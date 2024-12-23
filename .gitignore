@@ -1,0 +1,46 @@
+# Go workspaces.
+go.work
+go.work.sum
+# Test binary, built with `go test -c`
+*.test
+# Dependency directories after running `go mod vendor`
+vendor/
+
+# Binaries for programs and plugins
+*.elf
+*.uf2
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.hex
+# `__debug_bin` Debug binary generated in VSCode when using the built-in debugger.
+*bin
+
+# IDE
+.vscode/
+
+# For local development and testing create `local` directories.
+local
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+*.cov
+
+# Log files and common data formats.
+*.log
+*.Log
+*.LOG
+*.csv
+*.tsv
+*.dat
+*.json
+*.xlsx
+*.xls
+*.zip
+*.gz
+*.tar
+
+# If running a python script.
+*/__pycache__/*

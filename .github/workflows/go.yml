@@ -1,0 +1,49 @@
+# This workflow will build a golang project
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
+
+name: Go
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Go
+      uses: actions/setup-go@v3
+      with:
+        go-version: 1.21
+
+    - name: Build
+      run: go build -v ./...
+
+    - name: govulncheck
+      uses: golang/govulncheck-action@v1
+      with:
+        go-version-input: 1.21
+        go-package: ./...
+
+    - name: Test
+      run: go test -v -coverprofile=coverage.txt -covermode=atomic ./...
+
+    - name: Codecov upload coverage
+      shell: bash
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        RUN_ID: ${{ github.run_id }}
+      run: |
+        # Replace `linux` below with the appropriate OS
+        # Options are `alpine`, `linux`, `macos`, `windows`
+        # You will need to setup the environment variables below in github
+        # and the project in codecov.io: https://app.codecov.io/gh/${{ github.repository }}
+        go test -v -coverprofile=coverage.txt -covermode=atomic ./...
+        curl -Os https://uploader.codecov.io/latest/linux/codecov
+        chmod +x codecov
+        ./codecov --verbose upload-process --fail-on-error -t $CODECOV_TOKEN -n 'service'-$RUN_ID -F service -f coverage.txt
