@@ -3,6 +3,8 @@ package lneto
 import "errors"
 
 var (
+	errShortEth  = errors.New("ethernet length exceeds frame")
+	errShortVLAN = errors.New("ethernet length too short for VLAN")
 	errShortUDP  = errors.New("UDP length exceeds frame")
 	errBadUDPLen = errors.New("UDP length invalid")
 	errShortIPv4 = errors.New("IPv4 total length exceeds frame")
@@ -12,6 +14,18 @@ var (
 	errShortTCP  = errors.New("TCP offset exceeds frame")
 	errBadTCPOff = errors.New("TCP offset invalid")
 )
+
+// ValidateSize checks the frame's size fields and compares with the actual buffer
+// the frame. It returns a non-nil error on finding an inconsistency.
+func (efrm EthFrame) ValidateSize() error {
+	sz := efrm.EtherTypeOrSize()
+	if sz.IsSize() && len(efrm.buf) < int(sz) {
+		return errShortEth
+	} else if sz == EtherTypeVLAN && len(efrm.buf) < 18 {
+		return errShortVLAN
+	}
+	return nil
+}
 
 // ValidateSize checks the frame's size fields and compares with the actual buffer
 // the frame. It returns a non-nil error on finding an inconsistency.

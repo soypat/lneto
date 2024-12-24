@@ -2,34 +2,69 @@ package lneto
 
 import (
 	"encoding/binary"
+	"errors"
 
 	"github.com/soypat/tseq/lneto/tcp"
 )
 
-func NewEthFrame(buf []byte) EthFrame {
-	return EthFrame{buf: mustBufferFrameLen(buf, sizeHeaderEthNoVLAN, "Ethernet")}
-}
-func NewARPFrame(buf []byte) ARPFrame {
-	return ARPFrame{buf: mustBufferFrameLen(buf, sizeHeaderARPv4, "ARPv4")}
-}
-func NewIPv4Frame(buf []byte) IPv4Frame {
-	return IPv4Frame{buf: mustBufferFrameLen(buf, sizeHeaderIPv4, "IPv4")}
-}
-func NewIPv6Frame(buf []byte) IPv6Frame {
-	return IPv6Frame{buf: mustBufferFrameLen(buf, sizeHeaderIPv6, "IPv6")}
-}
-func NewTCPFrame(buf []byte) TCPFrame {
-	return TCPFrame{buf: mustBufferFrameLen(buf, sizeHeaderIPv4, "TCP")}
-}
-func NewUDPFrame(buf []byte) UDPFrame {
-	return UDPFrame{buf: mustBufferFrameLen(buf, sizeHeaderUDP, "UDP")}
+// NewEthFrame returns a EthFrame with data set to buf.
+// Users should still call [EthFrame.ValidateSize] before working
+// with payload/options of frames to avoid panics.
+func NewEthFrame(buf []byte) (EthFrame, error) {
+	if len(buf) < sizeHeaderEthNoVLAN {
+		return EthFrame{buf: nil}, errors.New("ethernet packet too short")
+	}
+	return EthFrame{buf: buf}, nil
 }
 
-func mustBufferFrameLen(b []byte, minLen int, name string) []byte {
-	if len(b) < minLen {
-		panic(name + " frame too short")
+// NewARPFrame returns a ARPFrame with data set to buf.
+// Users should still call [ARPFrame.ValidateSize] before working
+// with payload/options of frames to avoid panics.
+func NewARPFrame(buf []byte) (ARPFrame, error) {
+	if len(buf) < sizeHeaderARPv4 {
+		return ARPFrame{buf: nil}, errors.New("ARP packet too short")
 	}
-	return b
+	return ARPFrame{buf: buf}, nil
+}
+
+// NewIPv4Frame returns a new IPv4Frame with data set to buf.
+// Users should still call [IPv4Frame.ValidateSize] before working
+// with payload/options of frames to avoid panics.
+func NewIPv4Frame(buf []byte) (IPv4Frame, error) {
+	if len(buf) < sizeHeaderIPv4 {
+		return IPv4Frame{buf: nil}, errors.New("IPv4 packet too short")
+	}
+	return IPv4Frame{buf: buf}, nil
+}
+
+// NewIPv6Frame returns a new IPv6Frame with data set to buf.
+// Users should still call [IPv6Frame.ValidateSize] before working
+// with payload/options of frames to avoid panics.
+func NewIPv6Frame(buf []byte) (IPv6Frame, error) {
+	if len(buf) < sizeHeaderIPv6 {
+		return IPv6Frame{buf: nil}, errors.New("IPv6 packet too short")
+	}
+	return IPv6Frame{buf: buf}, nil
+}
+
+// NewTCPFrame returns a new TCPFrame with data set to buf.
+// Users should still call [TCPFrame.ValidateSize] before working
+// with payload/options of frames to avoid panics.
+func NewTCPFrame(buf []byte) (TCPFrame, error) {
+	if len(buf) < sizeHeaderTCP {
+		return TCPFrame{buf: nil}, errors.New("TCP packet too short")
+	}
+	return TCPFrame{buf: buf}, nil
+}
+
+// NewUDPFrame returns a new UDPFrame with data set to buf.
+// Users should still call [UDPFrame.ValidateSize] before working
+// with payload/options of frames to avoid panics.
+func NewUDPFrame(buf []byte) (UDPFrame, error) {
+	if len(buf) < sizeHeaderUDP {
+		return UDPFrame{buf: buf}, errors.New("UDP packet too short")
+	}
+	return UDPFrame{buf: buf}, nil
 }
 
 // EthFrame represents a Ethernet frame without including a preamble. The first byte is start of destination MAC address.
@@ -510,6 +545,12 @@ func (tfrm TCPFrame) UrgentPtr() uint16 {
 // Be sure to call [TCPFrame.ValidateSize] beforehand to avoid panic.
 func (tfrm TCPFrame) Payload() []byte {
 	return tfrm.buf[tfrm.HeaderLength():]
+}
+
+// Options returns the TCP option buffer portion of the frame. The returned slice may be zero length.
+// Be sure to call [TCPFrame.ValidateSize] beforehand to avoid panic.
+func (tfrm TCPFrame) Options() []byte {
+	return tfrm.buf[sizeHeaderTCP:tfrm.HeaderLength()]
 }
 
 type UDPFrame struct {

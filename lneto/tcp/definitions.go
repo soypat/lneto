@@ -1,12 +1,15 @@
 package tcp
 
 import (
+	"errors"
+	"fmt"
 	"math/bits"
 	"strconv"
+	"strings"
 	"unsafe"
 )
 
-//go:generate stringer -type=State -linecomment -output stringers.go .
+//go:generate stringer -type=State,OptionKind -linecomment -output stringers.go .
 
 // Segment represents an incoming/outgoing TCP segment in the sequence space.
 type Segment struct {
@@ -241,4 +244,111 @@ func (s State) IsSynchronized() bool {
 // IsDataOpen returns true if the connection allows sending and receiving of data.
 func (s State) isOpen() bool {
 	return s != StateClosed && s != StateTimeWait // TODO: is this api ok?
+}
+
+type OptionKind uint8
+
+const (
+	OptEnd                   OptionKind = iota // end of option list
+	OptNop                                     // no-operation
+	OptMaxSegmentSize                          // maximum segment size
+	OptWindowScale                             // window scale
+	OptSACKPermitted                           // SACK permitted
+	OptSACK                                    // SACK
+	OptEcho                                    // echo(obsolete)
+	optEchoReply                               // echo reply(obsolete)
+	OptTimestamps                              // timestamps
+	optPOCP                                    // partial order connection permitted(obsolete)
+	optPOSP                                    // partial order service profile(obsolete)
+	optCC                                      // CC(obsolete)
+	optCCnew                                   // CC.new(obsolete)
+	optCCecho                                  // CC.echo(obsolete)
+	optACR                                     // alternate checksum request(obsolete)
+	optACD                                     // alternate checksum data(obsolete)
+	optSkeeter                                 // skeeter
+	optBubba                                   // bubba
+	OptTrailerChecksum                         // trailer checksum
+	optMD5Signature                            // MD5 signature(obsolete)
+	OptSCPSCapabilities                        // SCPS capabilities
+	OptSNA                                     // selective negative acks
+	OptRecordBoundaries                        // record boundaries
+	OptCorruptionExperienced                   // corruption experienced
+	OptSNAP                                    // SNAP
+	OptUnassigned                              // unassigned
+	OptCompressionFilter                       // compression filter
+	OptQuickStartResponse                      // quick-start response
+	OptUserTimeout                             // user timeout or unauthorized use
+	OptAuthetication                           // Authentication TCP-AO
+	OptMultipath                               // multipath TCP
+)
+
+const (
+	OptFastOpenCookie        OptionKind = 34  // fast open cookie
+	OptEncryptionNegotiation OptionKind = 69  // encryption negotiation
+	OptAccurateECN0          OptionKind = 172 // accurate ECN order 0
+	OptAccurateECN1          OptionKind = 174 // accurate ECN order 1
+)
+
+// IsObsolete returns true if option considered obsolete by newer TCP specifications.
+func (kind OptionKind) IsObsolete() bool {
+	if kind.IsDefined() {
+		return strings.HasSuffix(kind.String(), "(obsolete)")
+	}
+	return false
+}
+
+// IsDefined returns true if the option is a known unreserved option kind.
+func (kind OptionKind) IsDefined() bool {
+	return kind <= 30 || kind == 34 || kind == 69 || kind == 172 || kind == 174
+}
+
+type OptionParser struct {
+	SkipSizeValidation bool
+	SkipObsolete       bool
+}
+
+func (op *OptionParser) ForEachOption(opts []byte, fn func(OptionKind, []byte) error) error {
+	off := 0
+	skipSizeValidation := op.SkipSizeValidation
+	skipObsolete := op.SkipObsolete
+	for off < len(opts) && opts[off] != 0 {
+		kind := OptionKind(opts[off])
+		off++
+		if kind == OptNop {
+			continue
+		}
+		if len(opts[off:]) < 2 {
+			return errors.New("short TCP options")
+		}
+		size := int(opts[off])
+		off++
+		if len(opts[off:]) < size {
+			return fmt.Errorf("option %q length %d exceeds buffer size %d", kind.String(), size, len(opts[off:]))
+		}
+
+		if !skipSizeValidation {
+			expectSize := -1
+			switch kind {
+			case OptTimestamps:
+				expectSize = 10
+			case OptMaxSegmentSize, OptUserTimeout:
+				expectSize = 4
+			case OptWindowScale:
+				expectSize = 3
+			case OptSACKPermitted:
+				expectSize = 2
+			}
+			if expectSize != -1 && size != expectSize {
+				return fmt.Errorf("bad TCP option %q size want %d got %d", kind.String(), expectSize, opts[off])
+			}
+		}
+		if skipObsolete && kind.IsObsolete() {
+			err := fn(kind, opts[off:off+size])
+			if err != nil {
+				return err
+			}
+		}
+		off += size
+	}
+	return nil
 }
