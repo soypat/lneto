@@ -9,8 +9,8 @@ import (
 func NewEthFrame(buf []byte) EthFrame {
 	return EthFrame{buf: mustBufferFrameLen(buf, sizeHeaderEthNoVLAN, "Ethernet")}
 }
-func NewARPv4Frame(buf []byte) ARPv4Frame {
-	return ARPv4Frame{buf: mustBufferFrameLen(buf, sizeHeaderARPv4, "ARPv4")}
+func NewARPFrame(buf []byte) ARPFrame {
+	return ARPFrame{buf: mustBufferFrameLen(buf, sizeHeaderARPv4, "ARPv4")}
 }
 func NewIPv4Frame(buf []byte) IPv4Frame {
 	return IPv4Frame{buf: mustBufferFrameLen(buf, sizeHeaderIPv4, "IPv4")}
@@ -82,53 +82,82 @@ func (efrm EthFrame) IsVLAN() bool {
 	return efrm.EtherTypeOrSize() == EtherTypeVLAN
 }
 
-type ARPv4Frame struct {
+type ARPFrame struct {
 	buf []byte
 }
 
 // RawData returns the underlying slice with which the frame was created.
-func (afrm ARPv4Frame) RawData() []byte { return afrm.buf }
+func (afrm ARPFrame) RawData() []byte { return afrm.buf }
 
 // HardwareType specifies the network link protocol type. Example: Ethernet is 1.
-func (afrm ARPv4Frame) Hardware() (Type uint16, length uint8) {
+func (afrm ARPFrame) Hardware() (Type uint16, length uint8) {
 	Type = binary.BigEndian.Uint16(afrm.buf[0:2])
 	length = afrm.buf[4]
 	return Type, length
 }
 
-func (afrm ARPv4Frame) SetHardware(Type uint16, length uint8) {
+// SetHardware sets the networl link protocol type. See [ARPFrame.SetHardware].
+func (afrm ARPFrame) SetHardware(Type uint16, length uint8) {
 	binary.BigEndian.PutUint16(afrm.buf[0:2], Type)
 	afrm.buf[4] = length
 }
 
-func (afrm ARPv4Frame) Protocol() (Type uint16, length uint8) {
-	Type = binary.BigEndian.Uint16(afrm.buf[2:4])
+// Protocol returns the internet protocol type and length. See [EtherType].
+func (afrm ARPFrame) Protocol() (Type EtherType, length uint8) {
+	Type = EtherType(binary.BigEndian.Uint16(afrm.buf[2:4]))
 	length = afrm.buf[5]
 	return Type, length
 }
 
-func (afrm ARPv4Frame) SetProtocol(Type uint16, length uint8) {
-	binary.BigEndian.PutUint16(afrm.buf[2:4], Type)
+// SetProtocol sets the protocol type and length fields of the ARP frame. See [ARPFrame.Protocol] and [EtherType].
+func (afrm ARPFrame) SetProtocol(Type EtherType, length uint8) {
+	binary.BigEndian.PutUint16(afrm.buf[2:4], uint16(Type))
 	afrm.buf[5] = length
 }
 
-func (afrm ARPv4Frame) SetOperation(b uint8) { afrm.buf[6] = b }
+// Operation returns the ARP header operation field. See [ARPOp].
+func (afrm ARPFrame) Operation() ARPOp { return ARPOp(afrm.buf[6]) }
 
-func (afrm ARPv4Frame) IsOperationRequest() bool { return afrm.buf[6] == 1 }
-func (afrm ARPv4Frame) IsOperationReply() bool   { return afrm.buf[6] == 2 }
+// SetOperation sets the ARP header operation field. See [ARPOp].
+func (afrm ARPFrame) SetOperation(b ARPOp) { afrm.buf[6] = uint8(b) }
 
-// Sender returns the MAC (hardware) and IP (protocol) addresses of sender of ARP packet.
-// In an ARP request MAC is used to indicate
-// the address of the host sending the request. In an ARP reply MAC is
+// Sender returns the hardware (MAC) and protocol addresses of sender of ARP packet.
+// In an ARP request MAC address is used to indicate
+// the address of the host sending the request. In an ARP reply MAC address is
 // used to indicate the address of the host that the request was looking for.
-func (afrm ARPv4Frame) Sender() (hardwareAddr *[6]byte, proto *[4]byte) {
+func (afrm ARPFrame) Sender() (hardwareAddr []byte, proto []byte) {
+	_, hlen := afrm.Hardware()
+	_, ilen := afrm.Protocol()
+	return afrm.buf[8 : 8+hlen], afrm.buf[8+hlen : 8+hlen+ilen]
+}
+
+// Target returns the hardware (MAC) and protocol addresses of target of ARP packet.
+// In an ARP request MAC target is ignored. In ARP reply MAC is used to indicate the address of host that originated request.
+func (afrm ARPFrame) Target() (hardwareAddr []byte, proto []byte) {
+	_, hlen := afrm.Hardware()
+	_, ilen := afrm.Protocol()
+	toff := 8 + hlen + ilen
+	return afrm.buf[toff : toff+hlen], afrm.buf[toff+hlen : toff+hlen+ilen]
+}
+
+// Sender4 returns the IPv4 sender addresses. See [ARPFrame.Sender].
+func (afrm ARPFrame) Sender4() (hardwareAddr *[6]byte, proto *[4]byte) {
 	return (*[6]byte)(afrm.buf[8:14]), (*[4]byte)(afrm.buf[14:18])
 }
 
-// Target returns the MAC (hardware) and IP (protocol) addresses of target of ARP packet.
-// In an ARP request MAC target is ignored. In ARP reply MAC is used to indicate the address of host that originated request.
-func (afrm ARPv4Frame) Target() (hardwareAddr *[6]byte, proto *[4]byte) {
+// Target4 returns the IPv4 target addresses. See [ARPFrame.Sender].
+func (afrm ARPFrame) Target4() (hardwareAddr *[6]byte, proto *[4]byte) {
 	return (*[6]byte)(afrm.buf[18:24]), (*[4]byte)(afrm.buf[24:28])
+}
+
+// Sender6 returns the IPv6 sender addresses. See [ARPFrame.Sender].
+func (afrm ARPFrame) Sender16() (hardwareAddr *[6]byte, proto *[16]byte) {
+	return (*[6]byte)(afrm.buf[8:14]), (*[16]byte)(afrm.buf[14:30])
+}
+
+// Target6 returns the IPv6 target addresses. See [ARPFrame.Sender].
+func (afrm ARPFrame) Target16() (hardwareAddr *[6]byte, proto *[16]byte) {
+	return (*[6]byte)(afrm.buf[30:36]), (*[16]byte)(afrm.buf[36:52])
 }
 
 type IPv4Frame struct {
@@ -138,14 +167,22 @@ type IPv4Frame struct {
 // RawData returns the underlying slice with which the frame was created.
 func (ifrm IPv4Frame) RawData() []byte { return ifrm.buf }
 
-func (ifrm IPv4Frame) Version() uint8 { return ifrm.buf[0] & 0xf }
-func (ifrm IPv4Frame) IHL() uint8     { return ifrm.buf[0] >> 4 }
-
 // HeaderLength returns the length of the IPv4 header as calculated using IHL. It includes IP options.
 func (ifrm IPv4Frame) HeaderLength() int {
-	return int(ifrm.IHL()) * 4
+	return int(ifrm.ihl()) * 4
 }
 
+func (ifrm IPv4Frame) ihl() uint8 {
+	return ifrm.buf[0] >> 4
+}
+
+// VersionAndIHL returns the version and IHL fields in the IPv4 header. Version should always be 4.
+func (ifrm IPv4Frame) VersionAndIHL() (version, IHL uint8) {
+	v := ifrm.buf[0]
+	return v & 0xf, v >> 4
+}
+
+// SetVersionAndIHL sets the version and IHL fields in the IPv4 header. Version should always be 4.
 func (ifrm IPv4Frame) SetVersionAndIHL(version, IHL uint8) { ifrm.buf[0] = version&0xf | IHL<<4 }
 
 // ToS (Type of Service) contains Differential Services Code Point (DSCP) and
@@ -217,7 +254,7 @@ func (ifrm IPv4Frame) Protocol() IPProto { return IPProto(ifrm.buf[9]) }
 // SetProtocol sets protocol field. See [IPv4Frame.Protocol] and [IPProto].
 func (ifrm IPv4Frame) SetProtocol(proto IPProto) { ifrm.buf[9] = uint8(proto) }
 
-// CRC returns the cyclic-redundancy check field of the IPv4 packet.
+// CRC returns the cyclic-redundancy-check (checksum) field of the IPv4 header.
 func (ifrm IPv4Frame) CRC() uint16 {
 	return binary.BigEndian.Uint16(ifrm.buf[10:12])
 }
@@ -238,7 +275,7 @@ func (ifrm IPv4Frame) CalculateHeaderCRC() uint16 {
 func (ifrm IPv4Frame) crcWriteTCPPseudo(crc *CRC791) {
 	crc.Write(ifrm.SourceAddr()[:])
 	crc.Write(ifrm.DestinationAddr()[:])
-	crc.AddUint16(ifrm.TotalLength() - 4*uint16(ifrm.IHL()))
+	crc.AddUint16(ifrm.TotalLength() - 4*uint16(ifrm.ihl()))
 	crc.AddUint16(uint16(ifrm.Protocol()))
 }
 
@@ -258,6 +295,8 @@ func (ifrm IPv4Frame) DestinationAddr() *[4]byte {
 	return (*[4]byte)(ifrm.buf[16:20])
 }
 
+// Payload returns the contents of the IPv4 packet, which may be zero sized.
+// Be sure to call [IPv4Frame.ValidateSize] beforehand to avoid panic.
 func (ifrm IPv4Frame) Payload() []byte {
 	off := ifrm.HeaderLength()
 	l := ifrm.TotalLength()
@@ -272,6 +311,7 @@ type IPv6Frame struct {
 func (i6frm IPv6Frame) RawData() []byte { return i6frm.buf }
 
 // Payload returns the contents of the IPv6 packet, which may be zero sized.
+// Be sure to call [IPv6Frame.ValidateSize] beforehand to avoid panic.
 func (i6frm IPv6Frame) Payload() []byte {
 	pl := i6frm.PayloadLength()
 	return i6frm.buf[sizeHeaderIPv6 : sizeHeaderIPv6+pl]
@@ -432,7 +472,7 @@ func (tfrm TCPFrame) SetCRC(checksum uint16) {
 func (tfrm TCPFrame) CalculateIPv4CRC(ifrm IPv4Frame) uint16 {
 	var crc CRC791
 	ifrm.crcWriteTCPPseudo(&crc)
-	expectLen := int(ifrm.TotalLength()) - 4*int(ifrm.IHL())
+	expectLen := int(ifrm.TotalLength()) - ifrm.HeaderLength()
 	if expectLen != len(tfrm.buf) {
 		println("unexpected TCP buffer length mismatches IPv4 header total length", expectLen, len(tfrm.buf))
 	}
@@ -466,6 +506,8 @@ func (tfrm TCPFrame) UrgentPtr() uint16 {
 	return binary.BigEndian.Uint16(tfrm.buf[18:20])
 }
 
+// Payload returns the payload content section of the TCP packet (not including TCP options).
+// Be sure to call [TCPFrame.ValidateSize] beforehand to avoid panic.
 func (tfrm TCPFrame) Payload() []byte {
 	return tfrm.buf[tfrm.HeaderLength():]
 }
@@ -477,15 +519,17 @@ type UDPFrame struct {
 // RawData returns the underlying slice with which the frame was created.
 func (ufrm UDPFrame) RawData() []byte { return ufrm.buf }
 
+// SourcePort identifies the sending port for the UDP packet. Must be non-zero.
 func (ufrm UDPFrame) SourcePort() uint16 {
 	return binary.BigEndian.Uint16(ufrm.buf[0:2])
 }
 
-// SetSourcePort sets UDP source port. See [UDPFrame.SetSourcePort]
+// SetSourcePort sets UDP source port. See [UDPFrame.SourcePort]
 func (ufrm UDPFrame) SetSourcePort(src uint16) {
 	binary.BigEndian.PutUint16(ufrm.buf[0:2], src)
 }
 
+// DestinationPort identifies the receiving port for the UDP packet. Must be non-zero.
 func (ufrm UDPFrame) DestinationPort() uint16 {
 	return binary.BigEndian.Uint16(ufrm.buf[2:4])
 }
@@ -507,6 +551,7 @@ func (ufrm UDPFrame) SetLength(length uint16) {
 	binary.BigEndian.PutUint16(ufrm.buf[4:6], length)
 }
 
+// CRC returns the checksum field in the UDP header.
 func (ufrm UDPFrame) CRC() uint16 {
 	return binary.BigEndian.Uint16(ufrm.buf[6:8])
 }
@@ -516,7 +561,8 @@ func (ufrm UDPFrame) SetCRC(checksum uint16) {
 	binary.BigEndian.PutUint16(ufrm.buf[6:8], checksum)
 }
 
-// Payload returns the data part of the UDP frame.
+// Payload returns the payload content section of the UDP packet.
+// Be sure to call [UDPFrame.ValidateSize] beforehand to avoid panic.
 func (ufrm UDPFrame) Payload() []byte {
 	l := ufrm.Length()
 	return ufrm.buf[sizeHeaderUDP:l]

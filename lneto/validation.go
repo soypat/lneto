@@ -8,10 +8,22 @@ var (
 	errShortIPv4 = errors.New("IPv4 total length exceeds frame")
 	errBadIPv4TL = errors.New("IPv4 short total length")
 	errShortIPv6 = errors.New("IPv6 payload length exceeds frame")
-
+	errShortARP  = errors.New("bad ARP size")
 	errShortTCP  = errors.New("TCP offset exceeds frame")
 	errBadTCPOff = errors.New("TCP offset invalid")
 )
+
+// ValidateSize checks the frame's size fields and compares with the actual buffer
+// the frame. It returns a non-nil error on finding an inconsistency.
+func (afrm ARPFrame) ValidateSize() error {
+	_, hlen := afrm.Hardware()
+	_, ilen := afrm.Protocol()
+	minLen := 8 + 2*(hlen+ilen)
+	if len(afrm.buf) < int(minLen) {
+		return errShortARP
+	}
+	return nil
+}
 
 // ValidateSize checks the frame's size fields and compares with the actual buffer
 // the frame. It returns a non-nil error on finding an inconsistency.

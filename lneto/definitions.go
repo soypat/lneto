@@ -1,6 +1,6 @@
 package lneto
 
-//go:generate stringer -type=EtherType,IPProto -linecomment -output stringers.go .
+//go:generate stringer -type=EtherType,IPProto,ARPOp -linecomment -output stringers.go .
 
 type EtherType uint16
 
@@ -244,4 +244,12 @@ const (
 	IPProtoEthernet        IPProto = 143 // Ethernet
 	IPProtoAGGFRAG         IPProto = 144 // AGGFRAG Encapsulation payload for ESP
 	IPProtoNSH             IPProto = 145 // Network Service Header
+)
+
+// ARPOp represents the type of ARP packet, either request or reply/response.
+type ARPOp uint8
+
+const (
+	ARPRequest ARPOp = 1 // request
+	ARPReply   ARPOp = 2 // reply
 )
