@@ -3,39 +3,73 @@ package lneto
 import (
 	"encoding/binary"
 
-	"github.com/soypat/tseq"
+	"github.com/soypat/tseq/lneto/tcp"
 )
 
-func NewEthFrame(buf []byte) EthFrame     { return EthFrame{buf: buf} }
-func NewARPv4Frame(buf []byte) ARPv4Frame { return ARPv4Frame{buf: buf} }
-func NewIPv4Frame(buf []byte) IPv4Frame   { return IPv4Frame{buf: buf} }
-func NewTCPFrame(buf []byte) TCPFrame     { return TCPFrame{buf: buf} }
-func NewUDPFrame(buf []byte) UDPFrame     { return UDPFrame{buf: buf} }
+func NewEthFrame(buf []byte) EthFrame {
+	return EthFrame{buf: mustBufferFrameLen(buf, sizeHeaderEthNoVLAN, "Ethernet")}
+}
+func NewARPv4Frame(buf []byte) ARPv4Frame {
+	return ARPv4Frame{buf: mustBufferFrameLen(buf, sizeHeaderARPv4, "ARPv4")}
+}
+func NewIPv4Frame(buf []byte) IPv4Frame {
+	return IPv4Frame{buf: mustBufferFrameLen(buf, sizeHeaderIPv4, "IPv4")}
+}
+func NewIPv6Frame(buf []byte) IPv6Frame {
+	return IPv6Frame{buf: mustBufferFrameLen(buf, sizeHeaderIPv6, "IPv6")}
+}
+func NewTCPFrame(buf []byte) TCPFrame {
+	return TCPFrame{buf: mustBufferFrameLen(buf, sizeHeaderIPv4, "TCP")}
+}
+func NewUDPFrame(buf []byte) UDPFrame {
+	return UDPFrame{buf: mustBufferFrameLen(buf, sizeHeaderUDP, "UDP")}
+}
 
+func mustBufferFrameLen(b []byte, minLen int, name string) []byte {
+	if len(b) < minLen {
+		panic(name + " frame too short")
+	}
+	return b
+}
+
+// EthFrame represents a Ethernet frame without including a preamble. The first byte is start of destination MAC address.
 type EthFrame struct {
 	buf []byte
 }
 
 // RawData returns the underlying slice with which the frame was created.
-func (frm EthFrame) RawData() []byte {	return frm.buf}
+func (efrm EthFrame) RawData() []byte { return efrm.buf }
 
-func (frm EthFrame) Payload() []byte {
-	if frm.IsVLAN() {
-		return frm.buf[18:]
+// Payload returns the data portion of the ethernet packet with handling of VLAN packets.
+func (efrm EthFrame) Payload() []byte {
+	if efrm.IsVLAN() {
+		if len(efrm.buf) < 18 {
+			return nil
+		}
+		return efrm.buf[18:]
 	}
-	return frm.buf[14:]
+	return efrm.buf[sizeHeaderEthNoVLAN:]
 }
 
-func (frm EthFrame) DstHardwareAddr6() (dst *[6]byte) {
-	return (*[6]byte)(frm.buf[:6])
+// DestinationHardwareAddr returns the target's MAC/hardware address for the ethernet packet.
+func (efrm EthFrame) DestinationHardwareAddr() (dst *[6]byte) {
+	return (*[6]byte)(efrm.buf[0:6])
 }
 
-func (frm EthFrame) SrcHardwareAddr6() (src *[6]byte) {
-	return (*[6]byte)(frm.buf[6:12])
+// SourceHardwareAddr returns the sender's MAC/hardware address of the ethernet packet.
+func (efrm EthFrame) SourceHardwareAddr() (src *[6]byte) {
+	return (*[6]byte)(efrm.buf[6:12])
 }
 
-func (frm EthFrame) EtherTypeOrSize() uint16 {
-	return binary.BigEndian.Uint16(frm.buf[12:14])
+// EtherTypeOrSize returns the EtherType/Size field of the ethernet packet.
+// Caller should check if the field is actually a valid EtherType or if it represents the Ethernet payload size with [EtherType.IsSize].
+func (efrm EthFrame) EtherTypeOrSize() EtherType {
+	return EtherType(binary.BigEndian.Uint16(efrm.buf[12:14]))
+}
+
+// SetEtherType sets the EtherType field of the ethernet packet. See [EtherType] and [EthFrame.EtherTypeOrSize].
+func (efrm EthFrame) SetEtherType(v EtherType) {
+	binary.BigEndian.PutUint16(efrm.buf[12:14], uint16(v))
 }
 
 // IsVLAN returns true if the SizeOrEtherType is set to the VLAN tag 0x8100. This
@@ -44,8 +78,8 @@ func (frm EthFrame) EtherTypeOrSize() uint16 {
 // must be read from the wire, of which the last 2 of these bytes contain the actual
 // SizeOrEtherType field, which needs to be validated yet again in case the packet is
 // a VLAN double-tap packet.
-func (frm EthFrame) IsVLAN() bool {
-	return frm.EtherTypeOrSize() == uint16(EtherTypeVLAN)
+func (efrm EthFrame) IsVLAN() bool {
+	return efrm.EtherTypeOrSize() == EtherTypeVLAN
 }
 
 type ARPv4Frame struct {
@@ -53,48 +87,48 @@ type ARPv4Frame struct {
 }
 
 // RawData returns the underlying slice with which the frame was created.
-func (frm ARPv4Frame) RawData() []byte {	return frm.buf}
+func (afrm ARPv4Frame) RawData() []byte { return afrm.buf }
 
 // HardwareType specifies the network link protocol type. Example: Ethernet is 1.
-func (arp ARPv4Frame) Hardware() (Type uint16, length uint8) {
-	Type = binary.BigEndian.Uint16(arp.buf[0:2])
-	length = arp.buf[4]
+func (afrm ARPv4Frame) Hardware() (Type uint16, length uint8) {
+	Type = binary.BigEndian.Uint16(afrm.buf[0:2])
+	length = afrm.buf[4]
 	return Type, length
 }
 
-func (arp ARPv4Frame) SetHardware(Type uint16, length uint8) {
-	binary.BigEndian.PutUint16(arp.buf[0:2], Type)
-	arp.buf[4] = length
+func (afrm ARPv4Frame) SetHardware(Type uint16, length uint8) {
+	binary.BigEndian.PutUint16(afrm.buf[0:2], Type)
+	afrm.buf[4] = length
 }
 
-func (arp ARPv4Frame) Protocol() (Type uint16, length uint8) {
-	Type = binary.BigEndian.Uint16(arp.buf[2:4])
-	length = arp.buf[5]
+func (afrm ARPv4Frame) Protocol() (Type uint16, length uint8) {
+	Type = binary.BigEndian.Uint16(afrm.buf[2:4])
+	length = afrm.buf[5]
 	return Type, length
 }
 
-func (arp ARPv4Frame) SetProtocol(Type uint16, length uint8) {
-	binary.BigEndian.PutUint16(arp.buf[2:4], Type)
-	arp.buf[5] = length
+func (afrm ARPv4Frame) SetProtocol(Type uint16, length uint8) {
+	binary.BigEndian.PutUint16(afrm.buf[2:4], Type)
+	afrm.buf[5] = length
 }
 
-func (arp ARPv4Frame) SetOperation(b uint8) { arp.buf[6] = b }
+func (afrm ARPv4Frame) SetOperation(b uint8) { afrm.buf[6] = b }
 
-func (arp ARPv4Frame) IsOperationRequest() bool { return arp.buf[6] == 1 }
-func (arp ARPv4Frame) IsOperationReply() bool   { return arp.buf[6] == 2 }
+func (afrm ARPv4Frame) IsOperationRequest() bool { return afrm.buf[6] == 1 }
+func (afrm ARPv4Frame) IsOperationReply() bool   { return afrm.buf[6] == 2 }
 
 // Sender returns the MAC (hardware) and IP (protocol) addresses of sender of ARP packet.
 // In an ARP request MAC is used to indicate
 // the address of the host sending the request. In an ARP reply MAC is
 // used to indicate the address of the host that the request was looking for.
-func (arp ARPv4Frame) Sender() (hardwareAddr *[6]byte, proto *[4]byte) {
-	return (*[6]byte)(arp.buf[8:14]), (*[4]byte)(arp.buf[14:18])
+func (afrm ARPv4Frame) Sender() (hardwareAddr *[6]byte, proto *[4]byte) {
+	return (*[6]byte)(afrm.buf[8:14]), (*[4]byte)(afrm.buf[14:18])
 }
 
 // Target returns the MAC (hardware) and IP (protocol) addresses of target of ARP packet.
 // In an ARP request MAC target is ignored. In ARP reply MAC is used to indicate the address of host that originated request.
-func (arp ARPv4Frame) Target() (hardwareAddr *[6]byte, proto *[4]byte) {
-	return (*[6]byte)(arp.buf[18:24]), (*[4]byte)(arp.buf[24:28])
+func (afrm ARPv4Frame) Target() (hardwareAddr *[6]byte, proto *[4]byte) {
+	return (*[6]byte)(afrm.buf[18:24]), (*[4]byte)(afrm.buf[24:28])
 }
 
 type IPv4Frame struct {
@@ -102,18 +136,17 @@ type IPv4Frame struct {
 }
 
 // RawData returns the underlying slice with which the frame was created.
-func (frm IPv4Frame) RawData() []byte {	return frm.buf}
+func (ifrm IPv4Frame) RawData() []byte { return ifrm.buf }
 
-
-func (ip IPv4Frame) Version() uint8 { return ip.buf[0] & 0xf }
-func (ip IPv4Frame) IHL() uint8     { return ip.buf[0] >> 4 }
+func (ifrm IPv4Frame) Version() uint8 { return ifrm.buf[0] & 0xf }
+func (ifrm IPv4Frame) IHL() uint8     { return ifrm.buf[0] >> 4 }
 
 // HeaderLength returns the length of the IPv4 header as calculated using IHL. It includes IP options.
-func (ip IPv4Frame) HeaderLength() int {
-	return int(ip.IHL()) * 4
+func (ifrm IPv4Frame) HeaderLength() int {
+	return int(ifrm.IHL()) * 4
 }
 
-func (ip IPv4Frame) SetVersionAndIHL(version, IHL uint8) { ip.buf[0] = version&0xf | IHL<<4 }
+func (ifrm IPv4Frame) SetVersionAndIHL(version, IHL uint8) { ifrm.buf[0] = version&0xf | IHL<<4 }
 
 // ToS (Type of Service) contains Differential Services Code Point (DSCP) and
 // Explicit Congestion Notification (ECN) union data.
@@ -126,12 +159,12 @@ func (ip IPv4Frame) SetVersionAndIHL(version, IHL uint8) { ip.buf[0] = version&0
 // ECN is defined in RFC 3168 and allows end-to-end notification of
 // network congestion without dropping packets. ECN is an optional feature available
 // when both endpoints support it and effective when also supported by the underlying network.
-func (ip IPv4Frame) ToS() IPToS {
-	return IPToS(ip.buf[1])
+func (ifrm IPv4Frame) ToS() IPToS {
+	return IPToS(ifrm.buf[1])
 }
 
 // SetToS sets ToS field. See [IPv4Frame.ToS].
-func (ip IPv4Frame) SetToS(tos IPToS) { ip.buf[1] = byte(tos) }
+func (ifrm IPv4Frame) SetToS(tos IPToS) { ifrm.buf[1] = byte(tos) }
 
 // TotalLength defines the entire packet size in bytes, including IP header and data.
 // The minimum size is 20 bytes (IPv4 header without data) and the maximum is 65,535 bytes.
@@ -141,90 +174,175 @@ func (ip IPv4Frame) SetToS(tos IPToS) { ip.buf[1] = byte(tos) }
 // Links may impose further restrictions on the packet size, in which case datagrams
 // must be fragmented. Fragmentation in IPv4 is performed in either the
 // sending host or in routers. Reassembly is performed at the receiving host.
-func (ip IPv4Frame) TotalLength() uint16 {
-	return binary.BigEndian.Uint16(ip.buf[2:4])
+func (ifrm IPv4Frame) TotalLength() uint16 {
+	return binary.BigEndian.Uint16(ifrm.buf[2:4])
 }
 
 // SetTotalLength sets TotalLength field. See [IPv4Frame.TotalLength].
-func (ip IPv4Frame) SetTotalLength(tl uint16) { binary.BigEndian.PutUint16(ip.buf[2:4], tl) }
+func (ifrm IPv4Frame) SetTotalLength(tl uint16) { binary.BigEndian.PutUint16(ifrm.buf[2:4], tl) }
 
 // ID is an identification field and is primarily used for uniquely
 // identifying the group of fragments of a single IP datagram.
-func (ip IPv4Frame) ID() uint16 {
-	return binary.BigEndian.Uint16(ip.buf[4:6])
+func (ifrm IPv4Frame) ID() uint16 {
+	return binary.BigEndian.Uint16(ifrm.buf[4:6])
 }
 
 // SetID sets ID field. See [IPv4Frame.ID].
-func (ip IPv4Frame) SetID(id uint16) { binary.BigEndian.PutUint16(ip.buf[4:6], id) }
+func (ifrm IPv4Frame) SetID(id uint16) { binary.BigEndian.PutUint16(ifrm.buf[4:6], id) }
 
 // Flags returns the [IPv4Flags] of the IP packet.
-func (ip IPv4Frame) Flags() IPv4Flags {
-	return IPv4Flags(binary.BigEndian.Uint16(ip.buf[6:8]))
+func (ifrm IPv4Frame) Flags() IPv4Flags {
+	return IPv4Flags(binary.BigEndian.Uint16(ifrm.buf[6:8]))
 }
 
 // SetFlags sets the IPv4 flags field. See [IPv4Flags].
-func (ip IPv4Frame) SetFlags(flags IPv4Flags) { binary.BigEndian.PutUint16(ip.buf[6:8], uint16(flags)) }
+func (ifrm IPv4Frame) SetFlags(flags IPv4Flags) {
+	binary.BigEndian.PutUint16(ifrm.buf[6:8], uint16(flags))
+}
 
 // TTL is an eight-bit time to live field limits a datagram's lifetime to prevent
 // network failure in the event of a routing loop. In practice, the field
 // is used as a hop count—when the datagram arrives at a router,
 // the router decrements the TTL field by one. When the TTL field hits zero,
 // the router discards the packet and typically sends an ICMP time exceeded message to the sender.
-func (ip IPv4Frame) TTL() uint8 { return ip.buf[8] }
+func (ifrm IPv4Frame) TTL() uint8 { return ifrm.buf[8] }
 
 // SetTTL sets the IP frame's TTL field. See [IPv4Frame.TTL].
-func (ip IPv4Frame) SetTTL(ttl uint8) { ip.buf[8] = ttl }
+func (ifrm IPv4Frame) SetTTL(ttl uint8) { ifrm.buf[8] = ttl }
 
 // Protocol field defines the protocol used in the data portion of the IP datagram. TCP is 6, UDP is 17.
-func (ip IPv4Frame) Protocol() uint8 { return ip.buf[9] }
+// See [IPProto].
+func (ifrm IPv4Frame) Protocol() IPProto { return IPProto(ifrm.buf[9]) }
 
-// SetProtocol sets protocol field. See [IPv4Frame.Protocol].
-func (ip IPv4Frame) SetProtocol(proto uint8) { ip.buf[9] = proto }
+// SetProtocol sets protocol field. See [IPv4Frame.Protocol] and [IPProto].
+func (ifrm IPv4Frame) SetProtocol(proto IPProto) { ifrm.buf[9] = uint8(proto) }
 
 // CRC returns the cyclic-redundancy check field of the IPv4 packet.
-func (ip IPv4Frame) CRC() uint16 {
-	return binary.BigEndian.Uint16(ip.buf[10:12])
+func (ifrm IPv4Frame) CRC() uint16 {
+	return binary.BigEndian.Uint16(ifrm.buf[10:12])
 }
 
 // SetCRC sets the CRC field of the IP packet. See [IPv4Frame.CRC].
-func (ip IPv4Frame) SetCRC(cs uint16) {
-	binary.BigEndian.PutUint16(ip.buf[10:12], cs)
+func (ifrm IPv4Frame) SetCRC(cs uint16) {
+	binary.BigEndian.PutUint16(ifrm.buf[10:12], cs)
 }
 
-func (ip IPv4Frame) CalculateHeaderCRC() uint16 {
+// CalculateHeaderCRC calculates the CRC for this IPv4 frame.
+func (ifrm IPv4Frame) CalculateHeaderCRC() uint16 {
 	var crc CRC791
-	crc.Write(ip.buf[0:10])
-	crc.Write(ip.buf[12:20])
+	crc.Write(ifrm.buf[0:10])
+	crc.Write(ifrm.buf[12:20])
 	return crc.Sum16()
 }
 
-func (ip IPv4Frame) writeTCPPseudoCRC(crc *CRC791) {
-	crc.Write(ip.SourceAddr()[:])
-	crc.Write(ip.DestinationAddr()[:])
-	crc.AddUint16(ip.TotalLength() - 4*uint16(ip.IHL()))
-	crc.AddUint16(uint16(ip.Protocol()))
+func (ifrm IPv4Frame) crcWriteTCPPseudo(crc *CRC791) {
+	crc.Write(ifrm.SourceAddr()[:])
+	crc.Write(ifrm.DestinationAddr()[:])
+	crc.AddUint16(ifrm.TotalLength() - 4*uint16(ifrm.IHL()))
+	crc.AddUint16(uint16(ifrm.Protocol()))
 }
 
-func (ip IPv4Frame) writeUDPPseudoCRC(crc *CRC791) {
-	crc.Write(ip.SourceAddr()[:])
-	crc.Write(ip.DestinationAddr()[:])
-	crc.AddUint16(uint16(ip.Protocol()))
+func (ifrm IPv4Frame) crcWriteUDPPseudo(crc *CRC791) {
+	crc.Write(ifrm.SourceAddr()[:])
+	crc.Write(ifrm.DestinationAddr()[:])
+	crc.AddUint16(uint16(ifrm.Protocol()))
 }
 
 // SourceAddr returns pointer to the source IPv4 address in the IP header.
-func (ip IPv4Frame) SourceAddr() *[4]byte {
-	return (*[4]byte)(ip.buf[12:16])
+func (ifrm IPv4Frame) SourceAddr() *[4]byte {
+	return (*[4]byte)(ifrm.buf[12:16])
 }
 
 // DestinationAddr returns pointer to the destination IPv4 address in the IP header.
-func (ip IPv4Frame) DestinationAddr() *[4]byte {
-	return (*[4]byte)(ip.buf[16:20])
+func (ifrm IPv4Frame) DestinationAddr() *[4]byte {
+	return (*[4]byte)(ifrm.buf[16:20])
 }
 
-func (ip IPv4Frame) Payload() []byte {
-	off := ip.HeaderLength()
-	l := ip.TotalLength()
-	return ip.buf[off:l]
+func (ifrm IPv4Frame) Payload() []byte {
+	off := ifrm.HeaderLength()
+	l := ifrm.TotalLength()
+	return ifrm.buf[off:l]
+}
+
+type IPv6Frame struct {
+	buf []byte
+}
+
+// RawData returns the underlying slice with which the frame was created.
+func (i6frm IPv6Frame) RawData() []byte { return i6frm.buf }
+
+// Payload returns the contents of the IPv6 packet, which may be zero sized.
+func (i6frm IPv6Frame) Payload() []byte {
+	pl := i6frm.PayloadLength()
+	return i6frm.buf[sizeHeaderIPv6 : sizeHeaderIPv6+pl]
+}
+
+// VersionTrafficAndFlow returns the version, Traffic and Flow label fields of the IPv6 header.
+// See [IPToS] Traffic Class. Version should be 6 for IPv6.
+func (i6frm IPv6Frame) VersionTrafficAndFlow() (version uint8, tos IPToS, flow uint32) {
+	v := binary.BigEndian.Uint32(i6frm.buf[0:4])
+	version = uint8(v >> (32 - 4))
+	tos = IPToS(v >> (32 - 12))
+	flow = v & 0x000f_ffff
+	return version, tos, flow
+}
+
+// SetVersionTrafficAndFlow sets the version, ToS and Flow label in the IPv6 header. Version must be equal to 6.
+// See [IPv6Frame.VersionTrafficAndFlow].
+func (i6frm IPv6Frame) SetVersionTrafficAndFlow(version uint8, tos IPToS, flow uint32) {
+	v := flow | uint32(tos)<<(32-12) | uint32(version)<<(32-4)
+	binary.BigEndian.PutUint32(i6frm.buf[0:4], v)
+}
+
+// PayloadLength returns the size of payload in octets(bytes) including any extension headers.
+// The length is set to zero when a Hop-by-Hop extension header carries a Jumbo Payload option.
+func (i6frm IPv6Frame) PayloadLength() uint16 {
+	return binary.BigEndian.Uint16(i6frm.buf[4:6])
+}
+
+// SetPayloadLength sets the payload length field of the IPv6 header. See [IPv6Frame.PayloadLength].
+func (i6frm IPv6Frame) SetPayloadLength(pl uint16) {
+	binary.BigEndian.PutUint16(i6frm.buf[4:6], pl)
+}
+
+// NextHeader returns the Next Header field of the IPv6 header which usually specifies the transport layer
+// protocol used by packet's payload.
+func (i6frm IPv6Frame) NextHeader() IPProto {
+	return IPProto(i6frm.buf[6])
+}
+
+// SetNextHeader sets the Next Header (protocol) field of the IPv6 header. See [IPv6Frame.NextHeader].
+func (i6frm IPv6Frame) SetNextHeader(proto IPProto) {
+	i6frm.buf[6] = uint8(proto)
+}
+
+// HopLimit returns the Hop Limit of the IPv6 header.
+// This value is decremented by one at each forwarding node and the packet is discarded if it becomes 0.
+// However, the destination node should process the packet normally even if received with a hop limit of 0.
+func (i6frm IPv6Frame) HopLimit() uint8 {
+	return i6frm.buf[7]
+}
+
+// SetHopLimit sets the Hop Limit field of the IPv6 header. See [IPv6Frame.HopLimiy].
+func (i6frm IPv6Frame) SetHopLimit(hop uint8) {
+	i6frm.buf[7] = hop
+}
+
+// SourceAddr returns pointer to the sending node unicast IPv6 address in the IP header.
+func (i6frm IPv6Frame) SourceAddr() *[16]byte {
+	return (*[16]byte)(i6frm.buf[8:24])
+}
+
+// DestinationAddr returns pointer to the destination node unicast or multicast IPv6 address in the IP header.
+func (i6frm IPv6Frame) DestinationAddr() *[16]byte {
+	return (*[16]byte)(i6frm.buf[24:40])
+}
+
+func (ifrm IPv6Frame) crcWritePseudo(crc *CRC791) {
+	crc.Write(ifrm.SourceAddr()[:])
+	crc.Write(ifrm.DestinationAddr()[:])
+	crc.AddUint32(uint32(ifrm.PayloadLength()))
+	crc.AddUint32(uint32(ifrm.NextHeader()))
 }
 
 type TCPFrame struct {
@@ -232,104 +350,124 @@ type TCPFrame struct {
 }
 
 // RawData returns the underlying slice with which the frame was created.
-func (frm TCPFrame) RawData() []byte {	return frm.buf}
+func (tfrm TCPFrame) RawData() []byte { return tfrm.buf }
 
-
-func (tcp TCPFrame) SourcePort() uint16 {
-	return binary.BigEndian.Uint16(tcp.buf[0:2])
+// SourcePort identifies the sending port of the TCP packet. Must be non-zero.
+func (tfrm TCPFrame) SourcePort() uint16 {
+	return binary.BigEndian.Uint16(tfrm.buf[0:2])
 }
 
 // SetSourcePort sets TCP source port. See [TCPFrame.SetSourcePort]
-func (tcp TCPFrame) SetSourcePort(src uint16) {
-	binary.BigEndian.PutUint16(tcp.buf[0:2], src)
+func (tfrm TCPFrame) SetSourcePort(src uint16) {
+	binary.BigEndian.PutUint16(tfrm.buf[0:2], src)
 }
 
-func (tcp TCPFrame) DestinationPort() uint16 {
-	return binary.BigEndian.Uint16(tcp.buf[2:4])
+// DestinationPort identifies the receiving port for the TCP packet. Must be non-zero.
+func (tfrm TCPFrame) DestinationPort() uint16 {
+	return binary.BigEndian.Uint16(tfrm.buf[2:4])
 }
 
 // SetDestinationPort sets TCP destination port. See [TCPFrame.DestinationPort]
-func (tcp TCPFrame) SetDestinationPort(dst uint16) {
-	binary.BigEndian.PutUint16(tcp.buf[2:4], dst)
+func (tfrm TCPFrame) SetDestinationPort(dst uint16) {
+	binary.BigEndian.PutUint16(tfrm.buf[2:4], dst)
 }
 
 // Seq returns sequence number of the first data octet in this segment (except when SYN present)
 // If SYN present this is the Initial Sequence Number (ISN) and the first data octet would be ISN+1.
-func (tcp TCPFrame) Seq() tseq.Value {
-	return tseq.Value(binary.BigEndian.Uint32(tcp.buf[4:8]))
+func (tfrm TCPFrame) Seq() tcp.Value {
+	return tcp.Value(binary.BigEndian.Uint32(tfrm.buf[4:8]))
 }
 
 // SetSeq sets Seq field. See [TCPFrame.Seq].
-func (tcp TCPFrame) SetSeq(v tseq.Value) {
-	binary.BigEndian.PutUint32(tcp.buf[4:8], uint32(v))
+func (tfrm TCPFrame) SetSeq(v tcp.Value) {
+	binary.BigEndian.PutUint32(tfrm.buf[4:8], uint32(v))
 }
 
 // Ack is the next sequence number (Seq field) the sender is expecting to receive (when ACK is present).
 // In other words an Ack of X indicates all octets up to but not including X have been received.
 // Once a connection is established the ACK flag should always be set.
-func (tcp TCPFrame) Ack() tseq.Value {
-	return tseq.Value(binary.BigEndian.Uint32(tcp.buf[8:12]))
+func (tfrm TCPFrame) Ack() tcp.Value {
+	return tcp.Value(binary.BigEndian.Uint32(tfrm.buf[8:12]))
 }
 
 // SetAck sets Ack field. See [TCPFrame.Ack].
-func (tcp TCPFrame) SetAck(v tseq.Value) {
-	binary.BigEndian.PutUint32(tcp.buf[8:12], uint32(v))
+func (tfrm TCPFrame) SetAck(v tcp.Value) {
+	binary.BigEndian.PutUint32(tfrm.buf[8:12], uint32(v))
+}
+
+// OffsetAndFlags returns the offset and flag fields of TCP header.
+// Offset is amount of 32-bit words used for TCP header including TCP options (see [TCPFrame.HeaderLength]).
+// See [tcp.Flags] for more information on TCP flags.
+func (tfrm TCPFrame) OffsetAndFlags() (offset uint8, flags tcp.Flags) {
+	v := binary.BigEndian.Uint16(tfrm.buf[12:14])
+	offset = uint8(v >> 12)
+	flags = tcp.Flags(v).Mask()
+	return offset, flags
+}
+
+// SetOffsetAndFlags returns offset and flag fields of TCP header. See [TCPFrame.OffsetAndFlags].
+func (tfrm TCPFrame) SetOffsetAndFlags(offset uint8, flags tcp.Flags) {
+	v := uint16(offset)<<12 | uint16(flags.Mask())
+	binary.BigEndian.PutUint16(tfrm.buf[12:14], v)
 }
 
 // HeaderLength uses Offset field to calculate the total length of
 // the TCP header including options. Performs no validation.
-func (tcp TCPFrame) HeaderLength() (tcpWords int) {
-	return 4 * int(tcp.Offset())
+func (tfrm TCPFrame) HeaderLength() (tcpWords int) {
+	offset, _ := tfrm.OffsetAndFlags()
+	return 4 * int(offset)
 }
 
-// Offset returns the number of 32 bit words used to represent the header. Is a TCP field.
-func (tcp TCPFrame) Offset() (tcpWords uint8) {
-	return tcp.buf[12] & 0xf
-}
-
-// SetOffset sets TCP offset field. See [TCPFrame.Offset].
-func (tcp TCPFrame) SetOffset() (tcpWords uint8) {
-	return tcp.buf[12] & 0xf
-}
-
-// Flags returns the TCP flags contained in TCP header. See [TCPFlags].
-func (tcp TCPFrame) Flags() TCPFlags { return TCPFlags(tcp.buf[13]) }
-
-// SetFlags sets the TCP flags. See [TCPFlags].
-func (tcp TCPFrame) SetFlags(flags TCPFlags) { tcp.buf[13] = uint8(flags) }
-
-func (tcp TCPFrame) CRC() uint16 {
-	return binary.BigEndian.Uint16(tcp.buf[16:18])
+// CRC returns the checksum field in the TCP header.
+func (tfrm TCPFrame) CRC() uint16 {
+	return binary.BigEndian.Uint16(tfrm.buf[16:18])
 }
 
 // SetCRC sets the checksum field of the TCP header. See [TCPFrame.CRC].
-func (tcp TCPFrame) SetCRC(checksum uint16) {
-	binary.BigEndian.PutUint16(tcp.buf[16:18], checksum)
+func (tfrm TCPFrame) SetCRC(checksum uint16) {
+	binary.BigEndian.PutUint16(tfrm.buf[16:18], checksum)
 }
 
-func (tcp TCPFrame) CalculateCRC(ipPseudo IPv4Frame) uint16 {
+// CalculateIPv4CRC returns the CRC for the TCP header over an IPv4 protocol.
+func (tfrm TCPFrame) CalculateIPv4CRC(ifrm IPv4Frame) uint16 {
 	var crc CRC791
-	ipPseudo.writeTCPPseudoCRC(&crc)
-	expectLen := int(ipPseudo.TotalLength()) - 4*int(ipPseudo.IHL())
-	if expectLen != len(tcp.buf) {
-		panic("unexpected TCP buffer length mismatches IPv4 header total length")
+	ifrm.crcWriteTCPPseudo(&crc)
+	expectLen := int(ifrm.TotalLength()) - 4*int(ifrm.IHL())
+	if expectLen != len(tfrm.buf) {
+		println("unexpected TCP buffer length mismatches IPv4 header total length", expectLen, len(tfrm.buf))
 	}
-	tcp.writeCRC(&crc)
+	tfrm.crcWrite(&crc)
 	return crc.Sum16()
 }
 
-func (tcp TCPFrame) writeCRC(crc *CRC791) {
-	// Write excluding
-	crc.Write(tcp.buf[:16])
-	crc.Write(tcp.buf[18:])
+// CalculateIPv4CRC returns the CRC for the TCP header over an IPv4 protocol.
+func (tfrm TCPFrame) CalculateIPv6CRC(ifrm IPv6Frame) uint16 {
+	var crc CRC791
+	ifrm.crcWritePseudo(&crc)
+	expectLen := int(ifrm.PayloadLength())
+	if expectLen != len(tfrm.buf) {
+		println("unexpected TCP buffer length mismatches IPv4 header total length", expectLen, len(tfrm.buf))
+	}
+	tfrm.crcWrite(&crc)
+	return crc.Sum16()
 }
 
-func (tcp TCPFrame) SetUrgentPtr(up uint16) {
-	binary.BigEndian.PutUint16(tcp.buf[18:20], up)
+func (tfrm TCPFrame) crcWrite(crc *CRC791) {
+	// Write excluding CRC
+	crc.Write(tfrm.buf[:16])
+	crc.Write(tfrm.buf[18:])
 }
 
-func (tcp TCPFrame) Payload() []byte {
-	return tcp.buf[tcp.HeaderLength():]
+func (tfrm TCPFrame) SetUrgentPtr(up uint16) {
+	binary.BigEndian.PutUint16(tfrm.buf[18:20], up)
+}
+
+func (tfrm TCPFrame) UrgentPtr() uint16 {
+	return binary.BigEndian.Uint16(tfrm.buf[18:20])
+}
+
+func (tfrm TCPFrame) Payload() []byte {
+	return tfrm.buf[tfrm.HeaderLength():]
 }
 
 type UDPFrame struct {
@@ -337,61 +475,70 @@ type UDPFrame struct {
 }
 
 // RawData returns the underlying slice with which the frame was created.
-func (frm UDPFrame) RawData() []byte {	return frm.buf}
+func (ufrm UDPFrame) RawData() []byte { return ufrm.buf }
 
-
-func (udp UDPFrame) SourcePort() uint16 {
-	return binary.BigEndian.Uint16(udp.buf[0:2])
+func (ufrm UDPFrame) SourcePort() uint16 {
+	return binary.BigEndian.Uint16(ufrm.buf[0:2])
 }
 
 // SetSourcePort sets UDP source port. See [UDPFrame.SetSourcePort]
-func (udp UDPFrame) SetSourcePort(src uint16) {
-	binary.BigEndian.PutUint16(udp.buf[0:2], src)
+func (ufrm UDPFrame) SetSourcePort(src uint16) {
+	binary.BigEndian.PutUint16(ufrm.buf[0:2], src)
 }
 
-func (udp UDPFrame) DestinationPort() uint16 {
-	return binary.BigEndian.Uint16(udp.buf[2:4])
+func (ufrm UDPFrame) DestinationPort() uint16 {
+	return binary.BigEndian.Uint16(ufrm.buf[2:4])
 }
 
 // SetDestinationPort sets UDP destination port. See [UDPFrame.DestinationPort]
-func (udp UDPFrame) SetDestinationPort(dst uint16) {
-	binary.BigEndian.PutUint16(udp.buf[2:4], dst)
+func (ufrm UDPFrame) SetDestinationPort(dst uint16) {
+	binary.BigEndian.PutUint16(ufrm.buf[2:4], dst)
 }
 
 // Length specifies length in bytes of UDP header and UDP payload. The minimum length
 // is 8 bytes (UDP header length). This field should match the result of the IP header
 // TotalLength field minus the IP header size: udp.Length == ip.TotalLength - 4*ip.IHL
-func (udp UDPFrame) Length() uint16 {
-	return binary.BigEndian.Uint16(udp.buf[4:6])
+func (ufrm UDPFrame) Length() uint16 {
+	return binary.BigEndian.Uint16(ufrm.buf[4:6])
 }
 
 // SetLength sets the UDP header's length field. See [UDPFrame.Length].
-func (udp UDPFrame) SetLength(length uint16) {
-	binary.BigEndian.PutUint16(udp.buf[4:6], length)
+func (ufrm UDPFrame) SetLength(length uint16) {
+	binary.BigEndian.PutUint16(ufrm.buf[4:6], length)
 }
 
-func (udp UDPFrame) CRC() uint16 {
-	return binary.BigEndian.Uint16(udp.buf[6:8])
+func (ufrm UDPFrame) CRC() uint16 {
+	return binary.BigEndian.Uint16(ufrm.buf[6:8])
 }
 
 // SetCRC sets the UDP header's CRC field. See [UDPFrame.CRC].
-func (udp UDPFrame) SetCRC(checksum uint16) {
-	binary.BigEndian.PutUint16(udp.buf[6:8], checksum)
+func (ufrm UDPFrame) SetCRC(checksum uint16) {
+	binary.BigEndian.PutUint16(ufrm.buf[6:8], checksum)
 }
 
 // Payload returns the data part of the UDP frame.
-func (udp UDPFrame) Payload() []byte {
-	l := udp.Length()
-	return udp.buf[8:l]
+func (ufrm UDPFrame) Payload() []byte {
+	l := ufrm.Length()
+	return ufrm.buf[sizeHeaderUDP:l]
 }
 
-func (udp UDPFrame) CalculateChecksum(pseudoHeader IPv4Frame) uint16 {
+func (ufrm UDPFrame) CalculateIPv4Checksum(ifrm IPv4Frame) uint16 {
 	var crc CRC791
-	pseudoHeader.writeUDPPseudoCRC(&crc)
-	crc.AddUint16(udp.Length())
-	crc.AddUint16(udp.SourcePort())
-	crc.AddUint16(udp.DestinationPort())
-	crc.AddUint16(udp.Length())
-	crc.Write(udp.Payload())
+	ifrm.crcWriteUDPPseudo(&crc)
+	crc.AddUint16(ufrm.Length())
+	crc.AddUint16(ufrm.SourcePort())
+	crc.AddUint16(ufrm.DestinationPort())
+	crc.AddUint16(ufrm.Length()) // Length double tap.
+	crc.Write(ufrm.Payload())
+	return crc.Sum16()
+}
+
+func (ufrm UDPFrame) CalculateIPv6Checksum(ifrm IPv6Frame) uint16 {
+	var crc CRC791
+	ifrm.crcWritePseudo(&crc)
+	crc.AddUint16(ufrm.SourcePort())
+	crc.AddUint16(ufrm.DestinationPort())
+	crc.AddUint16(ufrm.Length()) // Length double tap.
+	crc.Write(ufrm.Payload())
 	return crc.Sum16()
 }

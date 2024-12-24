@@ -1,5 +1,5 @@
 /*
-package tseq implements TCP control flow.
+package ltcp implements TCP control flow.
 
 # Transmission Control Block
 
@@ -13,7 +13,7 @@ pending control segment flags.
 All arithmetic dealing with sequence numbers must be performed modulo 2**32
 which brings with it subtleties to computer modulo arithmetic.
 */
-package tseq
+package tcp
 
 import "time"
 

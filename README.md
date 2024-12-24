@@ -7,9 +7,17 @@
 
 Userspace networking primitives.
 
-### Packages
+## Packages
 - `lneto`: Low-level Networking Operations, or "El Neto", the big networking package. Zero copy network frame marshalling and unmarshalling.
+    - [`lneto/frames.go`](./lneto/frames.go): Ethernet, IPv4/IPv6, ARP, TCP, UDP packet marshalling/unmarshalling.
 
+- [`lneto/tcp`](./lneto/ntp): TCP implementation and low level logic.
+- [`lneto/dhcp`](./lneto/dhcp): DHCP protocol implementation and low level logic.
+- [`lneto/dns`](./lneto/dns): DNS protocol implementation and low level logic.
+- [`lneto/ntp`](./lneto/ntp): NTP implementation and low level logic. Includes NTP time primitive manipulation and conversion to Go native types.
+
+
+## Install
 How to install package with newer versions of Go (+1.16):
 ```sh
 go mod download github.com/soypat/tseq@latest
