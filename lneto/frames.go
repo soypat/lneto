@@ -67,7 +67,12 @@ func NewUDPFrame(buf []byte) (UDPFrame, error) {
 	return UDPFrame{buf: buf}, nil
 }
 
-// EthFrame represents a Ethernet frame without including a preamble. The first byte is start of destination MAC address.
+// EthFrame encapsulates the raw data of an Ethernet frame
+// without including preamble (first byte is start of destination address)
+// and provides methods for manipulating, validating and
+// retrieving fields and payload data. See [IEEE 802.3].
+//
+// [IEEE 802.3]: https://standards.ieee.org/ieee/802.3/7071/
 type EthFrame struct {
 	buf []byte
 }
@@ -75,15 +80,18 @@ type EthFrame struct {
 // RawData returns the underlying slice with which the frame was created.
 func (efrm EthFrame) RawData() []byte { return efrm.buf }
 
+// HeaderLength returns the length of the ethernet packet header. Nominally returns 14; or 18 for VLAN packets.
+func (efrm EthFrame) HeaderLength() int {
+	if efrm.IsVLAN() {
+		return 18
+	}
+	return sizeHeaderEthNoVLAN
+}
+
 // Payload returns the data portion of the ethernet packet with handling of VLAN packets.
 func (efrm EthFrame) Payload() []byte {
-	if efrm.IsVLAN() {
-		if len(efrm.buf) < 18 {
-			return nil
-		}
-		return efrm.buf[18:]
-	}
-	return efrm.buf[sizeHeaderEthNoVLAN:]
+	hl := efrm.HeaderLength()
+	return efrm.buf[hl:]
 }
 
 // DestinationHardwareAddr returns the target's MAC/hardware address for the ethernet packet.
@@ -117,6 +125,11 @@ func (efrm EthFrame) IsVLAN() bool {
 	return efrm.EtherTypeOrSize() == EtherTypeVLAN
 }
 
+// ARPFrame encapsulates the raw data of an ARP packet
+// and provides methods for manipulating, validating and
+// retrieving fields and payload data. See [RFC826].
+//
+// [RFC826]: https://tools.ietf.org/html/rfc826
 type ARPFrame struct {
 	buf []byte
 }
@@ -195,6 +208,11 @@ func (afrm ARPFrame) Target16() (hardwareAddr *[6]byte, proto *[16]byte) {
 	return (*[6]byte)(afrm.buf[30:36]), (*[16]byte)(afrm.buf[36:52])
 }
 
+// IPv4Frame encapsulates the raw data of an IPv4 packet
+// and provides methods for manipulating, validating and
+// retreiving fields and payload data. See [RFC791].
+//
+// [RFC791]: https://tools.ietf.org/html/rfc791
 type IPv4Frame struct {
 	buf []byte
 }
@@ -338,6 +356,11 @@ func (ifrm IPv4Frame) Payload() []byte {
 	return ifrm.buf[off:l]
 }
 
+// IPv6Frame encapsulates the raw data of an IPv6 packet
+// and provides methods for manipulating, validating and
+// retrieving fields and payload data. See [RFC8200].
+//
+// [RFC8200]: https://tools.ietf.org/html/rfc8200
 type IPv6Frame struct {
 	buf []byte
 }
@@ -420,6 +443,11 @@ func (ifrm IPv6Frame) crcWritePseudo(crc *CRC791) {
 	crc.AddUint32(uint32(ifrm.NextHeader()))
 }
 
+// TCPFrame encapsulates the raw data of a TCP segment
+// and provides methods for manipulating, validating and
+// retrieving fields and payload data. See [RFC9293].
+//
+// [RFC9293]: https://datatracker.ietf.org/doc/html/rfc9293
 type TCPFrame struct {
 	buf []byte
 }
@@ -553,6 +581,11 @@ func (tfrm TCPFrame) Options() []byte {
 	return tfrm.buf[sizeHeaderTCP:tfrm.HeaderLength()]
 }
 
+// UDPFrame encapsulates the raw data of a UDP datagram
+// and provides methods for manipulating, validating and
+// retrieving fields and payload data. See [RFC768].
+//
+// [RFC768]: https://tools.ietf.org/html/rfc768
 type UDPFrame struct {
 	buf []byte
 }

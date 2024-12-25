@@ -24,6 +24,11 @@ func NewFrameV4(buf []byte) FrameV4 {
 	return FrameV4{buf: buf}
 }
 
+// Frame encapsulates the raw data of a DHCP packet
+// and provides methods for manipulating, validating and
+// retrieving fields and payload data. See [RFC2131].
+//
+// [RFC2131]: https://tools.ietf.org/html/rfc2131
 type FrameV4 struct {
 	buf []byte
 }

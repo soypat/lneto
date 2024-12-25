@@ -32,6 +32,11 @@ var (
 	errCompressedSRV      = errors.New("compressed name in SRV resource data")
 )
 
+// Frame encapsulates the raw data of a DNS packet
+// and provides methods for manipulating, validating and
+// retrieving fields and payload data. See [RFC1035].
+//
+// [RFC1035]: https://tools.ietf.org/html/rfc1035
 type Frame struct {
 	buf []byte
 }
