@@ -20,8 +20,11 @@ const (
 	DefaultServerPort = 67
 )
 
-func NewFrameV4(buf []byte) FrameV4 {
-	return FrameV4{buf: buf}
+func NewFrameV4(buf []byte) (FrameV4, error) {
+	if len(buf) < sizeHeader {
+		return FrameV4{}, errors.New("DHCP short frame")
+	}
+	return FrameV4{buf: buf}, nil
 }
 
 // Frame encapsulates the raw data of a DHCP packet
@@ -92,6 +95,13 @@ func (frm FrameV4) CHAddr() *[16]byte {
 
 func (frm FrameV4) MagicCookie() uint32 {
 	return binary.BigEndian.Uint32(frm.buf[magicCookieOffset:])
+}
+
+// ClearHeader zeros out the header contents.
+func (frm FrameV4) ClearHeader() {
+	for i := range frm.buf[:sizeHeader] {
+		frm.buf[i] = 0
+	}
 }
 
 func (frm FrameV4) ForEachOption(fn func(opt Option) error) error {

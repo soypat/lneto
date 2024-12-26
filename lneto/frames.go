@@ -125,6 +125,13 @@ func (efrm EthFrame) IsVLAN() bool {
 	return efrm.EtherTypeOrSize() == EtherTypeVLAN
 }
 
+// ClearHeader zeros out the fixed(non-variable) header contents.
+func (frm EthFrame) ClearHeader() {
+	for i := range frm.buf[:sizeHeaderEthNoVLAN] {
+		frm.buf[i] = 0
+	}
+}
+
 // ARPFrame encapsulates the raw data of an ARP packet
 // and provides methods for manipulating, validating and
 // retrieving fields and payload data. See [RFC826].
@@ -206,6 +213,13 @@ func (afrm ARPFrame) Sender16() (hardwareAddr *[6]byte, proto *[16]byte) {
 // Target6 returns the IPv6 target addresses. See [ARPFrame.Sender].
 func (afrm ARPFrame) Target16() (hardwareAddr *[6]byte, proto *[16]byte) {
 	return (*[6]byte)(afrm.buf[30:36]), (*[16]byte)(afrm.buf[36:52])
+}
+
+// ClearHeader zeros out the fixed(non-variable) header contents.
+func (frm ARPFrame) ClearHeader() {
+	for i := range frm.buf[:8] {
+		frm.buf[i] = 0
+	}
 }
 
 // IPv4Frame encapsulates the raw data of an IPv4 packet
@@ -356,6 +370,13 @@ func (ifrm IPv4Frame) Payload() []byte {
 	return ifrm.buf[off:l]
 }
 
+// ClearHeader zeros out the fixed(non-variable) header contents.
+func (frm IPv4Frame) ClearHeader() {
+	for i := range frm.buf[:sizeHeaderIPv4] {
+		frm.buf[i] = 0
+	}
+}
+
 // IPv6Frame encapsulates the raw data of an IPv6 packet
 // and provides methods for manipulating, validating and
 // retrieving fields and payload data. See [RFC8200].
@@ -441,6 +462,13 @@ func (ifrm IPv6Frame) crcWritePseudo(crc *CRC791) {
 	crc.Write(ifrm.DestinationAddr()[:])
 	crc.AddUint32(uint32(ifrm.PayloadLength()))
 	crc.AddUint32(uint32(ifrm.NextHeader()))
+}
+
+// ClearHeader zeros out the header contents.
+func (frm IPv6Frame) ClearHeader() {
+	for i := range frm.buf[:sizeHeaderIPv6] {
+		frm.buf[i] = 0
+	}
 }
 
 // TCPFrame encapsulates the raw data of a TCP segment
@@ -581,6 +609,13 @@ func (tfrm TCPFrame) Options() []byte {
 	return tfrm.buf[sizeHeaderTCP:tfrm.HeaderLength()]
 }
 
+// ClearHeader zeros out the fixed(non-variable) header contents.
+func (frm TCPFrame) ClearHeader() {
+	for i := range frm.buf[:sizeHeaderTCP] {
+		frm.buf[i] = 0
+	}
+}
+
 // UDPFrame encapsulates the raw data of a UDP datagram
 // and provides methods for manipulating, validating and
 // retrieving fields and payload data. See [RFC768].
@@ -661,4 +696,11 @@ func (ufrm UDPFrame) CalculateIPv6Checksum(ifrm IPv6Frame) uint16 {
 	crc.AddUint16(ufrm.Length()) // Length double tap.
 	crc.Write(ufrm.Payload())
 	return crc.Sum16()
+}
+
+// ClearHeader zeros out the header contents.
+func (frm UDPFrame) ClearHeader() {
+	for i := range frm.buf[:sizeHeaderUDP] {
+		frm.buf[i] = 0
+	}
 }

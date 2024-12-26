@@ -5,7 +5,30 @@ import (
 	"fmt"
 )
 
-//go:generate stringer -type=OptNum,Op,MessageType -linecomment -output stringers.go
+//go:generate stringer -type=OptNum,Op,MessageType,ClientState -linecomment -output stringers.go
+
+type ClientState uint8
+
+// State transition table:
+//
+//	StateInit      -> | Send out Discover  | -> StateSelecting
+//	StateSelecting -> |Accept Offer+Request| -> StateRequesting
+//	StateRequesting-> |    Receive Ack     | -> StateBound
+const (
+	_ ClientState = iota
+	// On clean slate boot, abort, NAK or decline enter the INIT state.
+	StateInit // init
+	// After sending out a Discover enter SELECTING.
+	StateSelecting // selecting
+	// After receiving a worthy offer and sending out request for offer enter REQUESTING.
+	StateRequesting // requesting
+	// On ACK to Request enter BOUND.
+	StateBound      // bound
+	StateRenewing   // renewing
+	StateRebinding  // rebinding
+	StateInitReboot // init-reboot
+	StateRebooting  // rebooting
+)
 
 type Option struct {
 	Num  OptNum

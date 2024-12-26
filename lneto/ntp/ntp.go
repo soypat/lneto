@@ -24,10 +24,18 @@ const (
 	MinDispDiv = 200  // Minimum dispersion divisor 1/(200) == 0.005
 )
 
-func NewFrame(buf []byte) Frame {
-	return Frame{buf: buf}
+func NewFrame(buf []byte) (Frame, error) {
+	if len(buf) < SizeHeader {
+		return Frame{buf: nil}, errors.New("NTP frame too short")
+	}
+	return Frame{buf: buf}, nil
 }
 
+// Frame encapsulates the raw data of an NTP packet
+// and provides methods for manipulating, validating and
+// retrieving fields and payload data. See [RFC5905].
+//
+// [RFC5905]: https://tools.ietf.org/html/rfc5905
 type Frame struct {
 	buf []byte
 }
@@ -121,6 +129,13 @@ func (frm Frame) TransmitTime() Timestamp {
 }
 func (frm Frame) SetTransmitTime(rt Timestamp) {
 	rt.Put(frm.buf[40:48])
+}
+
+// ClearHeader zeros out the header contents.
+func (frm Frame) ClearHeader() {
+	for i := range frm.buf[:SizeHeader] {
+		frm.buf[i] = 0
+	}
 }
 
 type Short uint32
@@ -262,11 +277,23 @@ func SystemPrecision() int8 {
 }
 
 func recalculateSystemPrecision() {
+	sysPrec = CalculateSystemPrecision(nil)
+}
+
+// CalculateSystemPrecision calculates the NTP system precision for a time source.
+// If the time source is nil the default static call to [time.Now] is used.
+func CalculateSystemPrecision(now func() time.Time) int8 {
 	const maxIter = 16
 	var times [maxIter]time.Time
-	for i := 0; i < maxIter; i++ {
-		times[i] = time.Now()
+	if now == nil {
+		for i := 0; i < maxIter; i++ {
+			times[i] = time.Now()
+		}
+	} else {
+		for i := 0; i < maxIter; i++ {
+			times[i] = now()
+		}
 	}
 	avg := times[maxIter-1].Sub(times[0]) / maxIter
-	sysPrec = int8(math.Log2(avg.Seconds()))
+	return int8(math.Log2(avg.Seconds()))
 }

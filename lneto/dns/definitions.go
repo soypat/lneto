@@ -97,6 +97,13 @@ func (frm Frame) SetARCount(arCount uint16) {
 	binary.BigEndian.PutUint16(frm.buf[10:12], arCount)
 }
 
+// ClearHeader zeros out the fixed(non-variable) header contents.
+func (frm Frame) ClearHeader() {
+	for i := range frm.buf[:SizeHeader] {
+		frm.buf[i] = 0
+	}
+}
+
 // HeaderFlags gathers the flags in bits 16..31 of the header.
 type HeaderFlags uint16
 
