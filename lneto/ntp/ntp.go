@@ -53,8 +53,8 @@ func (frm Frame) SetFlags(mode Mode, version uint8, lp LeapIndicator) {
 	frm.buf[0] = b
 }
 
-func (frm Frame) Stratum() uint8           { return frm.buf[1] }
-func (frm Frame) SetStratum(stratum uint8) { frm.buf[1] = stratum }
+func (frm Frame) Stratum() Stratum           { return Stratum(frm.buf[1]) }
+func (frm Frame) SetStratum(stratum Stratum) { frm.buf[1] = byte(stratum) }
 
 // Poll is 8-bit signed integer representing the maximum interval between
 // successive messages, in log2 seconds.  Suggested default limits for

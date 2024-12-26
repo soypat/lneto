@@ -32,12 +32,13 @@ type Client struct {
 	t     [4]Timestamp
 	// org      Timestamp
 	// rec      Timestamp
-	xmt      Timestamp
-	state    state
-	_sysprec int8
+	xmt           Timestamp
+	state         state
+	serverStratum Stratum
+	_sysprec      int8
 }
 
-func (c *Client) Write(payload []byte) (int, error) {
+func (c *Client) Send(payload []byte) (int, error) {
 	if c.isDone() {
 		return 0, io.EOF
 	}
@@ -71,7 +72,7 @@ func (c *Client) Write(payload []byte) (int, error) {
 	return SizeHeader, nil
 }
 
-func (c *Client) read(payload []byte) error {
+func (c *Client) Read(payload []byte) error {
 	if c.isDone() {
 		return io.EOF
 	}
@@ -91,6 +92,7 @@ func (c *Client) read(payload []byte) error {
 		t[1] = frm.ReceiveTime()
 		t[2] = tstx
 		t[3] = c.unsyncTimestamp(c.now())
+		c.serverStratum = frm.Stratum()
 		c.state = stateDone
 	case stateAwait2:
 		c.state = stateAwait2
@@ -124,6 +126,9 @@ func (c *Client) sysprec() int8 {
 func (c *Client) Now() time.Time {
 	return c.now().Add(c.Offset())
 }
+
+// ServerStratum returns the stratum of the server client synchronized with.
+func (c *Client) ServerStratum() Stratum { return c.serverStratum }
 
 // Offset returns the
 func (c *Client) Offset() time.Duration {

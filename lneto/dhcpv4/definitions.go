@@ -1,19 +1,18 @@
-package dhcp
+package dhcpv4
 
 import (
 	"errors"
-	"fmt"
 )
 
 //go:generate stringer -type=OptNum,Op,MessageType,ClientState -linecomment -output stringers.go
 
-type ClientState uint8
-
-// State transition table:
+// ClientState transition table during request:
 //
 //	StateInit      -> | Send out Discover  | -> StateSelecting
 //	StateSelecting -> |Accept Offer+Request| -> StateRequesting
 //	StateRequesting-> |    Receive Ack     | -> StateBound
+type ClientState uint8
+
 const (
 	_ ClientState = iota
 	// On clean slate boot, abort, NAK or decline enter the INIT state.
@@ -30,26 +29,26 @@ const (
 	StateRebooting  // rebooting
 )
 
-type Option struct {
-	Num  OptNum
-	Data []byte
+func AppendOption(dst []byte, opt OptNum, data ...byte) []byte {
+	if len(data) > 255 {
+		panic("option data too long")
+	}
+	dst = append(dst, byte(opt), byte(len(data)))
+	dst = append(dst, data...)
+	return dst
 }
 
-func (opt *Option) String() string {
-	return opt.Num.String() + ":" + fmt.Sprint(opt.Data)
-}
-
-func (opt *Option) Encode(dst []byte) (int, error) {
-	if len(opt.Data) > 255 {
-		return 0, errors.New("DHCP option data too long")
-	} else if len(dst) < 2+len(opt.Data) {
+func EncodeOption(dst []byte, opt OptNum, data ...byte) (int, error) {
+	if len(data) > 255 {
+		return 0, errors.New("DHCPv4 option data too long (>255)")
+	} else if len(dst) < 2+len(data) {
 		return 0, errors.New("DHCP option buffer too short")
 	}
-	_ = dst[2+len(opt.Data)]
-	dst[0] = byte(opt.Num)
-	dst[1] = byte(len(opt.Data))
-	copy(dst[2:], opt.Data)
-	return 2 + len(opt.Data), nil
+	_ = dst[2+len(data)]
+	dst[0] = byte(opt)
+	dst[1] = byte(len(data))
+	copy(dst[2:], data)
+	return 2 + len(data), nil
 }
 
 type OptNum uint8
@@ -137,7 +136,9 @@ const (
 	MsgRequest                     // request
 	MsgDecline                     // decline
 	MsgAck                         // ack
-	MsgNak                         // nak
+	MsgNack                        // nak
 	MsgRelease                     // release
 	MsgInform                      // inform
 )
+
+type Flags uint16

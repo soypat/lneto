@@ -8,6 +8,7 @@ import (
 )
 
 // NewEthFrame returns a EthFrame with data set to buf.
+// An error is returned if the buffer size is smaller than 14.
 // Users should still call [EthFrame.ValidateSize] before working
 // with payload/options of frames to avoid panics.
 func NewEthFrame(buf []byte) (EthFrame, error) {
@@ -18,6 +19,7 @@ func NewEthFrame(buf []byte) (EthFrame, error) {
 }
 
 // NewARPFrame returns a ARPFrame with data set to buf.
+// An error is returned if the buffer size is smaller than 28 (IPv4 min size).
 // Users should still call [ARPFrame.ValidateSize] before working
 // with payload/options of frames to avoid panics.
 func NewARPFrame(buf []byte) (ARPFrame, error) {
@@ -28,6 +30,7 @@ func NewARPFrame(buf []byte) (ARPFrame, error) {
 }
 
 // NewIPv4Frame returns a new IPv4Frame with data set to buf.
+// An error is returned if the buffer size is smaller than 20.
 // Users should still call [IPv4Frame.ValidateSize] before working
 // with payload/options of frames to avoid panics.
 func NewIPv4Frame(buf []byte) (IPv4Frame, error) {
@@ -38,6 +41,7 @@ func NewIPv4Frame(buf []byte) (IPv4Frame, error) {
 }
 
 // NewIPv6Frame returns a new IPv6Frame with data set to buf.
+// An error is returned if the buffer size is smaller than 40.
 // Users should still call [IPv6Frame.ValidateSize] before working
 // with payload/options of frames to avoid panics.
 func NewIPv6Frame(buf []byte) (IPv6Frame, error) {
@@ -48,6 +52,7 @@ func NewIPv6Frame(buf []byte) (IPv6Frame, error) {
 }
 
 // NewTCPFrame returns a new TCPFrame with data set to buf.
+// An error is returned if the buffer size is smaller than 20.
 // Users should still call [TCPFrame.ValidateSize] before working
 // with payload/options of frames to avoid panics.
 func NewTCPFrame(buf []byte) (TCPFrame, error) {
@@ -58,6 +63,7 @@ func NewTCPFrame(buf []byte) (TCPFrame, error) {
 }
 
 // NewUDPFrame returns a new UDPFrame with data set to buf.
+// An error is returned if the buffer size is smaller than 8.
 // Users should still call [UDPFrame.ValidateSize] before working
 // with payload/options of frames to avoid panics.
 func NewUDPFrame(buf []byte) (UDPFrame, error) {
