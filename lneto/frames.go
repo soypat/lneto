@@ -3,6 +3,8 @@ package lneto
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"math"
 
 	"github.com/soypat/tseq/lneto/tcp"
 )
@@ -97,6 +99,10 @@ func (efrm EthFrame) HeaderLength() int {
 // Payload returns the data portion of the ethernet packet with handling of VLAN packets.
 func (efrm EthFrame) Payload() []byte {
 	hl := efrm.HeaderLength()
+	et := efrm.EtherTypeOrSize()
+	if et.IsSize() {
+		return efrm.buf[hl:et]
+	}
 	return efrm.buf[hl:]
 }
 
@@ -119,6 +125,22 @@ func (efrm EthFrame) EtherTypeOrSize() EtherType {
 // SetEtherType sets the EtherType field of the ethernet packet. See [EtherType] and [EthFrame.EtherTypeOrSize].
 func (efrm EthFrame) SetEtherType(v EtherType) {
 	binary.BigEndian.PutUint16(efrm.buf[12:14], uint16(v))
+}
+
+// VLANTag returns the VLAN tag field following the TPID=0x8100. See [VLANTag]. Call [EthFrame.ValidateSize] to ensure this function does not panic.
+func (efrm EthFrame) VLANTag() VLANTag { return VLANTag(binary.BigEndian.Uint16(efrm.buf[14:16])) }
+
+// SetVLANTag sets the VLAN tag field of the Ethernet Header. See [VLANTag]. Call [EthFrame.ValidateSize] to ensure this function does not panic.
+func (efrm EthFrame) SetVLANTag(vt VLANTag) { binary.BigEndian.PutUint16(efrm.buf[14:16], uint16(vt)) }
+
+// VLANEtherType returns the [EtherType] for a VLAN ethernet frame (octet position 16). Call [EthFrame.ValidateSize] to ensure this function does not panic.
+func (efrm EthFrame) VLANEtherType() EtherType {
+	return EtherType(binary.BigEndian.Uint16(efrm.buf[16:18]))
+}
+
+// SetVLANEtherType sets the [EtherType] for a VLAN ethernet frame (octet position 16). Call [EthFrame.ValidateSize] to ensure this function does not panic.
+func (efrm EthFrame) SetVLANEtherType(vt EtherType) {
+	binary.BigEndian.PutUint16(efrm.buf[16:18], uint16(vt))
 }
 
 // IsVLAN returns true if the SizeOrEtherType is set to the VLAN tag 0x8100. This
@@ -246,17 +268,17 @@ func (ifrm IPv4Frame) HeaderLength() int {
 }
 
 func (ifrm IPv4Frame) ihl() uint8 {
-	return ifrm.buf[0] >> 4
+	return ifrm.buf[0] & 0xf
 }
 
 // VersionAndIHL returns the version and IHL fields in the IPv4 header. Version should always be 4.
 func (ifrm IPv4Frame) VersionAndIHL() (version, IHL uint8) {
 	v := ifrm.buf[0]
-	return v & 0xf, v >> 4
+	return v >> 4, v & 0xf
 }
 
 // SetVersionAndIHL sets the version and IHL fields in the IPv4 header. Version should always be 4.
-func (ifrm IPv4Frame) SetVersionAndIHL(version, IHL uint8) { ifrm.buf[0] = version&0xf | IHL<<4 }
+func (ifrm IPv4Frame) SetVersionAndIHL(version, IHL uint8) { ifrm.buf[0] = version<<4 | IHL&0xf }
 
 // ToS (Type of Service) contains Differential Services Code Point (DSCP) and
 // Explicit Congestion Notification (ECN) union data.
@@ -374,6 +396,13 @@ func (ifrm IPv4Frame) Payload() []byte {
 	off := ifrm.HeaderLength()
 	l := ifrm.TotalLength()
 	return ifrm.buf[off:l]
+}
+
+// Options returns the options portion of the IPv4 header. May be zero lengthed.
+// Be sure to call [IPv4Frame.ValidateSize] beforehand to avoid panic.
+func (ifrm IPv4Frame) Options() []byte {
+	off := ifrm.HeaderLength()
+	return ifrm.buf[sizeHeaderIPv4:off]
 }
 
 // ClearHeader zeros out the fixed(non-variable) header contents.
@@ -555,6 +584,11 @@ func (tfrm TCPFrame) HeaderLength() (tcpWords int) {
 	return 4 * int(offset)
 }
 
+func (tfrm TCPFrame) WindowSize() uint16 { return binary.BigEndian.Uint16(tfrm.buf[14:16]) }
+func (tfrm TCPFrame) SetWindowSize(v uint16) {
+	binary.BigEndian.PutUint16(tfrm.buf[14:16], v)
+}
+
 // CRC returns the checksum field in the TCP header.
 func (tfrm TCPFrame) CRC() uint16 {
 	return binary.BigEndian.Uint16(tfrm.buf[16:18])
@@ -595,18 +629,27 @@ func (tfrm TCPFrame) crcWrite(crc *CRC791) {
 	crc.Write(tfrm.buf[18:])
 }
 
-func (tfrm TCPFrame) SetUrgentPtr(up uint16) {
-	binary.BigEndian.PutUint16(tfrm.buf[18:20], up)
-}
-
-func (tfrm TCPFrame) UrgentPtr() uint16 {
-	return binary.BigEndian.Uint16(tfrm.buf[18:20])
-}
+func (tfrm TCPFrame) UrgentPtr() uint16      { return binary.BigEndian.Uint16(tfrm.buf[18:20]) }
+func (tfrm TCPFrame) SetUrgentPtr(up uint16) { binary.BigEndian.PutUint16(tfrm.buf[18:20], up) }
 
 // Payload returns the payload content section of the TCP packet (not including TCP options).
 // Be sure to call [TCPFrame.ValidateSize] beforehand to avoid panic.
 func (tfrm TCPFrame) Payload() []byte {
 	return tfrm.buf[tfrm.HeaderLength():]
+}
+
+// Segment returns the [tcp.Segment] representation of the TCP header and data length.
+func (tfrm TCPFrame) Segment(payloadSize int) tcp.Segment {
+	if payloadSize > math.MaxUint32 {
+		panic("TCP overflow payload size")
+	}
+	return tcp.Segment{
+		SEQ:     tfrm.Seq(),
+		ACK:     tfrm.Ack(),
+		WND:     tcp.Size(tfrm.WindowSize()),
+		DATALEN: tcp.Size(payloadSize),
+		Flags:   tcp.Flags(binary.BigEndian.Uint16(tfrm.buf[12:14])).Mask(),
+	}
 }
 
 // Options returns the TCP option buffer portion of the frame. The returned slice may be zero length.
@@ -620,6 +663,11 @@ func (frm TCPFrame) ClearHeader() {
 	for i := range frm.buf[:sizeHeaderTCP] {
 		frm.buf[i] = 0
 	}
+}
+
+func (tfrm TCPFrame) String() string {
+	seg := tfrm.Segment(len(tfrm.Payload()))
+	return fmt.Sprintf("%+v", seg)
 }
 
 // UDPFrame encapsulates the raw data of a UDP datagram

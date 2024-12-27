@@ -3,16 +3,17 @@ package lneto
 import "errors"
 
 var (
-	errShortEth  = errors.New("ethernet length exceeds frame")
-	errShortVLAN = errors.New("ethernet length too short for VLAN")
-	errShortUDP  = errors.New("UDP length exceeds frame")
-	errBadUDPLen = errors.New("UDP length invalid")
-	errShortIPv4 = errors.New("IPv4 total length exceeds frame")
-	errBadIPv4TL = errors.New("IPv4 short total length")
-	errShortIPv6 = errors.New("IPv6 payload length exceeds frame")
-	errShortARP  = errors.New("bad ARP size")
-	errShortTCP  = errors.New("TCP offset exceeds frame")
-	errBadTCPOff = errors.New("TCP offset invalid")
+	errShortEth   = errors.New("ethernet length exceeds frame")
+	errShortVLAN  = errors.New("ethernet length too short for VLAN")
+	errShortUDP   = errors.New("UDP length exceeds frame")
+	errBadUDPLen  = errors.New("UDP length invalid")
+	errShortIPv4  = errors.New("IPv4 total length exceeds frame")
+	errBadIPv4TL  = errors.New("IPv4 short total length")
+	errBadIPv4IHL = errors.New("IPv4 bad IHL (<5)")
+	errShortIPv6  = errors.New("IPv6 payload length exceeds frame")
+	errShortARP   = errors.New("bad ARP size")
+	errShortTCP   = errors.New("TCP offset exceeds frame")
+	errBadTCPOff  = errors.New("TCP offset invalid")
 )
 
 // ValidateSize checks the frame's size fields and compares with the actual buffer
@@ -54,11 +55,14 @@ func (ufrm UDPFrame) ValidateSize() error {
 // ValidateSize checks the frame's size fields and compares with the actual buffer
 // the frame. It returns a non-nil error on finding an inconsistency.
 func (ifrm IPv4Frame) ValidateSize() error {
+	ihl := ifrm.ihl()
 	tl := ifrm.TotalLength()
 	if tl < sizeHeaderIPv4 {
 		return errBadIPv4TL
 	} else if int(tl) > len(ifrm.RawData()) {
 		return errShortIPv4
+	} else if ihl < 5 {
+		return errBadIPv4IHL
 	}
 	return nil
 }

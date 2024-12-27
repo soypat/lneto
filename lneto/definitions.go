@@ -56,6 +56,19 @@ const (
 	minEthPayload = 46
 )
 
+// VLANTag holds priority (PCP) Drop indicator (DEI) and VLAN ID bits of the VLAN tag field.
+type VLANTag uint16
+
+// DropEligibleIndicator returns true if the DEI bit is set.
+// DEI may be used separately or in conjunction with PCP to indicate frames eligible to be dropped in the presence of congestion.
+func (vt VLANTag) DropEligibleIndicator() bool { return vt&(1<<3) != 0 }
+
+// PriorityCodePoint is 3-bit field which refers to the IEEE 802.1p class of service (CoS) and maps to the frame priority level. Different PCP values can be used to prioritize different classes of traffic
+func (vt VLANTag) PriorityCodePoint() uint8 { return uint8(vt & 0b111) }
+
+// VLANIdentifier 12 bit field which specifies which VLAN the frame belongs to. Values of 0 and 4095 are reserved.
+func (vt VLANTag) VLANIdentifier() uint16 { return uint16(vt) >> 4 }
+
 // IPToS represents the Traffic Class (a.k.a Type of Service).
 type IPToS uint8
 

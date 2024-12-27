@@ -11,6 +11,38 @@ import (
 
 //go:generate stringer -type=State,OptionKind -linecomment -output stringers.go .
 
+var (
+	// errDropSegment is a flag that signals to drop a segment silently.
+	errDropSegment    = errors.New("drop segment")
+	errWindowTooLarge = errors.New("invalid window size > 2**16")
+
+	errTCBNotClosed          = errors.New("TCB not closed")
+	errInvalidState          = errors.New("invalid state")
+	errConnNotexist          = errors.New("connection does not exist")
+	errConnectionClosing     = errors.New("connection closing")
+	errExpectedSYN           = errors.New("seqs:expected SYN")
+	errBadSegack             = errors.New("seqs:bad segack")
+	errFinwaitExpectedACK    = errors.New("seqs:finwait1 expected ACK")
+	errFinwaitExpectedFinack = errors.New("seqs:finwait2 expected FINACK")
+
+	errWindowOverflow    = newRejectErr("wnd > 2**16")
+	errSeqNotInWindow    = newRejectErr("seq not in snd/rcv.wnd")
+	errZeroWindow        = newRejectErr("zero window")
+	errLastNotInWindow   = newRejectErr("last not in snd/rcv.wnd")
+	errRequireSequential = newRejectErr("seq != rcv.nxt (require sequential segments)")
+	errAckNotNext        = newRejectErr("ack != snd.nxt")
+)
+
+func newRejectErr(err string) *RejectError { return &RejectError{err: "reject in/out seg: " + err} }
+
+// RejectError represents an error that arises during admission of a segment into the
+// Transmission Control Block logic in which the packet cannot be processed by the TCB.
+type RejectError struct {
+	err string
+}
+
+func (e *RejectError) Error() string { return e.err }
+
 // Segment represents an incoming/outgoing TCP segment in the sequence space.
 type Segment struct {
 	SEQ     Value // sequence number of first octet of segment. If SYN is set it is the initial sequence number (ISN) and the first data octet is ISN+1.
@@ -243,7 +275,12 @@ func (s State) IsSynchronized() bool {
 
 // IsDataOpen returns true if the connection allows sending and receiving of data.
 func (s State) isOpen() bool {
-	return s != StateClosed && s != StateTimeWait // TODO: is this api ok?
+	return !s.IsClosed()
+}
+
+// hasIRS checks if the ControlBlock has received a valid initial sequence number (IRS).
+func (s State) hasIRS() bool {
+	return s.isOpen() && s != StateSynSent && s != StateListen
 }
 
 type OptionKind uint8
