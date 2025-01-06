@@ -11,7 +11,7 @@ func TestRing(t *testing.T) {
 	rng := rand.New(rand.NewSource(0))
 	const bufSize = 10
 	r := &Ring{
-		buf: make([]byte, bufSize),
+		Buf: make([]byte, bufSize),
 	}
 	const data = "hello"
 	_, err := r.WriteString(data)
@@ -138,7 +138,6 @@ func TestRing(t *testing.T) {
 		}
 
 		// ReadDiscard test.
-
 		discard := rng.Intn(nfirst+nsecond) + 1
 		r.ReadDiscard(discard)
 		n, err := r.Read(readback[:])
@@ -159,15 +158,12 @@ func TestRing(t *testing.T) {
 
 func TestRing2(t *testing.T) {
 	const maxsize = 6
-	const ntests = 800
+	const ntests = 80000
 	rng := rand.New(rand.NewSource(0))
 	data := make([]byte, maxsize)
 	ringbuf := make([]byte, maxsize)
 	auxbuf := make([]byte, maxsize)
 	rng.Read(data)
-	// TODO(soypat): This test fails for greater ntests.
-	// It was not fixed because of a compiler bug: https://github.com/golang/go/issues/64854
-	// and since the benefits of the changes in this PR are already much better than what we previously had.
 	for i := 0; i < ntests; i++ {
 		dsize := max(rng.Intn(len(data)), 1)
 		if !testRing1_loopback(t, rng, ringbuf, data[:dsize], auxbuf) {
@@ -180,7 +176,7 @@ func TestRing_findcrash(t *testing.T) {
 	const maxsize = 33
 	const ntests = 800000
 	r := Ring{
-		buf: make([]byte, maxsize*6),
+		Buf: make([]byte, maxsize*6),
 	}
 	rng := rand.New(rand.NewSource(0))
 	data := make([]byte, maxsize)
@@ -229,7 +225,7 @@ func testRing1_loopback(t *testing.T, rng *rand.Rand, ringbuf, data, auxbuf []by
 	}
 	dsize := len(data)
 	var r Ring
-	r.buf = ringbuf
+	r.Buf = ringbuf
 
 	nfirst := rng.Intn(dsize) / 2
 	nsecond := rng.Intn(dsize) / 2
@@ -283,21 +279,21 @@ func fragmentReadInto(r io.Reader, buf []byte) (n int, _ error) {
 
 func setRingData(t *testing.T, r *Ring, offset int, data []byte) {
 	t.Helper()
-	if len(data) > len(r.buf) {
+	if len(data) > len(r.Buf) {
 		panic("data too large")
 	}
-	n := copy(r.buf[offset:], data)
-	r.end = offset + n
-	if len(data)+offset > len(r.buf) {
+	n := copy(r.Buf[offset:], data)
+	r.End = offset + n
+	if len(data)+offset > len(r.Buf) {
 		// End of buffer not enough to hold data, wrap around.
-		n = copy(r.buf, data[n:])
-		r.end = n
+		n = copy(r.Buf, data[n:])
+		r.End = n
 	}
-	r.off = offset
+	r.Off = offset
 	r.onReadEnd()
 	// println("buf:", len(r.buf), "end:", r.end, "off:", r.off, offset, "data:", len(data))
 	free := r.Free()
-	wantFree := len(r.buf) - len(data)
+	wantFree := len(r.Buf) - len(data)
 	if free != wantFree {
 		t.Fatalf("free got %d; want %d", free, wantFree)
 	}
@@ -306,12 +302,12 @@ func setRingData(t *testing.T, r *Ring, offset int, data []byte) {
 	if buffered != wantBuffered {
 		t.Fatalf("buffered got %d; want %d", buffered, wantBuffered)
 	}
-	end := r.end
-	off := r.off
+	end := r.End
+	off := r.Off
 	sdata := r.string()
 	if sdata != string(data) {
 		t.Fatalf("data got %q; want %q", sdata, data)
 	}
-	r.end = end
-	r.off = off
+	r.End = end
+	r.Off = off
 }

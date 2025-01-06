@@ -12,14 +12,39 @@ var errRingBufferFull = errors.New("tseq/ring: buffer full")
 
 // NewRing returns a new ring buffer ready for use.
 func NewRing(buf []byte) *Ring {
-	return &Ring{buf: buf}
+	return &Ring{Buf: buf}
 }
 
 // Ring implements basic Ring buffer functionality.
 type Ring struct {
-	buf []byte
-	off int
-	end int
+	// Buf is used to store data written into Ring
+	// with Write methods and then read out with Read methods.
+	Buf []byte
+	// Start of readable data which indexes into Buf.
+	Off int
+	// End of readable data which indexes into Buf.
+	End int
+}
+
+// WriteLimited performs a write that does not write over the ring buffer's
+// limitOffset index, which points to a position to r.Buf.
+func (r *Ring) WriteLimited(b []byte, limitOffset int) (int, error) {
+	if limitOffset > len(r.Buf) {
+		panic("bad limit offset")
+	}
+	if len(b) > len(r.Buf) {
+		return 0, io.ErrShortBuffer
+	}
+	writeEnd := r.Off + len(b)
+	if limitOffset >= r.Off && writeEnd > limitOffset {
+		return 0, errRingBufferFull
+	} else if writeEnd > len(r.Buf) {
+		writeEnd %= len(r.Buf)
+		if writeEnd > limitOffset {
+			return 0, errRingBufferFull
+		}
+	}
+	return r.Write(b)
 }
 
 // WriteString is a wrapper around [Ring.Write] that avoids allocation of converting byte slice to string.
@@ -37,17 +62,17 @@ func (r *Ring) Write(b []byte) (int, error) {
 	if midFree > 0 {
 		// start     end       off    len(buf)
 		//   |  used  |  mfree  |  used  |
-		n := copy(r.buf[r.end:r.off], b)
-		r.end += n
+		n := copy(r.Buf[r.End:r.Off], b)
+		r.End += n
 		return n, nil
 	}
 	// start       off       end      len(buf)
 	//   |  sfree   |  used   |  efree   |
-	n := copy(r.buf[r.end:], b)
-	r.end += n
+	n := copy(r.Buf[r.End:], b)
+	r.End += n
 	if n < len(b) {
-		n2 := copy(r.buf, b[n:])
-		r.end = n2
+		n2 := copy(r.Buf, b[n:])
+		r.End = n2
 		n += n2
 	}
 	return n, nil
@@ -66,10 +91,10 @@ func (r *Ring) ReadDiscard(n int) {
 		panic("discard exceeds length")
 	case n == buffered:
 		r.Reset()
-	case n+r.off > len(r.buf):
-		r.off = n - (len(r.buf) - r.off)
+	case n+r.Off > len(r.Buf):
+		r.Off = n - (len(r.Buf) - r.Off)
 	default:
-		r.off += n
+		r.Off += n
 	}
 }
 
@@ -83,7 +108,7 @@ func (r *Ring) ReadAt(p []byte, off64 int64) (int, error) {
 		return 0, io.ErrUnexpectedEOF
 	}
 	r2 := *r
-	r2.off = (r2.off + off) % (r.Size())
+	r2.Off = (r2.Off + off) % (r.Size())
 	return r2.ReadPeek(p)
 }
 
@@ -99,29 +124,29 @@ func (r *Ring) Read(b []byte) (int, error) {
 	if err != nil {
 		return n, err
 	}
-	r.off = newOff
+	r.Off = newOff
 	r.onReadEnd()
 	return n, nil
 }
 
 func (r *Ring) read(b []byte) (n, newOff int, err error) {
-	newOff = r.off
+	newOff = r.Off
 	if r.Buffered() == 0 {
 		return 0, newOff, io.EOF
 	}
-	if r.end > r.off {
+	if r.End > r.Off {
 		// start       off       end      len(buf)
 		//   |  sfree   |  used   |  efree   |
-		n = copy(b, r.buf[r.off:r.end])
+		n = copy(b, r.Buf[r.Off:r.End])
 		newOff += n
 		return n, newOff, nil
 	}
 	// start     end       off     len(buf)
 	//   |  used  |  mfree  |  used  |
-	n = copy(b, r.buf[r.off:])
+	n = copy(b, r.Buf[r.Off:])
 	newOff += n
 	if n < len(b) {
-		n2 := copy(b[n:], r.buf[:r.end])
+		n2 := copy(b[n:], r.Buf[:r.End])
 		newOff = n2
 		n += n2
 	}
@@ -130,13 +155,13 @@ func (r *Ring) read(b []byte) (n, newOff int, err error) {
 
 // Reset flushes all data from ring buffer so that no data can be further read.
 func (r *Ring) Reset() {
-	r.off = 0
-	r.end = 0
+	r.Off = 0
+	r.End = 0
 }
 
 // Size returns the capacity of the ring buffer.
 func (r *Ring) Size() int {
-	return len(r.buf)
+	return len(r.Buf)
 }
 
 // Buffered returns amount of bytes ready to read from ring buffer. Always less than [ring.Size].
@@ -146,38 +171,38 @@ func (r *Ring) Buffered() int {
 
 // Free returns amount of bytes that can be read into ring buffer before reaching maximum capacity given by [ring.Size]. Always less than [ring.Size].
 func (r *Ring) Free() int {
-	if r.off == 0 {
-		return len(r.buf) - r.end
+	if r.Off == 0 {
+		return len(r.Buf) - r.End
 	}
 
-	if r.off < r.end {
+	if r.Off < r.End {
 		// start       off       end      len(buf)
 		//   |  sfree   |  used   |  efree   |
-		startFree := r.off
-		endFree := len(r.buf) - r.end
+		startFree := r.Off
+		endFree := len(r.Buf) - r.End
 		return startFree + endFree
 	}
 	// start     end       off     len(buf)
 	//   |  used  |  mfree  |  used  |
-	return r.off - r.end
+	return r.Off - r.End
 }
 
 func (r *Ring) midFree() int {
-	if r.end >= r.off {
+	if r.End >= r.Off {
 		return 0
 	}
-	return r.off - r.end
+	return r.Off - r.End
 }
 
 // onReadEnd does some cleanup of [ring.off] and [ring.end] fields if possible for contiguous read performance benefits.
 func (r *Ring) onReadEnd() {
-	if r.end == len(r.buf) {
-		r.end = 0 // Wrap around.
+	if r.End == len(r.Buf) {
+		r.End = 0 // Wrap around.
 	}
-	if r.off == len(r.buf) {
-		r.off = 0 // Wrap around.
+	if r.Off == len(r.Buf) {
+		r.Off = 0 // Wrap around.
 	}
-	if r.off == r.end {
+	if r.Off == r.End {
 		r.Reset() // We read everything, reset.
 	}
 }
