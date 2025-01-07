@@ -6,7 +6,7 @@ import (
 	"math"
 	"net"
 
-	"github.com/soypat/tseq/internal"
+	"github.com/soypat/lneto/internal"
 )
 
 // ControlBlock is a partial Transmission Control Block (TCB) implementation as

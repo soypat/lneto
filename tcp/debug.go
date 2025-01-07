@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/soypat/tseq/internal"
+	"github.com/soypat/lneto/internal"
 )
 
 func (tcb *ControlBlock) logenabled(lvl slog.Level) bool {

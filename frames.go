@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/soypat/tseq/lneto/tcp"
+	"github.com/soypat/lneto/tcp"
 )
 
 // NewEthFrame returns a EthFrame with data set to buf.

@@ -1,3 +1,3 @@
-module github.com/soypat/tseq
+module github.com/soypat/lneto
 
 go 1.20

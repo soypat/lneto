@@ -1,14 +1,16 @@
-# tseq
-[![go.dev reference](https://pkg.go.dev/badge/github.com/soypat/tseq)](https://pkg.go.dev/github.com/soypat/tseq)
-[![Go Report Card](https://goreportcard.com/badge/github.com/soypat/tseq)](https://goreportcard.com/report/github.com/soypat/tseq)
-[![codecov](https://codecov.io/gh/soypat/tseq/branch/main/graph/badge.svg)](https://codecov.io/gh/soypat/tseq)
-[![Go](https://github.com/soypat/tseq/actions/workflows/go.yml/badge.svg)](https://github.com/soypat/tseq/actions/workflows/go.yml)
-[![sourcegraph](https://sourcegraph.com/github.com/soypat/tseq/-/badge.svg)](https://sourcegraph.com/github.com/soypat/tseq?badge)
+# lneto
+[![go.dev reference](https://pkg.go.dev/badge/github.com/soypat/lneto)](https://pkg.go.dev/github.com/soypat/lneto)
+[![Go Report Card](https://goreportcard.com/badge/github.com/soypat/lneto)](https://goreportcard.com/report/github.com/soypat/lneto)
+[![codecov](https://codecov.io/gh/soypat/lneto/branch/main/graph/badge.svg)](https://codecov.io/gh/soypat/lneto)
+[![Go](https://github.com/soypat/lneto/actions/workflows/go.yml/badge.svg)](https://github.com/soypat/lneto/actions/workflows/go.yml)
+[![sourcegraph](https://sourcegraph.com/github.com/soypat/lneto/-/badge.svg)](https://sourcegraph.com/github.com/soypat/lneto?badge)
 
-Userspace networking primitives.
+Userspace networking primitives. 
+
+`lneto` is pronounced "L-net-oh", a.k.a. "El Neto"; a.k.a. "Don Networkio"; a.k.a "Neto, connector of worlds".
 
 ## Packages
-- `lneto`: Low-level Networking Operations, or "El Neto", the big networking package. Zero copy network frame marshalling and unmarshalling.
+- `lneto`: Low-level Networking Operations, or "El Neto", the networking package. Zero copy network frame marshalling and unmarshalling.
     - [`lneto/frames.go`](./lneto/frames.go): Ethernet, IPv4/IPv6, ARP, TCP, UDP packet marshalling/unmarshalling.
 
 - [`lneto/tcp`](./lneto/ntp): TCP implementation and low level logic.
@@ -20,7 +22,7 @@ Userspace networking primitives.
 ## Install
 How to install package with newer versions of Go (+1.16):
 ```sh
-go mod download github.com/soypat/tseq@latest
+go mod download github.com/soypat/lneto@latest
 ```
 
 

@@ -5,7 +5,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/soypat/tseq/lneto/tcp"
+	"github.com/soypat/lneto/tcp"
 )
 
 func TestTCPMarshalUnmarshal(t *testing.T) {

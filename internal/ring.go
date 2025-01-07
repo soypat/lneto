@@ -8,7 +8,7 @@ import (
 	"unsafe"
 )
 
-var errRingBufferFull = errors.New("tseq/ring: buffer full")
+var errRingBufferFull = errors.New("lneto/ring: buffer full")
 
 // NewRing returns a new ring buffer ready for use.
 func NewRing(buf []byte) *Ring {

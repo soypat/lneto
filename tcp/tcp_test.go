@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/soypat/tseq/lneto"
-	"github.com/soypat/tseq/lneto/tcp"
+	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/tcp"
 )
 
 const (

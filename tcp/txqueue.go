@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/soypat/tseq/internal"
+	"github.com/soypat/lneto/internal"
 )
 
 func newRingTx(buf []byte, maxQueuedPackets int) *ringTx {
