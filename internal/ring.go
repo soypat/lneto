@@ -10,15 +10,12 @@ import (
 
 var errRingBufferFull = errors.New("lneto/ring: buffer full")
 
-// NewRing returns a new ring buffer ready for use.
-func NewRing(buf []byte) *Ring {
-	return &Ring{Buf: buf}
-}
-
 // Ring implements basic Ring buffer functionality.
 type Ring struct {
 	// Buf is used to store data written into Ring
 	// with Write methods and then read out with Read methods.
+	// The capacity of Buf is unused.
+	// There is no readable data when both Off and End are zero.
 	Buf []byte
 	// Start of readable data which indexes into Buf.
 	Off int
@@ -35,8 +32,9 @@ func (r *Ring) WriteLimited(b []byte, limitOffset int) (int, error) {
 	if len(b) > len(r.Buf) {
 		return 0, io.ErrShortBuffer
 	}
-	writeEnd := r.Off + len(b)
-	if limitOffset >= r.Off && writeEnd > limitOffset {
+
+	writeEnd := (r.Off + len(b)) % len(b)
+	if limitOffset > r.Off && writeEnd > limitOffset {
 		return 0, errRingBufferFull
 	} else if writeEnd > len(r.Buf) {
 		writeEnd %= len(r.Buf)

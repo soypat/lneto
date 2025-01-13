@@ -68,9 +68,9 @@ func (tx *ringTx) Write(b []byte) (int, error) {
 	return r.WriteLimited(b, first.off)
 }
 
-// ReadPacket reads from the unsent data ring buffer and generates a new packet segment.
+// MakePacket reads from the unsent data ring buffer and generates a new packet segment.
 // It fails if the sent packet queue is full.
-func (tx *ringTx) NewPacketAndRead(b []byte) (int, error) {
+func (tx *ringTx) MakePacket(b []byte) (int, error) {
 	nxtpkt := (tx.lastPkt + 1) % len(tx.packets)
 	if tx.firstPkt == nxtpkt {
 		return 0, errors.New("packet queue full")

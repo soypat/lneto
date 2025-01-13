@@ -172,6 +172,20 @@ func TestRing2(t *testing.T) {
 	}
 }
 
+func TestRingWriteLimited(t *testing.T) {
+	rng := rand.New(rand.NewSource(0))
+	const bufSize = 10
+	r := &Ring{
+		Buf: make([]byte, bufSize),
+	}
+	var data [bufSize]byte
+	for i := 0; i < 32; i++ {
+		n, _ := rng.Read(data[:rng.Intn(10)+1])
+		limoff := r.Off
+		r.WriteLimited()
+	}
+}
+
 func TestRing_findcrash(t *testing.T) {
 	const maxsize = 33
 	const ntests = 800000
