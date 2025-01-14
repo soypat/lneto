@@ -11,12 +11,13 @@ Userspace networking primitives.
 
 ## Packages
 - `lneto`: Low-level Networking Operations, or "El Neto", the networking package. Zero copy network frame marshalling and unmarshalling.
-    - [`lneto/frames.go`](./lneto/frames.go): Ethernet, IPv4/IPv6, ARP, TCP, UDP packet marshalling/unmarshalling.
+    - [`lneto/frames.go`](./frames.go): Ethernet, IPv4/IPv6, ARP, TCP, UDP packet marshalling/unmarshalling.
 
-- [`lneto/tcp`](./lneto/ntp): TCP implementation and low level logic.
-- [`lneto/dhcp`](./lneto/dhcp): DHCP protocol implementation and low level logic.
-- [`lneto/dns`](./lneto/dns): DNS protocol implementation and low level logic.
-- [`lneto/ntp`](./lneto/ntp): NTP implementation and low level logic. Includes NTP time primitive manipulation and conversion to Go native types.
+- [`lneto/tcp`](./ntp): TCP implementation and low level logic.
+- [`lneto/dhcpv4`](./dhcpv4): DHCP version 4 protocol implementation and low level logic.
+- [`lneto/dns`](./dns): DNS protocol implementation and low level logic.
+- [`lneto/ntp`](./ntp): NTP implementation and low level logic. Includes NTP time primitives manipulation and conversion to Go native types.
+- [`lneto/internal`](./internal): Lightweight and flexible ring buffer implementation and debugging primitives.
 
 
 ## Install
