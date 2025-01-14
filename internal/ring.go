@@ -32,15 +32,14 @@ func (r *Ring) WriteLimited(b []byte, limitOffset int) (int, error) {
 	if len(b) > len(r.Buf) {
 		return 0, io.ErrShortBuffer
 	}
-
-	writeEnd := (r.Off + len(b)) % len(b)
-	if limitOffset > r.Off && writeEnd > limitOffset {
+	var limit int
+	if limitOffset > r.End {
+		limit = limitOffset - r.End
+	} else {
+		limit = len(r.Buf) - r.End + limitOffset
+	}
+	if len(b) > limit {
 		return 0, errRingBufferFull
-	} else if writeEnd > len(r.Buf) {
-		writeEnd %= len(r.Buf)
-		if writeEnd > limitOffset {
-			return 0, errRingBufferFull
-		}
 	}
 	return r.Write(b)
 }
