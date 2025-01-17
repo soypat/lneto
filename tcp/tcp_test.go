@@ -578,6 +578,7 @@ func TestExchange_helloworld_client(t *testing.T) {
 }
 
 func parseSegment(t *testing.T, b []byte) (tcp.Segment, []byte) {
+	var vld lneto.Validator
 	t.Helper()
 	efrm, err := lneto.NewEthFrame(b)
 	if err != nil {
@@ -586,9 +587,9 @@ func parseSegment(t *testing.T, b []byte) (tcp.Segment, []byte) {
 	if efrm.EtherTypeOrSize() != lneto.EtherTypeIPv4 {
 		t.Fatalf("not IPv4")
 	}
-	err = efrm.ValidateSize()
-	if err != nil {
-		t.Fatal(err)
+	efrm.ValidateSize(&vld)
+	if err := vld.Err(); err != nil {
+		t.Fatal(vld.Err())
 	}
 	ifrm, err := lneto.NewIPv4Frame(efrm.Payload())
 	if err != nil {
@@ -601,16 +602,18 @@ func parseSegment(t *testing.T, b []byte) (tcp.Segment, []byte) {
 	if v != 4 {
 		t.Fatal("invalid IP version", v)
 	}
-	err = ifrm.ValidateSize()
-	if err != nil {
-		t.Fatal(err)
+	ifrm.ValidateSize(&vld)
+	if err := vld.Err(); err != nil {
+		t.Fatal(vld.Err())
 	}
 
 	ipl := ifrm.Payload()
 	tfrm, err := lneto.NewTCPFrame(ipl)
 	if err != nil {
 		t.Fatal(err)
-	} else if err = tfrm.ValidateSize(); err != nil {
+	}
+	tfrm.ValidateSize(&vld)
+	if err := vld.Err(); err != nil {
 		t.Fatal(err)
 	}
 	_ = tfrm.String()

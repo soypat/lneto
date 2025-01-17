@@ -111,6 +111,12 @@ func (efrm EthFrame) DestinationHardwareAddr() (dst *[6]byte) {
 	return (*[6]byte)(efrm.buf[0:6])
 }
 
+// IsBroadcast returns true if the destination is the broadcast address ff:ff:ff:ff:ff:ff, false otherwise.
+func (efrm EthFrame) IsBroadcast() bool {
+	return efrm.buf[0] == 0xff && efrm.buf[1] == 0xff && efrm.buf[2] == 0xff &&
+		efrm.buf[3] == 0xff && efrm.buf[4] == 0xff && efrm.buf[5] == 0xff
+}
+
 // SourceHardwareAddr returns the sender's MAC/hardware address of the ethernet packet.
 func (efrm EthFrame) SourceHardwareAddr() (src *[6]byte) {
 	return (*[6]byte)(efrm.buf[6:12])
@@ -267,9 +273,8 @@ func (ifrm IPv4Frame) HeaderLength() int {
 	return int(ifrm.ihl()) * 4
 }
 
-func (ifrm IPv4Frame) ihl() uint8 {
-	return ifrm.buf[0] & 0xf
-}
+func (ifrm IPv4Frame) ihl() uint8     { return ifrm.buf[0] & 0xf }
+func (ifrm IPv4Frame) version() uint8 { return ifrm.buf[0] >> 4 }
 
 // VersionAndIHL returns the version and IHL fields in the IPv4 header. Version should always be 4.
 func (ifrm IPv4Frame) VersionAndIHL() (version, IHL uint8) {

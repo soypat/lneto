@@ -217,16 +217,17 @@ func (gen *packetGen) appendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand) []by
 	case len(tcpPayload) > 0 && firstPayloadByte != tcpPayload[0]:
 		panic("TCP options overwrite payload")
 	}
-	err = efrm.ValidateSize()
-	if err != nil {
+	var vld Validator
+	efrm.ValidateSize(&vld)
+	if err = vld.Err(); err != nil {
 		panic(err)
 	}
-	err = ifrm.ValidateSize()
-	if err != nil {
+	ifrm.Validate(&vld)
+	if err = vld.Err(); err != nil {
 		panic(err)
 	}
-	err = tfrm.ValidateSize()
-	if err != nil {
+	tfrm.ValidateSize(&vld)
+	if err = vld.Err(); err != nil {
 		panic(err)
 	}
 	return dst
