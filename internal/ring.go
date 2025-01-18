@@ -23,8 +23,19 @@ type Ring struct {
 	End int
 }
 
+// SizeLimited returns the amount of bytes that can be written up to the
+// argument offset limitOffset. See [Ring.WriteLimited]
+func (r *Ring) FreeLimited(limitOffset int) (free int) {
+	if limitOffset > r.End {
+		free = limitOffset - r.End
+	} else {
+		free = len(r.Buf) - r.End + limitOffset
+	}
+	return free
+}
+
 // WriteLimited performs a write that does not write over the ring buffer's
-// limitOffset index, which points to a position to r.Buf.
+// limitOffset index, which points to a position to r.Buf. Up to [Ring.FreeLimited] bytes can be written.
 func (r *Ring) WriteLimited(b []byte, limitOffset int) (int, error) {
 	if limitOffset > len(r.Buf) {
 		panic("bad limit offset")
@@ -32,12 +43,7 @@ func (r *Ring) WriteLimited(b []byte, limitOffset int) (int, error) {
 	if len(b) > len(r.Buf) {
 		return 0, io.ErrShortBuffer
 	}
-	var limit int
-	if limitOffset > r.End {
-		limit = limitOffset - r.End
-	} else {
-		limit = len(r.Buf) - r.End + limitOffset
-	}
+	limit := r.FreeLimited(limitOffset)
 	if len(b) > limit {
 		return 0, errRingBufferFull
 	}

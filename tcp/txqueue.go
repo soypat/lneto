@@ -23,9 +23,9 @@ type ringTx struct {
 	rawbuf []byte
 	// packets contains
 	packets []ringidx
-	// firstPkt is the index of the oldest packet in the packets field.
-	firstPkt int
-	lastPkt  int
+	// _firstPkt is the index of the oldest packet in the packets field.
+	_firstPkt int
+	_lastPkt  int
 	// unsentOff is the offset of start of unsent data into rawbuf.
 	unsentoff int
 	// unsentend is the offset of end of unsent data in rawbuf.
@@ -58,21 +58,27 @@ func (tx *ringTx) BufferedSent() int {
 }
 
 // Write writes data to the underlying unsent data ring buffer.
-func (tx *ringTx) Write(b []byte) (int, error) {
-	first := tx.packets[tx.firstPkt]
+func (tx *ringTx) Write(b []byte) (n int, err error) {
+	first := tx.packets[tx._firstPkt]
 	r := tx.unsentRing()
 	if first.off < 0 {
 		// No packets in queue case.
-		return r.Write(b)
+		n, err = r.Write(b)
+	} else {
+		n, err = r.WriteLimited(b, first.off)
 	}
-	return r.WriteLimited(b, first.off)
+	if err != nil {
+		return 0, err
+	}
+	tx.unsentend = tx.addOff(tx.unsentend, n)
+	return n, err
 }
 
 // MakePacket reads from the unsent data ring buffer and generates a new packet segment.
 // It fails if the sent packet queue is full.
 func (tx *ringTx) MakePacket(b []byte) (int, error) {
-	nxtpkt := (tx.lastPkt + 1) % len(tx.packets)
-	if tx.firstPkt == nxtpkt {
+	nxtpkt := (tx._lastPkt + 1) % len(tx.packets)
+	if tx._firstPkt == nxtpkt {
 		return 0, errors.New("packet queue full")
 	}
 
@@ -82,20 +88,20 @@ func (tx *ringTx) MakePacket(b []byte) (int, error) {
 	if err != nil {
 		return n, err
 	}
-	last := &tx.packets[tx.lastPkt]
-	rlast := tx.packetRing(tx.lastPkt)
+	last := &tx.packets[tx._lastPkt]
+	rlast := tx.packetRing(tx._lastPkt)
 	tx.packets[nxtpkt].off = start
-	tx.packets[nxtpkt].end = r.Off
+	tx.packets[nxtpkt].end = tx.addOff(start, n)
 	tx.packets[nxtpkt].seq = last.seq + Value(rlast.Buffered())
-	tx.lastPkt = nxtpkt
-	tx.unsentoff = r.Off
+	tx._lastPkt = nxtpkt
+	tx.unsentoff = tx.addOff(tx.unsentoff, n)
 	return n, nil
 }
 
 // IsQueueFull returns true if the sent packet queue is full in which
 // case a call to ReadPacket is guaranteed to fail.
 func (tx *ringTx) IsQueueFull() bool {
-	return tx.firstPkt == (tx.lastPkt+1)%len(tx.packets)
+	return tx._firstPkt == (tx._lastPkt+1)%len(tx.packets)
 }
 
 func (tx *ringTx) packetRing(i int) internal.Ring {
@@ -108,16 +114,16 @@ func (tx *ringTx) packetRing(i int) internal.Ring {
 
 // RecvSegment processes an incoming segment and updates the sent packet queue
 func (tx *ringTx) RecvACK(ack Value) error {
-	i := tx.firstPkt
+	i := tx._firstPkt
 	for {
 		pkt := &tx.packets[i]
 		if ack >= pkt.seq {
 			// Packet was received by remote. Mark it as acked.
 			pkt.off = -1
-			tx.firstPkt++
+			tx._firstPkt++
 			continue
 		}
-		if i == tx.lastPkt {
+		if i == tx._lastPkt {
 			break
 		}
 		i = (i + 1) % len(tx.packets)
@@ -129,15 +135,58 @@ func (tx *ringTx) unsentRing() internal.Ring {
 	return tx.ring(tx.unsentoff, tx.unsentend)
 }
 
+func (tx *ringTx) freeRing() (internal.Ring, int) {
+	return tx.ring(tx.unsentoff, tx.unsentend), 0
+}
+
+func (tx *ringTx) a() {
+
+}
+
 func (tx *ringTx) sentRing() internal.Ring {
-	first := tx.packets[tx.firstPkt]
+	first := tx.packets[tx._firstPkt]
 	if first.off < 0 {
 		return tx.ring(0, 0)
 	}
-	last := tx.packets[tx.lastPkt]
+	last := tx.packets[tx._lastPkt]
 	return tx.ring(first.off, last.end)
 }
 
 func (tx *ringTx) ring(off, end int) internal.Ring {
 	return internal.Ring{Buf: tx.rawbuf, Off: off, End: end}
+}
+
+// addOff adds two integers together and wraps the value around the ring's buffer size.
+func (tx *ringTx) addOff(a, b int) int {
+	off := a + b
+	if off >= len(tx.rawbuf) {
+		off -= len(tx.rawbuf)
+	}
+	return off
+}
+
+func (tx *ringTx) firstPkt() int {
+	seq := tx.packets[0].seq
+	idx := -1
+	for i := 0; i < len(tx.packets); i++ {
+		pkt := &tx.packets[i]
+		if (pkt.end != 0 || pkt.off != 0) && seq.LessThanEq(pkt.seq) {
+			seq = pkt.seq
+			idx = i
+		}
+	}
+	return idx
+}
+
+func (tx *ringTx) lastPkt() int {
+	seq := tx.packets[0].seq
+	idx := -1
+	for i := 0; i < len(tx.packets); i++ {
+		pkt := &tx.packets[i]
+		if (pkt.end != 0 || pkt.off != 0) && pkt.seq.LessThanEq(seq) {
+			seq = pkt.seq
+			idx = i
+		}
+	}
+	return idx
 }

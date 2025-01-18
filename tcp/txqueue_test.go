@@ -23,6 +23,7 @@ func TestTxQueueWrite(t *testing.T) {
 		} else if n != len(buf) {
 			t.Fatalf("want %d written, got %d", len(buf), n)
 		}
+
 		n, err = rtx.MakePacket(data[:])
 		if err != nil {
 			t.Fatalf("making packet %d: %s", i, err)
