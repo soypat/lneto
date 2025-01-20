@@ -17,11 +17,14 @@ var (
 
 	errBadIPVersion = errors.New("bad IP version field")
 	errEvilPacket   = errors.New("evil packet")
+	errZeroDstPort  = errors.New("TCP zero destination port")
+	errZeroSrcPort  = errors.New("TCP zero source port")
 )
 
 type Validator struct {
-	checkEvil bool
-	accum     []error
+	checkEvil      bool
+	allowMultiErrs bool
+	accum          []error
 }
 
 func (v *Validator) ResetErr() {
@@ -38,6 +41,9 @@ func (v *Validator) Err() error {
 }
 
 func (v *Validator) gotErr(err error) {
+	if len(v.accum) != 0 && !v.allowMultiErrs {
+		return
+	}
 	v.accum = append(v.accum, err)
 }
 
@@ -80,7 +86,9 @@ func (ifrm IPv4Frame) ValidateSize(v *Validator) {
 	}
 }
 
-func (ifrm IPv4Frame) ValidateFields(v *Validator) {
+// ValidateExceptCRC checks for invalid frame values but does not check CRC.
+func (ifrm IPv4Frame) ValidateExceptCRC(v *Validator) {
+	ifrm.ValidateSize(v)
 	flags := ifrm.Flags()
 	if ifrm.version() != 4 {
 		v.gotErr(errBadIPVersion)
@@ -88,12 +96,6 @@ func (ifrm IPv4Frame) ValidateFields(v *Validator) {
 	if v.checkEvil && flags.IsEvil() {
 		v.gotErr(errEvilPacket)
 	}
-}
-
-// Validate checks for invalid frame values.
-func (ifrm IPv4Frame) Validate(v *Validator) {
-	ifrm.ValidateSize(v)
-	ifrm.ValidateFields(v)
 }
 
 // ValidateSize checks the frame's size fields and compares with the actual buffer
@@ -114,6 +116,16 @@ func (tfrm TCPFrame) ValidateSize(v *Validator) {
 	}
 	if off > len(tfrm.RawData()) {
 		v.gotErr(errShortTCP)
+	}
+}
+
+func (tfrm TCPFrame) ValidateExceptCRC(v *Validator) {
+	tfrm.ValidateSize(v)
+	if tfrm.DestinationPort() == 0 {
+		v.gotErr(errZeroDstPort)
+	}
+	if tfrm.SourcePort() == 0 {
+		v.gotErr(errZeroSrcPort)
 	}
 }
 
