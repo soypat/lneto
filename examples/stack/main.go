@@ -17,7 +17,6 @@ func main() {
 	rng := rand.New(rand.NewSource(1))
 	var gen ltesto.PacketGen
 	gen.RandomizeAddrs(rng)
-
 	slogger := logger{slog.Default()}
 	lStack := LinkStack{
 		logger: slogger,
@@ -49,18 +48,29 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	err = pStack.tcb.Open(tcp.Value(rng.Int()), 256, tcp.StateListen)
+	iss := tcp.Value(100)
+	err = pStack.tcb.Open(iss, 256, tcp.StateListen)
 	if err != nil {
 		log.Fatal(err)
 	}
-
+	seg := tcp.Segment{
+		SEQ:     300,
+		ACK:     iss,
+		DATALEN: 0,
+		WND:     256,
+		Flags:   tcp.FlagSYN,
+	}
 	buf := make([]byte, lStack.mtu)
-	packet := gen.AppendRandomIPv4TCPPacket(buf[:0], rng)
+	packet := gen.AppendRandomIPv4TCPPacket(buf[:0], rng, seg)
 	err = lStack.RecvEth(packet)
 	if err != nil {
 		log.Fatal(err)
 	}
+	n, err := lStack.HandleEth(buf)
+	if err != nil {
+		log.Fatal(n, err)
+	}
+	log.Println("success receiving packet")
 }
 
 type Handler interface {
@@ -334,7 +344,7 @@ func (ts *TCPStack) Handle(ipFrame []byte, tcpOff int) (n int, err error) {
 		return 0, err
 	}
 	// TCP packet written.
-	tfrm, _ := lneto.NewTCPFrame(ipFrame[tcpOff:])
+	tfrm, _ := lneto.NewTCPFrame(ipFrame[tcpOff : tcpOff+n])
 	ts.validator.ResetErr()
 	tfrm.ValidateSize(&ts.validator) // Perform basic validation.
 	if err = ts.validator.Err(); err != nil {

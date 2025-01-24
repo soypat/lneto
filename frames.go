@@ -610,7 +610,7 @@ func (tfrm TCPFrame) CalculateIPv4CRC(ifrm IPv4Frame) uint16 {
 	ifrm.crcWriteTCPPseudo(&crc)
 	expectLen := int(ifrm.TotalLength()) - ifrm.HeaderLength()
 	if expectLen != len(tfrm.buf) {
-		println("unexpected TCP buffer length mismatches IPv4 header total length", expectLen, len(tfrm.buf))
+		println("unexpected TCP buffer length mismatches IPv4 header total length", len(tfrm.buf), expectLen)
 	}
 	tfrm.crcWrite(&crc)
 	return crc.Sum16()
@@ -622,7 +622,7 @@ func (tfrm TCPFrame) CalculateIPv6CRC(ifrm IPv6Frame) uint16 {
 	ifrm.crcWritePseudo(&crc)
 	expectLen := int(ifrm.PayloadLength())
 	if expectLen != len(tfrm.buf) {
-		println("unexpected TCP buffer length mismatches IPv4 header total length", expectLen, len(tfrm.buf))
+		println("unexpected TCP buffer length mismatches IPv4 header total length", len(tfrm.buf), expectLen)
 	}
 	tfrm.crcWrite(&crc)
 	return crc.Sum16()

@@ -2,6 +2,7 @@ package ltesto
 
 import (
 	"bytes"
+	"math"
 	"math/rand"
 
 	"github.com/soypat/lneto"
@@ -34,13 +35,17 @@ func (gen *PacketGen) RandomizeAddrs(rng *rand.Rand) {
 	gen.DstTCP = uint16(ports >> 16)
 }
 
-func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand) []byte {
+func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand, seg tcp.Segment) []byte {
+	if seg.WND > math.MaxUint16 {
+		panic("TCP segment window overflow")
+	} else if seg.DATALEN > 2048 {
+		panic("too long datalen")
+	}
 	ri := rng.Int()
 	var (
-		isVLAN     = ri&(1<<0) != 0
-		hasIPOpt   = ri&(1<<1) != 0
-		hasTCPOpt  = ri&(1<<2) != 0
-		hasPayload = ri&(1<<3) != 0
+		isVLAN    = ri&(1<<0) != 0
+		hasIPOpt  = ri&(1<<1) != 0
+		hasTCPOpt = ri&(1<<2) != 0
 	)
 	var etherType lneto.EtherType = lneto.EtherTypeIPv4
 	var ipOpts []byte
@@ -56,14 +61,11 @@ func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand) []by
 	if hasTCPOpt {
 		tcpOpts = []byte{byte(tcp.OptSACKPermitted), 0, 1, 0}
 	}
-	var payloadLen int
-	if hasPayload {
-		payloadLen = (ri >> 16) % 1024
-	}
+
 	ipOptWLen := sizeWord(len(ipOpts))
 	tcpOptWlen := sizeWord(len(tcpOpts))
 	off := len(dst)
-	dst = append(dst, make([]byte, ethsize+sizeHeaderIPv4+4*int(ipOptWLen)+sizeHeaderTCP+4*int(tcpOptWlen)+payloadLen)...)
+	dst = append(dst, make([]byte, ethsize+sizeHeaderIPv4+4*int(ipOptWLen)+sizeHeaderTCP+4*int(tcpOptWlen)+int(seg.DATALEN))...)
 	efrm, err := lneto.NewEthFrame(dst[off:])
 	if err != nil {
 		panic(err)
@@ -99,11 +101,11 @@ func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand) []by
 	}
 	tfrm.SetSourcePort(gen.SrcTCP)
 	tfrm.SetDestinationPort(gen.DstTCP)
-	tfrm.SetSeq(tcp.Value(rng.Uint32()))
-	tfrm.SetAck(tcp.Value(rng.Uint32()))
+	tfrm.SetSeq(seg.SEQ)
+	tfrm.SetAck(seg.ACK)
 	wlen := sizeWord(sizeHeaderTCP + len(tcpOpts))
-	tfrm.SetOffsetAndFlags(wlen, tcp.Flags(rng.Uint32()))
-	tfrm.SetWindowSize(uint16(rng.Uint32()))
+	tfrm.SetOffsetAndFlags(wlen, seg.Flags)
+	tfrm.SetWindowSize(uint16(seg.WND))
 	urgPtr := uint16(rng.Uint32())
 	tfrm.SetUrgentPtr(urgPtr)
 	tcpPayload := tfrm.Payload()
@@ -111,6 +113,9 @@ func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand) []by
 	if len(tcpPayload) > 0 {
 		rng.Read(tcpPayload)
 		firstPayloadByte = tcpPayload[0]
+		if len(tcpPayload) != int(seg.DATALEN) {
+			panic("incorrect payload length calculation")
+		}
 	}
 	// Set Variable section of data.
 	copy(ifrm.Options(), ipOpts)
