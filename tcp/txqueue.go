@@ -115,12 +115,13 @@ func (tx *ringTx) MakePacket(b []byte) (int, Value, error) {
 	}
 	plen := Value(n)
 	seq := tx.seq
-	tx.packets[nxtpkt].off = start
-	tx.packets[nxtpkt].end = tx.addOff(start, n)
-	tx.packets[nxtpkt].seq = seq + plen
-
 	tx.unsentoff = tx.addOff(tx.unsentoff, n)
 	tx.seq += plen
+
+	pkt := &tx.packets[nxtpkt]
+	pkt.off = start
+	pkt.end = tx.addOff(start, n)
+	pkt.seq = seq + plen
 	return n, seq, nil
 }
 
@@ -175,26 +176,36 @@ func (tx *ringTx) pkt(i int) *ringidx {
 }
 
 func (tx *ringTx) firstPkt() int {
-	seq := tx.packets[0].seq
+	var seq Value
 	idx := -1
 	for i := 0; i < len(tx.packets); i++ {
 		pkt := &tx.packets[i]
-		if pkt.sent() && seq.LessThanEq(pkt.seq) {
-			seq = pkt.seq
-			idx = i
+		if pkt.sent() {
+			if idx == -1 {
+				seq = pkt.seq
+			}
+			if seq.LessThan(pkt.seq) {
+				seq = pkt.seq
+				idx = i
+			}
 		}
 	}
 	return idx
 }
 
 func (tx *ringTx) lastPkt() int {
-	seq := tx.packets[0].seq
+	var seq Value
 	idx := -1
 	for i := 0; i < len(tx.packets); i++ {
 		pkt := &tx.packets[i]
-		if pkt.sent() && pkt.seq.LessThanEq(seq) {
-			seq = pkt.seq
-			idx = i
+		if pkt.sent() {
+			if idx == -1 {
+				seq = pkt.seq
+			}
+			if pkt.seq.LessThan(seq) {
+				seq = pkt.seq
+				idx = i
+			}
 		}
 	}
 	return idx
