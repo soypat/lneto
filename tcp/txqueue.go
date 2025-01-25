@@ -2,7 +2,6 @@ package tcp
 
 import (
 	"errors"
-	"time"
 
 	"github.com/soypat/lneto/internal"
 )
@@ -18,9 +17,6 @@ type ringTx struct {
 	rawbuf []byte
 	// packets contains
 	packets []ringidx
-	// _firstPkt is the index of the oldest packet in the packets field.
-	// _firstPkt int
-	// _lastPkt  int
 	// unsentOff is the offset of start of unsent data into rawbuf.
 	unsentoff int
 	// unsentend is the offset of end of unsent data in rawbuf.
@@ -38,9 +34,7 @@ type ringidx struct {
 	end int
 	// seq is the sequence number of the packet.
 	seq Value
-	t   time.Time
-	// acked flags if this packet has been acknowledged. Useful for SACK (selective acknowledgement)
-	// acked bool
+	// time is a measure of the instant of time message was sent at.
 }
 
 // Reset resets the RingTx's internal state to use buf as the main ring buffer and creates or reuses
@@ -128,14 +122,6 @@ func (tx *ringTx) MakePacket(b []byte) (int, Value, error) {
 	tx.unsentoff = tx.addOff(tx.unsentoff, n)
 	tx.seq += plen
 	return n, seq, nil
-}
-
-func (tx *ringTx) packetRing(i int) internal.Ring {
-	pkt := tx.packets[i]
-	if pkt.off < 0 {
-		return internal.Ring{}
-	}
-	return tx.ring(pkt.off, pkt.end)
 }
 
 // RecvSegment processes an incoming segment and updates the sent packet queue

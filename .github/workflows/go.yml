@@ -32,18 +32,10 @@ jobs:
 
     - name: Test
       run: go test -v -coverprofile=coverage.txt -covermode=atomic ./...
-
-    - name: Codecov upload coverage
-      shell: bash
-      env:
-        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-        RUN_ID: ${{ github.run_id }}
-      run: |
-        # Replace `linux` below with the appropriate OS
-        # Options are `alpine`, `linux`, `macos`, `windows`
-        # You will need to setup the environment variables below in github
-        # and the project in codecov.io: https://app.codecov.io/gh/${{ github.repository }}
-        go test -v -coverprofile=coverage.txt -covermode=atomic ./...
-        curl -Os https://uploader.codecov.io/latest/linux/codecov
-        chmod +x codecov
-        ./codecov --verbose upload-process --fail-on-error -t $CODECOV_TOKEN -n 'service'-$RUN_ID -F service -f coverage.txt
+    
+    - name: Upload coverage reports to Codecov
+      uses: codecov/codecov-action@v5
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        slug: soypat/lneto
+    

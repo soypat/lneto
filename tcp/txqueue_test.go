@@ -34,7 +34,7 @@ func TestTxQueue_SequentialMessages(t *testing.T) {
 			t.Fatalf("want %d unsent buffered, got %d", unsent, len(msg))
 		}
 		sent := rtx.BufferedSent()
-		if sent > 0 {
+		if sent != 0 {
 			t.Fatalf("want 0 bytes sent, got %d", sent)
 		}
 		n, seq, err := rtx.MakePacket(data[:])
@@ -46,6 +46,10 @@ func TestTxQueue_SequentialMessages(t *testing.T) {
 			t.Fatalf("want data %q, got data read %q", msg, data[:n])
 		} else if seq != prevSeq {
 			t.Fatalf("want seq %d, got %d", prevSeq, seq)
+		}
+		sent = rtx.BufferedSent()
+		if sent != len(msg) {
+			t.Fatalf("want %d sent, got %d", len(msg), sent)
 		}
 		prevSeq += Value(n)
 		err = rtx.RecvACK(prevSeq)
