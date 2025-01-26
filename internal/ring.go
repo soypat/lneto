@@ -119,43 +119,38 @@ func (r *Ring) ReadAt(p []byte, off64 int64) (int, error) {
 
 // ReadPeek reads up to len(b) bytes from the ring buffer but does not advance the read pointer. [io.EOF] returned when no data available.
 func (r *Ring) ReadPeek(b []byte) (int, error) {
-	n, _, err := r.read(b)
+	n, err := r.read(b)
 	return n, err
 }
 
 // Read reads up to len(b) bytes from the ring buffer and advances the read pointer. [io.EOF] returned when no data available.
 func (r *Ring) Read(b []byte) (int, error) {
-	n, newOff, err := r.read(b)
+	n, err := r.read(b)
 	if err != nil {
 		return n, err
 	}
-	r.Off = newOff
-	r.onReadEnd()
+	r.onReadEnd(n)
 	return n, nil
 }
 
-func (r *Ring) read(b []byte) (n, newOff int, err error) {
-	newOff = r.Off
+func (r *Ring) read(b []byte) (n int, err error) {
 	if r.Buffered() == 0 {
-		return 0, newOff, io.EOF
+		return 0, io.EOF
 	}
 	if r.End > r.Off {
 		// start       off       end      len(buf)
 		//   |  sfree   |  used   |  efree   |
 		n = copy(b, r.Buf[r.Off:r.End])
-		newOff += n
-		return n, newOff, nil
+		return n, nil
 	}
 	// start     end       off     len(buf)
 	//   |  used  |  mfree  |  used  |
 	n = copy(b, r.Buf[r.Off:])
-	newOff += n
 	if n < len(b) {
 		n2 := copy(b[n:], r.Buf[:r.End])
-		newOff = n2
 		n += n2
 	}
-	return n, newOff, nil
+	return n, nil
 }
 
 // Reset flushes all data from ring buffer so that no data can be further read.
@@ -176,7 +171,7 @@ func (r *Ring) Buffered() int {
 
 // Free returns amount of bytes that can be read into ring buffer before reaching maximum capacity given by [ring.Size]. Always less than [ring.Size].
 func (r *Ring) Free() int {
-	if r.Off == 0 {
+	if r.Off == 0 || r.End == 0 {
 		return len(r.Buf) - r.End
 	}
 	if r.Off < r.End {
@@ -192,22 +187,22 @@ func (r *Ring) Free() int {
 }
 
 func (r *Ring) midFree() int {
-	if r.End >= r.Off {
+	if r.End >= r.Off || r.End == 0 {
 		return 0
 	}
 	return r.Off - r.End
 }
 
 // onReadEnd does some cleanup of [ring.off] and [ring.end] fields if possible for contiguous read performance benefits.
-func (r *Ring) onReadEnd() {
-	if r.Off == len(r.Buf) {
-		if r.End == len(r.Buf) {
-			r.Reset()
-		} else {
-			r.Off = 0
-		}
-	} else if r.Off == r.End {
+func (r *Ring) onReadEnd(totalRead int) {
+	if totalRead <= 0 {
+		panic("invalid onReadEnd bytes read")
+	}
+	newOff := r.addOff(r.Off, totalRead)
+	if newOff == r.End {
 		r.Reset()
+	} else {
+		r.Off = newOff
 	}
 }
 

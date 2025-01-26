@@ -28,9 +28,9 @@ type ringTx struct {
 
 // ringidx represents packet data inside RingTx
 type ringidx struct {
-	// off is data start offset of packet data inside buf.
+	// off is data start offset of packet data inside buf. Follows [internal.Ring] semantics.
 	off int
-	// end is the ringed data end offset, non-inclusive.
+	// end is the ringed data end offset, non-inclusive. Follows [internal.Ring] semantics.
 	end int
 	// seq is the sequence number of the packet.
 	seq Value

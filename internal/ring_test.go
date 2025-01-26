@@ -2,6 +2,7 @@ package internal
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"math/rand"
 	"testing"
@@ -9,51 +10,15 @@ import (
 
 func TestRing(t *testing.T) {
 	rng := rand.New(rand.NewSource(0))
-	const bufSize = 10
+	const overdata = "hello world"
+	const bufSize = 8
+	var n int
+	var err error
+	var buf [bufSize]byte
 	r := &Ring{
 		Buf: make([]byte, bufSize),
 	}
 	const data = "hello"
-	_, err := r.WriteString(data)
-	if err != nil {
-		t.Error(err)
-	}
-	testRingSanity(t, r)
-	// Case where data is contiguous and at start of buffer.
-	var buf [bufSize]byte
-	n, err := fragmentReadInto(r, buf[:])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(buf[:n]) != data {
-		t.Fatalf("got %q; want %q", buf[:n], data)
-	}
-	testRingSanity(t, r)
-	// Case where data overwrites end of buffer.
-	const overdata = "hello world"
-	n, err = r.Write([]byte(overdata))
-	if err == nil || n > 0 {
-		t.Fatal(err, n)
-	}
-	testRingSanity(t, r)
-	// Set Random data in ring buffer and read it back.
-	for i := 0; i < 32; i++ {
-		n := rng.Intn(bufSize)
-		copy(buf[:], overdata[:n])
-		offset := rng.Intn(bufSize - 1)
-		setRingData(t, r, offset, buf[:n])
-
-		// Case where data wraps around end of buffer.
-		n, err = r.Read(buf[:])
-		if err != nil {
-			break
-		}
-		if string(buf[:n]) != overdata[:n] {
-			t.Error("got", buf[:n], "want", overdata[:n])
-		}
-		testRingSanity(t, r)
-	}
-
 	// Set random data and write some more and read it back.
 	for i := 0; i < 32; i++ {
 		nfirst := rng.Intn(bufSize) / 2
@@ -159,12 +124,11 @@ func TestRing(t *testing.T) {
 		}
 		testRingSanity(t, r)
 	}
-
 	_ = r._string(0)
 }
 
 func TestRing2(t *testing.T) {
-	const maxsize = 6
+	const maxsize = 8
 	const ntests = 80000
 	rng := rand.New(rand.NewSource(0))
 	data := make([]byte, maxsize)
@@ -175,6 +139,162 @@ func TestRing2(t *testing.T) {
 		dsize := max(rng.Intn(len(data)), 1)
 		if !testRing1_loopback(t, rng, ringbuf, data[:dsize], auxbuf) {
 			t.Fatalf("failed test %d", i)
+		}
+	}
+}
+
+func TestRingEmpty(t *testing.T) {
+	const bufSize = 8
+	data := make([]byte, bufSize)
+	r := &Ring{Buf: data}
+	readCalls := []func([]byte) (int, error){
+		r.read,
+		r.Read,
+		r.ReadPeek,
+	}
+	for _, isResetCalled := range []bool{false, true} {
+		for _, isonReadEndCalled := range []bool{false, true} {
+			name := fmt.Sprintf("reset=%v readend=%v", isResetCalled, isonReadEndCalled)
+			t.Run(name, func(t *testing.T) {
+				for off := 0; off < bufSize+1; off++ {
+					r.End = 0
+					r.Off = off
+					if isResetCalled {
+						testRingSanity(t, r)
+						r.Reset()
+					}
+					buf := r.Buffered()
+					if buf != 0 {
+						t.Fatalf("want 0 bytes buffered, got %d for off=%d, end=%d size=%d", buf, r.Off, r.End, r.Size())
+					}
+					if isonReadEndCalled {
+						testRingSanity(t, r)
+						canonRing(r)
+					}
+					buf2 := r.Buffered()
+					if buf2 != 0 {
+						t.Fatalf("want 0 bytes buffered(second call), got buf=%d->%d for off=%d->%d, end=0->%d size=%d", buf, buf2, off, r.Off, r.End, r.Size())
+					}
+					for _, read := range readCalls {
+						n, err := read(data)
+						if err != io.EOF {
+							t.Fatal("want EOF for empty read call")
+						} else if n != 0 {
+							t.Fatalf("expected no bytes read, got %d", n)
+						}
+					}
+					testRingSanity(t, r)
+				}
+			})
+		}
+	}
+}
+
+func TestRingNonEmpty(t *testing.T) {
+	const bufSize = 8
+	data := make([]byte, bufSize)
+	r := &Ring{Buf: data}
+	for _, checkRead := range []bool{false, true} {
+		for _, checkWrite := range []bool{false, true} {
+			for _, isonReadEndCalled := range []bool{false, true} {
+				name := fmt.Sprintf("readend=%v checkWrite=%v checkRead=%v", isonReadEndCalled, checkWrite, checkRead)
+				t.Run(name, func(t *testing.T) {
+					for end := 1; end < bufSize+1; end++ {
+						for off := 0; off < bufSize+1; off++ {
+							r.End = end
+							r.Off = off
+							buf := r.Buffered()
+							if buf == 0 {
+								t.Fatalf("want !=0 bytes buffered, got %d for off=%d, end=%d size=%d", buf, r.Off, r.End, r.Size())
+							}
+							if isonReadEndCalled {
+								testRingSanity(t, r)
+								canonRing(r)
+							}
+							buf2 := r.Buffered()
+							if buf2 != buf {
+								t.Fatalf("Buffered changed on no-op %d->%d? for off=%d->%d, end=%d->%d size=%d", buf, buf2, off, r.Off, end, r.End, r.Size())
+							}
+							if r.Off != off {
+								t.Fatalf("want off=%d, got off=%d off modified with no read call?!", off, r.Off)
+							}
+							if checkWrite {
+								testRingSanity(t, r)
+								free := r.Size() - buf
+								n, err := r.Write(data[:free])
+								if n != free || err != nil {
+									t.Errorf("want %d to fill buffer, got n=%d err=%v", free, n, err)
+								}
+							}
+							if checkRead {
+								testRingSanity(t, r)
+								buf := r.Buffered()
+								n, err := r.Read(data[:buf])
+								if n != buf || err != nil {
+									t.Errorf("want %d read bytes, got n=%d err=%v", buf, n, err)
+								}
+							}
+							testRingSanity(t, r)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestRing_TwoWrite(t *testing.T) {
+	const bufSize = 8
+	rng := rand.New(rand.NewSource(1))
+	var rawbuf, auxbuf, readback [bufSize]byte
+	r := &Ring{Buf: rawbuf[:]}
+
+	for i := 0; i < 1024; i++ {
+		n1 := rng.Intn(bufSize-1) + 1 // leave space for one more write
+		n2 := rng.Intn(bufSize-n1) + 1
+		off := rng.Intn(bufSize + 1)
+		if n1+n2 > r.Size() {
+			panic("invalid test")
+		}
+		r.Reset()
+		rng.Read(auxbuf[:])
+		setRingData(t, r, off, auxbuf[:n1])
+		n2got, err := r.Write(auxbuf[n1 : n1+n2])
+		if err != nil || n2got != n2 {
+			t.Fatal(err, n2, n2got)
+		}
+		testRingSanity(t, r)
+		n, err := r.Read(readback[:])
+		if err != nil {
+			t.Fatal(err)
+		} else if n != n1+n2 {
+			t.Fatalf("failed to read complete written data %d/%d (%d+%d)", n, n1+n2, n1, n2)
+		} else if !bytes.Equal(readback[:n], auxbuf[:n]) {
+			t.Fatalf("integrity of data compromised %q!=%q", readback[:n], auxbuf[:n])
+		}
+		testRingSanity(t, r)
+	}
+}
+
+func TestRingOverwrite(t *testing.T) {
+	const bufSize = 8
+	var rawbuf, auxbuf [bufSize]byte
+	r := &Ring{Buf: rawbuf[:]}
+	for off := 0; off < bufSize+1; off++ {
+		for buf := 0; buf < bufSize+1; buf++ {
+			setRingData(t, r, off, rawbuf[:buf])
+			// Select write size overwriting data.
+			for osz := bufSize - buf + 1; osz < bufSize+1; osz++ {
+				if osz <= r.Free() {
+					panic("invalid test")
+				}
+				ngot, err := r.Write(auxbuf[:osz])
+				if err == nil {
+					t.Fatal("expected error")
+				} else if ngot > 0 {
+					t.Fatalf("expected no data written, got %d", ngot)
+				}
+			}
 		}
 	}
 }
@@ -341,21 +461,27 @@ func fragmentReadInto(r io.Reader, buf []byte) (n int, _ error) {
 
 func setRingData(t *testing.T, r *Ring, offset int, data []byte) {
 	t.Helper()
-	if len(data) > len(r.Buf) {
+	sz := r.Size()
+	if len(data) > sz {
 		panic("data too large")
 	}
 	n := copy(r.Buf[offset:], data)
-	r.End = offset + n
-	if len(data)+offset > len(r.Buf) {
-		// End of buffer not enough to hold data, wrap around.
-		n = copy(r.Buf, data[n:])
-		r.End = n
+	if len(data) > 0 {
+		r.End = offset + n
+		if len(data)+offset > sz {
+			// End of buffer not enough to hold data, wrap around.
+			n = copy(r.Buf, data[n:])
+			r.End = n
+		}
+	} else {
+		r.End = 0
 	}
+
 	r.Off = offset
-	r.onReadEnd()
-	// println("buf:", len(r.buf), "end:", r.end, "off:", r.off, offset, "data:", len(data))
+	canonRing(r)
+	// println("buf:", sz, "end:", r.end, "off:", r.off, offset, "data:", len(data))
 	free := r.Free()
-	wantFree := len(r.Buf) - len(data)
+	wantFree := sz - len(data)
 	if free != wantFree {
 		t.Fatalf("free got %d; want %d", free, wantFree)
 	}
@@ -389,5 +515,12 @@ func testRingSanity(t *testing.T, r *Ring) {
 	} else if r.End != 0 && r.Off == r.End && buf != sz {
 		t.Helper()
 		t.Fatalf("want (off==end && end!=0) to encode full buffer, got off=%d end=%d show fill ration %d/%d", r.Off, r.End, buf, sz)
+	}
+}
+
+func canonRing(r *Ring) {
+	if r.Buffered() == 0 {
+		// r.End = r.addOff(r.Off, 1)
+		// r.onReadEnd(1)
 	}
 }
