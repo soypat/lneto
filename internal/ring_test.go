@@ -175,6 +175,7 @@ func TestRingEmpty(t *testing.T) {
 					if buf2 != 0 {
 						t.Fatalf("want 0 bytes buffered(second call), got buf=%d->%d for off=%d->%d, end=0->%d size=%d", buf, buf2, off, r.Off, r.End, r.Size())
 					}
+					testRingSanity(t, r)
 					for _, read := range readCalls {
 						n, err := read(data)
 						if err != io.EOF {
@@ -182,8 +183,8 @@ func TestRingEmpty(t *testing.T) {
 						} else if n != 0 {
 							t.Fatalf("expected no bytes read, got %d", n)
 						}
+						testRingSanity(t, r)
 					}
-					testRingSanity(t, r)
 				}
 			})
 		}
@@ -238,6 +239,42 @@ func TestRingNonEmpty(t *testing.T) {
 						}
 					}
 				})
+			}
+		}
+	}
+}
+
+func TestRing_OffWrite(t *testing.T) {
+	const bufSize = 8
+	var rawbuf, auxbuf, readback [bufSize]byte
+	r := &Ring{Buf: rawbuf[:]}
+	for n := 1; n < bufSize+1; n++ {
+		for off := 0; off < bufSize+1; off++ {
+			r.Off = off // Start write at off.
+			r.End = 0   // Reset to use no data.
+			for i := 0; i < n; i++ {
+				rawbuf[(off+i)%len(rawbuf)] = 0
+				auxbuf[i] = byte(i) + 1
+			}
+			ngot, err := r.Write(auxbuf[:n])
+			if err != nil {
+				t.Fatal(err)
+			} else if ngot != n {
+				t.Fatal(n, ngot)
+			}
+			for i := 0; i < n; i++ {
+				offz := (off + i) % len(rawbuf)
+				if rawbuf[offz] != auxbuf[i] {
+					t.Fatalf("mismatch pos=%d off=%d %q!=%q", i, offz, rawbuf[offz], auxbuf[i])
+				}
+			}
+			ngot, err = r.Read(readback[:])
+			if err != nil {
+				t.Fatal(err)
+			} else if ngot != n {
+				t.Fatal(n, ngot)
+			} else if !bytes.Equal(readback[:n], auxbuf[:n]) {
+				t.Fatalf("want readback %q, got %q", auxbuf[:n], readback[:n])
 			}
 		}
 	}
@@ -441,24 +478,6 @@ func testRing1_loopback(t *testing.T, rng *rand.Rand, ringbuf, data, auxbuf []by
 	return !t.Failed()
 }
 
-func fragmentReadInto(r io.Reader, buf []byte) (n int, _ error) {
-	maxSize := len(buf) / 4
-	for {
-		ntop := min(n+rand.Intn(maxSize)+1, len(buf))
-		ngot, err := r.Read(buf[n:ntop])
-		n += ngot
-		if err != nil {
-			if err == io.EOF {
-				return n, nil
-			}
-			return n, err
-		}
-		if n == len(buf) {
-			return n, nil
-		}
-	}
-}
-
 func setRingData(t *testing.T, r *Ring, offset int, data []byte) {
 	t.Helper()
 	sz := r.Size()
@@ -520,7 +539,7 @@ func testRingSanity(t *testing.T, r *Ring) {
 
 func canonRing(r *Ring) {
 	if r.Buffered() == 0 {
-		// r.End = r.addOff(r.Off, 1)
-		// r.onReadEnd(1)
+		r.End = r.addOff(r.Off, 1)
+		r.onReadEnd(1)
 	}
 }

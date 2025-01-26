@@ -17,9 +17,9 @@ type ringTx struct {
 	rawbuf []byte
 	// packets contains
 	packets []ringidx
-	// unsentOff is the offset of start of unsent data into rawbuf.
+	// unsentOff is the offset of start of unsent data in rawbuf.
 	unsentoff int
-	// unsentend is the offset of end of unsent data in rawbuf.
+	// unsentend is the offset of end of unsent data in rawbuf. If zero then unsent buffer is empty.
 	unsentend int
 	seq       Value
 	// always empty ring.
@@ -71,32 +71,36 @@ func (rx *ringTx) ResetOrReuse(buf []byte, maxQueuedPackets int, ack Value) erro
 	return rx.Reset(buf, maxQueuedPackets, ack)
 }
 
+// Size returns the total storage space of the transmission buffer.
+func (tx *ringTx) Size() int { return len(tx.rawbuf) }
+
+// Free returns the total available space for Write calls.
+func (tx *ringTx) Free() int {
+	freeStart, freeEnd, _ := tx.lims()
+	r := tx.ring(freeEnd, freeStart)
+	return r.Free()
+}
+
 // Buffered returns the amount of unsent bytes.
 func (tx *ringTx) Buffered() int {
-	r := tx.unsentRing()
+	r, _ := tx.unsentRing()
 	return r.Buffered()
 }
 
 // BufferedSent returns the total amount of bytes sent but not acked.
 func (tx *ringTx) BufferedSent() int {
-	r := tx.sentRing()
+	r, _ := tx.sentRing()
 	return r.Buffered()
 }
 
 // Write writes data to the underlying unsent data ring buffer.
 func (tx *ringTx) Write(b []byte) (n int, err error) {
-	first := tx.pkt(tx.firstPkt())
-	r := tx.unsentRing()
-	if !first.sent() {
-		// No packets in queue case.
-		n, err = r.Write(b)
-	} else {
-		n, err = r.WriteLimited(b, first.off)
-	}
+	r, lim := tx.unsentRing()
+	n, err = r.WriteLimited(b, lim)
 	if err != nil {
 		return 0, err
 	}
-	tx.unsentend = tx.addOff(tx.unsentend, n)
+	tx.unsentend = tx.addEnd(tx.unsentend, n)
 	return n, err
 }
 
@@ -107,7 +111,7 @@ func (tx *ringTx) MakePacket(b []byte) (int, Value, error) {
 	if tx.nextPkt() < 0 {
 		return 0, 0, errors.New("queue full")
 	}
-	r := tx.unsentRing()
+	r, _ := tx.unsentRing()
 	start := r.Off
 	n, err := r.Read(b)
 	if err != nil {
@@ -115,12 +119,14 @@ func (tx *ringTx) MakePacket(b []byte) (int, Value, error) {
 	}
 	plen := Value(n)
 	seq := tx.seq
-	tx.unsentoff = tx.addOff(tx.unsentoff, n)
+	tx.unsentoff = tx.addEnd(tx.unsentoff, n)
+	if tx.unsentoff == tx.unsentend {
+		tx.unsentend = 0 // Mark unsent as being empty.
+	}
 	tx.seq += plen
-
 	pkt := &tx.packets[nxtpkt]
 	pkt.off = start
-	pkt.end = tx.addOff(start, n)
+	pkt.end = tx.addEnd(start, n)
 	pkt.seq = seq + plen
 	return n, seq, nil
 }
@@ -133,37 +139,43 @@ func (tx *ringTx) RecvACK(ack Value) error {
 			pkt.markRcvd()
 		}
 	}
+
 	return nil
 }
 
-func (tx *ringTx) unsentRing() internal.Ring {
-	off := tx.unsentoff
-	if off == tx.unsentend && off != 0 {
-		off--
+func (tx *ringTx) unsentRing() (internal.Ring, int) {
+	freeStart, freeEnd, sentEnd := tx.lims()
+	if tx.unsentend == 0 {
+		freeStart = 0 // Unsent is empty.
 	}
-	return tx.ring(off, tx.unsentend)
+	return tx.ring(sentEnd, freeStart), freeEnd
 }
 
-func (tx *ringTx) sentRing() internal.Ring {
-	first := tx.pkt(tx.firstPkt())
-	if !first.sent() {
-		return internal.Ring{}
-	}
-	last := tx.pkt(tx.lastPkt())
-	return tx.ring(first.off, last.end)
+func (tx *ringTx) sentRing() (internal.Ring, int) {
+	freeStart, freeEnd, sentEnd := tx.lims()
+	return tx.ring(freeEnd, sentEnd), freeStart
 }
 
 func (tx *ringTx) ring(off, end int) internal.Ring {
 	return internal.Ring{Buf: tx.rawbuf, Off: off, End: end}
 }
 
-// addOff adds two integers together and wraps the value around the ring's buffer size.
-func (tx *ringTx) addOff(a, b int) int {
-	off := a + b
-	if off >= len(tx.rawbuf) {
-		off -= len(tx.rawbuf)
+// addEnd adds two integers together and wraps the value around the ring's buffer size.
+// Result of addEnd will never be 0 unless arguments are (0,0).
+func (tx *ringTx) addEnd(a, b int) int {
+	result := a + b
+	if result > len(tx.rawbuf) {
+		result -= len(tx.rawbuf)
 	}
-	return off
+	return result
+}
+
+func (tx *ringTx) addOff(a, b int) int {
+	result := a + b
+	if result >= len(tx.rawbuf) {
+		result -= len(tx.rawbuf)
+	}
+	return result
 }
 
 func (tx *ringTx) pkt(i int) *ringidx {
@@ -180,14 +192,9 @@ func (tx *ringTx) firstPkt() int {
 	idx := -1
 	for i := 0; i < len(tx.packets); i++ {
 		pkt := &tx.packets[i]
-		if pkt.sent() {
-			if idx == -1 {
-				seq = pkt.seq
-			}
-			if seq.LessThan(pkt.seq) {
-				seq = pkt.seq
-				idx = i
-			}
+		if pkt.sent() && (idx == -1 || seq.LessThan(pkt.seq)) {
+			seq = pkt.seq
+			idx = i
 		}
 	}
 	return idx
@@ -198,14 +205,9 @@ func (tx *ringTx) lastPkt() int {
 	idx := -1
 	for i := 0; i < len(tx.packets); i++ {
 		pkt := &tx.packets[i]
-		if pkt.sent() {
-			if idx == -1 {
-				seq = pkt.seq
-			}
-			if pkt.seq.LessThan(seq) {
-				seq = pkt.seq
-				idx = i
-			}
+		if pkt.sent() && (idx == -1 || pkt.seq.LessThan(seq)) {
+			seq = pkt.seq
+			idx = i
 		}
 	}
 	return idx
@@ -221,6 +223,31 @@ func (tx *ringTx) nextPkt() int {
 		}
 	}
 	return idx
+}
+
+// lims returns the limits of free|sent|unsent buffers.
+// Example:
+//
+//	|   acked(free)  |          sent         |          unsent          |             free       |
+//	0       freeEnd=first.off       last.end==unsent.off        freeStart=unsent.end         Size()
+func (tx *ringTx) lims() (freeStart, freeEnd, sentEndorUnsentStart int) {
+	freeStart = tx.unsentend
+	if freeStart == 0 {
+		freeStart = tx.unsentoff
+	}
+	first := tx.pkt(tx.firstPkt())
+	if first.sent() {
+		freeEnd = first.off
+		sentEndorUnsentStart = tx.unsentoff
+	} else if tx.unsentend != 0 {
+		// sent section empty and unsent not empty.
+		freeEnd = tx.unsentoff
+		sentEndorUnsentStart = tx.unsentoff
+	} else {
+		freeEnd = tx.unsentoff
+		sentEndorUnsentStart = tx.unsentoff
+	}
+	return freeStart, freeEnd, sentEndorUnsentStart
 }
 
 func (pkt *ringidx) sent() bool {

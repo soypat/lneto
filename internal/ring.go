@@ -28,10 +28,14 @@ type Ring struct {
 // SizeLimited returns the amount of bytes that can be written up to the
 // argument offset limitOffset. See [Ring.WriteLimited]
 func (r *Ring) FreeLimited(limitOffset int) (free int) {
-	if limitOffset > r.End {
-		free = limitOffset - r.End
+	end := r.End
+	if r.End == 0 {
+		end = r.Off
+	}
+	if limitOffset > end {
+		free = limitOffset - end
 	} else {
-		free = len(r.Buf) - r.End + limitOffset
+		free = len(r.Buf) - end + limitOffset
 	}
 	return free
 }
@@ -57,7 +61,8 @@ func (r *Ring) WriteString(s string) (int, error) {
 	return r.Write(unsafe.Slice(unsafe.StringData(s), len(s)))
 }
 
-// Write appends data to the ring buffer that can then be read back in order with [Ring.Read] methods. An error is returned if length of data too large for buffer.
+// Write appends data to the ring buffer that can then be read back in order with [Ring.Read] methods.
+// An error is returned if length of data too large for buffer. Write is guaranteed to start at buffer index [Ring.Off].
 func (r *Ring) Write(b []byte) (int, error) {
 	free := r.Free()
 	if len(b) > free {
@@ -70,6 +75,10 @@ func (r *Ring) Write(b []byte) (int, error) {
 		n := copy(r.Buf[r.End:r.Off], b)
 		r.End += n
 		return n, nil
+	} else if r.End == 0 {
+		// To ensure Write begins on r.Off.
+		// Specialised for when user controls Off manually instead of by internal calls to [Ring.onReadEnd] or calls to [Ring.Reset].
+		r.End = r.Off
 	}
 	// start       off       end      len(buf)
 	//   |  sfree   |  used   |  efree   |
@@ -86,14 +95,14 @@ func (r *Ring) Write(b []byte) (int, error) {
 // ReadDiscard is a performance auxiliary method that performs a dummy read or no-op read
 // for advancing the read pointer n bytes without actually copying data.
 // This method panics if amount of bytes is more than buffered (see [Ring.Buffered]).
-func (r *Ring) ReadDiscard(n int) {
-	if n < 0 {
-		panic("negative discard amount")
+func (r *Ring) ReadDiscard(n int) error {
+	if n <= 0 {
+		return errors.New("invalid discard amount")
 	}
 	buffered := r.Buffered()
 	switch {
 	case n > buffered:
-		panic("discard exceeds length")
+		return errors.New("discard exceeds length")
 	case n == buffered:
 		r.Reset()
 	case n+r.Off > len(r.Buf):
@@ -101,6 +110,7 @@ func (r *Ring) ReadDiscard(n int) {
 	default:
 		r.Off += n
 	}
+	return nil
 }
 
 // ReadAt reads data at an offset from start of readable data but does not advance read pointer. [io.EOF] returned when no data available.
@@ -171,7 +181,7 @@ func (r *Ring) Buffered() int {
 
 // Free returns amount of bytes that can be read into ring buffer before reaching maximum capacity given by [ring.Size]. Always less than [ring.Size].
 func (r *Ring) Free() int {
-	if r.Off == 0 || r.End == 0 {
+	if r.End == 0 || r.Off == 0 {
 		return len(r.Buf) - r.End
 	}
 	if r.Off < r.End {
@@ -201,11 +211,15 @@ func (r *Ring) onReadEnd(totalRead int) {
 	newOff := r.addOff(r.Off, totalRead)
 	if newOff == r.End {
 		r.Reset()
+	} else if newOff == len(r.Buf) {
+		r.Off = 0 // Optimization case.
 	} else {
 		r.Off = newOff
 	}
 }
 
+// addOff sums a and b to return an index within 1..[Ring.Size] supposing a and b are each less-equal than [Ring.Size].
+// Result will never be 0 unless both a and b are 0.
 func (r *Ring) addOff(a, b int) int {
 	result := a + b
 	if result > len(r.Buf) {
