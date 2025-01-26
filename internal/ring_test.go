@@ -18,6 +18,7 @@ func TestRing(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
+	testRingSanity(t, r)
 	// Case where data is contiguous and at start of buffer.
 	var buf [bufSize]byte
 	n, err := fragmentReadInto(r, buf[:])
@@ -27,14 +28,14 @@ func TestRing(t *testing.T) {
 	if string(buf[:n]) != data {
 		t.Fatalf("got %q; want %q", buf[:n], data)
 	}
-
+	testRingSanity(t, r)
 	// Case where data overwrites end of buffer.
 	const overdata = "hello world"
 	n, err = r.Write([]byte(overdata))
 	if err == nil || n > 0 {
 		t.Fatal(err, n)
 	}
-
+	testRingSanity(t, r)
 	// Set Random data in ring buffer and read it back.
 	for i := 0; i < 32; i++ {
 		n := rng.Intn(bufSize)
@@ -50,6 +51,7 @@ func TestRing(t *testing.T) {
 		if string(buf[:n]) != overdata[:n] {
 			t.Error("got", buf[:n], "want", overdata[:n])
 		}
+		testRingSanity(t, r)
 	}
 
 	// Set random data and write some more and read it back.
@@ -71,6 +73,7 @@ func TestRing(t *testing.T) {
 		if ngot != nsecond {
 			t.Errorf("%d did not write data correctly: got %d; want %d", i, ngot, nsecond)
 		}
+		testRingSanity(t, r)
 		buf = [bufSize]byte{}
 		// Case where data wraps around end of buffer.
 		n, err = r.Read(buf[:])
@@ -84,6 +87,7 @@ func TestRing(t *testing.T) {
 		if string(buf[:n]) != overdata[:n] {
 			t.Errorf("got %q; want %q", buf[:n], overdata[:n])
 		}
+		testRingSanity(t, r)
 	}
 
 	var readback [bufSize]byte
@@ -114,6 +118,7 @@ func TestRing(t *testing.T) {
 			} else if !bytes.Equal(readback[nfirst:nfirst+nsecond], []byte(data[:nsecond])) {
 				t.Error("second section not match")
 			}
+			testRingSanity(t, r)
 		}
 
 		// Two-tap ReadAt to make sure pointer not advanced.
@@ -135,6 +140,7 @@ func TestRing(t *testing.T) {
 			} else if len(second) > 0 && !bytes.Equal(gotSecond, second) {
 				t.Errorf("second section not match got=%q want=%q", gotSecond, second)
 			}
+			testRingSanity(t, r)
 		}
 
 		// ReadDiscard test.
@@ -151,6 +157,7 @@ func TestRing(t *testing.T) {
 		if !bytes.Equal(readback[:n], content[discard:]) {
 			t.Errorf("want data read %q, got %q", content[discard:], readback[:n])
 		}
+		testRingSanity(t, r)
 	}
 
 	_ = r._string(0)
@@ -178,6 +185,7 @@ func TestRingWriteLimited(t *testing.T) {
 	r := &Ring{
 		Buf: make([]byte, bufSize),
 	}
+	testRingSanity(t, r)
 	var data [bufSize]byte
 	var wdata [bufSize]byte
 	for i := 0; i < 10000; i++ {
@@ -205,6 +213,7 @@ func TestRingWriteLimited(t *testing.T) {
 			wantN = min(toWrite, len(r.Buf)-r.End+limOff)
 		}
 		overwrite := toWrite > wantN
+
 		n, err := r.WriteLimited(wdata[:toWrite], limOff)
 		if !overwrite && err != nil {
 			t.Errorf("limited write: %s", err)
@@ -218,6 +227,7 @@ func TestRingWriteLimited(t *testing.T) {
 				t.Fatalf("OVERWRITE pos=%d end=%d lim=%d", i, r.End, limOff)
 			}
 		}
+		testRingSanity(t, r)
 	}
 }
 
@@ -248,6 +258,7 @@ func TestRing_findcrash(t *testing.T) {
 			} else if expectFree != free {
 				t.Fatal(i, "free not updated correctly", expectFree, free)
 			}
+			testRingSanity(t, &r)
 		}
 		buffered := r.Buffered()
 		if buffered < 0 {
@@ -264,6 +275,7 @@ func TestRing_findcrash(t *testing.T) {
 			} else if buffered != expectBuffered {
 				t.Fatal(i, "buffered not updated correctly", expectBuffered, buffered)
 			}
+			testRingSanity(t, &r)
 		}
 	}
 }
@@ -292,13 +304,14 @@ func testRing1_loopback(t *testing.T, rng *rand.Rand, ringbuf, data, auxbuf []by
 	if ngot != nsecond {
 		t.Errorf("did not write data correctly: got %d; want %d", ngot, nsecond)
 	}
+	testRingSanity(t, &r)
 	// Case where data wraps around end of buffer.
 	n, err := r.Read(auxbuf[:])
 	if err != nil {
 		t.Error(err)
 		return false
 	}
-
+	testRingSanity(t, &r)
 	if n != nfirst+nsecond {
 		t.Errorf("got %d; want %d (%d+%d)", n, nfirst+nsecond, nfirst, nsecond)
 	}
@@ -359,4 +372,22 @@ func setRingData(t *testing.T, r *Ring, offset int, data []byte) {
 	}
 	r.End = end
 	r.Off = off
+	testRingSanity(t, r)
+}
+
+func testRingSanity(t *testing.T, r *Ring) {
+	// t.Helper() // Really costly call. Avoid calling it every single function call.
+	buf := r.Buffered()
+	free := r.Free()
+	sz := r.Size()
+	if r.End == 0 && buf > 0 {
+		t.Helper()
+		t.Fatalf("want end=0 to encode no data, got off=%d end=%d => buffered=%d", r.Off, r.End, r.Buffered())
+	} else if sz != free+buf {
+		t.Helper()
+		t.Fatalf("want size=free+buffered, got %d=%d+%d", sz, free, buf)
+	} else if r.End != 0 && r.Off == r.End && buf != sz {
+		t.Helper()
+		t.Fatalf("want (off==end && end!=0) to encode full buffer, got off=%d end=%d show fill ration %d/%d", r.Off, r.End, buf, sz)
+	}
 }

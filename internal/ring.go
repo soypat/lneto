@@ -15,11 +15,13 @@ type Ring struct {
 	// Buf is used to store data written into Ring
 	// with Write methods and then read out with Read methods.
 	// The capacity of Buf is unused.
-	// There is no readable data when both Off and End are zero.
+	// There is no readable data when End==0.
 	Buf []byte
 	// Start of readable data which indexes into Buf.
+	// If Off==End and End!=0 the buffer is full and data begins at Off.
 	Off int
-	// End of readable data which indexes into Buf.
+	// End of readable data which indexes into Buf, not including byte at End index.
+	// If End==0 then the buffer is empty. If End==Off and End!=0 the buffer is full.
 	End int
 }
 
@@ -111,7 +113,7 @@ func (r *Ring) ReadAt(p []byte, off64 int64) (int, error) {
 		return 0, io.ErrUnexpectedEOF
 	}
 	r2 := *r
-	r2.Off = (r2.Off + off) % (r.Size())
+	r2.Off = r.addOff(r2.Off, off)
 	return r2.ReadPeek(p)
 }
 
@@ -177,7 +179,6 @@ func (r *Ring) Free() int {
 	if r.Off == 0 {
 		return len(r.Buf) - r.End
 	}
-
 	if r.Off < r.End {
 		// start       off       end      len(buf)
 		//   |  sfree   |  used   |  efree   |
@@ -199,15 +200,23 @@ func (r *Ring) midFree() int {
 
 // onReadEnd does some cleanup of [ring.off] and [ring.end] fields if possible for contiguous read performance benefits.
 func (r *Ring) onReadEnd() {
-	if r.End == len(r.Buf) {
-		r.End = 0 // Wrap around.
-	}
 	if r.Off == len(r.Buf) {
-		r.Off = 0 // Wrap around.
+		if r.End == len(r.Buf) {
+			r.Reset()
+		} else {
+			r.Off = 0
+		}
+	} else if r.Off == r.End {
+		r.Reset()
 	}
-	if r.Off == r.End {
-		r.Reset() // We read everything, reset.
+}
+
+func (r *Ring) addOff(a, b int) int {
+	result := a + b
+	if result > len(r.Buf) {
+		result -= len(r.Buf)
 	}
+	return result
 }
 
 func max(a, b int) int {
