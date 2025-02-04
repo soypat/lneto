@@ -159,6 +159,7 @@ func testQueueSanity(t *testing.T, rtx *ringTx) {
 	sz := rtx.Size()
 	gotSz := free + sent + unsent
 	if gotSz != sz {
+		t.Fatal("\n", rtx.string())
 		t.Fatalf("want size=%d, got size=%d (free+sent+unsent=%d+%d+%d)", sz, gotSz, free, sent, unsent)
 	}
 	freeStart, freeEnd, sentEnd := rtx.lims()
@@ -172,4 +173,69 @@ func testQueueSanity(t *testing.T, rtx *ringTx) {
 	} else if unsent != 0 && gotUnsentEnd != freeStart {
 		t.Fatalf("want unsentEnd=%d, got %d (freeStart)", freeStart, gotUnsentEnd)
 	}
+}
+
+func (rx *ringTx) string() string {
+	return ""
+	type zone struct {
+		name                 string
+		start, end           int
+		printStart, printEnd bool
+	}
+
+	fs, fe, us := rx.lims()
+	var zones = []zone{
+		{name: "free", start: fs, end: fe},
+		{name: "usnt", start: us, end: fs},
+		{name: "sent", start: fe, end: us},
+	}
+	var wrapZone *zone
+	for i := range zones {
+		wraps := zones[i].end != 0 && zones[i].end < zones[i].start
+		if wraps {
+			if wrapZone != nil {
+				panic("illegal to have more than one wrap zone")
+			}
+			wrapZone = &zones[i]
+		}
+	}
+
+	var b1, b2 bytes.Buffer
+	b1.WriteByte('|')
+	b2.WriteByte(' ')
+	b2.WriteByte(' ')
+	for i := 0; i < len(rx.rawbuf); {
+		var printedThisline int
+		var zoneName string
+		for k := range zones {
+			z := &zones[k]
+			if z.end == 0 {
+				continue // No data in zone.
+			}
+			if !z.printStart && i >= z.start {
+				zoneName = z.name
+				if printedThisline > 0 {
+					b2.WriteByte('/')
+					printedThisline++
+				}
+				b2.WriteString(zoneName + "_s")
+				printedThisline += len(zoneName) + 2
+				z.printStart = true
+			}
+
+		}
+		if printedThisline > 0 {
+			b1.WriteByte('|')
+			b2.WriteByte(' ')
+			b2.WriteByte(' ')
+			for j := 0; j < printedThisline+1; j++ {
+				b1.WriteByte('-')
+			}
+		}
+		b2.WriteByte(' ')
+		b1.WriteByte('-')
+	}
+	b1.WriteString("|\n")
+	b1.Write(b2.Bytes())
+	return b1.String()
 }

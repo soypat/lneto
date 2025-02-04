@@ -12,6 +12,9 @@ const (
 )
 
 // ringTx is a ring buffer with retransmission queue functionality added.
+//
+//	|   acked(free)  |          sent         |          unsent          |             free       |
+//	0       freeEnd=first.off       last.end==unsent.off        freeStart=unsent.end         Size()
 type ringTx struct {
 	// rawbuf contains the ring buffer of ordered bytes. It should be the size of the window.
 	rawbuf []byte
@@ -21,7 +24,11 @@ type ringTx struct {
 	unsentoff int
 	// unsentend is the offset of end of unsent data in rawbuf. If zero then unsent buffer is empty.
 	unsentend int
-	seq       Value
+	// sentoff is the offset of start of sent data in rawbuf.
+	sentoff int
+	// sentend is the offset of end of sent data in rawbuf. If zero then sent buffer is empty.
+	sentend int
+	seq     Value
 	// always empty ring.
 	emptyRing ringidx
 }
@@ -76,8 +83,7 @@ func (tx *ringTx) Size() int { return len(tx.rawbuf) }
 
 // Free returns the total available space for Write calls.
 func (tx *ringTx) Free() int {
-	freeStart, freeEnd, _ := tx.lims()
-	r := tx.ring(freeEnd, freeStart)
+	r := tx.sentAndUnsentBuffer()
 	return r.Free()
 }
 
@@ -117,43 +123,68 @@ func (tx *ringTx) MakePacket(b []byte) (int, Value, error) {
 	if err != nil {
 		return n, 0, err
 	}
-	plen := Value(n)
-	seq := tx.seq
-	tx.unsentoff = tx.addEnd(tx.unsentoff, n)
-	if tx.unsentoff == tx.unsentend {
+
+	off := tx.addEnd(tx.unsentoff, n)
+	tx.unsentoff = off
+	tx.sentend = off
+	if off == tx.unsentend {
 		tx.unsentend = 0 // Mark unsent as being empty.
 	}
-	tx.seq += plen
+
 	pkt := &tx.packets[nxtpkt]
 	pkt.off = start
-	pkt.end = tx.addEnd(start, n)
-	pkt.seq = seq + plen
+	pkt.end = off
+
+	// Sequence number updates.
+	seq := tx.seq
+	newseq := Add(seq, Size(n))
+	tx.seq = newseq
+	pkt.seq = newseq
 	return n, seq, nil
 }
 
 // RecvSegment processes an incoming segment and updates the sent packet queue
 func (tx *ringTx) RecvACK(ack Value) error {
-	for i := range tx.packets {
+	if ack.LessThan(tx.seq) {
+		return errors.New("old packet")
+	}
+	first := tx.firstPkt()
+	if first < 0 {
+		return errors.New("no packets to ack")
+	}
+	hiSeq := tx.pkt(first).seq
+	for i := 0; i < len(tx.packets); i++ {
 		pkt := &tx.packets[i]
 		if pkt.sent() && pkt.seq.LessThanEq(ack) {
+			if hiSeq.LessThan(pkt.seq) {
+				tx.sentoff = pkt.end
+				hiSeq = pkt.seq
+			}
 			pkt.markRcvd()
 		}
 	}
-
+	firstAcked := !tx.pkt(first).sent()
+	if firstAcked && tx.sentoff == tx.sentend {
+		// All data acked.
+		tx.sentend = 0
+	}
 	return nil
 }
 
-func (tx *ringTx) unsentRing() (internal.Ring, int) {
-	freeStart, freeEnd, sentEnd := tx.lims()
-	if tx.unsentend == 0 {
-		freeStart = 0 // Unsent is empty.
+func (tx *ringTx) sentAndUnsentBuffer() internal.Ring {
+	end := tx.unsentend
+	if end == 0 {
+		end = tx.sentend
 	}
-	return tx.ring(sentEnd, freeStart), freeEnd
+	return internal.Ring{Buf: tx.rawbuf, Off: tx.sentoff, End: end}
+}
+
+func (tx *ringTx) unsentRing() (internal.Ring, int) {
+	return tx.ring(tx.unsentoff, tx.unsentend), tx.sentoff
 }
 
 func (tx *ringTx) sentRing() (internal.Ring, int) {
-	freeStart, freeEnd, sentEnd := tx.lims()
-	return tx.ring(freeEnd, sentEnd), freeStart
+	return tx.ring(tx.sentoff, tx.sentend), tx.unsentoff // unsentoff should match with sentend, so no writes can be performed to sentring.
 }
 
 func (tx *ringTx) ring(off, end int) internal.Ring {
