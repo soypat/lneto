@@ -123,6 +123,7 @@ func (tx *ringTx) MakePacket(b []byte) (int, Value, error) {
 	if err != nil {
 		return n, 0, err
 	}
+	pkt := &tx.packets[nxtpkt]
 
 	off := tx.addEnd(tx.unsentoff, n)
 	tx.unsentoff = off
@@ -130,17 +131,15 @@ func (tx *ringTx) MakePacket(b []byte) (int, Value, error) {
 	if off == tx.unsentend {
 		tx.unsentend = 0 // Mark unsent as being empty.
 	}
-
-	pkt := &tx.packets[nxtpkt]
 	pkt.off = start
 	pkt.end = off
 
 	// Sequence number updates.
-	seq := tx.seq
-	newseq := Add(seq, Size(n))
+	oldseq := tx.seq
+	newseq := Add(oldseq, Size(n))
 	tx.seq = newseq
 	pkt.seq = newseq
-	return n, seq, nil
+	return n, oldseq, nil
 }
 
 // RecvSegment processes an incoming segment and updates the sent packet queue

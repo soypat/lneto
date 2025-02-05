@@ -2,6 +2,7 @@ package tcp
 
 import (
 	"bytes"
+	"fmt"
 	"math/rand"
 	"testing"
 )
@@ -149,17 +150,23 @@ func testTxQueue_SequentialMessages(t *testing.T, rtx *ringTx, msgs [][]byte, bu
 }
 
 func testQueueSanity(t *testing.T, rtx *ringTx) {
-	t.Helper()
+	// t.Helper()
+	defer func() {
+		if t.Failed() {
+			t.Log("\n" + rtx.string())
+		}
+	}()
 	if rtx.emptyRing != (ringidx{}) {
 		t.Fatalf("empty ring not empty")
 	}
+
 	free := rtx.Free()
 	sent := rtx.BufferedSent()
 	unsent := rtx.Buffered()
 	sz := rtx.Size()
 	gotSz := free + sent + unsent
 	if gotSz != sz {
-		t.Fatal("\n", rtx.string())
+		t.Fatal("\n" + rtx.string())
 		t.Fatalf("want size=%d, got size=%d (free+sent+unsent=%d+%d+%d)", sz, gotSz, free, sent, unsent)
 	}
 	freeStart, freeEnd, sentEnd := rtx.lims()
@@ -176,18 +183,30 @@ func testQueueSanity(t *testing.T, rtx *ringTx) {
 }
 
 func (rx *ringTx) string() string {
-	return ""
-	type zone struct {
-		name                 string
-		start, end           int
-		printStart, printEnd bool
+	sz := rx.Size()
+	unsent, _ := rx.unsentRing()
+	sent, _ := rx.sentRing()
+	all := rx.sentAndUnsentBuffer()
+	if all.End == 0 || // Empty buffer, set offset so that free zone occupies whole buffer.
+		all.Off == 0 { // Buffer offset starts at zero which would set Free.End to 0 making it empty, patch that.
+		all.Off = sz
 	}
-
-	fs, fe, us := rx.lims()
+	type zone struct {
+		name       string
+		start, end int
+	}
+	zcontains := func(off int, z *zone) bool {
+		if z.end == 0 {
+			return false // Empty
+		} else if z.end < z.start {
+			return off < z.end || off >= z.start
+		}
+		return off >= z.start && off < z.end
+	}
 	var zones = []zone{
-		{name: "free", start: fs, end: fe},
-		{name: "usnt", start: us, end: fs},
-		{name: "sent", start: fe, end: us},
+		{name: "free", start: all.End, end: all.Off},
+		{name: "usnt", start: unsent.Off, end: unsent.End},
+		{name: "sent", start: sent.Off, end: sent.End},
 	}
 	var wrapZone *zone
 	for i := range zones {
@@ -199,43 +218,36 @@ func (rx *ringTx) string() string {
 			wrapZone = &zones[i]
 		}
 	}
-
-	var b1, b2 bytes.Buffer
-	b1.WriteByte('|')
-	b2.WriteByte(' ')
-	b2.WriteByte(' ')
-	for i := 0; i < len(rx.rawbuf); {
-		var printedThisline int
-		var zoneName string
-		for k := range zones {
-			z := &zones[k]
-			if z.end == 0 {
-				continue // No data in zone.
-			}
-			if !z.printStart && i >= z.start {
-				zoneName = z.name
-				if printedThisline > 0 {
-					b2.WriteByte('/')
-					printedThisline++
-				}
-				b2.WriteString(zoneName + "_s")
-				printedThisline += len(zoneName) + 2
-				z.printStart = true
-			}
-
-		}
-		if printedThisline > 0 {
-			b1.WriteByte('|')
-			b2.WriteByte(' ')
-			b2.WriteByte(' ')
-			for j := 0; j < printedThisline+1; j++ {
-				b1.WriteByte('-')
+	var currentZone *zone
+	var lastPrintedZone *zone
+	var l1, l2 bytes.Buffer
+	changes := 0
+	for ib := 0; ib < sz; ib++ {
+		currentContainsIdx := currentZone != nil && zcontains(ib, currentZone)
+		for iz := 0; !currentContainsIdx && iz < len(zones); iz++ {
+			z := &zones[iz]
+			if zcontains(ib, z) {
+				currentZone = z
 			}
 		}
-		b2.WriteByte(' ')
-		b1.WriteByte('-')
+		if currentZone == lastPrintedZone {
+			continue
+		}
+		changes++
+		if changes > 4 {
+			panic("found too many zone changes")
+		}
+		lastPrintedZone = currentZone
+		// Change of zone.
+		top := "|-----" + currentZone.name + "-----"
+		l2.WriteString(top)
+		n, _ := fmt.Fprintf(&l1, "%d", currentZone.start)
+		for i := 0; i < len(top)-n; i++ {
+			l1.WriteByte(' ')
+		}
 	}
-	b1.WriteString("|\n")
-	b1.Write(b2.Bytes())
-	return b1.String()
+	l2.WriteByte('|')
+	fmt.Fprintf(&l1, "%d\n", currentZone.end)
+	l2.WriteTo(&l1)
+	return l1.String()
 }
