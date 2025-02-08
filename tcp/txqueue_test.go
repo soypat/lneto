@@ -12,6 +12,9 @@ func TestTxQueue(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 
 	var rtx ringTx
+	defer func() {
+		testQueueSanity(t, &rtx)
+	}()
 	increasingComplexityTests := []struct {
 		name string
 		test func(*testing.T)
@@ -169,16 +172,38 @@ func testQueueSanity(t *testing.T, rtx *ringTx) {
 		t.Fatal("\n" + rtx.string())
 		t.Fatalf("want size=%d, got size=%d (free+sent+unsent=%d+%d+%d)", sz, gotSz, free, sent, unsent)
 	}
-	freeStart, freeEnd, sentEnd := rtx.lims()
-	gotFreeEnd := rtx.addOff(freeStart, free)
-	gotSentEnd := rtx.addOff(freeEnd, sent)
-	gotUnsentEnd := rtx.addOff(sentEnd, unsent)
-	if free != 0 && gotFreeEnd != freeEnd {
-		t.Fatalf("want freeEnd=%d, got %d", freeEnd, gotFreeEnd)
-	} else if sent != 0 && gotSentEnd != sentEnd {
-		t.Fatalf("want sentEnd=%d, got %d", sentEnd, gotSentEnd)
-	} else if unsent != 0 && gotUnsentEnd != freeStart {
-		t.Fatalf("want unsentEnd=%d, got %d (freeStart)", freeStart, gotUnsentEnd)
+	rsent, _ := rtx.sentRing()
+	sentEmpty := rsent.Buffered() == 0
+	runsent, _ := rtx.unsentRing()
+	unsentEmpty := runsent.Buffered() == 0
+	all := rtx.sentAndUnsentBuffer()
+	allEmpty := all.Buffered() == 0
+	if !sentEmpty {
+		if all.Off != rsent.Off {
+			t.Fatalf("want entire buffer start %d to equal sent start %d", all.Off, rsent.Off)
+		} else if rsent.End == 0 {
+			t.Fatalf("expected not empty sent buffer End to be !=0, got %d", rsent.End)
+		}
+		gotSentEnd := rtx.addOff(rsent.Off, sent)
+		if gotSentEnd != rsent.End {
+			t.Fatalf("calculated sent end mismatches lim sent end %d != %d", gotSentEnd, rsent.End)
+		}
+	}
+	if !unsentEmpty {
+		if all.End != runsent.End {
+			t.Fatalf("want entire buffer end %d to equal unsent end %d", all.End, runsent.End)
+		} else if runsent.End == 0 {
+			t.Fatalf("expected not empty unsent buffer End to be !=0, got %d", runsent.End)
+		}
+		gotUnsentEnd := rtx.addOff(runsent.Off, unsent)
+		if gotUnsentEnd != runsent.End {
+			t.Fatalf("calculated unsent end mismatches lim unsent end %d != %d", gotUnsentEnd, runsent.End)
+		}
+	}
+	if allEmpty && (!sentEmpty || !unsentEmpty) {
+		t.Fatalf("all buffer empty but sent|unsent(%v/%v) not empty", sentEmpty, unsentEmpty)
+	} else if !allEmpty && sentEmpty && unsentEmpty {
+		t.Fatal("all buffer not empty but sent&unsentempty")
 	}
 }
 

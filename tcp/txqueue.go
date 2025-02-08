@@ -260,24 +260,8 @@ func (tx *ringTx) nextPkt() int {
 //
 //	|   acked(free)  |          sent         |          unsent          |             free       |
 //	0       freeEnd=first.off       last.end==unsent.off        freeStart=unsent.end         Size()
-func (tx *ringTx) lims() (freeStart, freeEnd, sentEndorUnsentStart int) {
-	freeStart = tx.unsentend
-	if freeStart == 0 {
-		freeStart = tx.unsentoff
-	}
-	first := tx.pkt(tx.firstPkt())
-	if first.sent() {
-		freeEnd = first.off
-		sentEndorUnsentStart = tx.unsentoff
-	} else if tx.unsentend != 0 {
-		// sent section empty and unsent not empty.
-		freeEnd = tx.unsentoff
-		sentEndorUnsentStart = tx.unsentoff
-	} else {
-		freeEnd = tx.unsentoff
-		sentEndorUnsentStart = tx.unsentoff
-	}
-	return freeStart, freeEnd, sentEndorUnsentStart
+func (tx *ringTx) lims() (unsentStart, unsentEnd, sentStart, sentEnd int) {
+	return tx.unsentoff, tx.unsentend, tx.sentoff, tx.sentend
 }
 
 func (pkt *ringidx) sent() bool {
