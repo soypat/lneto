@@ -5,11 +5,26 @@ import (
 	"fmt"
 )
 
+type ValidateFlags uint64
+
+const (
+	validateReserved ValidateFlags = 1 << iota
+	validateEvilBit
+	validateAllowMultiErrors
+)
+
+func (vf ValidateFlags) has(v ValidateFlags) bool {
+	return vf&v == v
+}
+
 type Validator struct {
-	checkEvil      bool
-	allowMultiErrs bool
-	accum          []error
-	accumBitpos    []BitPosErr
+	accum       []error
+	accumBitpos []BitPosErr
+	flags       ValidateFlags
+}
+
+func (v *Validator) Flags() ValidateFlags {
+	return v.flags
 }
 
 func (v *Validator) ResetErr() {
@@ -18,6 +33,9 @@ func (v *Validator) ResetErr() {
 }
 
 func (v *Validator) HasError() bool {
+	if v.flags.has(validateReserved) {
+		panic("reserved bit set")
+	}
 	return len(v.accum) != 0
 }
 
@@ -37,7 +55,7 @@ func (v *Validator) gotErr(err error) {
 func (v *Validator) AddError(err error) {
 	if err == nil {
 		panic("error argument to AddError cannot be nil")
-	} else if len(v.accum) != 0 && !v.allowMultiErrs {
+	} else if len(v.accum) != 0 && !v.flags.has(validateAllowMultiErrors) {
 		return
 	}
 	v.accum = append(v.accum, err)

@@ -122,7 +122,7 @@ const (
 	IPProtoGGP             IPProto = 3   // Gateway-to-Gateway [RFC823]
 	IPProtoIPv4            IPProto = 4   // IPv4 encapsulation [RFC2003]
 	IPProtoST              IPProto = 5   // Stream [RFC1190, RFC1819]
-	IPProtoTCP             IPProto = 6   // Transmission Control [RFC793]
+	IPProtoTCP             IPProto = 6   // Transmission Control [RFC9293]
 	IPProtoCBT             IPProto = 7   // CBT [Ballardie]
 	IPProtoEGP             IPProto = 8   // Exterior Gateway Protocol [RFC888]
 	IPProtoIGP             IPProto = 9   // any private interior gateway (used by Cisco for their IGRP)

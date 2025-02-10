@@ -14,6 +14,7 @@ import (
 )
 
 func main() {
+	const mtu = 1500
 	rng := rand.New(rand.NewSource(1))
 	var gen ltesto.PacketGen
 	gen.RandomizeAddrs(rng)
@@ -21,7 +22,7 @@ func main() {
 	lStack := LinkStack{
 		logger: slogger,
 		mac:    gen.DstMAC,
-		mtu:    1500,
+		mtu:    mtu,
 	}
 	iStack := &IPv4Stack{
 		ip:     gen.DstIPv4,
@@ -31,12 +32,20 @@ func main() {
 		logger: slogger,
 	}
 	pStack := &TCPPort{
-		lport: gen.DstTCP,
-		rport: gen.SrcTCP,
-		tcb:   tcp.ControlBlock{},
+		handler: tcp.Handler{},
 	}
-
-	err := iStack.Register(tStack, &gen.SrcIPv4)
+	iss := tcp.Value(100)
+	txbuf := make([]byte, mtu)
+	rxbuf := make([]byte, mtu)
+	err := pStack.handler.SetBuffers(txbuf, rxbuf, 3)
+	if err != nil {
+		log.Fatal(err)
+	}
+	err = pStack.handler.Open(tcp.StateListen, gen.DstTCP, gen.SrcTCP, iss)
+	if err != nil {
+		log.Fatal(err)
+	}
+	err = iStack.Register(tStack, &gen.SrcIPv4)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -44,12 +53,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	err = tStack.Register(pStack, pStack.lport)
-	if err != nil {
-		log.Fatal(err)
-	}
-	iss := tcp.Value(100)
-	err = pStack.tcb.Open(iss, 256, tcp.StateListen)
+	err = tStack.Register(pStack, pStack.handler.LocalPort())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -364,10 +368,7 @@ func (ts *TCPStack) Handle(ipFrame []byte, tcpOff int) (n int, err error) {
 }
 
 type TCPPort struct {
-	tcb       tcp.ControlBlock
-	validator lneto.Validator
-	lport     uint16
-	rport     uint16
+	handler tcp.Handler
 }
 
 func (tp *TCPPort) Protocol() uint32 { return uint32(lneto.IPProtoTCP) }
@@ -376,57 +377,14 @@ func (tp *TCPPort) Recv(tcpFrame []byte, off int) error {
 	if off != 0 {
 		return errors.New("TCP API expected 0 offset")
 	}
-	tfrm, err := lneto.NewTCPFrame(tcpFrame)
-	if err != nil {
-		return err
-	}
-	tp.validator.ResetErr()
-	tfrm.ValidateExceptCRC(&tp.validator)
-	if err = tp.validator.Err(); err != nil {
-		return err
-	}
-	if tfrm.DestinationPort() != tp.lport {
-		return errors.New("port mismatch")
-	}
-	seg := tfrm.Segment(len(tfrm.Payload()))
-	err = tp.tcb.Recv(seg)
-	if err != nil {
-		return err
-	}
-	return nil
+	return tp.handler.Recv(tcpFrame)
 }
 
 func (tp *TCPPort) Handle(tcpFrame []byte, off int) (n int, err error) {
 	if off != 0 {
 		return 0, errors.New("TCP API expected 0 offset")
-	} else if tp.tcb.State().IsClosed() {
-		return 0, io.EOF
 	}
-	tfrm, err := lneto.NewTCPFrame(tcpFrame)
-	if err != nil {
-		return 0, err
-	}
-	if !tp.tcb.HasPending() {
-		return 0, nil
-	}
-
-	seg, ok := tp.tcb.PendingSegment(0)
-	if !ok {
-		return 0, nil
-	}
-	err = tp.tcb.Send(seg)
-	if err != nil {
-		return 0, err
-	}
-	tfrm.SetSourcePort(tp.lport)
-	tfrm.SetDestinationPort(tp.rport)
-	tfrm.SetOffsetAndFlags(5, seg.Flags)
-	tfrm.SetSeq(seg.SEQ)
-	tfrm.SetAck(seg.ACK)
-	tfrm.SetUrgentPtr(0)
-	tfrm.SetWindowSize(uint16(seg.WND))
-
-	return 20, nil
+	return tp.handler.Send(tcpFrame)
 }
 
 type logger struct {

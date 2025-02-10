@@ -322,10 +322,3 @@ func operateOnRing(t *testing.T, rtx *ringTx, write, readPacket, aux []byte, arg
 	}
 	testQueueSanity(t, rtx)
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

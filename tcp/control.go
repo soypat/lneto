@@ -51,13 +51,13 @@ type ControlBlock struct {
 	// On a call to Send the queue is advanced and flags set in the segment are unset.
 	// The second position of the queue is used for FIN segments.
 	pending      [2]Flags
-	state        State
+	_state       State // leading underscore so field not suggested on top of exported State method when developing.
 	challengeAck bool
 	logger
 }
 
 // State returns the current state of the TCP connection.
-func (tcb *ControlBlock) State() State { return tcb.state }
+func (tcb *ControlBlock) State() State { return tcb._state }
 
 // RecvNext returns the next sequence number expected to be received from remote.
 // This implementation will reject segments that are not the next expected sequence.
@@ -73,7 +73,7 @@ func (tcb *ControlBlock) ISS() Value { return tcb.snd.ISS }
 // MaxInFlightData returns the maximum size of a segment that can be sent by taking into account
 // the send window size and the unacked data. Returns 0 before StateSynRcvd.
 func (tcb *ControlBlock) MaxInFlightData() Size {
-	if !tcb.state.hasIRS() {
+	if !tcb._state.hasIRS() {
 		return 0 // SYN not yet received.
 	}
 	unacked := Sizeof(tcb.snd.UNA, tcb.snd.NXT)
@@ -142,7 +142,7 @@ type recvSpace struct {
 // state must be StateListen or StateSynSent.
 func (tcb *ControlBlock) Open(iss Value, wnd Size, state State) (err error) {
 	switch {
-	case tcb.state != StateClosed && tcb.state != StateListen:
+	case tcb._state != StateClosed && tcb._state != StateListen:
 		err = errTCBNotClosed
 	case state != StateListen && state != StateSynSent:
 		err = errInvalidState
@@ -153,14 +153,14 @@ func (tcb *ControlBlock) Open(iss Value, wnd Size, state State) (err error) {
 		tcb.logerr("tcb:open", slog.String("err", err.Error()))
 		return err
 	}
-	tcb.state = state
+	tcb._state = state
 	tcb.resetRcv(wnd, 0)
 	tcb.resetSnd(iss, 1)
 	tcb.pending = [2]Flags{}
 	if state == StateSynSent {
 		tcb.pending[0] = FlagSYN
 	}
-	tcb.trace("tcb:open", slog.String("state", tcb.state.String()))
+	tcb.trace("tcb:open", slog.String("state", tcb._state.String()))
 	return nil
 }
 
@@ -175,8 +175,8 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 		return Segment{SEQ: tcb.snd.NXT, ACK: tcb.rcv.NXT, Flags: FlagACK, WND: tcb.rcv.WND}, true
 	}
 	pending := tcb.pending[0]
-	established := tcb.state == StateEstablished
-	if !established && tcb.state != StateCloseWait {
+	established := tcb._state == StateEstablished
+	if !established && tcb._state != StateCloseWait {
 		payloadLen = 0 // Can't send data if not established.
 	}
 	if pending == 0 && payloadLen == 0 {
@@ -238,7 +238,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 
 	prevNxt := tcb.snd.NXT
 	var pending Flags
-	switch tcb.state {
+	switch tcb._state {
 	case StateListen:
 		pending, err = tcb.rcvListen(seg)
 	case StateSynSent:
@@ -259,10 +259,10 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	case StateClosing:
 		// Thanks to @knieriem for finding and reporting this bug.
 		if seg.Flags.HasAny(FlagACK) {
-			tcb.state = StateTimeWait
+			tcb._state = StateTimeWait
 		}
 	default:
-		panic("unexpected recv state:" + tcb.state.String())
+		panic("unexpected recv state:" + tcb._state.String())
 	}
 	if err != nil {
 		return err
@@ -270,7 +270,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 
 	tcb.pending[0] |= pending
 	if prevNxt != 0 && tcb.snd.NXT != prevNxt && tcb.logenabled(slog.LevelDebug) {
-		tcb.debug("tcb:snd.nxt-change", slog.String("state", tcb.state.String()),
+		tcb.debug("tcb:snd.nxt-change", slog.String("state", tcb._state.String()),
 			slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)),
 			slog.Uint64("prevnxt", uint64(prevNxt)), slog.Uint64("seg.seq", uint64(seg.SEQ)))
 	}
@@ -304,22 +304,22 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 	hasFIN := seg.Flags.HasAny(FlagFIN)
 	hasACK := seg.Flags.HasAny(FlagACK)
 	var newPending Flags
-	switch tcb.state {
+	switch tcb._state {
 	case StateSynRcvd:
 		if hasFIN {
-			tcb.state = StateFinWait1 // RFC 9293: 3.10.4 CLOSE call.
+			tcb._state = StateFinWait1 // RFC 9293: 3.10.4 CLOSE call.
 		}
 	case StateClosing:
 		if hasACK {
-			tcb.state = StateTimeWait
+			tcb._state = StateTimeWait
 		}
 	case StateEstablished:
 		if hasFIN {
-			tcb.state = StateFinWait1
+			tcb._state = StateFinWait1
 		}
 	case StateCloseWait:
 		if hasFIN {
-			tcb.state = StateLastAck
+			tcb._state = StateLastAck
 		} else if hasACK {
 			newPending = finack // Queue finack.
 		}
@@ -355,7 +355,7 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	outOfWindow := checkSeq && !seg.SEQ.InWindow(tcb.snd.NXT, tcb.snd.WND) &&
 		!zeroWindowOK
 	switch {
-	case tcb.state == StateClosed:
+	case tcb._state == StateClosed:
 		err = io.ErrClosedPipe
 	case seg.WND > math.MaxUint16:
 		err = errWindowTooLarge
@@ -369,7 +369,7 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 			err = errSeqNotInWindow
 		}
 
-	case seg.DATALEN > 0 && (tcb.state == StateFinWait1 || tcb.state == StateFinWait2):
+	case seg.DATALEN > 0 && (tcb._state == StateFinWait1 || tcb._state == StateFinWait2):
 		err = errConnectionClosing // Case 1: No further SENDs from the user will be accepted by the TCP implementation.
 
 	case checkSeq && tcb.snd.WND == 0 && seg.DATALEN > 0 && seg.SEQ == tcb.snd.NXT:
@@ -386,8 +386,8 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	hasAck := flags.HasAll(FlagACK)
 	// Short circuit SEQ checks if SYN present since the incoming segment initialize1s connection.
 	checkSEQ := !flags.HasAny(FlagSYN)
-	established := tcb.state == StateEstablished
-	preestablished := tcb.state.IsPreestablished()
+	established := tcb._state == StateEstablished
+	preestablished := tcb._state.IsPreestablished()
 	acksOld := hasAck && !tcb.snd.UNA.LessThan(seg.ACK)
 	acksUnsentData := hasAck && !seg.ACK.LessThanEq(tcb.snd.NXT)
 	ctlOrDataSegment := established && (seg.DATALEN > 0 || flags.HasAny(FlagFIN|FlagRST))
@@ -396,7 +396,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	switch {
 	case seg.WND > math.MaxUint16:
 		err = errWindowOverflow
-	case tcb.state == StateClosed:
+	case tcb._state == StateClosed:
 		err = io.ErrClosedPipe
 
 	case checkSEQ && tcb.rcv.WND == 0 && seg.DATALEN > 0 && seg.SEQ == tcb.rcv.NXT:
@@ -429,7 +429,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 		err = errDropSegment
 		tcb.pending[0] &= FlagFIN // Completely ignore duplicate ACKs but do not erase fin bit.
 		if isDebug {
-			tcb.debug("rcv:ACK-dup", slog.String("state", tcb.state.String()),
+			tcb.debug("rcv:ACK-dup", slog.String("state", tcb._state.String()),
 				slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.una", uint64(tcb.snd.UNA)))
 		}
 
@@ -437,7 +437,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 		err = errDropSegment
 		tcb.pending[0] = FlagACK // Send ACK for unsent data.
 		if isDebug {
-			tcb.debug("rcv:ACK-unsent", slog.String("state", tcb.state.String()),
+			tcb.debug("rcv:ACK-unsent", slog.String("state", tcb._state.String()),
 				slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)))
 		}
 
@@ -447,7 +447,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 		tcb.rstPtr = seg.ACK
 		tcb.resetSnd(tcb.snd.ISS, seg.WND)
 		if isDebug {
-			tcb.debug("rcv:RST-old", slog.String("state", tcb.state.String()), slog.Uint64("ack", uint64(seg.ACK)))
+			tcb.debug("rcv:RST-old", slog.String("state", tcb._state.String()), slog.Uint64("ack", uint64(seg.ACK)))
 		}
 	}
 	return err
@@ -472,16 +472,16 @@ func (tcb *ControlBlock) resetRcv(localWND Size, remoteISS Value) {
 }
 
 func (tcb *ControlBlock) handleRST(seq Value) error {
-	tcb.debug("rcv:RST", slog.String("state", tcb.state.String()))
+	tcb.debug("rcv:RST", slog.String("state", tcb._state.String()))
 	if seq != tcb.rcv.NXT {
 		// See RFC9293: If the RST bit is set and the sequence number does not exactly match the next expected sequence value, yet is within the current receive window, TCP endpoints MUST send an acknowledgment (challenge ACK).
 		tcb.challengeAck = true
 		tcb.pending[0] |= FlagACK
 		return errDropSegment
 	}
-	if tcb.state.IsPreestablished() {
+	if tcb._state.IsPreestablished() {
 		tcb.pending[0] = 0
-		tcb.state = StateListen
+		tcb._state = StateListen
 		tcb.resetSnd(tcb.snd.ISS+tcb.rstJump(), tcb.snd.WND)
 		tcb.resetRcv(tcb.rcv.WND, 3_14159_2653^tcb.rcv.IRS)
 	} else {
@@ -497,7 +497,7 @@ func (tcb *ControlBlock) rstJump() Value {
 
 // close sets ControlBlock state to closed and resets all sequence numbers and pending flag.
 func (tcb *ControlBlock) close() {
-	tcb.state = StateClosed
+	tcb._state = StateClosed
 	tcb.pending = [2]Flags{}
 	tcb.resetRcv(0, 0)
 	tcb.resetSnd(0, 0)
@@ -510,11 +510,11 @@ func (tcb *ControlBlock) close() {
 // Close returns an error if the connection is already closed or closing.
 func (tcb *ControlBlock) Close() (err error) {
 	// See RFC 9293: 3.10.4 CLOSE call.
-	switch tcb.state {
+	switch tcb._state {
 	case StateClosed:
 		err = errConnNotexist
 	case StateCloseWait:
-		tcb.state = StateLastAck
+		tcb._state = StateLastAck
 		tcb.pending = [2]Flags{FlagFIN, FlagACK}
 	case StateListen, StateSynSent:
 		tcb.close()
@@ -528,7 +528,7 @@ func (tcb *ControlBlock) Close() (err error) {
 		err = errInvalidState
 	}
 	if err == nil {
-		tcb.trace("tcb:close", slog.String("state", tcb.state.String()))
+		tcb.trace("tcb:close", slog.String("state", tcb._state.String()))
 	} else {
 		tcb.logerr("tcb:close", slog.String("err", err.Error()))
 	}

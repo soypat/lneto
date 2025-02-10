@@ -26,12 +26,12 @@ func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
 		if t.Failed() {
 			t.Errorf("exchange failed:\nwant: %s\ngot:  %s",
 				ex.RFC9293String(ex.WantState, ex.WantPeerState),
-				ex.RFC9293String(tcb.state, ex.WantPeerState),
+				ex.RFC9293String(tcb._state, ex.WantPeerState),
 			)
 		}
 	}()
 	const pfx = "exchange"
-	t.Log(tcb.state, "Exchange start")
+	t.Log(tcb._state, "Exchange start")
 	for i, ex = range exchange {
 		if ex.Outgoing != nil && ex.Incoming != nil {
 			t.Fatalf(pfx+"[%d] cannot send and receive in the same exchange, please split into two exchanges.", i)
@@ -60,7 +60,7 @@ func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
 			}
 		}
 
-		t.Log(ex.RFC9293String(tcb.state, ex.WantPeerState))
+		t.Log(ex.RFC9293String(tcb._state, ex.WantPeerState))
 
 		state := tcb.State()
 		if state != ex.WantState {
@@ -78,7 +78,7 @@ func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
 }
 
 func (tcb *ControlBlock) HelperInitState(state State, localISS, localNXT Value, localWindow Size) {
-	tcb.state = state
+	tcb._state = state
 	tcb.snd = sendSpace{
 		ISS: localISS,
 		UNA: localISS,

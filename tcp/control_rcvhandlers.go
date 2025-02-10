@@ -14,7 +14,7 @@ func (tcb *ControlBlock) rcvListen(seg Segment) (pending Flags, err error) {
 
 	// We must respond with SYN|ACK frame after receiving SYN in listen state (three way handshake).
 	tcb.pending[0] = synack
-	tcb.state = StateSynRcvd
+	tcb._state = StateSynRcvd
 	return synack, nil
 }
 
@@ -33,13 +33,13 @@ func (tcb *ControlBlock) rcvSynSent(seg Segment) (pending Flags, err error) {
 	}
 
 	if hasAck {
-		tcb.state = StateEstablished
+		tcb._state = StateEstablished
 		pending = FlagACK
 		tcb.resetRcv(tcb.rcv.WND, seg.SEQ)
 	} else {
 		// Simultaneous connection sync edge case.
 		pending = synack
-		tcb.state = StateSynRcvd
+		tcb._state = StateSynRcvd
 		tcb.resetSnd(tcb.snd.ISS, seg.WND)
 		tcb.resetRcv(tcb.rcv.WND, seg.SEQ)
 	}
@@ -56,7 +56,7 @@ func (tcb *ControlBlock) rcvSynRcvd(seg Segment) (pending Flags, err error) {
 	if err != nil {
 		return 0, err
 	}
-	tcb.state = StateEstablished
+	tcb._state = StateEstablished
 	return 0, nil
 }
 
@@ -69,7 +69,7 @@ func (tcb *ControlBlock) rcvEstablished(seg Segment) (pending Flags, err error) 
 		pending = FlagACK
 		if hasFin {
 			// See Figure 5: TCP Connection State Diagram of RFC 9293.
-			tcb.state = StateCloseWait
+			tcb._state = StateCloseWait
 			tcb.pending[1] = FlagFIN // Queue FIN for after the CloseWait ACK.
 		}
 	}
@@ -85,12 +85,12 @@ func (tcb *ControlBlock) rcvFinWait1(seg Segment) (pending Flags, err error) {
 	case hasFin && hasAck && seg.ACK == tcb.snd.NXT:
 		// Special case: Server sent a FINACK response to our FIN so we enter TimeWait directly.
 		// We have to check ACK against send NXT to avoid simultaneous close sequence edge case.
-		tcb.state = StateTimeWait
+		tcb._state = StateTimeWait
 	case hasFin:
-		tcb.state = StateClosing
+		tcb._state = StateClosing
 	case hasAck:
 		// TODO(soypat): Check if this branch does NOT need ACK queued. Online flowcharts say not needed.
-		tcb.state = StateFinWait2
+		tcb._state = StateFinWait2
 	default:
 		return 0, errFinwaitExpectedACK
 	}
@@ -102,6 +102,6 @@ func (tcb *ControlBlock) rcvFinWait2(seg Segment) (pending Flags, err error) {
 	if !seg.Flags.HasAll(finack) {
 		return pending, errFinwaitExpectedFinack
 	}
-	tcb.state = StateTimeWait
+	tcb._state = StateTimeWait
 	return FlagACK, nil
 }

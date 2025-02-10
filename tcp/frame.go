@@ -148,6 +148,20 @@ func (tfrm Frame) Segment(payloadSize int) Segment {
 	}
 }
 
+// SetSegment sets the sequence, acknowledgment, offset, window and flag fields of the TCP header from the the [Segment].
+// Offset, like in [Frame.SetOffset], is expressed in words with minimum being 5.
+func (tfrm Frame) SetSegment(seg Segment, offset uint8) {
+	if offset >= 1<<4 {
+		panic("tcp offset too large")
+	} else if seg.WND > math.MaxUint16 {
+		panic("tcp window overflow")
+	}
+	tfrm.SetSeq(seg.SEQ)
+	tfrm.SetAck(seg.ACK)
+	tfrm.SetOffsetAndFlags(offset, seg.Flags)
+	tfrm.SetWindowSize(uint16(seg.WND))
+}
+
 // Options returns the TCP option buffer portion of the frame. The returned slice may be zero length.
 // Be sure to call [Frame.ValidateSize] beforehand to avoid panic.
 func (tfrm Frame) Options() []byte {

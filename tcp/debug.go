@@ -33,7 +33,7 @@ func (l logger) logenabled(lvl slog.Level) bool {
 
 func (tcb *ControlBlock) traceSnd(msg string) {
 	tcb.trace(msg,
-		slog.String("state", tcb.state.String()),
+		slog.String("state", tcb._state.String()),
 		slog.Uint64("pend", uint64(tcb.pending[0])),
 		slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)),
 		slog.Uint64("snd.una", uint64(tcb.snd.UNA)),
@@ -43,7 +43,7 @@ func (tcb *ControlBlock) traceSnd(msg string) {
 
 func (tcb *ControlBlock) traceRcv(msg string) {
 	tcb.trace(msg,
-		slog.String("state", tcb.state.String()),
+		slog.String("state", tcb._state.String()),
 		slog.Uint64("rcv.nxt", uint64(tcb.rcv.NXT)),
 		slog.Uint64("rcv.wnd", uint64(tcb.rcv.WND)),
 		slog.Bool("challenge", tcb.challengeAck),
