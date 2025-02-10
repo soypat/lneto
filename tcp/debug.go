@@ -1,30 +1,34 @@
 package tcp
 
 import (
-	"context"
 	"log/slog"
 
 	"github.com/soypat/lneto/internal"
 )
 
-func (tcb *ControlBlock) logenabled(lvl slog.Level) bool {
-	return internal.HeapAllocDebugging || (tcb.log != nil && tcb.log.Handler().Enabled(context.Background(), lvl))
+// logger provides methods that can be easily attached by struct embedding
+// to types in this package.
+type logger struct {
+	log *slog.Logger
 }
 
-func (tcb *ControlBlock) logattrs(lvl slog.Level, msg string, attrs ...slog.Attr) {
-	internal.LogAttrs(tcb.log, lvl, msg, attrs...)
+func (l logger) logerr(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(l.log, slog.LevelError, msg, attrs...)
 }
-
-func (tcb *ControlBlock) debug(msg string, attrs ...slog.Attr) {
-	tcb.logattrs(slog.LevelDebug, msg, attrs...)
+func (l logger) info(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(l.log, slog.LevelInfo, msg, attrs...)
 }
-
-func (tcb *ControlBlock) trace(msg string, attrs ...slog.Attr) {
-	tcb.logattrs(internal.LevelTrace, msg, attrs...)
+func (l logger) warn(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(l.log, slog.LevelWarn, msg, attrs...)
 }
-
-func (tcb *ControlBlock) logerr(msg string, attrs ...slog.Attr) {
-	tcb.logattrs(slog.LevelError, msg, attrs...)
+func (l logger) debug(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(l.log, slog.LevelDebug, msg, attrs...)
+}
+func (l logger) trace(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(l.log, internal.LevelTrace, msg, attrs...)
+}
+func (l logger) logenabled(lvl slog.Level) bool {
+	return internal.LogEnabled(l.log, lvl)
 }
 
 func (tcb *ControlBlock) traceSnd(msg string) {

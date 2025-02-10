@@ -21,6 +21,10 @@ var (
 	timebuf [len(timefmt) * 2]byte
 )
 
+func LogEnabled(l *slog.Logger, lvl slog.Level) bool {
+	return true
+}
+
 func LogAttrs(_ *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) {
 	now := time.Now()
 	n := len(now.AppendFormat(timebuf[:0], timefmt))

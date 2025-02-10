@@ -70,7 +70,21 @@ func TestTxQueue(t *testing.T) {
 						}
 						currentAck = Add(currentAck, Size(len(msg)))
 					}
+					sent := rtx.BufferedSent()
+					unsent := rtx.Buffered()
+					wantUnsent := int(Add(currentAck, -startAck))
+					if unsent != wantUnsent {
+						t.Fatalf("want %d data buffered, got %d", wantUnsent, unsent)
+					} else if sent != 0 {
+						t.Fatalf("want no data sent, got %d", sent)
+					}
 					operateOnRing(t, &rtx, nil, readBuf[:], aux[:], &currentAck)
+					unsent = rtx.Buffered()
+					if unsent != 0 {
+						t.Fatalf("expected all data to be sent after ack of most recent packet, %d", unsent)
+					} else if rtx.BufferedSent() != 0 {
+						t.Fatal("unexpected buffer not completely acked")
+					}
 				}
 			},
 		},
@@ -80,122 +94,6 @@ func TestTxQueue(t *testing.T) {
 		if t.Failed() {
 			t.Fatalf("subtest %d/%d %q failed, not running more complex tests until fixed", i+1, len(increasingComplexityTests), test.name)
 		}
-	}
-}
-
-func testTxQueue_NMessages(t *testing.T, rtx *ringTx, msgs [][]byte, buf, aux []byte, maxPkt int, startAck Value) {
-	if len(msgs) > maxPkt {
-		panic("need ring buffer to contain messages")
-	}
-	err := rtx.Reset(buf, maxPkt, startAck)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	prevSeq := Value(startAck)
-	packets := make([][]byte, len(msgs))
-	sent := 0
-	for i := range aux {
-		aux[i] = 0
-	}
-	for i, msg := range msgs {
-		if len(aux) < len(msg) {
-			panic("need aux to contain message")
-		}
-		n, err := rtx.Write(msg)
-		if err != nil {
-			t.Fatalf("writing packet %d: %s", i, err)
-		} else if n != len(msg) {
-			t.Fatalf("want %d written, got %d", len(msg), n)
-		}
-		testQueueSanity(t, rtx)
-		unsent := rtx.Buffered()
-		if unsent != n {
-			t.Fatalf("want unsent %d, got %d", n, unsent)
-		}
-		testQueueSanity(t, rtx)
-		n, seq, err := rtx.MakePacket(aux[sent : sent+len(msg)])
-		if err != nil {
-			t.Fatal("MakePacket: ", err)
-		} else if seq != prevSeq {
-			t.Fatalf("want seq %d, got %d", prevSeq, seq)
-		} else if n != len(msg) {
-			t.Fatalf("want full message %d sent, got %d", len(msg), n)
-		}
-		testQueueSanity(t, rtx)
-		gotSent := rtx.BufferedSent()
-		if gotSent != sent+n {
-			t.Fatalf("want sent %d, got %d", sent+n, gotSent)
-		}
-		testQueueSanity(t, rtx)
-		packets = append(packets, aux[sent:sent+n])
-		prevSeq += Value(n)
-		sent += n
-	}
-}
-
-func testTxQueue_SequentialMessages(t *testing.T, rtx *ringTx, msgs [][]byte, buf, aux []byte, maxPkt int, startAck Value) {
-	err := rtx.Reset(buf, maxPkt, startAck)
-	if err != nil {
-		t.Fatal(err)
-	}
-	prevSeq := Value(startAck)
-	for i, msg := range msgs {
-		if t.Failed() {
-			t.Errorf("%s failed on message %d", t.Name(), i)
-			return
-		}
-		if len(aux) < len(msg) {
-			panic("need aux to contain message")
-		}
-		n, err := rtx.Write(msg)
-		if err != nil {
-			t.Fatalf("writing packet %d: %s", i, err)
-		} else if n != len(msg) {
-			t.Fatalf("want %d written, got %d", len(msg), n)
-		}
-		testQueueSanity(t, rtx)
-		unsent := rtx.Buffered()
-		if len(msg) != unsent {
-			t.Fatalf("want %d unsent buffered, got %d", len(msg), unsent)
-		}
-		testQueueSanity(t, rtx)
-		sent := rtx.BufferedSent()
-		if sent != 0 {
-			t.Fatalf("want 0 bytes sent, got %d", sent)
-		}
-		testQueueSanity(t, rtx)
-		n, seq, err := rtx.MakePacket(aux[:])
-		data := aux[:n]
-		if err != nil {
-			t.Fatalf("making packet %d: %s", i, err)
-		} else if n != len(msg) {
-			t.Fatalf("want %d packet read, got %d", len(msg), n)
-		} else if !bytes.Equal(msg, aux[:n]) {
-			t.Fatalf("want data %q, got data read %q", msg, data[:n])
-		} else if seq != prevSeq {
-			t.Fatalf("want seq %d, got %d", prevSeq, seq)
-		}
-		testQueueSanity(t, rtx)
-		sent = rtx.BufferedSent()
-		if sent != len(msg) {
-			t.Fatalf("want %d sent, got %d", len(msg), sent)
-		}
-		testQueueSanity(t, rtx)
-		prevSeq += Value(n)
-		err = rtx.RecvACK(prevSeq)
-		if err != nil {
-			t.Fatal(err)
-		}
-		sent = rtx.BufferedSent()
-		unsent = rtx.Buffered()
-		if sent != 0 {
-			t.Errorf("message not marked as sent- expected no data left got %d", sent)
-		}
-		if unsent != 0 {
-			t.Errorf("huge bug, unexpected data loaded to unsent buffer")
-		}
-		testQueueSanity(t, rtx)
 	}
 }
 

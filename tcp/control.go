@@ -53,7 +53,7 @@ type ControlBlock struct {
 	pending      [2]Flags
 	state        State
 	challengeAck bool
-	log          *slog.Logger
+	logger
 }
 
 // State returns the current state of the TCP connection.
@@ -88,7 +88,7 @@ func (tcb *ControlBlock) SetRecvWindow(wnd Size) {
 
 // SetLogger sets the logger to be used by the ControlBlock.
 func (tcb *ControlBlock) SetLogger(log *slog.Logger) {
-	tcb.log = log
+	tcb.logger = logger{log: log}
 }
 
 // IncomingIsKeepalive checks if an incoming segment is a keepalive segment.
