@@ -138,7 +138,7 @@ type recvSpace struct {
 	WND Size  // receive window defined by local. Permitted number of remote unacked octets in flight.
 }
 
-// Open implements a passive opening of a connection (wait for incoming packets).
+// Open implements a passive opening of a connection (wait for incoming packets from an unknown remote port).
 // Upon success [ControlBlock] enters LISTEN state, such as that of a server.
 // To open an active connection use [ControlBlock.Send] with a segment generated with [ClientSynSegment].
 func (tcb *ControlBlock) Open(iss Value, wnd Size) (err error) {

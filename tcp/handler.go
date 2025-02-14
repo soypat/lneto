@@ -51,7 +51,8 @@ func (h *Handler) LocalPort() uint16 {
 	return h.localPort
 }
 
-func (h *Handler) Open(state State, localPort, remotePort uint16, iss Value) error {
+// Open prepares a passive connection. Set remote port to non-zero to
+func (h *Handler) Open(localPort uint16, iss Value) error {
 	// Open will fail unless SCB in closed state.
 	err := h.scb.Open(iss, Size(h.bufRx.Size()))
 	if err != nil {
@@ -63,7 +64,7 @@ func (h *Handler) Open(state State, localPort, remotePort uint16, iss Value) err
 		bufRx:      h.bufRx,
 		connid:     h.connid + 1,
 		localPort:  localPort,
-		remotePort: remotePort,
+		remotePort: 0,
 		validator:  h.validator,
 		logger:     h.logger,
 		closing:    false,
@@ -139,15 +140,9 @@ func (h *Handler) Send(b []byte) (int, error) {
 		return 0, err
 	}
 	var segment Segment
-	if h.AwaitingSyn() {
+	if h.AwaitingSynSend() {
 		// Handling init syn segment.
-		segment = Segment{
-			SEQ:     h.scb.ISS(),
-			ACK:     0,
-			Flags:   FlagSYN,
-			WND:     h.scb.RecvWindow(),
-			DATALEN: 0,
-		}
+		segment = ClientSynSegment(h.scb.ISS(), h.scb.RecvWindow())
 	} else {
 		var ok bool
 		available := min(h.bufTx.Buffered(), len(b)-sizeHeaderTCP)
@@ -181,9 +176,13 @@ func (h *Handler) Send(b []byte) (int, error) {
 	return sizeHeaderTCP + int(segment.DATALEN), nil
 }
 
-// AwaitingSyn checks if the Handler is waiting for a Syn to arrive.
-func (h *Handler) AwaitingSyn() bool {
+// AwaitingSynResponse checks if the Handler is waiting for a Syn to arrive.
+func (h *Handler) AwaitingSynResponse() bool {
 	return h.remotePort != 0 && h.scb.State() == StateSynSent
+}
+
+func (h *Handler) AwaitingSynSend() bool {
+	return h.remotePort != 0 && h.scb.State() == StateClosed
 }
 
 func (h *Handler) isClosed() bool {
