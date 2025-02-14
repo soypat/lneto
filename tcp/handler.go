@@ -53,7 +53,7 @@ func (h *Handler) LocalPort() uint16 {
 
 func (h *Handler) Open(state State, localPort, remotePort uint16, iss Value) error {
 	// Open will fail unless SCB in closed state.
-	err := h.scb.Open(iss, Size(h.bufRx.Size()), state)
+	err := h.scb.Open(iss, Size(h.bufRx.Size()))
 	if err != nil {
 		return err
 	}
@@ -156,13 +156,15 @@ func (h *Handler) Send(b []byte) (int, error) {
 			// No pending control segment or data to send. Yield.
 			return 0, nil
 		}
-		n, seq, err := h.bufTx.MakePacket(b[sizeHeaderTCP : sizeHeaderTCP+segment.DATALEN])
-		if err != nil {
-			return 0, err
-		} else if seq != segment.SEQ {
-			panic("mismatching sequence numbers")
-		} else if n != int(segment.DATALEN) {
-			panic("expected n == available")
+		if available > 0 {
+			n, seq, err := h.bufTx.MakePacket(b[sizeHeaderTCP : sizeHeaderTCP+segment.DATALEN])
+			if err != nil {
+				return 0, err
+			} else if seq != segment.SEQ {
+				panic("mismatching sequence numbers")
+			} else if n != int(segment.DATALEN) {
+				panic("expected n == available")
+			}
 		}
 	}
 	prevState := h.scb.State()

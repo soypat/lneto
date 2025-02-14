@@ -316,22 +316,28 @@ func TestExchange_rfc9293_figure13(t *testing.T) {
 func TestExchange_noDupAckDuringEstablished(t *testing.T) {
 	var tcbA tcp.ControlBlock
 	const issA, issB, windowA, windowB = 300, 334222749, 256, 64240
-	err := tcbA.Open(issA, issA, tcp.StateSynSent)
+	synseg := tcp.ClientSynSegment(issA, windowA)
+
+	// err := tcbA.Open(issA, issA, tcp.StateSynSent)
 	tcbA.SetRecvWindow(windowA)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// if err != nil {
+	// 	t.Fatal(err)
+	// }
 	establishA := []tcp.Exchange{
-		0: { // B sends SYN to A.
+		0: { // A sends SYN to B.
+			Outgoing:  &synseg,
+			WantState: tcp.StateSynSent,
+		},
+		1: { // B sends SYN to A.
 			Incoming:    &tcp.Segment{SEQ: issB, ACK: 0, WND: windowB, Flags: tcp.FlagSYN},
 			WantPending: &tcp.Segment{SEQ: issA, ACK: issB + 1, WND: windowA, Flags: SYNACK},
 			WantState:   tcp.StateSynRcvd,
 		},
-		1: { // Send SYNACK to B.
+		2: { // Send SYNACK to B.
 			Outgoing:  &tcp.Segment{SEQ: issA, ACK: issB + 1, WND: windowA, Flags: SYNACK},
 			WantState: tcp.StateSynRcvd,
 		},
-		2: { // B ACKs SYNACK, thus establishing the connection on both sides.
+		3: { // B ACKs SYNACK, thus establishing the connection on both sides.
 			Incoming:  &tcp.Segment{SEQ: issB + 1, ACK: issA + 1, WND: windowB, Flags: tcp.FlagACK},
 			WantState: tcp.StateEstablished,
 		},

@@ -70,11 +70,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	log.Println("success receiving packet")
 	n, err := lStack.HandleEth(buf)
 	if err != nil {
 		log.Fatal(n, err)
+	} else if n > 0 {
+		log.Println("success sending packet")
+	} else {
+		log.Println("no packet sent")
 	}
-	log.Println("success receiving packet")
 }
 
 type Handler interface {

@@ -138,14 +138,13 @@ type recvSpace struct {
 	WND Size  // receive window defined by local. Permitted number of remote unacked octets in flight.
 }
 
-// Open implements a passive/active opening of a connection.
-// state must be StateListen or StateSynSent.
-func (tcb *ControlBlock) Open(iss Value, wnd Size, state State) (err error) {
+// Open implements a passive opening of a connection (wait for incoming packets).
+// Upon success [ControlBlock] enters LISTEN state, such as that of a server.
+// To open an active connection use [ControlBlock.Send] with a segment generated with [ClientSynSegment].
+func (tcb *ControlBlock) Open(iss Value, wnd Size) (err error) {
 	switch {
 	case tcb._state != StateClosed && tcb._state != StateListen:
 		err = errTCBNotClosed
-	case state != StateListen && state != StateSynSent:
-		err = errInvalidState
 	case wnd > math.MaxUint16:
 		err = errWindowTooLarge
 	}
@@ -153,15 +152,17 @@ func (tcb *ControlBlock) Open(iss Value, wnd Size, state State) (err error) {
 		tcb.logerr("tcb:open", slog.String("err", err.Error()))
 		return err
 	}
-	tcb._state = state
+	tcb._state = StateListen
+	tcb.prepareToHandshake(iss, wnd)
+	tcb.trace("tcb:open-server")
+	return nil
+}
+
+// prepareToHandshake initializes the TCB send/receive spaces with initial send sequence number and local window.
+func (tcb *ControlBlock) prepareToHandshake(iss Value, wnd Size) {
 	tcb.resetRcv(wnd, 0)
 	tcb.resetSnd(iss, 1)
 	tcb.pending = [2]Flags{}
-	if state == StateSynSent {
-		tcb.pending[0] = FlagSYN
-	}
-	tcb.trace("tcb:open", slog.String("state", tcb._state.String()))
-	return nil
 }
 
 // HasPending returns true if there is a pending control segment to send. Calls to Send will advance the pending queue.
@@ -305,6 +306,12 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 	hasACK := seg.Flags.HasAny(FlagACK)
 	var newPending Flags
 	switch tcb._state {
+	case StateClosed:
+		if seg.Flags == FlagSYN {
+			tcb._state = StateSynSent
+			tcb.prepareToHandshake(seg.SEQ, seg.WND)
+			tcb.trace("tcb:open-client")
+		}
 	case StateSynRcvd:
 		if hasFIN {
 			tcb._state = StateFinWait1 // RFC 9293: 3.10.4 CLOSE call.
@@ -348,14 +355,15 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 
 func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	hasAck := seg.Flags.HasAny(FlagACK)
-	checkSeq := !seg.Flags.HasAny(FlagRST)
+	isFirst := tcb._state == StateClosed && seg.isFirstSYN()
+	checkSeq := !isFirst && !seg.Flags.HasAny(FlagRST)
 	seglast := seg.Last()
 	// Extra check for when send Window is zero and no data is being sent.
 	zeroWindowOK := tcb.snd.WND == 0 && seg.DATALEN == 0 && seg.SEQ == tcb.snd.NXT
 	outOfWindow := checkSeq && !seg.SEQ.InWindow(tcb.snd.NXT, tcb.snd.WND) &&
 		!zeroWindowOK
 	switch {
-	case tcb._state == StateClosed:
+	case tcb._state == StateClosed && !isFirst:
 		err = io.ErrClosedPipe
 	case seg.WND > math.MaxUint16:
 		err = errWindowTooLarge

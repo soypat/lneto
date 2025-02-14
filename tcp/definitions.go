@@ -68,6 +68,25 @@ func (seg *Segment) Last() Value {
 	return Add(seg.SEQ, seglen) - 1
 }
 
+func (seg Segment) isFirstSYN() bool {
+	return seg.Flags == FlagSYN && seg.ACK == 0 && seg.DATALEN == 0 && seg.WND > 0
+}
+
+// ClientSynSegment is a the first packet sent over a TCP connection to a server. Typically the client
+// will call ClientSynSegment to generate a new SYN packet to send over to the server to initiate communications:
+//
+//	synseg := ClientSynSegment(100, 256)
+//	err := clientTCB.Send(synseg) // By now the client's TCB is in StateSynSent and is attempting to open a connection.
+func ClientSynSegment(clientISS Value, clientWND Size) Segment {
+	return Segment{
+		SEQ:     clientISS,
+		WND:     clientWND,
+		Flags:   FlagSYN,
+		ACK:     0,
+		DATALEN: 0,
+	}
+}
+
 // StringExchange returns a string representation of a segment exchange over
 // a network in RFC9293 styled visualization. invertDir inverts the arrow directions.
 // i.e:
