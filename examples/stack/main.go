@@ -41,7 +41,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	err = pStack.handler.Open(gen.DstTCP, iss)
+	err = pStack.handler.OpenListen(gen.DstTCP, iss)
 	if err != nil {
 		log.Fatal(err)
 	}

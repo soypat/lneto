@@ -47,13 +47,14 @@ type ControlBlock struct {
 	rcv recvSpace
 	// When FlagRST is set in pending flags rstPtr will contain the sequence number of the RST segment to make it "believable" (See RFC9293)
 	rstPtr Value
+	logger
+
 	// pending is the queue of pending flags to be sent in the next 2 segments.
 	// On a call to Send the queue is advanced and flags set in the segment are unset.
 	// The second position of the queue is used for FIN segments.
 	pending      [2]Flags
 	_state       State // leading underscore so field not suggested on top of exported State method when developing.
 	challengeAck bool
-	logger
 }
 
 // State returns the current state of the TCP connection.
@@ -144,7 +145,7 @@ type recvSpace struct {
 func (tcb *ControlBlock) Open(iss Value, wnd Size) (err error) {
 	switch {
 	case tcb._state != StateClosed && tcb._state != StateListen:
-		err = errTCBNotClosed
+		err = errNeedClosedTCBToOpen
 	case wnd > math.MaxUint16:
 		err = errWindowTooLarge
 	}
@@ -189,7 +190,7 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	_ = inFlight
 	maxPayload := tcb.snd.maxSend()
 	if payloadLen > int(maxPayload) {
-		if maxPayload == 0 && !tcb.pending[0].HasAny(FlagFIN|FlagRST|FlagSYN) {
+		if maxPayload == 0 && !pending.HasAny(FlagFIN|FlagRST|FlagSYN) {
 			return Segment{}, false
 		} else if maxPayload > tcb.snd.WND {
 			panic("seqs: bad calculation")

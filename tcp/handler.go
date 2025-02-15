@@ -19,19 +19,21 @@ var (
 // Does NOT implement IP related logic, so no CRC calculation/validation or pseudo header logic.
 // Does NOT implement connection lifetime handling, so NO deadlines, keepalives, backoffs or anything that requires use of time package.
 type Handler struct {
-	scb        ControlBlock
-	bufTx      ringTx
-	bufRx      internal.Ring
+	scb   ControlBlock
+	bufTx ringTx
+	bufRx internal.Ring
+	logger
+	validator  lneto2.Validator
 	localPort  uint16
 	remotePort uint16
 	// connid is a conenction counter that is incremented each time a new
 	// connection is established via Open calls. This disambiguate's whether
 	// Read and Write calls belong to the current connection.
-	connid    uint8
-	closing   bool
-	validator lneto2.Validator
-	logger
+	connid  uint8
+	closing bool
 }
+
+func (h *Handler) State() State { return h.scb.State() }
 
 func (h *Handler) SetBuffers(txbuf, rxbuf []byte, packets int) error {
 	if !h.scb.State().IsClosed() {
@@ -43,35 +45,61 @@ func (h *Handler) SetBuffers(txbuf, rxbuf []byte, packets int) error {
 	if len(h.bufRx.Buf) < 1 {
 		return errors.New("short rx buffer")
 	}
+	h.scb.SetRecvWindow(Size(h.bufRx.Size()))
 	h.bufRx.Reset()
 	return h.bufTx.ResetOrReuse(txbuf, packets, 0)
 }
 
+// LocalPort returns the local port of the connection. Returns 0 if the connection is closed and uninitialized.
 func (h *Handler) LocalPort() uint16 {
 	return h.localPort
 }
 
-// Open prepares a passive connection. Set remote port to non-zero to
-func (h *Handler) Open(localPort uint16, iss Value) error {
+// RemotePort returns the remote port of the connection if it is set.
+// If the connection is passive and has not yet been established it will return 0.
+func (h *Handler) RemotePort() uint16 {
+	return h.remotePort
+}
+
+func (h *Handler) OpenActive(localPort, remotePort uint16, iss Value) error {
+	if h.bufRx.Size() < minBufferSize || h.bufTx.Size() < minBufferSize {
+		return errBufferTooSmall
+	}
+	if h.scb.State() != StateClosed {
+		return errNeedClosedTCBToOpen
+	}
+	h.reset(localPort, remotePort, iss)
+	return nil
+}
+
+// OpenListen prepares a passive connection. Set remote port to non-zero to
+func (h *Handler) OpenListen(localPort uint16, iss Value) error {
+	if h.bufRx.Size() < minBufferSize || h.bufTx.Size() < minBufferSize {
+		return errBufferTooSmall
+	}
 	// Open will fail unless SCB in closed state.
 	err := h.scb.Open(iss, Size(h.bufRx.Size()))
 	if err != nil {
 		return err
 	}
+	h.reset(localPort, 0, iss)
+	return nil
+}
+
+func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 	*h = Handler{
 		scb:        h.scb,
 		bufTx:      h.bufTx,
 		bufRx:      h.bufRx,
 		connid:     h.connid + 1,
 		localPort:  localPort,
-		remotePort: 0,
+		remotePort: remotePort,
 		validator:  h.validator,
 		logger:     h.logger,
 		closing:    false,
 	}
 	h.bufTx.ResetOrReuse(nil, 0, iss)
 	h.bufRx.Reset()
-	return nil
 }
 
 func (h *Handler) Recv(b []byte) error {
@@ -132,7 +160,7 @@ func (h *Handler) Recv(b []byte) error {
 
 func (h *Handler) Send(b []byte) (int, error) {
 	h.trace("tcp.Handler:start", slog.Uint64("port", uint64(h.localPort)))
-	if h.isClosed() {
+	if h.isClosed() && !h.AwaitingSynSend() {
 		return 0, net.ErrClosed
 	}
 	tfrm, err := NewFrame(b)
@@ -179,6 +207,10 @@ func (h *Handler) Send(b []byte) (int, error) {
 // AwaitingSynResponse checks if the Handler is waiting for a Syn to arrive.
 func (h *Handler) AwaitingSynResponse() bool {
 	return h.remotePort != 0 && h.scb.State() == StateSynSent
+}
+
+func (h *Handler) AwaitingSynAck() bool {
+	return h.remotePort == 0 && h.scb.State() == StateListen
 }
 
 func (h *Handler) AwaitingSynSend() bool {
