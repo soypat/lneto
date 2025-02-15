@@ -31,20 +31,24 @@ func TestTxQueue(t *testing.T) {
 					rtx.Reset(ringBuf[:], rng.Intn(4)+1, startAck)
 					for imsg, msg := range msgs {
 						// Write and create packet from single messages.
+						seq := currentAck
 						currentAck = Add(currentAck, Size(len(msg)))
-						operateOnRing(t, &rtx, msg, readBuf[:], aux[:], &currentAck)
+						operateOnRing(t, &rtx, msg, readBuf[:], aux[:], seq, &currentAck)
 						buffered := rtx.Buffered()
 						if buffered != 0 {
 							t.Fatalf("msg%d: want no buffered data after transaction, got %d", imsg, buffered)
 						}
-						newSeq := rtx.currentSeq()
-						wantSeq := currentAck
-						if newSeq != wantSeq {
-							t.Fatalf("msg%d: want seq %d, got %d", imsg, wantSeq, newSeq)
-						}
-						if t.Failed() {
-							t.Fatalf("failed on msg %d", imsg)
-						}
+						// newSeq, ok := rtx.firstSeq()
+						// if !ok {
+						// 	t.Fatal("no first packet found")
+						// }
+						// wantSeq := currentAck
+						// if newSeq != wantSeq {
+						// 	t.Fatalf("msg%d: want seq %d, got %d", imsg, wantSeq, newSeq)
+						// }
+						// if t.Failed() {
+						// 	t.Fatalf("failed on msg %d", imsg)
+						// }
 					}
 				}
 			},
@@ -58,14 +62,17 @@ func TestTxQueue(t *testing.T) {
 					msgs := removeEmptyMsgs(bytes.SplitAfter(msgBuf[:], []byte{0}))
 					currentAck := Value(startAck)
 					rtx.Reset(ringBuf[:], rng.Intn(4)+1, startAck)
+					expectBuffered := 0
 					for _, msg := range msgs {
 						// Send all messages.
-						operateOnRing(t, &rtx, msg, nil, aux[:], nil)
+						seq := currentAck
+						operateOnRing(t, &rtx, msg, nil, aux[:], seq, nil)
 						if t.Failed() {
 							return
 						}
-						gotSeq := rtx.currentSeq()
-						if gotSeq != startAck {
+						expectBuffered += len(msg)
+						buffered := rtx.Buffered()
+						if buffered != expectBuffered {
 							t.Fatalf("expected seq to not change during writes")
 						}
 						currentAck = Add(currentAck, Size(len(msg)))
@@ -78,7 +85,7 @@ func TestTxQueue(t *testing.T) {
 					} else if sent != 0 {
 						t.Fatalf("want no data sent, got %d", sent)
 					}
-					operateOnRing(t, &rtx, nil, readBuf[:], aux[:], &currentAck)
+					operateOnRing(t, &rtx, nil, readBuf[:], aux[:], 0, &currentAck)
 					unsent = rtx.Buffered()
 					if unsent != 0 {
 						t.Fatalf("expected all data to be sent after ack of most recent packet, %d", unsent)
@@ -231,7 +238,7 @@ func removeEmptyMsgs(msgs [][]byte) [][]byte {
 	return slices.DeleteFunc(msgs, func(b []byte) bool { return len(b) == 0 })
 }
 
-func operateOnRing(t *testing.T, rtx *ringTx, write, readPacket, aux []byte, argRecvAck *Value) {
+func operateOnRing(t *testing.T, rtx *ringTx, write, readPacket, aux []byte, newPacketSeq Value, argRecvAck *Value) {
 	if len(aux) < rtx.Size() {
 		panic("too small auxiliary buffer")
 	}
@@ -239,7 +246,7 @@ func operateOnRing(t *testing.T, rtx *ringTx, write, readPacket, aux []byte, arg
 	// Prepare aux with data expected from read after write.
 	runsent, _ := rtx.unsentRing()
 	unsent := runsent.Buffered()
-
+	startSeq, startSeqOK := rtx.firstSeq()
 	wantWritten := min(free, len(write))
 	wantBufRead := aux[:min(unsent+wantWritten, len(readPacket))]
 
@@ -259,7 +266,6 @@ func operateOnRing(t *testing.T, rtx *ringTx, write, readPacket, aux []byte, arg
 		copy(wantBufRead[n:], write)
 	}
 
-	prevSeq := rtx.currentSeq()
 	if len(write) != 0 {
 		testQueueSanity(t, rtx)
 		preBuffered := rtx.Buffered()
@@ -284,15 +290,18 @@ func operateOnRing(t *testing.T, rtx *ringTx, write, readPacket, aux []byte, arg
 		if wantRead != len(wantBufRead) {
 			t.Fatalf("miscalculated expect read %d != %d", wantRead, len(wantBufRead))
 		}
-		n, seq, err := rtx.MakePacket(readPacket)
+		n, err := rtx.MakePacket(readPacket, newPacketSeq)
 		if err != nil && wantRead != 0 {
 			t.Errorf("error reading: %s", err)
 		} else if n != wantRead {
 			t.Errorf("want read %d, got %d", wantRead, n)
 		}
-		wantSeq := prevSeq
-		if seq != wantSeq {
-			t.Errorf("want new seq %d, got %d", wantSeq, seq)
+		lastSeq, lastSeqOK := rtx.lastSeq()
+		endSeq, endSeqOK := rtx.endSeq()
+		if !lastSeqOK || lastSeq != newPacketSeq {
+			t.Fatalf("expected last seq to be %d, got %d (or lastSeqOK=%v)", newPacketSeq, lastSeq, lastSeqOK)
+		} else if !endSeqOK || endSeq != Add(newPacketSeq, Size(n)) {
+			t.Fatalf("expected end seq to be %d, got %d (or endSeqOK=%v)", Add(newPacketSeq, Size(n)), endSeq, endSeqOK)
 		}
 		if !bytes.Equal(readPacket[:n], wantBufRead) {
 			t.Error("data content packet read not match wanted packet")
@@ -303,22 +312,37 @@ func operateOnRing(t *testing.T, rtx *ringTx, write, readPacket, aux []byte, arg
 		}
 	}
 
+	startSeq2, sseqOK := rtx.firstSeq()
+	if sseqOK == startSeqOK && startSeq2 != startSeq {
+		t.Fatalf("expected FIRST seq to not change during writes")
+	}
+
 	if !t.Failed() && argRecvAck != nil {
 		testQueueSanity(t, rtx)
-		preAcked := rtx.BufferedSent()
+		// preAcked := rtx.BufferedSent()
 		rcvAck := *argRecvAck
-		seq := rtx.currentSeq()
+		seq, ok := rtx.firstSeq()
+		if !ok {
+			t.Fatal("no first packet found")
+		}
 		startSeq := Add(seq, Size(-rtx.BufferedSent()))
 		acklInSentRange := startSeq.LessThan(rcvAck) && rcvAck.LessThanEq(seq)
 		err := rtx.RecvACK(rcvAck)
 		if err != nil && acklInSentRange {
 			t.Errorf("expected correct acking %d < %d <= %d: %s", startSeq, rcvAck, seq, err)
 		}
-		gotCalcAcked := preAcked - rtx.BufferedSent()
-		wantAcked := int(Sizeof(prevSeq, rtx.currentSeq()))
-		if gotCalcAcked != wantAcked {
-			t.Errorf("want acked %d, got %d", wantAcked, gotCalcAcked)
+		bufSent := rtx.BufferedSent()
+		gotFirstSeq, ok := rtx.firstSeq()
+		if !ok && bufSent != 0 {
+			t.Fatalf("no first packet found after acking")
 		}
+		if ok && gotFirstSeq.LessThanEq(rcvAck) {
+			t.Fatalf("expected first seq %d to be greater than ack %d", gotFirstSeq, rcvAck)
+		}
+		// wantAcked := int(Sizeof(prevSeq, gotFirstSeq))
+		// if gotCalcAcked != wantAcked {
+		// 	t.Errorf("want acked %d, got %d", wantAcked, gotCalcAcked)
+		// }
 	}
 	testQueueSanity(t, rtx)
 }

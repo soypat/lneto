@@ -42,7 +42,7 @@ func (h *Handler) SetBuffers(txbuf, rxbuf []byte, packets int) error {
 	if rxbuf != nil {
 		h.bufRx.Buf = rxbuf
 	}
-	if len(h.bufRx.Buf) < 1 {
+	if len(h.bufRx.Buf) < minBufferSize {
 		return errors.New("short rx buffer")
 	}
 	h.scb.SetRecvWindow(Size(h.bufRx.Size()))
@@ -180,11 +180,9 @@ func (h *Handler) Send(b []byte) (int, error) {
 			return 0, nil
 		}
 		if available > 0 {
-			n, seq, err := h.bufTx.MakePacket(b[sizeHeaderTCP : sizeHeaderTCP+segment.DATALEN])
+			n, err := h.bufTx.MakePacket(b[sizeHeaderTCP:sizeHeaderTCP+segment.DATALEN], segment.SEQ)
 			if err != nil {
 				return 0, err
-			} else if seq != segment.SEQ {
-				panic("mismatching sequence numbers")
 			} else if n != int(segment.DATALEN) {
 				panic("expected n == available")
 			}
@@ -202,6 +200,31 @@ func (h *Handler) Send(b []byte) (int, error) {
 	tfrm.SetSegment(segment, 5) // No TCP options.
 	tfrm.SetUrgentPtr(0)
 	return sizeHeaderTCP + int(segment.DATALEN), nil
+}
+
+func (h *Handler) Free() int {
+	return h.bufTx.Free()
+}
+
+func (h *Handler) Write(b []byte) (int, error) {
+	if h.State().IsClosed() { // Reject write call if data cannot be sent.
+		return 0, net.ErrClosed
+	}
+	return h.bufTx.Write(b)
+}
+
+func (h *Handler) Read(b []byte) (int, error) {
+	if h.State().IsClosed() { // Reject read call if state is at StateClosed. Note this is less strict than Write call condition.
+		return 0, net.ErrClosed
+	}
+	return h.bufRx.Read(b)
+}
+
+func (h *Handler) Buffered() int {
+	if h.State().IsClosed() {
+		return 0
+	}
+	return h.bufRx.Buffered()
 }
 
 // AwaitingSynResponse checks if the Handler is waiting for a Syn to arrive.

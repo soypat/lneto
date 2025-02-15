@@ -28,7 +28,7 @@ type ringTx struct {
 	sentoff int
 	// sentend is the offset of end of sent data in rawbuf. If zero then sent buffer is empty.
 	sentend int
-	seq     Value
+	// seq     Value
 	// always empty ring.
 	emptyRing ringidx
 }
@@ -39,8 +39,10 @@ type ringidx struct {
 	off int
 	// end is the ringed data end offset, non-inclusive. Follows [internal.Ring] semantics.
 	end int
-	// seq is the sequence number of the packet.
+	// seq is the sequence number of the first byte in the packet.
 	seq Value
+	// size is the size of the packet in bytes.
+	size Size
 	// time is a measure of the instant of time message was sent at.
 }
 
@@ -58,7 +60,6 @@ func (rtx *ringTx) Reset(buf []byte, maxqueuedPackets int, seq Value) error {
 	*rtx = ringTx{
 		rawbuf:  buf,
 		packets: rtx.packets[:maxqueuedPackets],
-		seq:     seq,
 	}
 	for i := range rtx.packets {
 		rtx.packets[i].markRcvd()
@@ -112,16 +113,16 @@ func (rtx *ringTx) Write(b []byte) (n int, err error) {
 
 // MakePacket reads from the unsent data ring buffer and generates a new packet segment.
 // It fails if the sent packet queue is full.
-func (rtx *ringTx) MakePacket(b []byte) (int, Value, error) {
+func (rtx *ringTx) MakePacket(b []byte, currentSeq Value) (int, error) {
 	nxtpkt := rtx.nextPkt()
-	if rtx.nextPkt() < 0 {
-		return 0, 0, errors.New("queue full")
+	if nxtpkt < 0 {
+		return 0, errors.New("queue full")
 	}
 	r, _ := rtx.unsentRing()
 	start := r.Off
 	n, err := r.Read(b)
 	if err != nil {
-		return n, 0, err
+		return n, err
 	}
 	pkt := &rtx.packets[nxtpkt]
 
@@ -131,33 +132,34 @@ func (rtx *ringTx) MakePacket(b []byte) (int, Value, error) {
 	if off == rtx.unsentend {
 		rtx.unsentend = 0 // Mark unsent as being empty.
 	}
-	pkt.off = start
-	pkt.end = off
-
-	// Sequence number updates.
-	oldseq := rtx.seq
-	newseq := Add(oldseq, Size(n))
-	rtx.seq = newseq
-	pkt.seq = newseq
-	return n, oldseq, nil
+	*pkt = ringidx{
+		off:  start,
+		end:  off,
+		seq:  currentSeq,
+		size: Size(n),
+	}
+	return n, nil
 }
 
 // RecvSegment processes an incoming segment and updates the sent packet queue
 func (rtx *ringTx) RecvACK(ack Value) error {
-	if ack.LessThan(rtx.seq) {
-		return errors.New("old packet")
-	}
 	first := rtx.firstPkt()
 	if first < 0 {
 		return errors.New("no packets to ack")
 	}
-	hiSeq := rtx.pkt(first).seq
+	pkt0 := rtx.pkt(first)
+	if ack.LessThanEq(pkt0.seq) {
+		return errors.New("old packet")
+	}
+
+	hiSeq := Add(pkt0.seq, pkt0.size)
 	for i := 0; i < len(rtx.packets); i++ {
 		pkt := &rtx.packets[i]
-		if pkt.sent() && pkt.seq.LessThanEq(ack) {
-			if hiSeq.LessThanEq(pkt.seq) {
+		pktendSeq := Add(pkt.seq, pkt.size)
+		if pkt.sent() && pktendSeq.LessThanEq(ack) {
+			if hiSeq.LessThanEq(pktendSeq) {
 				rtx.sentoff = pkt.end
-				hiSeq = pkt.seq
+				hiSeq = pktendSeq
 			}
 			pkt.markRcvd()
 		}
@@ -266,7 +268,28 @@ func (rtx *ringTx) consolidateBufs() {
 	}
 }
 
-func (rtx *ringTx) currentSeq() Value { return rtx.seq }
+func (rtx *ringTx) endSeq() (Value, bool) {
+	pkt := rtx.lastPkt()
+	if pkt < 0 {
+		return 0, false
+	}
+	last := rtx.pkt(pkt)
+	return Add(last.seq, last.size), true
+}
+func (rtx *ringTx) lastSeq() (Value, bool) {
+	pkt := rtx.lastPkt()
+	if pkt < 0 {
+		return 0, false
+	}
+	return rtx.pkt(pkt).seq, true
+}
+func (rtx *ringTx) firstSeq() (Value, bool) {
+	pkt := rtx.firstPkt()
+	if pkt < 0 {
+		return 0, false
+	}
+	return rtx.pkt(pkt).seq, true
+}
 
 // lims returns the limits of free|sent|unsent buffers.
 // Example:
