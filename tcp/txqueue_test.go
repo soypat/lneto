@@ -12,9 +12,12 @@ func TestTxQueue(t *testing.T) {
 	const bufsize = 1024
 	var msgBuf, ringBuf, readBuf, aux [bufsize]byte
 	rng := rand.New(rand.NewSource(1))
-
+	panicked := true
 	var rtx ringTx
 	defer func() {
+		if panicked {
+			t.Error("panicked, rtx:\n", rtx.string())
+		}
 		testQueueSanity(t, &rtx)
 	}()
 	increasingComplexityTests := []struct {
@@ -92,7 +95,7 @@ func TestTxQueue(t *testing.T) {
 			},
 		},
 		2: {
-			name: "ParialAcks",
+			name: "PartialAcks",
 			test: func(t *testing.T) {
 				const startAck = 0
 				const packets = 100
@@ -153,6 +156,7 @@ func TestTxQueue(t *testing.T) {
 			t.Fatalf("subtest %d/%d %q failed, not running more complex tests until fixed", i+1, len(increasingComplexityTests), test.name)
 		}
 	}
+	panicked = false
 }
 
 func testQueueSanity(t *testing.T, rtx *ringTx) {
@@ -212,6 +216,28 @@ func testQueueSanity(t *testing.T, rtx *ringTx) {
 		t.Fatalf("all buffer empty but sent|unsent(%v/%v) not empty", sentEmpty, unsentEmpty)
 	} else if !allEmpty && sentEmpty && unsentEmpty {
 		t.Fatal("all buffer not empty but sent&unsentempty")
+	}
+
+	// Check sanenness of last/first packets.
+	last := rtx.lastPkt()
+	first := rtx.firstPkt()
+	if first < 0 && last >= 0 || last < 0 && first >= 0 {
+		t.Fatalf("found first/last(%d,%d) but did not find last/first", first, last)
+	}
+	// Check sent data or return if no sent data available.
+	if sent == 0 {
+		return
+	}
+	lastPkt := rtx.pkt(last)
+	endseq, ok := rtx.endSeq()
+	firstPkt := rtx.pkt(first)
+	lastEndSeq := Add(lastPkt.seq, lastPkt.size)
+	if lastPkt.seq.LessThan(firstPkt.seq) {
+		t.Fatalf("first packet not previous to last packet seq, wanted %d<%d", firstPkt.seq, lastPkt.seq)
+	} else if !ok {
+		t.Fatal("unexpected end sequence not found")
+	} else if lastEndSeq != endseq {
+		t.Fatalf("last packet end sequence not match with got endSeq %d!=%d", lastEndSeq, endseq)
 	}
 }
 

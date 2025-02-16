@@ -192,7 +192,7 @@ func (rtx *ringTx) RecvACK(ack Value) error {
 			acked := int(ack - pkt.seq)
 			pring := rtx.ring(pkt.off, pkt.end)
 			buffered := pring.Buffered()
-			if acked > buffered || acked <= minBufferSize {
+			if acked > buffered || acked < minBufferSize {
 				panic("unreachable")
 			}
 			off := rtx.addOff(pkt.off, acked)
@@ -266,7 +266,7 @@ func (rtx *ringTx) firstPkt() int {
 	idx := -1
 	for i := 0; i < len(rtx.packets); i++ {
 		pkt := &rtx.packets[i]
-		if pkt.sent() && (idx == -1 || seq.LessThan(pkt.seq)) {
+		if pkt.sent() && (idx == -1 || pkt.seq.LessThan(seq)) {
 			seq = pkt.seq
 			idx = i
 		}
@@ -279,7 +279,7 @@ func (rtx *ringTx) lastPkt() int {
 	idx := -1
 	for i := 0; i < len(rtx.packets); i++ {
 		pkt := &rtx.packets[i]
-		if pkt.sent() && (idx == -1 || pkt.seq.LessThan(seq)) {
+		if pkt.sent() && (idx == -1 || seq.LessThan(pkt.seq)) {
 			seq = pkt.seq
 			idx = i
 		}
