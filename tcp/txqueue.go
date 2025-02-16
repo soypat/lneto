@@ -2,6 +2,7 @@ package tcp
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/soypat/lneto/internal"
 )
@@ -118,6 +119,10 @@ func (rtx *ringTx) MakePacket(b []byte, currentSeq Value) (int, error) {
 	if nxtpkt < 0 {
 		return 0, errors.New("queue full")
 	}
+	endSeq, ok := rtx.endSeq()
+	if ok && currentSeq.LessThan(endSeq) {
+		return 0, errors.New("sequence number less than last sequence number")
+	}
 	r, _ := rtx.unsentRing()
 	start := r.Off
 	n, err := r.Read(b)
@@ -149,26 +154,62 @@ func (rtx *ringTx) RecvACK(ack Value) error {
 	}
 	pkt0 := rtx.pkt(first)
 	if ack.LessThanEq(pkt0.seq) {
-		return errors.New("old packet")
+		return fmt.Errorf("incoming ack %d older than first packet seq %d", ack, pkt0.seq)
+		// return errors.New("old packet")
 	}
-
-	hiSeq := Add(pkt0.seq, pkt0.size)
+	// lastAckedPkt stores last fully acked packet.
+	var lastAckedPkt *ringidx
 	for i := 0; i < len(rtx.packets); i++ {
 		pkt := &rtx.packets[i]
-		pktendSeq := Add(pkt.seq, pkt.size)
-		if pkt.sent() && pktendSeq.LessThanEq(ack) {
-			if hiSeq.LessThanEq(pktendSeq) {
-				rtx.sentoff = pkt.end
-				hiSeq = pktendSeq
+		if !pkt.sent() || ack.LessThanEq(pkt.seq) {
+			continue
+		}
+		endseq := Add(pkt.seq, pkt.size)
+		isFullyAcked := endseq.LessThanEq(ack)
+		isPartialAcked := ack.InRange(pkt.seq, endseq)
+		isLast := lastAckedPkt == nil || lastAckedPkt.seq.LessThanEq(pkt.seq)
+		isBeforeLast := lastAckedPkt != nil && !isLast
+		if isFullyAcked == isPartialAcked { // is either or.
+			panic("unreachable")
+		}
+		if isLast && isFullyAcked {
+			if lastAckedPkt != nil {
+				lastAckedPkt.markRcvd()
+			}
+			lastAckedPkt = pkt
+		} else if isBeforeLast {
+			if isPartialAcked {
+				panic("unreachable")
 			}
 			pkt.markRcvd()
+		} else if !isPartialAcked {
+			panic("unreachable")
+		}
+		if isPartialAcked {
+			if lastAckedPkt != nil && lastAckedPkt.seq.LessThan(pkt.seq) {
+				panic("unreachable")
+			}
+			acked := int(ack - pkt.seq)
+			pring := rtx.ring(pkt.off, pkt.end)
+			buffered := pring.Buffered()
+			if acked > buffered || acked <= minBufferSize {
+				panic("unreachable")
+			}
+			off := rtx.addOff(pkt.off, acked)
+			pkt.off = off
+			pkt.seq = ack
+			pkt.size = pkt.size - Size(acked)
+			rtx.sentoff = off
 		}
 	}
-	firstAcked := !rtx.pkt(first).sent()
-	if firstAcked && rtx.sentoff == rtx.sentend {
-		// All data acked.
-		rtx.sentend = 0
-		rtx.consolidateBufs()
+	if lastAckedPkt != nil {
+		rtx.sentoff = lastAckedPkt.end
+		lastAckedPkt.markRcvd()
+		if rtx.sentoff == rtx.sentend {
+			// All data acked.
+			rtx.sentend = 0
+			rtx.consolidateBufs()
+		}
 	}
 	return nil
 }

@@ -9,7 +9,8 @@ import (
 )
 
 func TestTxQueue(t *testing.T) {
-	var msgBuf, ringBuf, readBuf, aux [1024]byte
+	const bufsize = 1024
+	var msgBuf, ringBuf, readBuf, aux [bufsize]byte
 	rng := rand.New(rand.NewSource(1))
 
 	var rtx ringTx
@@ -28,7 +29,10 @@ func TestTxQueue(t *testing.T) {
 					rng.Read(msgBuf[:])
 					msgs := removeEmptyMsgs(bytes.SplitAfter(msgBuf[:], []byte{0}))
 					currentAck := Value(startAck)
-					rtx.Reset(ringBuf[:], rng.Intn(4)+1, startAck)
+					err := rtx.Reset(ringBuf[:], rng.Intn(4)+1, startAck)
+					if err != nil {
+						t.Fatal(err)
+					}
 					for imsg, msg := range msgs {
 						// Write and create packet from single messages.
 						seq := currentAck
@@ -38,17 +42,6 @@ func TestTxQueue(t *testing.T) {
 						if buffered != 0 {
 							t.Fatalf("msg%d: want no buffered data after transaction, got %d", imsg, buffered)
 						}
-						// newSeq, ok := rtx.firstSeq()
-						// if !ok {
-						// 	t.Fatal("no first packet found")
-						// }
-						// wantSeq := currentAck
-						// if newSeq != wantSeq {
-						// 	t.Fatalf("msg%d: want seq %d, got %d", imsg, wantSeq, newSeq)
-						// }
-						// if t.Failed() {
-						// 	t.Fatalf("failed on msg %d", imsg)
-						// }
 					}
 				}
 			},
@@ -61,7 +54,10 @@ func TestTxQueue(t *testing.T) {
 					rng.Read(msgBuf[:])
 					msgs := removeEmptyMsgs(bytes.SplitAfter(msgBuf[:], []byte{0}))
 					currentAck := Value(startAck)
-					rtx.Reset(ringBuf[:], rng.Intn(4)+1, startAck)
+					err := rtx.Reset(ringBuf[:], rng.Intn(4)+1, startAck)
+					if err != nil {
+						t.Fatal(err)
+					}
 					expectBuffered := 0
 					for _, msg := range msgs {
 						// Send all messages.
@@ -91,6 +87,61 @@ func TestTxQueue(t *testing.T) {
 						t.Fatalf("expected all data to be sent after ack of most recent packet, %d", unsent)
 					} else if rtx.BufferedSent() != 0 {
 						t.Fatal("unexpected buffer not completely acked")
+					}
+				}
+			},
+		},
+		2: {
+			name: "ParialAcks",
+			test: func(t *testing.T) {
+				const startAck = 0
+				const packets = 100
+				const maxPacketSize = bufsize / 4
+				var datalens [][]byte
+				for i := 0; i < 10; i++ {
+					rng.Read(msgBuf[:])
+					err := rtx.Reset(ringBuf[:], packets, startAck)
+					if err != nil {
+						t.Fatal(err)
+					}
+					operateOnRing(t, &rtx, msgBuf[:], nil, aux[:], 0, nil)
+					// Send all bytes over wire.
+					currentSeq := Value(startAck)
+					datalens = datalens[:0]
+					for rtx.Buffered() != 0 {
+						nbytes := rng.Intn(maxPacketSize-minBufferSize) + minBufferSize
+						n, err := rtx.MakePacket(readBuf[:nbytes], currentSeq)
+						if err != nil {
+							t.Fatal(err)
+						} else if n == 0 {
+							t.Fatal("got zero length")
+						}
+						// Reuse memory in slice of byte buffers.
+						if len(datalens) == cap(datalens) {
+							datalens = append(datalens, append([]byte{}, readBuf[:n]...))
+						} else {
+							datalens = datalens[:len(datalens)+1]
+							datalens[len(datalens)-1] = append(datalens[len(datalens)-1][:0], readBuf[:n]...)
+						}
+						currentSeq += Value(n)
+					}
+					currentAck := Value(startAck)
+					for idata, data := range datalens {
+						plen := len(data)
+						partialLen0 := plen - (rng.Intn(plen)/2 + minBufferSize)
+						// partialLen1 := plen - partialLen0
+						// sent := rtx.BufferedSent()
+						ack1 := currentAck + Value(partialLen0)
+						ack2 := currentAck + Value(plen)
+						err = rtx.RecvACK(ack1)
+						if err != nil {
+							t.Fatalf("data%d acking first partial %d..%d(..%d): %s", idata, currentAck, ack1, ack2, err)
+						}
+						err = rtx.RecvACK(ack2)
+						if err != nil {
+							t.Fatalf("data%d acking second partial (%d..)%d..%d: %s", idata, currentAck, ack1, ack2, err)
+						}
+						currentAck = ack2
 					}
 				}
 			},
