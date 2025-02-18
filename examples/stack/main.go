@@ -6,6 +6,7 @@ import (
 	"log"
 	"log/slog"
 	"math/rand"
+	"net/netip"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -13,72 +14,92 @@ import (
 	"github.com/soypat/lneto/tcp"
 )
 
+const mtu = 2048
+
 func main() {
-	const mtu = 1500
 	rng := rand.New(rand.NewSource(1))
 	var gen ltesto.PacketGen
 	gen.RandomizeAddrs(rng)
 	slogger := logger{slog.Default()}
+	lStack, handler, err := NewEthernetTCPStack(gen.DstMAC, netip.AddrPortFrom(netip.AddrFrom4(gen.DstIPv4), gen.DstTCP), slogger)
+	if err != nil {
+		log.Fatal(err)
+	}
+	iface := netip.MustParsePrefix("192.168.10.1/24")
+	tap, err := internal.NewTap("tap0", iface)
+	if err != nil {
+		log.Fatal(err)
+	}
+	const port, iss = 80, 300
+	err = handler.OpenListen(port, iss)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	defer tap.Close()
+	var buf [mtu]byte
+	for {
+		n, err := tap.Read(buf[:])
+		if err != nil {
+			log.Fatal(err)
+		} else if n > 0 {
+			err = lStack.RecvEth(buf[:n])
+			if err != nil {
+				slogger.error("recv", slog.String("err", err.Error()), slog.Int("plen", n))
+			} else {
+				slogger.info("recv", slog.Int("plen", n))
+			}
+		}
+		n, err = lStack.HandleEth(buf[:])
+		if err != nil {
+			slogger.error("handle", slog.String("err", err.Error()))
+		} else if n > 0 {
+			_, err = tap.Write(buf[:n])
+			if err != nil {
+				log.Fatal(err)
+			} else {
+				slogger.info("write", slog.Int("plen", n))
+			}
+		}
+	}
+}
+
+func NewEthernetTCPStack(mac [6]byte, ip netip.AddrPort, slogger logger) (*LinkStack, *tcp.Handler, error) {
 	lStack := LinkStack{
 		logger: slogger,
-		mac:    gen.DstMAC,
+		mac:    mac,
 		mtu:    mtu,
 	}
-	iStack := &IPv4Stack{
-		ip:     gen.DstIPv4,
+	ipStack := &IPv4Stack{
+		ip:     ip.Addr().As4(),
 		logger: slogger,
 	}
-	tStack := &TCPStack{
+	tcpStack := &TCPStack{
 		logger: slogger,
 	}
-	pStack := &TCPPort{
+	tcpPortStack := &TCPPort{
 		handler: tcp.Handler{},
 	}
-	iss := tcp.Value(100)
+	port := ip.Port()
 	txbuf := make([]byte, mtu)
 	rxbuf := make([]byte, mtu)
-	err := pStack.handler.SetBuffers(txbuf, rxbuf, 3)
+	err := tcpPortStack.handler.SetBuffers(txbuf, rxbuf, 3)
 	if err != nil {
-		log.Fatal(err)
+		return nil, nil, err
 	}
-	err = pStack.handler.OpenListen(gen.DstTCP, iss)
+	err = ipStack.Register(tcpStack, nil)
 	if err != nil {
-		log.Fatal(err)
+		return nil, nil, err
 	}
-	err = iStack.Register(tStack, &gen.SrcIPv4)
+	err = lStack.Register(ipStack, [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
 	if err != nil {
-		log.Fatal(err)
+		return nil, nil, err
 	}
-	err = lStack.Register(iStack, gen.SrcMAC)
+	err = tcpStack.Register(tcpPortStack, port)
 	if err != nil {
-		log.Fatal(err)
+		return nil, nil, err
 	}
-	err = tStack.Register(pStack, pStack.handler.LocalPort())
-	if err != nil {
-		log.Fatal(err)
-	}
-	seg := tcp.Segment{
-		SEQ:     300,
-		ACK:     iss,
-		DATALEN: 0,
-		WND:     256,
-		Flags:   tcp.FlagSYN,
-	}
-	buf := make([]byte, lStack.mtu)
-	packet := gen.AppendRandomIPv4TCPPacket(buf[:0], rng, seg)
-	err = lStack.RecvEth(packet)
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Println("success receiving packet")
-	n, err := lStack.HandleEth(buf)
-	if err != nil {
-		log.Fatal(n, err)
-	} else if n > 0 {
-		log.Println("success sending packet")
-	} else {
-		log.Println("no packet sent")
-	}
+	return &lStack, &tcpPortStack.handler, nil
 }
 
 type Handler interface {
