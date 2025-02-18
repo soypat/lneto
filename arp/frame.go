@@ -3,6 +3,9 @@ package arp
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"net"
+	"net/netip"
 
 	"github.com/soypat/lneto/lneto2"
 )
@@ -61,10 +64,10 @@ func (afrm Frame) SetProtocol(Type lneto2.EtherType, length uint8) {
 }
 
 // Operation returns the ARP header operation field. See [Operation].
-func (afrm Frame) Operation() Operation { return Operation(afrm.buf[6]) }
+func (afrm Frame) Operation() Operation { return Operation(binary.BigEndian.Uint16(afrm.buf[6:8])) }
 
 // SetOperation sets the ARP header operation field. See [Operation].
-func (afrm Frame) SetOperation(b Operation) { afrm.buf[6] = uint8(b) }
+func (afrm Frame) SetOperation(op Operation) { binary.BigEndian.PutUint16(afrm.buf[6:8], uint16(op)) }
 
 // Sender returns the hardware (MAC) and protocol addresses of sender of ARP packet.
 // In an ARP request MAC address is used to indicate
@@ -138,4 +141,25 @@ func (afrm Frame) ValidateSize(v *lneto2.Validator) {
 	if len(afrm.buf) < int(minLen) {
 		v.AddError(errShortARP)
 	}
+}
+
+func (afrm Frame) String() string {
+	opstr := afrm.Operation().String()
+	hwt, _ := afrm.Hardware()
+	ptt, _ := afrm.Protocol()
+	sndhw, sndpt := afrm.Sender()
+	tgthw, tgtpt := afrm.Target()
+	var sndstr, tgtstr string
+	if ptt == lneto2.EtherTypeIPv4 || ptt == lneto2.EtherTypeIPv6 {
+		sender, _ := netip.AddrFromSlice(sndpt)
+		target, _ := netip.AddrFromSlice(tgtpt)
+		sndstr = sender.String()
+		tgtstr = target.String()
+	} else {
+		sndstr = net.HardwareAddr(sndpt).String()
+		tgtstr = net.HardwareAddr(tgtpt).String()
+	}
+	return fmt.Sprintf("ARP %s HW=(%d,SENDER=%s,TARGET=%s) PROTO=(%s,SENDER=%s,TARGET=%s)",
+		opstr, hwt, net.HardwareAddr(sndhw).String(), net.HardwareAddr(tgthw).String(),
+		ptt.String(), sndstr, tgtstr)
 }

@@ -9,7 +9,7 @@ type ValidateFlags uint64
 
 const (
 	validateReserved ValidateFlags = 1 << iota
-	validateEvilBit
+	ValidateEvilBit
 	validateAllowMultiErrors
 )
 

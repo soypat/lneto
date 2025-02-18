@@ -17,7 +17,7 @@ var (
 )
 
 // Operation represents the type of ARP packet, either request or reply/response.
-type Operation uint8
+type Operation uint16
 
 const (
 	OpRequest Operation = 1 // request

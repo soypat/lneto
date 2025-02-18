@@ -2,30 +2,42 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"log/slog"
-	"math/rand"
+	"net"
 	"net/netip"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/internal"
-	"github.com/soypat/lneto/internal/ltesto"
+	"github.com/soypat/lneto/lneto2"
 	"github.com/soypat/lneto/tcp"
 )
 
-const mtu = 2048
+const (
+	mtu       = 2048
+	iface     = "192.168.10.1/24"
+	stackIP   = "192.168.10.2"
+	stackPort = 80
+)
+
+var stackHWAddr = [6]byte{0xc0, 0xff, 0xee, 0x00, 0xde, 0xad}
 
 func main() {
-	rng := rand.New(rand.NewSource(1))
-	var gen ltesto.PacketGen
-	gen.RandomizeAddrs(rng)
+	ip := netip.MustParseAddr(stackIP)
+	iface := netip.MustParsePrefix(iface)
+	if !iface.Contains(ip) {
+		log.Fatal("interface does not contain stack address")
+	}
+	addrPort := netip.AddrPortFrom(ip, stackPort)
 	slogger := logger{slog.Default()}
-	lStack, handler, err := NewEthernetTCPStack(gen.DstMAC, netip.AddrPortFrom(netip.AddrFrom4(gen.DstIPv4), gen.DstTCP), slogger)
+	lStack, handler, err := NewEthernetTCPStack(stackHWAddr, addrPort, slogger)
 	if err != nil {
 		log.Fatal(err)
 	}
-	iface := netip.MustParsePrefix("192.168.10.1/24")
+
 	tap, err := internal.NewTap("tap0", iface)
 	if err != nil {
 		log.Fatal(err)
@@ -80,10 +92,29 @@ func NewEthernetTCPStack(mac [6]byte, ip netip.AddrPort, slogger logger) (*LinkS
 	tcpPortStack := &TCPPort{
 		handler: tcp.Handler{},
 	}
+	proto := lneto2.EtherTypeIPv4
+	if ip.Addr().Is6() {
+		proto = lneto2.EtherTypeIPv6
+	}
+	arphandler, err := arp.NewHandler(arp.HandlerConfig{
+		HardwareAddr: mac[:],
+		ProtocolAddr: ip.Addr().AsSlice(),
+		MaxQueries:   1,
+		MaxPending:   1,
+		HardwareType: 1,
+		ProtocolType: proto,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	arpStack := ARPStack{
+		handler: *arphandler,
+	}
+
 	port := ip.Port()
 	txbuf := make([]byte, mtu)
 	rxbuf := make([]byte, mtu)
-	err := tcpPortStack.handler.SetBuffers(txbuf, rxbuf, 3)
+	err = tcpPortStack.handler.SetBuffers(txbuf, rxbuf, 3)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -91,7 +122,11 @@ func NewEthernetTCPStack(mac [6]byte, ip netip.AddrPort, slogger logger) (*LinkS
 	if err != nil {
 		return nil, nil, err
 	}
-	err = lStack.Register(ipStack, [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
+	err = lStack.Register(ipStack, mac)
+	if err != nil {
+		return nil, nil, err
+	}
+	err = lStack.Register(&arpStack, [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -146,21 +181,24 @@ func (ls *LinkStack) RecvEth(ethFrame []byte) (err error) {
 	if err != nil {
 		return err
 	}
-	if !efrm.IsBroadcast() && ls.mac != *efrm.DestinationHardwareAddr() {
-		return errors.New("packet MAC mismatch")
+	etype := efrm.EtherTypeOrSize()
+	dstaddr := efrm.DestinationHardwareAddr()
+	if !efrm.IsBroadcast() && ls.mac != *dstaddr {
+		return fmt.Errorf("incoming %s mismatch hwaddr %s", etype.String(), net.HardwareAddr(dstaddr[:]).String())
 	}
 	var vld lneto.Validator
 	efrm.ValidateSize(&vld)
 	if err := vld.Err(); err != nil {
 		return err
 	}
-	etype := efrm.EtherTypeOrSize()
+
 	for i := range ls.handlers {
 		h := &ls.handlers[i]
 		if h.proto == uint32(etype) {
 			return h.recv(efrm.Payload(), 0)
 		}
 	}
+
 	return nil
 }
 
@@ -181,6 +219,7 @@ func (ls *LinkStack) HandleEth(dst []byte) (n int, err error) {
 			copy(efrm.DestinationHardwareAddr()[:], h.raddr)
 			*efrm.SourceHardwareAddr() = ls.mac
 			efrm.SetEtherType(lneto.EtherType(h.proto))
+
 			return n + 14, nil
 		}
 	}
@@ -389,7 +428,32 @@ func (ts *TCPStack) Handle(ipFrame []byte, tcpOff int) (n int, err error) {
 		crc = tfrm.CalculateIPv6CRC(ifrm)
 	}
 	tfrm.SetCRC(crc)
-	return tcpOff + n, nil
+	return n, nil
+}
+
+type ARPStack struct {
+	handler arp.Handler
+}
+
+func (as *ARPStack) Protocol() uint32 { return uint32(lneto.EtherTypeARP) }
+
+func (as *ARPStack) Recv(EtherFrame []byte, arpOff int) error {
+	afrm, _ := arp.NewFrame(EtherFrame[arpOff:])
+	slog.Info("recv", slog.String("in", afrm.String()))
+	return as.handler.Recv(EtherFrame[arpOff:])
+}
+
+func (as *ARPStack) Handle(EtherFrame []byte, arpOff int) (int, error) {
+	n, err := as.handler.Send(EtherFrame[arpOff:])
+	if err != nil || n == 0 {
+		return 0, err
+	}
+	afrm, _ := arp.NewFrame(EtherFrame[arpOff:])
+	hwaddr, _ := afrm.Target()
+	efrm, _ := lneto.NewEthFrame(EtherFrame)
+	copy(efrm.DestinationHardwareAddr()[:], hwaddr)
+	slog.Info("handle", slog.String("out", afrm.String()))
+	return n, err
 }
 
 type TCPPort struct {
