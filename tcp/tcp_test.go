@@ -5,7 +5,9 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/ipv4"
+	"github.com/soypat/lneto/lneto2"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -584,20 +586,20 @@ func TestExchange_helloworld_client(t *testing.T) {
 }
 
 func parseSegment(t *testing.T, b []byte) (tcp.Segment, []byte) {
-	var vld lneto.Validator
+	var vld lneto2.Validator
 	t.Helper()
-	efrm, err := lneto.NewEthFrame(b)
+	efrm, err := ethernet.NewFrame(b)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if efrm.EtherTypeOrSize() != lneto.EtherTypeIPv4 {
+	if efrm.EtherTypeOrSize() != ethernet.TypeIPv4 {
 		t.Fatalf("not IPv4")
 	}
 	efrm.ValidateSize(&vld)
 	if err := vld.Err(); err != nil {
 		t.Fatal(vld.Err())
 	}
-	ifrm, err := lneto.NewIPv4Frame(efrm.Payload())
+	ifrm, err := ipv4.NewFrame(efrm.Payload())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -614,7 +616,7 @@ func parseSegment(t *testing.T, b []byte) (tcp.Segment, []byte) {
 	}
 
 	ipl := ifrm.Payload()
-	tfrm, err := lneto.NewTCPFrame(ipl)
+	tfrm, err := tcp.NewFrame(ipl)
 	if err != nil {
 		t.Fatal(err)
 	}

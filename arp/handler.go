@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 
+	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/lneto2"
 )
 
@@ -11,7 +12,7 @@ type Handler struct {
 	ourHWAddr    []byte
 	ourProtoAddr []byte
 	htype        uint16
-	protoType    lneto2.EtherType
+	protoType    ethernet.Type
 	pending      [][sizeHeaderv6]byte
 	queries      []queryResult
 }
@@ -22,7 +23,7 @@ type HandlerConfig struct {
 	MaxQueries   int
 	MaxPending   int
 	HardwareType uint16
-	ProtocolType lneto2.EtherType
+	ProtocolType ethernet.Type
 }
 
 func NewHandler(cfg HandlerConfig) (*Handler, error) {

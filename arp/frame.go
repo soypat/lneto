@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 
+	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/lneto2"
 )
 
@@ -49,16 +50,16 @@ func (afrm Frame) SetHardware(Type uint16, length uint8) {
 	afrm.buf[4] = length
 }
 
-// Protocol returns the internet protocol type and length. See [lneto2.EtherType].
-func (afrm Frame) Protocol() (Type lneto2.EtherType, length uint8) {
-	Type = lneto2.EtherType(binary.BigEndian.Uint16(afrm.buf[2:4]))
+// Protocol returns the internet protocol type and length. See [ethernet.Type].
+func (afrm Frame) Protocol() (Type ethernet.Type, length uint8) {
+	Type = ethernet.Type(binary.BigEndian.Uint16(afrm.buf[2:4]))
 	return Type, afrm.protolen()
 }
 
 func (afrm Frame) protolen() uint8 { return afrm.buf[5] }
 
-// SetProtocol sets the protocol type and length fields of the ARP frame. See [Frame.Protocol] and [lneto2.EtherType].
-func (afrm Frame) SetProtocol(Type lneto2.EtherType, length uint8) {
+// SetProtocol sets the protocol type and length fields of the ARP frame. See [Frame.Protocol] and [ethernet.Type].
+func (afrm Frame) SetProtocol(Type ethernet.Type, length uint8) {
 	binary.BigEndian.PutUint16(afrm.buf[2:4], uint16(Type))
 	afrm.buf[5] = length
 }
@@ -150,7 +151,7 @@ func (afrm Frame) String() string {
 	sndhw, sndpt := afrm.Sender()
 	tgthw, tgtpt := afrm.Target()
 	var sndstr, tgtstr string
-	if ptt == lneto2.EtherTypeIPv4 || ptt == lneto2.EtherTypeIPv6 {
+	if ptt == ethernet.TypeIPv4 || ptt == ethernet.TypeIPv6 {
 		sender, _ := netip.AddrFromSlice(sndpt)
 		target, _ := netip.AddrFromSlice(tgtpt)
 		sndstr = sender.String()

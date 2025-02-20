@@ -9,14 +9,6 @@ import (
 	"github.com/soypat/lneto/lneto2"
 )
 
-var (
-	errShortTCP    = errors.New("TCP offset exceeds frame")
-	errBadTCPOff   = errors.New("TCP offset invalid")
-	errEvilPacket  = errors.New("evil packet")
-	errZeroDstPort = errors.New("TCP zero destination port")
-	errZeroSrcPort = errors.New("TCP zero source port")
-)
-
 const (
 	sizeHeaderTCP = 20
 )
@@ -148,6 +140,12 @@ func (tfrm Frame) Segment(payloadSize int) Segment {
 	}
 }
 
+func (tfrm Frame) CRCWrite(crc *lneto2.CRC791) {
+	// Write excluding CRC
+	crc.Write(tfrm.buf[:16])
+	crc.Write(tfrm.buf[18:])
+}
+
 // SetSegment sets the sequence, acknowledgment, offset, window and flag fields of the TCP header from the the [Segment].
 // Offset, like in [Frame.SetOffset], is expressed in words with minimum being 5.
 func (tfrm Frame) SetSegment(seg Segment, offset uint8) {
@@ -183,6 +181,14 @@ func (tfrm Frame) String() string {
 //
 // Validation API
 //
+
+var (
+	errShortTCP    = errors.New("TCP offset exceeds frame")
+	errBadTCPOff   = errors.New("TCP offset invalid")
+	errEvilPacket  = errors.New("evil packet")
+	errZeroDstPort = errors.New("TCP zero destination port")
+	errZeroSrcPort = errors.New("TCP zero source port")
+)
 
 // func (tfrm Frame) Validate(v *lneto2.Validator) {
 // tfrm.ValidateSize(v)

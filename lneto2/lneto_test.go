@@ -1,12 +1,13 @@
-package lneto_test
+package lneto2_test
 
 import (
 	"bytes"
 	"math/rand"
 	"testing"
 
-	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal/ltesto"
+	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -37,31 +38,31 @@ func testMoveTCPPacket(t *testing.T, src, dst []byte) {
 	if len(src) != len(dst) {
 		panic("expect src and dst same length")
 	}
-	efrm, err := lneto.NewEthFrame(src)
+	efrm, err := ethernet.NewFrame(src)
 	if err != nil {
 		t.Fatal(err)
 	}
 	epl := efrm.Payload()
-	ifrm, err := lneto.NewIPv4Frame(epl)
+	ifrm, err := ipv4.NewFrame(epl)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ipl := ifrm.Payload()
-	tfrm, err := lneto.NewTCPFrame(ipl)
+	tfrm, err := tcp.NewFrame(ipl)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	efrm2, _ := lneto.NewEthFrame(dst)
+	efrm2, _ := ethernet.NewFrame(dst)
 	*efrm2.DestinationHardwareAddr() = *efrm.DestinationHardwareAddr()
 	*efrm2.SourceHardwareAddr() = *efrm.SourceHardwareAddr()
 	efrm2.SetEtherType(efrm.EtherTypeOrSize())
-	if efrm.EtherTypeOrSize() == lneto.EtherTypeVLAN {
+	if efrm.EtherTypeOrSize() == ethernet.TypeVLAN {
 		efrm2.SetVLANTag(efrm.VLANTag())
 		efrm2.SetVLANEtherType(efrm.VLANEtherType())
 	}
 
-	ifrm2, _ := lneto.NewIPv4Frame(efrm2.Payload())
+	ifrm2, _ := ipv4.NewFrame(efrm2.Payload())
 	ifrm2.SetVersionAndIHL(ifrm.VersionAndIHL())
 	ifrm2.SetToS(ifrm.ToS())
 	ifrm2.SetFlags(ifrm.Flags())
@@ -73,7 +74,7 @@ func testMoveTCPPacket(t *testing.T, src, dst []byte) {
 	*ifrm2.SourceAddr() = *ifrm.SourceAddr()
 	*ifrm2.DestinationAddr() = *ifrm.DestinationAddr()
 
-	tfrm2, _ := lneto.NewTCPFrame(ifrm2.Payload())
+	tfrm2, _ := tcp.NewFrame(ifrm2.Payload())
 	tfrm2.SetSourcePort(tfrm.SourcePort())
 	tfrm2.SetDestinationPort(tfrm.DestinationPort())
 	tfrm2.SetSeq(tfrm.Seq())

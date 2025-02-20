@@ -5,7 +5,7 @@ import (
 	"log"
 	"testing"
 
-	"github.com/soypat/lneto/lneto2"
+	"github.com/soypat/lneto/ethernet"
 )
 
 func TestHandler(t *testing.T) {
@@ -15,7 +15,7 @@ func TestHandler(t *testing.T) {
 		MaxQueries:   1,
 		MaxPending:   1,
 		HardwareType: 1,
-		ProtocolType: lneto2.EtherTypeIPv4,
+		ProtocolType: ethernet.TypeIPv4,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -26,7 +26,7 @@ func TestHandler(t *testing.T) {
 		MaxQueries:   1,
 		MaxPending:   1,
 		HardwareType: 1,
-		ProtocolType: lneto2.EtherTypeIPv4,
+		ProtocolType: ethernet.TypeIPv4,
 	})
 	if err != nil {
 		t.Fatal(err)

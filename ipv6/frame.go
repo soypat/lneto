@@ -2,9 +2,21 @@ package ipv6
 
 import (
 	"encoding/binary"
+	"errors"
 
 	"github.com/soypat/lneto/lneto2"
 )
+
+// NewIPv6Frame returns a new IPv6Frame with data set to buf.
+// An error is returned if the buffer size is smaller than 40.
+// Users should still call [IPv6Frame.ValidateSize] before working
+// with payload/options of frames to avoid panics.
+func NewFrame(buf []byte) (Frame, error) {
+	if len(buf) < sizeHeader {
+		return Frame{buf: nil}, errShortBuf
+	}
+	return Frame{buf: buf}, nil
+}
 
 // Frame encapsulates the raw data of an IPv6 packet
 // and provides methods for manipulating, validating and
@@ -86,7 +98,7 @@ func (i6frm Frame) DestinationAddr() *[16]byte {
 	return (*[16]byte)(i6frm.buf[24:40])
 }
 
-func (i6frm Frame) crcWritePseudo(crc *lneto2.CRC791) {
+func (i6frm Frame) CRCWritePseudo(crc *lneto2.CRC791) {
 	crc.Write(i6frm.SourceAddr()[:])
 	crc.Write(i6frm.DestinationAddr()[:])
 	crc.AddUint32(uint32(i6frm.PayloadLength()))
@@ -97,5 +109,23 @@ func (i6frm Frame) crcWritePseudo(crc *lneto2.CRC791) {
 func (i6frm Frame) ClearHeader() {
 	for i := range i6frm.buf[:sizeHeader] {
 		i6frm.buf[i] = 0
+	}
+}
+
+//
+// Validate API.
+//
+
+var (
+	errShortFrame = errors.New("ipv6: short frame")
+	errShortBuf   = errors.New("ipv6: short buffer for frame")
+)
+
+// ValidateSize checks the frame's size fields and compares with the actual buffer
+// the frame. It returns a non-nil error on finding an inconsistency.
+func (i6frm Frame) ValidateSize(v *lneto2.Validator) {
+	tl := i6frm.PayloadLength()
+	if int(tl)+sizeHeader > len(i6frm.RawData()) {
+		v.AddError(errShortFrame)
 	}
 }

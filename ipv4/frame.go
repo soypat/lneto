@@ -7,6 +7,17 @@ import (
 	"github.com/soypat/lneto/lneto2"
 )
 
+// NewIPv4Frame returns a new IPv4Frame with data set to buf.
+// An error is returned if the buffer size is smaller than 20.
+// Users should still call [IPv4Frame.ValidateSize] before working
+// with payload/options of frames to avoid panics.
+func NewFrame(buf []byte) (Frame, error) {
+	if len(buf) < sizeHeader {
+		return Frame{buf: nil}, errors.New("ipv4: short buffer")
+	}
+	return Frame{buf: buf}, nil
+}
+
 // Frame encapsulates the raw data of an IPv4 packet
 // and provides methods for manipulating, validating and
 // retreiving fields and payload data. See [RFC791].
@@ -123,14 +134,14 @@ func (ifrm Frame) CalculateHeaderCRC() uint16 {
 	return crc.Sum16()
 }
 
-func (ifrm Frame) crcWriteTCPPseudo(crc *lneto2.CRC791) {
+func (ifrm Frame) CRCWriteTCPPseudo(crc *lneto2.CRC791) {
 	crc.Write(ifrm.SourceAddr()[:])
 	crc.Write(ifrm.DestinationAddr()[:])
 	crc.AddUint16(ifrm.TotalLength() - 4*uint16(ifrm.ihl()))
 	crc.AddUint16(uint16(ifrm.Protocol()))
 }
 
-func (ifrm Frame) crcWriteUDPPseudo(crc *lneto2.CRC791) {
+func (ifrm Frame) CRCWriteUDPPseudo(crc *lneto2.CRC791) {
 	crc.Write(ifrm.SourceAddr()[:])
 	crc.Write(ifrm.DestinationAddr()[:])
 	crc.AddUint16(uint16(ifrm.Protocol()))

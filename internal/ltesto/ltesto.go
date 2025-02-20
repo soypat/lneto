@@ -5,7 +5,9 @@ import (
 	"math"
 	"math/rand"
 
-	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/ipv4"
+	"github.com/soypat/lneto/lneto2"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -47,14 +49,14 @@ func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand, seg 
 		hasIPOpt  = ri&(1<<1) != 0
 		hasTCPOpt = ri&(1<<2) != 0
 	)
-	var etherType lneto.EtherType = lneto.EtherTypeIPv4
+	var etherType ethernet.Type = ethernet.TypeIPv4
 	var ipOpts []byte
 	if hasIPOpt {
 		ipOpts = []byte{1, 2, 3, 4}
 	}
 	ethsize := 14
 	if gen.EnableVLAN && isVLAN {
-		etherType = lneto.EtherTypeVLAN
+		etherType = ethernet.TypeVLAN
 		ethsize = 18
 	}
 	var tcpOpts []byte
@@ -66,7 +68,7 @@ func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand, seg 
 	tcpOptWlen := sizeWord(len(tcpOpts))
 	off := len(dst)
 	dst = append(dst, make([]byte, ethsize+sizeHeaderIPv4+4*int(ipOptWLen)+sizeHeaderTCP+4*int(tcpOptWlen)+int(seg.DATALEN))...)
-	efrm, err := lneto.NewEthFrame(dst[off:])
+	efrm, err := ethernet.NewFrame(dst[off:])
 	if err != nil {
 		panic(err)
 	}
@@ -75,11 +77,11 @@ func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand, seg 
 
 	efrm.SetEtherType(etherType)
 	if isVLAN {
-		efrm.SetVLANEtherType(lneto.EtherTypeIPv4)
+		efrm.SetVLANEtherType(ethernet.TypeIPv4)
 		efrm.SetVLANTag(1 << 4)
 	}
 	ethernetPayload := efrm.Payload()
-	ifrm, err := lneto.NewIPv4Frame(ethernetPayload)
+	ifrm, err := ipv4.NewFrame(ethernetPayload)
 	if err != nil {
 		panic(err)
 	}
@@ -89,13 +91,13 @@ func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand, seg 
 	ifrm.SetID(uint16(rng.Uint32()))
 	ifrm.SetFlags(0x4001) // Don't fragment.
 	ifrm.SetTTL(64)
-	ifrm.SetProtocol(lneto.IPProtoTCP)
+	ifrm.SetProtocol(lneto2.IPProtoTCP)
 	*ifrm.SourceAddr() = gen.SrcIPv4
 	*ifrm.DestinationAddr() = gen.DstIPv4
 	ifrm.SetCRC(ifrm.CalculateHeaderCRC())
 
 	ipPayload := ifrm.Payload()
-	tfrm, err := lneto.NewTCPFrame(ipPayload)
+	tfrm, err := tcp.NewFrame(ipPayload)
 	if err != nil {
 		panic(err)
 	}
@@ -120,8 +122,11 @@ func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand, seg 
 	// Set Variable section of data.
 	copy(ifrm.Options(), ipOpts)
 	copy(tfrm.Options(), tcpOpts)
-	tcpCRC := tfrm.CalculateIPv4CRC(ifrm)
-	tfrm.SetCRC(tcpCRC)
+	var crc lneto2.CRC791
+	ifrm.CRCWriteTCPPseudo(&crc)
+	tfrm.CRCWrite(&crc)
+
+	tfrm.SetCRC(crc.Sum16())
 	switch {
 	case gen.SrcTCP != tfrm.SourcePort():
 		panic("IP options overwrite TCP header")
@@ -136,7 +141,7 @@ func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand, seg 
 	case len(tcpPayload) > 0 && firstPayloadByte != tcpPayload[0]:
 		panic("TCP options overwrite payload")
 	}
-	var vld lneto.Validator
+	var vld lneto2.Validator
 	efrm.ValidateSize(&vld)
 	if err = vld.Err(); err != nil {
 		panic(err)
