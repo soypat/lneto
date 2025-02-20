@@ -33,6 +33,11 @@ type Handler struct {
 	closing bool
 }
 
+func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
+	h.logger.log = handler
+	h.scb.logger.log = scb
+}
+
 func (h *Handler) State() State { return h.scb.State() }
 
 func (h *Handler) SetBuffers(txbuf, rxbuf []byte, packets int) error {

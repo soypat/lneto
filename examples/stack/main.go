@@ -1,13 +1,19 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/netip"
+	"net/url"
+	"os"
+	"time"
 
 	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/ethernet"
@@ -23,6 +29,7 @@ const (
 	iface     = "192.168.10.1/24"
 	stackIP   = "192.168.10.2"
 	stackPort = 80
+	iss       = 100
 )
 
 var stackHWAddr = [6]byte{0xc0, 0xff, 0xee, 0x00, 0xde, 0xad}
@@ -40,21 +47,27 @@ func main() {
 		log.Fatal(err)
 	}
 
-	tap, err := internal.NewTap("tap0", iface)
-	if err != nil {
-		log.Fatal(err)
-	}
-	const port, iss = 80, 300
-	err = handler.OpenListen(port, iss)
-	if err != nil {
-		log.Fatal(err)
-	}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	}))
+	handler.SetLoggers(logger, logger)
 
+	err = handler.OpenListen(addrPort.Port(), iss)
+	if err != nil {
+		log.Fatal(err)
+	}
+	tap := NewHTTPTap("http://127.0.0.1:7070")
+	// tap, err := internal.NewTap("tap0", iface)
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer tap.Close()
+	fmt.Println("hosting server at ", addrPort.String())
 	var buf [mtu]byte
 	for {
 		n, err := tap.Read(buf[:])
 		if err != nil {
+			slogger.error("tap-err", slog.String("err", err.Error()))
 			log.Fatal(err)
 		} else if n > 0 {
 			err = lStack.RecvEth(buf[:n])
@@ -63,6 +76,8 @@ func main() {
 			} else {
 				slogger.info("recv", slog.Int("plen", n))
 			}
+		} else if n == 0 {
+			time.Sleep(250 * time.Millisecond)
 		}
 		n, err = lStack.HandleEth(buf[:])
 		if err != nil {
@@ -519,3 +534,56 @@ func addHandler(handlers []handler, h Handler, remoteAddr []byte, lport uint16) 
 	hh.lport = lport
 	return handlers
 }
+
+func NewHTTPTap(baseURL string) *HTTPTap {
+	var h HTTPTap
+	h.sendurl = baseURL + "/send"
+	h.recvurl = baseURL + "/recv"
+	_, err := url.Parse(h.sendurl)
+	if err != nil {
+		panic(err)
+	}
+	var data [2048]byte
+	var n int = -1
+	for n != 0 {
+		n, _ = h.Read(data[:]) // Empty remote data.
+	}
+	return &h
+}
+
+type HTTPTap struct {
+	c       http.Client
+	recvurl string
+	sendurl string
+}
+
+func (h *HTTPTap) Read(b []byte) (int, error) {
+	resp, err := h.c.Get(h.recvurl)
+	if err != nil {
+		return 0, err
+	} else if resp.StatusCode != 200 {
+		return 0, errors.New(resp.Status + " for " + h.recvurl)
+	}
+	var data []byte
+	err = json.NewDecoder(resp.Body).Decode(&data)
+	if err != nil {
+		return 0, err
+	} else if len(b) < len(data) {
+		return 0, fmt.Errorf("got too large packet %d for buffer %d", len(data), len(b))
+	}
+	copy(b, data)
+	return len(data), nil
+}
+
+func (h *HTTPTap) Write(b []byte) (int, error) {
+	data, _ := json.Marshal(b)
+	resp, err := h.c.Post(h.sendurl, "application/json", bytes.NewReader(data))
+	if err != nil {
+		return 0, err
+	} else if resp.StatusCode != 200 {
+		return 0, errors.New(resp.Status + " for " + h.sendurl)
+	}
+	return len(b), nil
+}
+
+func (h *HTTPTap) Close() error { return nil }
