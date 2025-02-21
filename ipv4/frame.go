@@ -3,6 +3,8 @@ package ipv4
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"net/netip"
 
 	"github.com/soypat/lneto/lneto2"
 )
@@ -217,4 +219,17 @@ func (ifrm Frame) ValidateExceptCRC(v *lneto2.Validator) {
 	if v.Flags()&lneto2.ValidateEvilBit != 0 && flags.IsEvil() {
 		v.AddError(errEvil)
 	}
+}
+
+func (ifrm Frame) String() string {
+	dst := netip.AddrFrom4(*ifrm.DestinationAddr())
+	src := netip.AddrFrom4(*ifrm.SourceAddr())
+
+	hl := ifrm.HeaderLength()
+	tl := int(ifrm.TotalLength())
+	ttl := ifrm.TTL()
+	id := ifrm.ID()
+	proto := ifrm.Protocol()
+	tos := ifrm.ToS()
+	return fmt.Sprintf("IP %s SRC=%s DST=%s LEN=%d OPT=%d TTL=%d ID=%d ToS=0x%x", proto.String(), src.String(), dst.String(), tl, tl-hl, ttl, id, tos)
 }

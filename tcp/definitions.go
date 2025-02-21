@@ -73,6 +73,13 @@ func (seg Segment) isFirstSYN() bool {
 	return seg.Flags == FlagSYN && seg.ACK == 0 && seg.DATALEN == 0 && seg.WND > 0
 }
 
+func (seg Segment) String() string {
+	if seg.DATALEN == 0 {
+		return fmt.Sprintf("SEG %s ACK=%d SEQ=%d WND=%d", seg.Flags, seg.ACK, seg.SEQ, seg.WND)
+	}
+	return fmt.Sprintf("SEG %s ACK=%d SEQ=%d WND=%d DATALEN=%d", seg.Flags, seg.ACK, seg.SEQ, seg.WND, seg.DATALEN)
+}
+
 // ClientSynSegment is a the first packet sent over a TCP connection to a server. Typically the client
 // will call ClientSynSegment to generate a new SYN packet to send over to the server to initiate communications:
 //

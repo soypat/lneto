@@ -394,6 +394,7 @@ func (ts *TCPStack) Recv(ipFrame []byte, tcpOff int) error {
 	case 4:
 		ifrm, _ := ipv4.NewFrame(ipFrame)
 		ifrm.CRCWriteTCPPseudo(&ts.crc)
+		ts.log.Info("tcpStack:recv", slog.String("ipfrm", ifrm.String()), slog.String("frame", tfrm.String()))
 	case 6:
 		i6frm, _ := ipv6.NewFrame(ipFrame)
 		i6frm.CRCWritePseudo(&ts.crc)
@@ -435,6 +436,7 @@ func (ts *TCPStack) Handle(ipFrame []byte, tcpOff int) (n int, err error) {
 	}
 	// TCP packet written.
 	tfrm, _ := tcp.NewFrame(ipFrame[tcpOff : tcpOff+n])
+
 	ts.validator.ResetErr()
 	tfrm.ValidateSize(&ts.validator) // Perform basic validation.
 	if err = ts.validator.Err(); err != nil {
@@ -445,6 +447,7 @@ func (ts *TCPStack) Handle(ipFrame []byte, tcpOff int) (n int, err error) {
 	case 4:
 		ifrm, _ := ipv4.NewFrame(ipFrame)
 		ifrm.CRCWriteTCPPseudo(&ts.crc)
+		ts.log.Info("tcpStack:send", slog.String("ipfrm", ifrm.String()), slog.String("frame", tfrm.String()))
 	case 6:
 		i6frm, _ := ipv6.NewFrame(ipFrame)
 		i6frm.CRCWritePseudo(&ts.crc)

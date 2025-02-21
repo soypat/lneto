@@ -11,7 +11,8 @@ import (
 )
 
 var (
-	errMismatchedPort = errors.New("mismatched port")
+	errMismatchedSrcPort = errors.New("source port mismatch")
+	errMismatchedDstPort = errors.New("destination port mismatch")
 )
 
 // Handler is a low level TCP handling data structure. It implements logic
@@ -120,13 +121,14 @@ func (h *Handler) Recv(b []byte) error {
 	if err != nil {
 		return err
 	}
+
 	remotePort := tfrm.SourcePort()
 	if h.remotePort != 0 && remotePort != h.remotePort {
-		return errMismatchedPort
+		return errMismatchedSrcPort
 	}
 	dstPort := tfrm.DestinationPort()
 	if h.localPort != dstPort {
-		return errMismatchedPort
+		return errMismatchedDstPort
 	}
 	payload := tfrm.Payload()
 	if len(payload) > h.bufRx.Free() {
@@ -159,6 +161,9 @@ func (h *Handler) Recv(b []byte) error {
 		// Remote reached out and has given us their port, set it on our side.
 		h.debug("tcp.Handler:rx-remoteport-set", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("remoteport", uint64(remotePort)))
 		h.remotePort = remotePort
+	}
+	if h.logenabled(internal.LevelTrace) {
+		h.trace("tcp.Handler:rx-done", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("remoteport", uint64(remotePort)), slog.String("seg", segIncoming.String()))
 	}
 	return nil
 }

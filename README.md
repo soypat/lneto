@@ -27,4 +27,11 @@ go mod download github.com/soypat/lneto@latest
 ```
 
 
+## Developing (linux)
 
+- [`tap`](./examples/tap) (linux only, root privilidges required) Program opens a TAP interface and assigns an IP address to it and exposes the interface via a HTTP interface. This program is run with root privilidges to facilitate debugging of lneto since no root privilidges are required to interact with the HTTP interface exposed.
+    - `POST http://127.0.0.1:7070/send`: Receives a POST with request body containing JSON string of data to send over TAP interface. Response contains only status code.
+    - `GET http://127.0.0.1:7070/recv`: Receives a GET request. Response contains a JSON string of oldest unread TAP interface packet. If string is empty then there is no more data to read.
+
+- [`stack`](./examples/stack) Contains stack implementation which can interact with `tap` program. No root privilidges required.
+    - Can expose a HTTP server.

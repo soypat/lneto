@@ -174,8 +174,10 @@ func (frm Frame) ClearHeader() {
 }
 
 func (tfrm Frame) String() string {
+	src := tfrm.SourcePort()
+	dst := tfrm.DestinationPort()
 	seg := tfrm.Segment(len(tfrm.Payload()))
-	return fmt.Sprintf("%+v", seg)
+	return fmt.Sprintf("TCP :%d -> :%d %s", src, dst, seg.String())
 }
 
 //
