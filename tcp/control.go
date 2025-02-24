@@ -153,17 +153,18 @@ func (tcb *ControlBlock) Open(iss Value, wnd Size) (err error) {
 		tcb.logerr("tcb:open", slog.String("err", err.Error()))
 		return err
 	}
-	tcb._state = StateListen
-	tcb.prepareToHandshake(iss, wnd)
+
+	tcb.prepareToHandshake(iss, wnd, StateListen)
 	tcb.trace("tcb:open-server")
 	return nil
 }
 
 // prepareToHandshake initializes the TCB send/receive spaces with initial send sequence number and local window.
-func (tcb *ControlBlock) prepareToHandshake(iss Value, wnd Size) {
+func (tcb *ControlBlock) prepareToHandshake(iss Value, wnd Size, newState State) {
+	tcb.reset()
 	tcb.resetRcv(wnd, 0)
 	tcb.resetSnd(iss, 1)
-	tcb.pending = [2]Flags{}
+	tcb._state = newState
 }
 
 // HasPending returns true if there is a pending control segment to send. Calls to Send will advance the pending queue.
@@ -256,7 +257,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	case StateCloseWait:
 	case StateLastAck:
 		if seg.Flags.HasAny(FlagACK) {
-			tcb.close()
+			tcb.Abort()
 		}
 	case StateClosing:
 		// Thanks to @knieriem for finding and reporting this bug.
@@ -309,21 +310,16 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 	switch tcb._state {
 	case StateClosed:
 		if seg.Flags == FlagSYN {
-			tcb._state = StateSynSent
-			tcb.prepareToHandshake(seg.SEQ, seg.WND)
+			tcb.prepareToHandshake(seg.SEQ, seg.WND, StateSynSent)
 			tcb.trace("tcb:open-client")
 		}
-	case StateSynRcvd:
+	case StateSynRcvd, StateEstablished:
 		if hasFIN {
 			tcb._state = StateFinWait1 // RFC 9293: 3.10.4 CLOSE call.
 		}
 	case StateClosing:
 		if hasACK {
 			tcb._state = StateTimeWait
-		}
-	case StateEstablished:
-		if hasFIN {
-			tcb._state = StateFinWait1
 		}
 	case StateCloseWait:
 		if hasFIN {
@@ -494,7 +490,7 @@ func (tcb *ControlBlock) handleRST(seq Value) error {
 		tcb.resetSnd(tcb.snd.ISS+tcb.rstJump(), tcb.snd.WND)
 		tcb.resetRcv(tcb.rcv.WND, 3_14159_2653^tcb.rcv.IRS)
 	} else {
-		tcb.close() // Enter closed state and return.
+		tcb.Abort() // Enter closed state and return.
 		return net.ErrClosed
 	}
 	return errDropSegment
@@ -504,13 +500,17 @@ func (tcb *ControlBlock) rstJump() Value {
 	return 100
 }
 
-// close sets ControlBlock state to closed and resets all sequence numbers and pending flag.
-func (tcb *ControlBlock) close() {
-	tcb._state = StateClosed
-	tcb.pending = [2]Flags{}
-	tcb.resetRcv(0, 0)
-	tcb.resetSnd(0, 0)
-	tcb.debug("tcb:close")
+// Abort sets ControlBlock state to Closed and resets all sequence numbers and pending flag.
+// No more data can be sent nor received after the connection is aborted until opened again.
+func (tcb *ControlBlock) Abort() {
+	tcb.reset()
+	tcb.debug("tcb:abort")
+}
+
+func (tcb *ControlBlock) reset() {
+	*tcb = ControlBlock{
+		logger: tcb.logger,
+	}
 }
 
 // Close implements a passive/active closing of a connection. It does not immediately
@@ -521,15 +521,18 @@ func (tcb *ControlBlock) Close() (err error) {
 	// See RFC 9293: 3.10.4 CLOSE call.
 	switch tcb._state {
 	case StateClosed:
-		err = errConnNotexist
+		err = errConnNotExist
 	case StateCloseWait:
 		tcb._state = StateLastAck
 		tcb.pending = [2]Flags{FlagFIN, FlagACK}
 	case StateListen, StateSynSent:
-		tcb.close()
+		// In Listen State there is no established connection.
+		// In SynSent the remote endpoint is not yet synchronized and upon receiving an RST will abort connection.
+		tcb.Abort()
 	case StateSynRcvd, StateEstablished:
 		// We suppose user has no more pending data to send, so we flag FIN to be sent.
 		// Users of this API should call Close only when they have no more data to send.
+		// When FIN is sent SCB will transition to FinWait1.
 		tcb.pending[0] = (tcb.pending[0] & FlagACK) | FlagFIN
 	case StateFinWait2, StateTimeWait:
 		err = errConnectionClosing

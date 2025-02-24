@@ -56,39 +56,38 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	tap := NewHTTPTap("http://127.0.0.1:7070")
-	// tap, err := internal.NewTap("tap0", iface)
-	if err != nil {
-		log.Fatal(err)
-	}
 	defer tap.Close()
+
 	fmt.Println("hosting server at ", addrPort.String())
 	var buf [mtu]byte
 	for {
-		n, err := tap.Read(buf[:])
+		nread, err := tap.Read(buf[:])
 		if err != nil {
 			slogger.error("tap-err", slog.String("err", err.Error()))
 			log.Fatal(err)
-		} else if n > 0 {
-			err = lStack.RecvEth(buf[:n])
+		} else if nread > 0 {
+			err = lStack.RecvEth(buf[:nread])
 			if err != nil {
-				slogger.error("recv", slog.String("err", err.Error()), slog.Int("plen", n))
+				slogger.error("recv", slog.String("err", err.Error()), slog.Int("plen", nread))
 			} else {
-				slogger.info("recv", slog.Int("plen", n))
+				slogger.info("recv", slog.Int("plen", nread))
 			}
-		} else if n == 0 {
-			time.Sleep(250 * time.Millisecond)
 		}
-		n, err = lStack.HandleEth(buf[:])
+		nw, err := lStack.HandleEth(buf[:])
 		if err != nil {
 			slogger.error("handle", slog.String("err", err.Error()))
-		} else if n > 0 {
-			_, err = tap.Write(buf[:n])
+		} else if nw > 0 {
+			_, err = tap.Write(buf[:nw])
 			if err != nil {
 				log.Fatal(err)
 			} else {
-				slogger.info("write", slog.Int("plen", n))
+				slogger.info("write", slog.Int("plen", nw))
 			}
+		}
+		if nread == 0 && nw == 0 {
+			time.Sleep(5 * time.Millisecond)
 		}
 	}
 }
@@ -337,6 +336,10 @@ func (is *IPv4Stack) Handle(ethFrame []byte, ipOff int) (int, error) {
 			ifrm.SetFlags(dontFrag)
 			ifrm.SetTTL(64)
 			ifrm.SetCRC(ifrm.CalculateHeaderCRC())
+			if ifrm.Protocol() == lneto2.IPProtoTCP {
+				tfrm, _ := tcp.NewFrame(ifrm.Payload())
+				is.info("IPv4Stack:send", slog.String("ip", ifrm.String()), slog.String("tcp", tfrm.String()))
+			}
 			return totalLen, nil
 		}
 	}
@@ -347,7 +350,6 @@ type TCPStack struct {
 	validator lneto2.Validator
 	handlers  []handler
 	logger
-	crc lneto2.CRC791
 }
 
 func (ts *TCPStack) Protocol() uint32 { return uint32(lneto2.IPProtoTCP) }
@@ -389,20 +391,9 @@ func (ts *TCPStack) Recv(ipFrame []byte, tcpOff int) error {
 	if err = ts.validator.Err(); err != nil {
 		return err
 	}
-	ts.crc.Reset()
-	switch ipVersion {
-	case 4:
-		ifrm, _ := ipv4.NewFrame(ipFrame)
-		ifrm.CRCWriteTCPPseudo(&ts.crc)
-		ts.log.Info("tcpStack:recv", slog.String("ipfrm", ifrm.String()), slog.String("frame", tfrm.String()))
-	case 6:
-		i6frm, _ := ipv6.NewFrame(ipFrame)
-		i6frm.CRCWritePseudo(&ts.crc)
-	}
-	tfrm.CRCWrite(&ts.crc)
-	crc := ts.crc.Sum16()
+	crc := tcpChecksum(ipFrame, len(tfrm.RawData()))
 	gotCRC := tfrm.CRC()
-	if ts.crc.Sum16() != gotCRC {
+	if crc != gotCRC {
 		ts.error("TCPStack:Recv:crc-mismatch", slog.Uint64("lport", uint64(lport)), slog.Uint64("want", uint64(crc)), slog.Uint64("got", uint64(gotCRC)))
 		return errors.New("TCP crc mismatch")
 	}
@@ -428,6 +419,7 @@ func (ts *TCPStack) Handle(ipFrame []byte, tcpOff int) (n int, err error) {
 			}
 		}
 		if n > 0 {
+			ipFrame = ipFrame[:tcpOff+n]
 			break
 		}
 	}
@@ -435,24 +427,14 @@ func (ts *TCPStack) Handle(ipFrame []byte, tcpOff int) (n int, err error) {
 		return 0, err
 	}
 	// TCP packet written.
-	tfrm, _ := tcp.NewFrame(ipFrame[tcpOff : tcpOff+n])
+	tfrm, _ := tcp.NewFrame(ipFrame[tcpOff:])
 
 	ts.validator.ResetErr()
 	tfrm.ValidateSize(&ts.validator) // Perform basic validation.
 	if err = ts.validator.Err(); err != nil {
 		return 0, err
 	}
-	ts.crc.Reset()
-	switch ipVersion {
-	case 4:
-		ifrm, _ := ipv4.NewFrame(ipFrame)
-		ifrm.CRCWriteTCPPseudo(&ts.crc)
-		ts.log.Info("tcpStack:send", slog.String("ipfrm", ifrm.String()), slog.String("frame", tfrm.String()))
-	case 6:
-		i6frm, _ := ipv6.NewFrame(ipFrame)
-		i6frm.CRCWritePseudo(&ts.crc)
-	}
-	crc := ts.crc.Sum16()
+	crc := tcpChecksum(ipFrame, n)
 	tfrm.SetCRC(crc)
 	return n, nil
 }
@@ -554,6 +536,12 @@ func NewHTTPTap(baseURL string) *HTTPTap {
 	return &h
 }
 
+type TAPNop struct{}
+
+func (h *TAPNop) Read(b []byte) (int, error)  { return 0, nil }
+func (h *TAPNop) Write(b []byte) (int, error) { return 0, nil }
+func (h *TAPNop) Close() error                { return nil }
+
 type HTTPTap struct {
 	c       http.Client
 	recvurl string
@@ -590,3 +578,30 @@ func (h *HTTPTap) Write(b []byte) (int, error) {
 }
 
 func (h *HTTPTap) Close() error { return nil }
+
+func tcpChecksum(ipFrame []byte, tcpPayload int) uint16 {
+	version := ipFrame[0] >> 4
+	var tfrm tcp.Frame
+	var crc lneto2.CRC791
+	switch version {
+	case 4:
+		ifrm, _ := ipv4.NewFrame(ipFrame)
+		crc.Write(ifrm.SourceAddr()[:])
+		crc.Write(ifrm.DestinationAddr()[:])
+		crc.AddUint16(uint16(tcpPayload))
+		crc.AddUint16(6)
+		tfrm, _ = tcp.NewFrame(ifrm.Payload())
+	case 6:
+		i6frm, _ := ipv6.NewFrame(ipFrame)
+		crc.Write(i6frm.SourceAddr()[:])
+		crc.Write(i6frm.DestinationAddr()[:])
+		crc.AddUint32(uint32(tcpPayload))
+		crc.AddUint32(6)
+		i6frm.CRCWritePseudo(&crc)
+		tfrm, _ = tcp.NewFrame(i6frm.Payload())
+	default:
+		panic("invalid IP version")
+	}
+	tfrm.CRCWrite(&crc)
+	return crc.Sum16()
+}

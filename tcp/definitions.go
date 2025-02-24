@@ -19,7 +19,7 @@ var (
 	errBufferTooSmall        = errors.New("buffer too small")
 	errNeedClosedTCBToOpen   = errors.New("need closed TCB to call open")
 	errInvalidState          = errors.New("invalid state")
-	errConnNotexist          = errors.New("connection does not exist")
+	errConnNotExist          = errors.New("connection does not exist")
 	errConnectionClosing     = errors.New("connection closing")
 	errExpectedSYN           = errors.New("seqs:expected SYN")
 	errBadSegack             = errors.New("seqs:bad segack")
@@ -286,7 +286,7 @@ func (s State) IsPreestablished() bool {
 // IsClosing returns true if the connection is in a closing state but not yet terminated (relieved of remote connection state).
 // Returns false for Closed pseudo state.
 func (s State) IsClosing() bool {
-	return !(s <= StateEstablished)
+	return s == StateFinWait1 || s == StateFinWait2 || s == StateClosing || s == StateLastAck || s == StateCloseWait
 }
 
 // IsClosed returns true if the connection closed and can possibly relieved of
@@ -297,7 +297,19 @@ func (s State) IsClosed() bool {
 
 // IsSynchronized returns true if the connection has gone through the Established state.
 func (s State) IsSynchronized() bool {
-	return s >= StateEstablished
+	return s >= StateEstablished && !s.IsClosed()
+}
+
+// txOpen returns true if the TCP state machine allows data to be sent by user.
+func (s State) txOpen() bool {
+	// In CloseWait state the remote endpoint has closed
+	// our receive hald of the connection but we can still transmit indefinitely.
+	return s == StateEstablished || s == StateCloseWait
+}
+
+// rxOpen returns true if the TCP state machine allows data to be received from remote endpoint.
+func (s State) rxOpen() bool {
+	return s == StateEstablished || s == StateFinWait1 || s == StateFinWait2
 }
 
 // IsDataOpen returns true if the connection allows sending and receiving of data.

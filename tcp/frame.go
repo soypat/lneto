@@ -128,7 +128,7 @@ func (tfrm Frame) Payload() []byte {
 
 // Segment returns the [Segment] representation of the TCP header and data length.
 func (tfrm Frame) Segment(payloadSize int) Segment {
-	if payloadSize > math.MaxUint32 {
+	if payloadSize > math.MaxInt32 {
 		panic("TCP overflow payload size")
 	}
 	return Segment{
