@@ -15,12 +15,12 @@ import (
 	"os"
 	"time"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/ipv6"
-	"github.com/soypat/lneto/lneto2"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -203,7 +203,7 @@ func (ls *LinkStack) RecvEth(ethFrame []byte) (err error) {
 	if !efrm.IsBroadcast() && ls.mac != *dstaddr {
 		return fmt.Errorf("incoming %s mismatch hwaddr %s", etype.String(), net.HardwareAddr(dstaddr[:]).String())
 	}
-	var vld lneto2.Validator
+	var vld lneto.Validator
 	efrm.ValidateSize(&vld)
 	if err := vld.Err(); err != nil {
 		return err
@@ -245,7 +245,7 @@ func (ls *LinkStack) HandleEth(dst []byte) (n int, err error) {
 
 type IPv4Stack struct {
 	ip        [4]byte
-	validator lneto2.Validator
+	validator lneto.Validator
 	handlers  []handler
 	logger
 }
@@ -315,7 +315,7 @@ func (is *IPv4Stack) Handle(ethFrame []byte, ipOff int) (int, error) {
 	ifrm.SetToS(0)
 	for i := range is.handlers {
 		h := &is.handlers[i]
-		proto := lneto2.IPProto(h.proto)
+		proto := lneto.IPProto(h.proto)
 		ifrm.SetProtocol(proto)
 		if len(h.raddr) == 4 {
 			copy(ifrm.DestinationAddr()[:], h.raddr)
@@ -336,7 +336,7 @@ func (is *IPv4Stack) Handle(ethFrame []byte, ipOff int) (int, error) {
 			ifrm.SetFlags(dontFrag)
 			ifrm.SetTTL(64)
 			ifrm.SetCRC(ifrm.CalculateHeaderCRC())
-			if ifrm.Protocol() == lneto2.IPProtoTCP {
+			if ifrm.Protocol() == lneto.IPProtoTCP {
 				tfrm, _ := tcp.NewFrame(ifrm.Payload())
 				is.info("IPv4Stack:send", slog.String("ip", ifrm.String()), slog.String("tcp", tfrm.String()))
 			}
@@ -347,12 +347,12 @@ func (is *IPv4Stack) Handle(ethFrame []byte, ipOff int) (int, error) {
 }
 
 type TCPStack struct {
-	validator lneto2.Validator
+	validator lneto.Validator
 	handlers  []handler
 	logger
 }
 
-func (ts *TCPStack) Protocol() uint32 { return uint32(lneto2.IPProtoTCP) }
+func (ts *TCPStack) Protocol() uint32 { return uint32(lneto.IPProtoTCP) }
 
 func (ts *TCPStack) Register(h Handler, lport uint16) error {
 	if lport == 0 {
@@ -468,7 +468,7 @@ type TCPPort struct {
 	handler tcp.Handler
 }
 
-func (tp *TCPPort) Protocol() uint32 { return uint32(lneto2.IPProtoTCP) }
+func (tp *TCPPort) Protocol() uint32 { return uint32(lneto.IPProtoTCP) }
 
 func (tp *TCPPort) Recv(tcpFrame []byte, off int) error {
 	if off != 0 {
@@ -582,7 +582,7 @@ func (h *HTTPTap) Close() error { return nil }
 func tcpChecksum(ipFrame []byte, tcpPayload int) uint16 {
 	version := ipFrame[0] >> 4
 	var tfrm tcp.Frame
-	var crc lneto2.CRC791
+	var crc lneto.CRC791
 	switch version {
 	case 4:
 		ifrm, _ := ipv4.NewFrame(ipFrame)

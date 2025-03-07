@@ -1,4 +1,4 @@
-package lneto2
+package lneto
 
 //go:generate stringer -type=IPProto -linecomment -output stringers.go .
 

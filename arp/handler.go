@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"errors"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
-	"github.com/soypat/lneto/lneto2"
 )
 
 type Handler struct {
@@ -133,7 +133,7 @@ func (c *Handler) Recv(b []byte) error {
 	if err != nil {
 		return err
 	}
-	var vld lneto2.Validator
+	var vld lneto.Validator
 	afrm.ValidateSize(&vld)
 	if vld.HasError() {
 		return vld.Err()

@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/ipv4"
-	"github.com/soypat/lneto/lneto2"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -586,7 +586,7 @@ func TestExchange_helloworld_client(t *testing.T) {
 }
 
 func parseSegment(t *testing.T, b []byte) (tcp.Segment, []byte) {
-	var vld lneto2.Validator
+	var vld lneto.Validator
 	t.Helper()
 	efrm, err := ethernet.NewFrame(b)
 	if err != nil {

@@ -1,4 +1,4 @@
-package lneto2
+package lneto
 
 import (
 	"encoding/binary"

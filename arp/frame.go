@@ -7,8 +7,8 @@ import (
 	"net"
 	"net/netip"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
-	"github.com/soypat/lneto/lneto2"
 )
 
 // NewARPFrame returns a ARPFrame with data set to buf.
@@ -135,7 +135,7 @@ func (afrm Frame) SwapTargetSender() {
 //
 // ValidateSize checks the frame's size fields and compares with the actual buffer
 // the frame. It returns a non-nil error on finding an inconsistency.
-func (afrm Frame) ValidateSize(v *lneto2.Validator) {
+func (afrm Frame) ValidateSize(v *lneto.Validator) {
 	_, hlen := afrm.Hardware()
 	_, ilen := afrm.Protocol()
 	minLen := 8 + 2*(hlen+ilen)

@@ -6,8 +6,8 @@ import (
 
 	"log/slog"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
-	"github.com/soypat/lneto/lneto2"
 )
 
 var (
@@ -24,7 +24,7 @@ type Handler struct {
 	bufTx ringTx
 	bufRx internal.Ring
 	logger
-	validator  lneto2.Validator
+	validator  lneto.Validator
 	localPort  uint16
 	remotePort uint16
 	// connid is a conenction counter that is incremented each time a new

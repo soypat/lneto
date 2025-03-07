@@ -5,9 +5,9 @@ import (
 	"math"
 	"math/rand"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/ipv4"
-	"github.com/soypat/lneto/lneto2"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -91,7 +91,7 @@ func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand, seg 
 	ifrm.SetID(uint16(rng.Uint32()))
 	ifrm.SetFlags(0x4001) // Don't fragment.
 	ifrm.SetTTL(64)
-	ifrm.SetProtocol(lneto2.IPProtoTCP)
+	ifrm.SetProtocol(lneto.IPProtoTCP)
 	*ifrm.SourceAddr() = gen.SrcIPv4
 	*ifrm.DestinationAddr() = gen.DstIPv4
 	ifrm.SetCRC(ifrm.CalculateHeaderCRC())
@@ -122,7 +122,7 @@ func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand, seg 
 	// Set Variable section of data.
 	copy(ifrm.Options(), ipOpts)
 	copy(tfrm.Options(), tcpOpts)
-	var crc lneto2.CRC791
+	var crc lneto.CRC791
 	ifrm.CRCWriteTCPPseudo(&crc)
 	tfrm.CRCWrite(&crc)
 
@@ -141,7 +141,7 @@ func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand, seg 
 	case len(tcpPayload) > 0 && firstPayloadByte != tcpPayload[0]:
 		panic("TCP options overwrite payload")
 	}
-	var vld lneto2.Validator
+	var vld lneto.Validator
 	efrm.ValidateSize(&vld)
 	if err = vld.Err(); err != nil {
 		panic(err)

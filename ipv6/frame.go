@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 
-	"github.com/soypat/lneto/lneto2"
+	"github.com/soypat/lneto"
 )
 
 // NewIPv6Frame returns a new IPv6Frame with data set to buf.
@@ -67,12 +67,12 @@ func (i6frm Frame) SetPayloadLength(pl uint16) {
 
 // NextHeader returns the Next Header field of the IPv6 header which usually specifies the transport layer
 // protocol used by packet's payload.
-func (i6frm Frame) NextHeader() lneto2.IPProto {
-	return lneto2.IPProto(i6frm.buf[6])
+func (i6frm Frame) NextHeader() lneto.IPProto {
+	return lneto.IPProto(i6frm.buf[6])
 }
 
 // SetNextHeader sets the Next Header (protocol) field of the IPv6 header. See [Frame.NextHeader].
-func (i6frm Frame) SetNextHeader(proto lneto2.IPProto) {
+func (i6frm Frame) SetNextHeader(proto lneto.IPProto) {
 	i6frm.buf[6] = uint8(proto)
 }
 
@@ -98,7 +98,7 @@ func (i6frm Frame) DestinationAddr() *[16]byte {
 	return (*[16]byte)(i6frm.buf[24:40])
 }
 
-func (i6frm Frame) CRCWritePseudo(crc *lneto2.CRC791) {
+func (i6frm Frame) CRCWritePseudo(crc *lneto.CRC791) {
 	crc.Write(i6frm.SourceAddr()[:])
 	crc.Write(i6frm.DestinationAddr()[:])
 	crc.AddUint32(uint32(i6frm.PayloadLength()))
@@ -123,7 +123,7 @@ var (
 
 // ValidateSize checks the frame's size fields and compares with the actual buffer
 // the frame. It returns a non-nil error on finding an inconsistency.
-func (i6frm Frame) ValidateSize(v *lneto2.Validator) {
+func (i6frm Frame) ValidateSize(v *lneto.Validator) {
 	tl := i6frm.PayloadLength()
 	if int(tl)+sizeHeader > len(i6frm.RawData()) {
 		v.AddError(errShortFrame)

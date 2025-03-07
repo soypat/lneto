@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 
-	"github.com/soypat/lneto/lneto2"
+	"github.com/soypat/lneto"
 )
 
 // NewIPv4Frame returns a new IPv4Frame with data set to buf.
@@ -113,10 +113,10 @@ func (ifrm Frame) SetTTL(ttl uint8) { ifrm.buf[8] = ttl }
 
 // Protocol field defines the protocol used in the data portion of the IP datagram. TCP is 6, UDP is 17.
 // See [IPProto].
-func (ifrm Frame) Protocol() lneto2.IPProto { return lneto2.IPProto(ifrm.buf[9]) }
+func (ifrm Frame) Protocol() lneto.IPProto { return lneto.IPProto(ifrm.buf[9]) }
 
-// SetProtocol sets protocol field. See [Frame.Protocol] and [lneto2.IPProto].
-func (ifrm Frame) SetProtocol(proto lneto2.IPProto) { ifrm.buf[9] = uint8(proto) }
+// SetProtocol sets protocol field. See [Frame.Protocol] and [lneto.IPProto].
+func (ifrm Frame) SetProtocol(proto lneto.IPProto) { ifrm.buf[9] = uint8(proto) }
 
 // CRC returns the cyclic-redundancy-check (checksum) field of the IPv4 header.
 func (ifrm Frame) CRC() uint16 {
@@ -130,20 +130,20 @@ func (ifrm Frame) SetCRC(cs uint16) {
 
 // CalculateHeaderCRC calculates the CRC for this IPv4 frame.
 func (ifrm Frame) CalculateHeaderCRC() uint16 {
-	var crc lneto2.CRC791
+	var crc lneto.CRC791
 	crc.Write(ifrm.buf[0:10])
 	crc.Write(ifrm.buf[12:20])
 	return crc.Sum16()
 }
 
-func (ifrm Frame) CRCWriteTCPPseudo(crc *lneto2.CRC791) {
+func (ifrm Frame) CRCWriteTCPPseudo(crc *lneto.CRC791) {
 	crc.Write(ifrm.SourceAddr()[:])
 	crc.Write(ifrm.DestinationAddr()[:])
 	crc.AddUint16(ifrm.TotalLength() - 4*uint16(ifrm.ihl()))
 	crc.AddUint16(uint16(ifrm.Protocol()))
 }
 
-func (ifrm Frame) CRCWriteUDPPseudo(crc *lneto2.CRC791) {
+func (ifrm Frame) CRCWriteUDPPseudo(crc *lneto.CRC791) {
 	crc.Write(ifrm.SourceAddr()[:])
 	crc.Write(ifrm.DestinationAddr()[:])
 	crc.AddUint16(uint16(ifrm.Protocol()))
@@ -195,7 +195,7 @@ var (
 
 // ValidateSize checks the frame's size fields and compares with the actual buffer
 // the frame. It returns a non-nil error on finding an inconsistency.
-func (ifrm Frame) ValidateSize(v *lneto2.Validator) {
+func (ifrm Frame) ValidateSize(v *lneto.Validator) {
 	ihl := ifrm.ihl()
 	tl := ifrm.TotalLength()
 	if tl < sizeHeader {
@@ -210,13 +210,13 @@ func (ifrm Frame) ValidateSize(v *lneto2.Validator) {
 }
 
 // ValidateExceptCRC checks for invalid frame values but does not check CRC.
-func (ifrm Frame) ValidateExceptCRC(v *lneto2.Validator) {
+func (ifrm Frame) ValidateExceptCRC(v *lneto.Validator) {
 	ifrm.ValidateSize(v)
 	flags := ifrm.Flags()
 	if ifrm.version() != 4 {
 		v.AddError(errBadVersion)
 	}
-	if v.Flags()&lneto2.ValidateEvilBit != 0 && flags.IsEvil() {
+	if v.Flags()&lneto.ValidateEvilBit != 0 && flags.IsEvil() {
 		v.AddError(errEvil)
 	}
 }

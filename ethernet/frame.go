@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 
-	"github.com/soypat/lneto/lneto2"
+	"github.com/soypat/lneto"
 )
 
 // NewFrame returns a EthFrame with data set to buf.
@@ -120,7 +120,7 @@ var (
 
 // ValidateSize checks the frame's size fields and compares with the actual buffer
 // the frame. It returns a non-nil error on finding an inconsistency.
-func (efrm Frame) ValidateSize(v *lneto2.Validator) {
+func (efrm Frame) ValidateSize(v *lneto.Validator) {
 	sz := efrm.EtherTypeOrSize()
 	if sz.IsSize() && len(efrm.buf) < int(sz) {
 		v.AddError(errShort)

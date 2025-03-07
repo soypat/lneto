@@ -1,4 +1,4 @@
-package lneto2_test
+package lneto_test
 
 import (
 	"bytes"

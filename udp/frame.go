@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 
-	"github.com/soypat/lneto/lneto2"
+	"github.com/soypat/lneto"
 )
 
 // NewUDPFrame returns a new UDPFrame with data set to buf.
@@ -80,7 +80,7 @@ func (ufrm Frame) Payload() []byte {
 }
 
 // func (ufrm Frame) CalculateIPv4Checksum(ifrm IPv4Frame) uint16 {
-// 	var crc lneto2.CRC791
+// 	var crc lneto.CRC791
 // 	ifrm.crcWriteUDPPseudo(&crc)
 // 	crc.AddUint16(ufrm.Length())
 // 	crc.AddUint16(ufrm.SourcePort())
@@ -91,7 +91,7 @@ func (ufrm Frame) Payload() []byte {
 // }
 
 // func (ufrm Frame) CalculateIPv6Checksum(ifrm IPv6Frame) uint16 {
-// 	var crc lneto2.CRC791
+// 	var crc lneto.CRC791
 // 	ifrm.crcWritePseudo(&crc)
 // 	crc.AddUint16(ufrm.SourcePort())
 // 	crc.AddUint16(ufrm.DestinationPort())
@@ -118,7 +118,7 @@ var (
 
 // ValidateSize checks the frame's size fields and compares with the actual buffer
 // the frame. It returns a non-nil error on finding an inconsistency.
-func (ufrm Frame) ValidateSize(v *lneto2.Validator) {
+func (ufrm Frame) ValidateSize(v *lneto.Validator) {
 	ul := ufrm.Length()
 	if ul < sizeHeader {
 		v.AddError(errBadLen)

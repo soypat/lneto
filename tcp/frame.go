@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/soypat/lneto/lneto2"
+	"github.com/soypat/lneto"
 )
 
 const (
@@ -140,7 +140,7 @@ func (tfrm Frame) Segment(payloadSize int) Segment {
 	}
 }
 
-func (tfrm Frame) CRCWrite(crc *lneto2.CRC791) {
+func (tfrm Frame) CRCWrite(crc *lneto.CRC791) {
 	// Write excluding CRC
 	crc.Write(tfrm.buf[:16])
 	crc.Write(tfrm.buf[18:])
@@ -192,14 +192,14 @@ var (
 	errZeroSrcPort = errors.New("TCP zero source port")
 )
 
-// func (tfrm Frame) Validate(v *lneto2.Validator) {
+// func (tfrm Frame) Validate(v *lneto.Validator) {
 // tfrm.ValidateSize(v)
 // tfrm.ValidateExceptCRC(v)
 // }
 
 // ValidateSize checks the frame's size fields and compares with the actual buffer
 // the frame. It returns a non-nil error on finding an inconsistency.
-func (tfrm Frame) ValidateSize(v *lneto2.Validator) {
+func (tfrm Frame) ValidateSize(v *lneto.Validator) {
 	off := tfrm.HeaderLength()
 	if off < sizeHeaderTCP {
 		v.AddBitPosErr(12*8, 4, errBadTCPOff)
@@ -209,7 +209,7 @@ func (tfrm Frame) ValidateSize(v *lneto2.Validator) {
 	}
 }
 
-func (tfrm Frame) ValidateExceptCRC(v *lneto2.Validator) {
+func (tfrm Frame) ValidateExceptCRC(v *lneto.Validator) {
 	tfrm.ValidateSize(v)
 	if tfrm.DestinationPort() == 0 {
 		v.AddBitPosErr(2*8, 16, errZeroDstPort)
