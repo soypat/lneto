@@ -33,8 +33,8 @@ func sendDataFull(t *testing.T, client, server *Handler, data, packetBuf []byte)
 	err = server.Recv(packetBuf[:n])
 	if err != nil {
 		t.Fatal("server receiving:", err)
-	} else if server.Buffered() != len(data) {
-		t.Fatal("server did not receive full data packet", server.Buffered(), len(data))
+	} else if server.BufferedInput() != len(data) {
+		t.Fatal("server did not receive full data packet", server.BufferedInput(), len(data))
 	}
 	clear(packetBuf)
 	n, err = server.Read(packetBuf)

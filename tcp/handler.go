@@ -73,12 +73,14 @@ func (h *Handler) OpenActive(localPort, remotePort uint16, iss Value) error {
 	}
 	if h.scb.State() != StateClosed {
 		return errNeedClosedTCBToOpen
+	} else if remotePort == 0 {
+		return errors.New("zero port on open call")
 	}
 	h.reset(localPort, remotePort, iss)
 	return nil
 }
 
-// OpenListen prepares a passive connection. Set remote port to non-zero to
+// OpenListen prepares a passive connection.
 func (h *Handler) OpenListen(localPort uint16, iss Value) error {
 	if h.bufRx.Size() < minBufferSize || h.bufTx.Size() < minBufferSize {
 		return errBufferTooSmall
@@ -230,7 +232,8 @@ func (h *Handler) Read(b []byte) (int, error) {
 	return h.bufRx.Read(b)
 }
 
-func (h *Handler) Buffered() int {
+// BufferedInput returns amount of bytes buffered in receive buffer.
+func (h *Handler) BufferedInput() int {
 	if h.State().IsClosed() {
 		return 0
 	}

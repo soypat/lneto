@@ -1,17 +1,13 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"log/slog"
 	"net"
-	"net/http"
 	"net/netip"
-	"net/url"
 	"os"
 	"time"
 
@@ -19,6 +15,7 @@ import (
 	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
+	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/ipv6"
 	"github.com/soypat/lneto/tcp"
@@ -57,7 +54,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	tap := NewHTTPTap("http://127.0.0.1:7070")
+	tap := ltesto.NewHTTPTapClient("http://127.0.0.1:7070")
 	defer tap.Close()
 
 	fmt.Println("hosting server at ", addrPort.String())
@@ -519,65 +516,6 @@ func addHandler(handlers []handler, h Handler, remoteAddr []byte, lport uint16) 
 	hh.lport = lport
 	return handlers
 }
-
-func NewHTTPTap(baseURL string) *HTTPTap {
-	var h HTTPTap
-	h.sendurl = baseURL + "/send"
-	h.recvurl = baseURL + "/recv"
-	_, err := url.Parse(h.sendurl)
-	if err != nil {
-		panic(err)
-	}
-	var data [2048]byte
-	var n int = -1
-	for n != 0 {
-		n, _ = h.Read(data[:]) // Empty remote data.
-	}
-	return &h
-}
-
-type TAPNop struct{}
-
-func (h *TAPNop) Read(b []byte) (int, error)  { return 0, nil }
-func (h *TAPNop) Write(b []byte) (int, error) { return 0, nil }
-func (h *TAPNop) Close() error                { return nil }
-
-type HTTPTap struct {
-	c       http.Client
-	recvurl string
-	sendurl string
-}
-
-func (h *HTTPTap) Read(b []byte) (int, error) {
-	resp, err := h.c.Get(h.recvurl)
-	if err != nil {
-		return 0, err
-	} else if resp.StatusCode != 200 {
-		return 0, errors.New(resp.Status + " for " + h.recvurl)
-	}
-	var data []byte
-	err = json.NewDecoder(resp.Body).Decode(&data)
-	if err != nil {
-		return 0, err
-	} else if len(b) < len(data) {
-		return 0, fmt.Errorf("got too large packet %d for buffer %d", len(data), len(b))
-	}
-	copy(b, data)
-	return len(data), nil
-}
-
-func (h *HTTPTap) Write(b []byte) (int, error) {
-	data, _ := json.Marshal(b)
-	resp, err := h.c.Post(h.sendurl, "application/json", bytes.NewReader(data))
-	if err != nil {
-		return 0, err
-	} else if resp.StatusCode != 200 {
-		return 0, errors.New(resp.Status + " for " + h.sendurl)
-	}
-	return len(b), nil
-}
-
-func (h *HTTPTap) Close() error { return nil }
 
 func tcpChecksum(ipFrame []byte, tcpPayload int) uint16 {
 	version := ipFrame[0] >> 4

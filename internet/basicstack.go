@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/netip"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -19,35 +20,42 @@ type StackBasic struct {
 }
 
 type handler struct {
-	proto  lneto.IPProto
-	port   uint16
 	recv   func([]byte, int) error
 	handle func([]byte, int) (int, error)
+	proto  lneto.IPProto
+	port   uint16
 }
 
-func (is *StackBasic) Recv(frame []byte) error {
+func (sb *StackBasic) SetAddr(addr netip.Addr) {
+	if !addr.Is4() {
+		panic("only support IPv4")
+	}
+	sb.ip = addr.As4()
+}
+
+func (sb *StackBasic) Recv(frame []byte) error {
 	ifrm, err := ipv4.NewFrame(frame)
 	if err != nil {
 		return err
 	}
-	if *ifrm.DestinationAddr() != is.ip {
+	if *ifrm.DestinationAddr() != sb.ip {
 		return errors.New("packet not for us")
 	}
-	is.validator.ResetErr()
-	ifrm.ValidateExceptCRC(&is.validator)
-	if err = is.validator.Err(); err != nil {
+	sb.validator.ResetErr()
+	ifrm.ValidateExceptCRC(&sb.validator)
+	if err = sb.validator.Err(); err != nil {
 		return err
 	}
 	gotCRC := ifrm.CRC()
 	wantCRC := ifrm.CalculateHeaderCRC()
 	if gotCRC != wantCRC {
-		is.error("IPv4Stack:Recv:crc-mismatch", slog.Uint64("want", uint64(wantCRC)), slog.Uint64("got", uint64(gotCRC)))
+		sb.error("IPv4Stack:Recv:crc-mismatch", slog.Uint64("want", uint64(wantCRC)), slog.Uint64("got", uint64(gotCRC)))
 		return errors.New("IPv4 CRC mismatch")
 	}
 	off := ifrm.HeaderLength()
 	totalLen := ifrm.TotalLength()
-	for i := range is.handlers {
-		h := &is.handlers[i]
+	for i := range sb.handlers {
+		h := &sb.handlers[i]
 		if h.proto == ifrm.Protocol() {
 			return h.recv(frame[:totalLen], off)
 		}
@@ -55,7 +63,7 @@ func (is *StackBasic) Recv(frame []byte) error {
 	return nil
 }
 
-func (is *StackBasic) Handle(frame []byte) (int, error) {
+func (sb *StackBasic) Handle(frame []byte) (int, error) {
 	if len(frame) < 256 {
 		return 0, io.ErrShortBuffer
 	}
@@ -63,38 +71,44 @@ func (is *StackBasic) Handle(frame []byte) (int, error) {
 	const ihl = 5
 	const headerlen = ihl * 4
 	ifrm.SetVersionAndIHL(4, 5)
-	*ifrm.SourceAddr() = is.ip
+	*ifrm.SourceAddr() = sb.ip
 	ifrm.SetToS(0)
-	for i := range is.handlers {
-		h := &is.handlers[i]
-		proto := lneto.IPProto(h.proto)
-		ifrm.SetProtocol(proto)
-		if len(h.raddr) == 4 {
-			copy(ifrm.DestinationAddr()[:], h.raddr)
-		} else {
-			copy(ifrm.DestinationAddr()[:], "\x00\x00\x00\x00")
-		}
-
+	ifrm.SetID(0)
+	for i := range sb.handlers {
+		h := &sb.handlers[i]
 		n, err := h.handle(frame[:], headerlen)
 		if err != nil {
-			is.error("IPv4Stack:handle", slog.String("proto", proto.String()), slog.String("err", err.Error()))
+			sb.error("IPv4Stack:handle", slog.String("proto", h.proto.String()), slog.String("err", err.Error()))
 			continue
 		}
 		if n > 0 {
 			const dontFrag = 0x4000
 			totalLen := n + headerlen
 			ifrm.SetTotalLength(uint16(totalLen))
-			ifrm.SetID(0)
 			ifrm.SetFlags(dontFrag)
 			ifrm.SetTTL(64)
 			ifrm.SetCRC(ifrm.CalculateHeaderCRC())
 			if ifrm.Protocol() == lneto.IPProtoTCP {
 				tfrm, _ := tcp.NewFrame(ifrm.Payload())
-				is.info("IPv4Stack:send", slog.String("ip", ifrm.String()), slog.String("tcp", tfrm.String()))
+				sb.info("IPv4Stack:send", slog.String("ip", ifrm.String()), slog.String("tcp", tfrm.String()))
 			}
 			return totalLen, nil
 		}
 	}
+	return 0, nil
+}
+
+func (sb *StackBasic) RegisterTCPConn(conn *TCPConn) error {
+	if conn.LocalPort() == 0 {
+		return errors.New("undefined local port")
+	}
+	sb.handlers = append(sb.handlers, handler{
+		recv:   conn.RecvIP,
+		handle: conn.HandleIP,
+		proto:  lneto.IPProtoIPv4,
+		port:   conn.LocalPort(),
+	})
+	return nil
 }
 
 type logger struct {
@@ -112,4 +126,7 @@ func (l logger) warn(msg string, attrs ...slog.Attr) {
 }
 func (l logger) debug(msg string, attrs ...slog.Attr) {
 	internal.LogAttrs(l.log, slog.LevelDebug, msg, attrs...)
+}
+func (l logger) trace(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(l.log, internal.LevelTrace, msg, attrs...)
 }

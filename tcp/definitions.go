@@ -16,7 +16,7 @@ var (
 	errDropSegment    = errors.New("drop segment")
 	errWindowTooLarge = errors.New("invalid window size > 2**16")
 
-	errBufferTooSmall        = errors.New("buffer too small")
+	errBufferTooSmall        = errors.New("tcp buffer too small")
 	errNeedClosedTCBToOpen   = errors.New("need closed TCB to call open")
 	errInvalidState          = errors.New("invalid state")
 	errConnNotExist          = errors.New("connection does not exist")
