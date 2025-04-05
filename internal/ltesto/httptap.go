@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"log/slog"
 	"net/http"
 	"net/netip"
 	"net/url"
+	"time"
 
 	"github.com/soypat/lneto/internal"
 )
@@ -29,6 +31,7 @@ type HTTPTapClient struct {
 	c       http.Client
 	recvurl string
 	sendurl string
+	buf     []byte
 }
 
 func (h *HTTPTapClient) ReadDiscard() {
@@ -69,6 +72,35 @@ func (h *HTTPTapClient) Write(b []byte) (int, error) {
 }
 
 func (h *HTTPTapClient) Close() error { return nil }
+
+func (h *HTTPTapClient) HandleTap(buf []byte) (HandleTapResult, error) {
+	nread, err := tap.Read(buf[:])
+	if err != nil {
+		slogger.error("tap-err", slog.String("err", err.Error()))
+		log.Fatal(err)
+	} else if nread > 0 {
+		err = lStack.RecvEth(buf[:nread])
+		if err != nil {
+			slogger.error("recv", slog.String("err", err.Error()), slog.Int("plen", nread))
+		} else {
+			slogger.info("recv", slog.Int("plen", nread))
+		}
+	}
+	nw, err := lStack.HandleEth(buf[:])
+	if err != nil {
+		slogger.error("handle", slog.String("err", err.Error()))
+	} else if nw > 0 {
+		_, err = tap.Write(buf[:nw])
+		if err != nil {
+			log.Fatal(err)
+		} else {
+			slogger.info("write", slog.Int("plen", nw))
+		}
+	}
+	if nread == 0 && nw == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+}
 
 type HTTPTapServer struct {
 	router    *http.ServeMux

@@ -36,16 +36,16 @@ func main() {
 		log.Fatal("interface does not contain stack address")
 	}
 	addrPort := netip.AddrPortFrom(ip, stackPort)
-	slogger := logger{slog.Default()}
+	lg := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	}))
+
+	slogger := logger{lg}
+
 	lStack, handler, err := NewEthernetTCPStack(stackHWAddr, addrPort, slogger)
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
-	handler.SetLoggers(logger, logger)
 
 	err = handler.OpenListen(addrPort.Port(), iss)
 	if err != nil {
@@ -108,7 +108,7 @@ func NewEthernetTCPStack(mac [6]byte, ip netip.AddrPort, slogger logger) (*LinkS
 		handle: func(b []byte, i int) (int, error) {
 			return ipStack.Handle(b[i:])
 		},
-		proto: uint32(lneto.IPProtoIPv4),
+		proto: ethernet.TypeIPv4,
 		lport: 0,
 	})
 	var conn internet.TCPConn
@@ -136,8 +136,8 @@ func NewEthernetTCPStack(mac [6]byte, ip netip.AddrPort, slogger logger) (*LinkS
 	arphandler, err := arp.NewHandler(arp.HandlerConfig{
 		HardwareAddr: mac[:],
 		ProtocolAddr: ip.Addr().AsSlice(),
-		MaxQueries:   1,
-		MaxPending:   1,
+		MaxQueries:   4,
+		MaxPending:   4,
 		HardwareType: 1,
 		ProtocolType: proto,
 	})
@@ -147,8 +147,11 @@ func NewEthernetTCPStack(mac [6]byte, ip netip.AddrPort, slogger logger) (*LinkS
 	arpStack := ARPStack{
 		handler: *arphandler,
 	}
-
-	err = lStack.Register(ipStack, mac)
+	err = lStack.Register(handler{
+		recv:   arpStack.Recv,
+		handle: arpStack.Handle,
+		proto:  ethernet.TypeARP,
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -159,7 +162,7 @@ type handler struct {
 	raddr  []byte
 	recv   func([]byte, int) error
 	handle func([]byte, int) (int, error)
-	proto  uint32
+	proto  ethernet.Type
 	lport  uint16
 }
 
@@ -182,7 +185,6 @@ func (ls *LinkStack) Register(h handler) error {
 }
 
 func (ls *LinkStack) RecvEth(ethFrame []byte) (err error) {
-
 	efrm, err := ethernet.NewFrame(ethFrame)
 	if err != nil {
 		return err
@@ -200,7 +202,7 @@ func (ls *LinkStack) RecvEth(ethFrame []byte) (err error) {
 
 	for i := range ls.handlers {
 		h := &ls.handlers[i]
-		if h.proto == uint32(etype) {
+		if h.proto == etype {
 			return h.recv(efrm.Payload(), 0)
 		}
 	}
