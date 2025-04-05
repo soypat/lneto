@@ -116,7 +116,10 @@ func (conn *TCPConn) HandleIP(buf []byte, off int) (n int, err error) {
 	if err != nil {
 		return 0, err
 	}
-	copy(raddr, conn.remoteAddr)
+	err = setDstAddr(buf[:off], conn.remoteAddr)
+	if err != nil {
+		return 0, err
+	}
 	return n, nil
 }
 
@@ -143,6 +146,31 @@ func getIPAddr(buf []byte) (addr []byte, err error) {
 		err = errors.New("unsupported IP version")
 	}
 	return addr, err
+}
+
+func setDstAddr(buf []byte, addr []byte) (err error) {
+	var dstaddr []byte
+	switch buf[0] >> 4 {
+	case 4:
+		ifrm4, err := ipv4.NewFrame(buf)
+		if err != nil {
+			return err
+		}
+		dstaddr = ifrm4.DestinationAddr()[:]
+	case 6:
+		ifrm6, err := ipv6.NewFrame(buf)
+		if err != nil {
+			return err
+		}
+		dstaddr = ifrm6.DestinationAddr()[:]
+	default:
+		err = errors.New("unsupported IP version")
+	}
+	if err == nil && len(dstaddr) != len(addr) {
+		return errors.New("invalid ip version to setDstAddr")
+	}
+	copy(dstaddr, addr)
+	return nil
 }
 
 func (conn *TCPConn) isRaddrSet() bool {

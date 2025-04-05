@@ -38,7 +38,8 @@ func (sb *StackBasic) Recv(frame []byte) error {
 	if err != nil {
 		return err
 	}
-	if *ifrm.DestinationAddr() != sb.ip {
+	dst := ifrm.DestinationAddr()
+	if *dst != sb.ip {
 		return errors.New("packet not for us")
 	}
 	sb.validator.ResetErr()
