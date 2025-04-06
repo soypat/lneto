@@ -33,6 +33,10 @@ func (sb *StackBasic) SetAddr(addr netip.Addr) {
 	sb.ip = addr.As4()
 }
 
+func (sb *StackBasic) Addr() netip.Addr {
+	return netip.AddrFrom4(sb.ip)
+}
+
 func (sb *StackBasic) Recv(frame []byte) error {
 	ifrm, err := ipv4.NewFrame(frame)
 	if err != nil {

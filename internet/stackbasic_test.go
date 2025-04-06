@@ -12,15 +12,20 @@ func TestBasicStack(t *testing.T) {
 	var connCl, connSv TCPConn
 	setupClientServer(t, rng, &sbCl, &sbSv, &connCl, &connSv)
 	var buf [2048]byte
-	n, err := sbCl.Handle(buf[:])
+	expectExchange(t, &sbCl, &sbSv, buf[:])
+
+}
+
+func expectExchange(t *testing.T, from, to *StackBasic, buf []byte) {
+	n, err := from.Handle(buf)
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
 	} else if n == 0 {
-		t.Fatal("expected data exchange")
+		t.Error("expected data exchange")
 	}
-	err = sbSv.Recv(buf[:n])
+	err = to.Recv(buf[:n])
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
 	}
 }
 
