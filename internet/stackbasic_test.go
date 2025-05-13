@@ -4,6 +4,8 @@ import (
 	"math/rand"
 	"net/netip"
 	"testing"
+
+	"github.com/soypat/lneto/tcp"
 )
 
 func TestBasicStack(t *testing.T) {
@@ -12,8 +14,19 @@ func TestBasicStack(t *testing.T) {
 	var connCl, connSv TCPConn
 	setupClientServer(t, rng, &sbCl, &sbSv, &connCl, &connSv)
 	var buf [2048]byte
-	expectExchange(t, &sbCl, &sbSv, buf[:])
-
+	exchangeAndExpectStates := func(clState, svState tcp.State) {
+		t.Helper()
+		expectExchange(t, &sbCl, &sbSv, buf[:])
+		gotCl := connCl.State()
+		gotSv := connSv.State()
+		if gotCl != clState {
+			t.Errorf("want client state %s, got %s", clState, gotCl)
+		}
+		if gotSv != svState {
+			t.Errorf("want server state %s, got %s", svState, gotSv)
+		}
+	}
+	exchangeAndExpectStates(tcp.StateSynSent, tcp.StateListen)
 }
 
 func expectExchange(t *testing.T, from, to *StackBasic, buf []byte) {
