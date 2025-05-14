@@ -35,3 +35,17 @@ go mod download github.com/soypat/lneto@latest
 
 - [`stack`](./examples/stack) Contains stack implementation which can interact with `tap` program. No root privilidges required.
     - Can expose a HTTP server.
+
+To run the HTTP TAP server run the following commands. Requires elevated privilidges!
+```sh
+# Build+Run HTTP Tap server from one shell, this will expose the `tap0` TAP interface over an HTTP interface at http://127.0.0.1:7070 on /recv and /send endpoints.
+go build ./examples/tap && sudo ./tap
+```
+
+Now run the application you wish to test without elevated privilidges. Stackbasic shows a basic HTTP demo in action.
+```sh
+go run ./examples/stackbasic
+```
+
+**Wireshark**: Using the provided method of interfacing mean's you'll always be able to easily reach the TAP interface on your machine over HTTP from any process, be it Python or Go. To visualize the packets over the interface we suggest using wireshark and selecting the `tap0` interface which will show all activity over the HTTP TAP interface created with [`./examples/tap`](./examples/tap/main.go).
+
