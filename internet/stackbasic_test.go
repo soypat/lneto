@@ -34,6 +34,14 @@ func TestBasicStack(t *testing.T) {
 	exchangeAndExpectStates(tcp.StateEstablished, tcp.StateEstablished) // Client sends ACK, establishing connection in full.
 }
 
+func TestBasicStack2(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	var sbCl, sbSv StackBasic
+	var connCl, connSv TCPConn
+	setupClientServerEstablished(t, rng, &sbCl, &sbSv, &connCl, &connSv)
+
+}
+
 func expectExchange(t *testing.T, from, to *StackBasic, buf []byte) {
 	t.Helper()
 	n, err := from.Handle(buf)
@@ -46,6 +54,34 @@ func expectExchange(t *testing.T, from, to *StackBasic, buf []byte) {
 	err = to.Recv(buf[:n])
 	if err != nil {
 		t.Error("expectExchange:Recv:", err)
+	}
+}
+
+func setupClientServerEstablished(t *testing.T, rng *rand.Rand, client, server *StackBasic, connClient, connServer *TCPConn) {
+	t.Helper()
+	setupClientServer(t, rng, client, server, connClient, connServer)
+	var buf [2048]byte
+	nextToSend := client
+	nextToRecv := server
+	exchangeAndExpectStates := func(clState, svState tcp.State) {
+		t.Helper()
+		expectExchange(t, nextToSend, nextToRecv, buf[:])
+		gotCl := connClient.State()
+		gotSv := connServer.State()
+		if gotCl != clState {
+			t.Errorf("want client state %s, got %s", clState, gotCl)
+		}
+		if gotSv != svState {
+			t.Errorf("want server state %s, got %s", svState, gotSv)
+		}
+		nextToSend, nextToRecv = nextToRecv, nextToSend
+	}
+	exchangeAndExpectStates(tcp.StateSynSent, tcp.StateSynRcvd)         // Client sends over first SYN and server receives it.
+	exchangeAndExpectStates(tcp.StateEstablished, tcp.StateSynRcvd)     // server sends back SYNACK, establishing connection on client side.
+	exchangeAndExpectStates(tcp.StateEstablished, tcp.StateEstablished) // Client sends ACK, establishing connection in full.
+	if t.Failed() {
+		t.Error("establishment failed")
+		t.FailNow()
 	}
 }
 

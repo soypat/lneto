@@ -239,7 +239,7 @@ func (flags Flags) AppendFormat(b []byte) []byte {
 	return b
 }
 
-// State enumerates states a TCP connection progresses through during its lifetime.
+// State enumerates states a TCP connection progresses through during its lifetime as per RFC9293.
 type State uint8
 
 const (

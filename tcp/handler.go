@@ -39,8 +39,10 @@ func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
 	h.scb.logger.log = scb
 }
 
+// State returns the state of the TCP state machine as per RFC9293. See [State].
 func (h *Handler) State() State { return h.scb.State() }
 
+// SetBuffers sets the internal buffers used to receive and transmit bytes asynchronously via [Handler.Write] and [Handler.Read] calls.
 func (h *Handler) SetBuffers(txbuf, rxbuf []byte, packets int) error {
 	if !h.scb.State().IsClosed() {
 		return errors.New("tcp.Handler must be closed before setting buffers")
@@ -67,6 +69,8 @@ func (h *Handler) RemotePort() uint16 {
 	return h.remotePort
 }
 
+// OpenActive opens an "active" TCP connection to a known remote port. The caller holds knowledge of the IP address.
+// OpenActive is used by TCP Clients to initiate a connection.
 func (h *Handler) OpenActive(localPort, remotePort uint16, iss Value) error {
 	if h.bufRx.Size() < minBufferSize || h.bufTx.Size() < minBufferSize {
 		return errBufferTooSmall
@@ -80,7 +84,8 @@ func (h *Handler) OpenActive(localPort, remotePort uint16, iss Value) error {
 	return nil
 }
 
-// OpenListen prepares a passive connection.
+// OpenListen prepares a passive TCP connection where the Handler acts as a server.
+// OpenListen is used by TCP Servers to begin listening for remote connections.
 func (h *Handler) OpenListen(localPort uint16, iss Value) error {
 	if h.bufRx.Size() < minBufferSize || h.bufTx.Size() < minBufferSize {
 		return errBufferTooSmall
@@ -110,11 +115,13 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 	h.bufRx.Reset()
 }
 
-func (h *Handler) Recv(b []byte) error {
+// Recv receives an incoming TCP packet frame with the first byte being the first octet of the TCP frame.
+// The [Handler]'s internal state is updated if the packet is admitted successfully.
+func (h *Handler) Recv(incomingPacket []byte) error {
 	if h.isClosed() {
 		return net.ErrClosed
 	}
-	tfrm, err := NewFrame(b)
+	tfrm, err := NewFrame(incomingPacket)
 	if err != nil {
 		return err
 	}
@@ -170,6 +177,9 @@ func (h *Handler) Recv(b []byte) error {
 	return nil
 }
 
+// Send writes TCP frame to be sent over the network to the remote peer to `b`.
+// It does no IP interfacing or CRC calculation of packet, which is left to the caller to perform.
+// The returned integer is the length written to the argument buffer.
 func (h *Handler) Send(b []byte) (int, error) {
 	h.trace("tcp.Handler:start", slog.Uint64("port", uint64(h.localPort)))
 	if h.isClosed() && !h.AwaitingSynSend() {
@@ -214,10 +224,13 @@ func (h *Handler) Send(b []byte) (int, error) {
 	return sizeHeaderTCP + int(segment.DATALEN), nil
 }
 
+// Free returns the amount of space free in the transmit buffer. A call to [Handler.Write] with a larger buffer will fail.
 func (h *Handler) Free() int {
 	return h.bufTx.Free()
 }
 
+// Write implements [io.Writer] by copying b to a internal buffer to be sent over the network on the next
+// [Handler.Send] call that can send data to remote peer. Use [Handler.Free] to know the maximum length the argument slice can be before erroring.
 func (h *Handler) Write(b []byte) (int, error) {
 	if h.State().IsClosed() { // Reject write call if data cannot be sent.
 		return 0, net.ErrClosed
@@ -225,6 +238,7 @@ func (h *Handler) Write(b []byte) (int, error) {
 	return h.bufTx.Write(b)
 }
 
+// Read implements [io.Reader] by reading received data from remote peer in internal buffer.
 func (h *Handler) Read(b []byte) (int, error) {
 	if h.State().IsClosed() { // Reject read call if state is at StateClosed. Note this is less strict than Write call condition.
 		return 0, net.ErrClosed
@@ -245,10 +259,12 @@ func (h *Handler) AwaitingSynResponse() bool {
 	return h.remotePort != 0 && h.scb.State() == StateSynSent
 }
 
+// AwaitingSynAck returns true if the Handler is a passive server opened with [Handler.OpenListen] and not yet received a valid SYN remote packet.
 func (h *Handler) AwaitingSynAck() bool {
 	return h.remotePort == 0 && h.scb.State() == StateListen
 }
 
+// AwaitingSynSend returns true if the Handler is an active client opened with [Handler.OpenActive] and not yet sent out the first SYN packet to the remote client.
 func (h *Handler) AwaitingSynSend() bool {
 	return h.remotePort != 0 && h.scb.State() == StateClosed
 }
