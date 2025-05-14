@@ -14,9 +14,11 @@ func TestBasicStack(t *testing.T) {
 	var connCl, connSv TCPConn
 	setupClientServer(t, rng, &sbCl, &sbSv, &connCl, &connSv)
 	var buf [2048]byte
+	nextToSend := &sbCl
+	nextToRecv := &sbSv
 	exchangeAndExpectStates := func(clState, svState tcp.State) {
 		t.Helper()
-		expectExchange(t, &sbCl, &sbSv, buf[:])
+		expectExchange(t, nextToSend, nextToRecv, buf[:])
 		gotCl := connCl.State()
 		gotSv := connSv.State()
 		if gotCl != clState {
@@ -25,20 +27,25 @@ func TestBasicStack(t *testing.T) {
 		if gotSv != svState {
 			t.Errorf("want server state %s, got %s", svState, gotSv)
 		}
+		nextToSend, nextToRecv = nextToRecv, nextToSend
 	}
-	exchangeAndExpectStates(tcp.StateSynSent, tcp.StateListen)
+	exchangeAndExpectStates(tcp.StateSynSent, tcp.StateSynRcvd)         // Client sends over first SYN and server receives it.
+	exchangeAndExpectStates(tcp.StateEstablished, tcp.StateSynRcvd)     // server sends back SYNACK, establishing connection on client side.
+	exchangeAndExpectStates(tcp.StateEstablished, tcp.StateEstablished) // Client sends ACK, establishing connection in full.
 }
 
 func expectExchange(t *testing.T, from, to *StackBasic, buf []byte) {
+	t.Helper()
 	n, err := from.Handle(buf)
 	if err != nil {
-		t.Error(err)
+		t.Error("expectExchange:Handle:", err)
 	} else if n == 0 {
 		t.Error("expected data exchange")
+		return
 	}
 	err = to.Recv(buf[:n])
 	if err != nil {
-		t.Error(err)
+		t.Error("expectExchange:Recv:", err)
 	}
 }
 

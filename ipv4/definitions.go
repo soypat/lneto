@@ -4,7 +4,7 @@ const (
 	sizeHeader = 20
 )
 
-// ToS represents the Traffic Class (a.k.a Type of Service).
+// ToS represents the Traffic Class (a.k.a Type of Service). It is 8 bits long. 6 MSB are Differentiated Services; 2 LSB are Explicit Congenstion Notification.
 type ToS uint8
 
 // DS returns the top 6 bits of the IPv4 ToS holding the Differentiated Services field
@@ -14,7 +14,7 @@ func (tos ToS) DS() uint8 { return uint8(tos) >> 2 }
 // ECN is the Explicit Congestion Notification which provides congestion control and non-congestion control traffic.
 func (tos ToS) ECN() uint8 { return uint8(tos & 0b11) }
 
-// Flags holds fragmentation field data of an IPv4 header.
+// Flags holds fragmentation field data of an IPv4 header. It is 16 bits long.
 type Flags uint16
 
 // IsEvil returns true if evil bit set as per [RFC3514].

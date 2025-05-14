@@ -61,7 +61,8 @@ func (sb *StackBasic) Recv(frame []byte) error {
 	totalLen := ifrm.TotalLength()
 	for i := range sb.handlers {
 		h := &sb.handlers[i]
-		if h.proto == ifrm.Protocol() {
+		proto := ifrm.Protocol()
+		if h.proto == proto {
 			return h.recv(frame[:totalLen], off)
 		}
 	}
@@ -92,6 +93,7 @@ func (sb *StackBasic) Handle(frame []byte) (int, error) {
 			ifrm.SetTotalLength(uint16(totalLen))
 			ifrm.SetFlags(dontFrag)
 			ifrm.SetTTL(64)
+			ifrm.SetProtocol(h.proto)
 			ifrm.SetCRC(ifrm.CalculateHeaderCRC())
 			if ifrm.Protocol() == lneto.IPProtoTCP {
 				tfrm, _ := tcp.NewFrame(ifrm.Payload())
