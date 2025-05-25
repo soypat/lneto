@@ -34,7 +34,7 @@ func (f flags) hasAny(checkThese flags) bool {
 //
 // It does NOT implement:
 //   - Normalization.
-//   - Cookies.
+//   - Cookies (see [Cookie]).
 //   - Special header optimizations.
 //   - Safe API. Users can easily mangle HTTP body with calls.
 type Header struct {
