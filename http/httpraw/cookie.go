@@ -63,6 +63,9 @@ func (c *Cookie) Parse() error {
 		})
 		off += n
 	}
+	if len(c.kvs) == 0 {
+		return errNoCookies
+	}
 	return nil
 }
 
