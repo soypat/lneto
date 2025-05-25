@@ -30,13 +30,18 @@ type Handler struct {
 	// connid is a conenction counter that is incremented each time a new
 	// connection is established via Open calls. This disambiguate's whether
 	// Read and Write calls belong to the current connection.
-	connid  uint8
+	connid  uint16
 	closing bool
 }
 
 func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
 	h.logger.log = handler
 	h.scb.logger.log = scb
+}
+
+// ConnectionID returns the connection identifier which is incremented every time the connection is closed or open.
+func (h *Handler) ConnectionID() int {
+	return int(h.connid)
 }
 
 // State returns the state of the TCP state machine as per RFC9293. See [State].
@@ -97,6 +102,13 @@ func (h *Handler) OpenListen(localPort uint16, iss Value) error {
 	}
 	h.reset(localPort, 0, iss)
 	return nil
+}
+
+// Abort forcibly terminates all state associated to current connection.
+// After a call to abort no more data can be sent nor received over the connection.
+func (h *Handler) Abort() {
+	h.scb.Abort()
+	h.reset(0, 0, 0)
 }
 
 func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
@@ -175,6 +187,11 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		h.trace("tcp.Handler:rx-done", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("remoteport", uint64(remotePort)), slog.String("seg", segIncoming.String()))
 	}
 	return nil
+}
+
+func (h *Handler) Close() error {
+	h.trace("tcp.Handler.Close")
+	return h.scb.Close()
 }
 
 // Send writes TCP frame to be sent over the network to the remote peer to `b`.

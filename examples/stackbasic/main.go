@@ -14,9 +14,11 @@ import (
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/http/httpraw"
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/internet"
+	"github.com/soypat/lneto/tcp"
 )
 
 const (
@@ -57,6 +59,7 @@ func main() {
 
 	fmt.Println("hosting server at ", addrPort.String())
 	var buf [mtu]byte
+	var hdr httpraw.Header
 	for {
 		nread, err := tap.Read(buf[:])
 		if err != nil {
@@ -79,6 +82,23 @@ func main() {
 				log.Fatal(err)
 			} else {
 				slogger.info("write", slog.Int("plen", nw))
+			}
+		}
+		if handler.State() == tcp.StateEstablished {
+			data := handler.BufferedInput()
+			if data > 0 {
+				n, err := handler.Read(buf[:])
+				if err != nil {
+					slogger.error("tcp-read", slog.String("err", err.Error()))
+				} else {
+					hdr.Reset(buf[:n])
+					err = hdr.Parse(false)
+					if err != nil {
+						slogger.error("http-parse", slog.String("err", err.Error()))
+					} else {
+						fmt.Println(hdr.String())
+					}
+				}
 			}
 		}
 		if nread == 0 && nw == 0 {

@@ -63,6 +63,7 @@ func (sb *StackBasic) Recv(frame []byte) error {
 		h := &sb.handlers[i]
 		proto := ifrm.Protocol()
 		if h.proto == proto {
+			sb.info("iprecv", slog.String("ipproto", proto.String()), slog.Int("plen", int(totalLen)))
 			return h.recv(frame[:totalLen], off)
 		}
 	}

@@ -4,24 +4,35 @@ import (
 	"bytes"
 	"errors"
 	"log/slog"
+	"net"
 	"net/netip"
+	"os"
+	"runtime"
 	"time"
 
+	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/ipv6"
 	"github.com/soypat/lneto/tcp"
 )
 
+var (
+	errDeadlineExceeded = os.ErrDeadlineExceeded
+)
+
 type TCPConn struct {
 	h          tcp.Handler
 	remoteAddr []byte
-	logger
 
 	rdead  time.Time
 	wdead  time.Time
 	lastTx time.Time
 	lastRx time.Time
+
+	abortErr error
+	logger
 }
+
 type TCPConnConfig struct {
 	RxBuf             []byte
 	TxBuf             []byte
@@ -80,6 +91,11 @@ func (conn *TCPConn) OpenListen(localPort uint16, iss tcp.Value) error {
 	return nil
 }
 
+func (conn *TCPConn) Close() error {
+	conn.trace("TCPConn.Close")
+	return conn.h.Close()
+}
+
 func (conn *TCPConn) RecvIP(buf []byte, off int) (err error) {
 	conn.trace("tcpconn.Recv:start")
 	if off >= len(buf) {
@@ -98,6 +114,83 @@ func (conn *TCPConn) RecvIP(buf []byte, off int) (err error) {
 	}
 	if !conn.isRaddrSet() && conn.h.RemotePort() != 0 {
 		conn.remoteAddr = append(conn.remoteAddr[:0], raddr...)
+	}
+	return nil
+}
+
+// Write writes argument data to the TCPConns's output buffer which is queued to be sent.
+func (conn *TCPConn) Write(b []byte) (int, error) {
+	err := conn.checkPipeOpen()
+	if err != nil {
+		return 0, err
+	}
+	plen := len(b)
+	conn.trace("TCPConn.Write:start")
+	connid := conn.h.ConnectionID()
+	if conn.deadlineExceeded(conn.wdead) {
+		return 0, errDeadlineExceeded
+	} else if plen == 0 {
+		return 0, nil
+	}
+	backoff := internal.NewBackoff(internal.BackoffHasPriority)
+	n := 0
+	for {
+		if conn.abortErr != nil {
+			return n, conn.abortErr
+		} else if connid != conn.h.ConnectionID() {
+			return n, net.ErrClosed
+		}
+		ngot, _ := conn.h.Write(b)
+		n += ngot
+		b = b[ngot:]
+		if n == plen {
+			break
+		} else if ngot > 0 {
+			backoff.Hit()
+			runtime.Gosched() // Do a little yield since we won't have data for sure otherwise.
+		} else {
+			backoff.Miss()
+		}
+		conn.trace("TCPConn.Write:insuf-buf", slog.Int("missing", plen-n))
+		if conn.deadlineExceeded(conn.wdead) {
+			return n, errDeadlineExceeded
+		}
+	}
+	return n, nil
+}
+
+// Read reads data from the socket's input buffer. If the buffer is empty,
+// Read will block until data is available or connection closes.
+func (conn *TCPConn) Read(b []byte) (int, error) {
+	err := conn.checkPipeOpen()
+	if err != nil {
+		return 0, err
+	}
+	conn.trace("TCPConn.Read:start")
+	connid := conn.h.ConnectionID()
+	backoff := internal.NewBackoff(internal.BackoffHasPriority)
+	for conn.h.BufferedInput() == 0 && conn.State() == tcp.StateEstablished {
+		if conn.abortErr != nil {
+			return 0, conn.abortErr
+		} else if connid != conn.h.ConnectionID() {
+			return 0, net.ErrClosed
+		}
+		if conn.deadlineExceeded(conn.rdead) {
+			return 0, errDeadlineExceeded
+		}
+		backoff.Miss()
+	}
+	n, err := conn.h.Read(b)
+	return n, err
+}
+
+func (conn *TCPConn) checkPipeOpen() error {
+	if conn.abortErr != nil {
+		return conn.abortErr
+	}
+	state := conn.State()
+	if state.IsClosed() {
+		return net.ErrClosed
 	}
 	return nil
 }
@@ -183,4 +276,44 @@ func (conn *TCPConn) reset(h tcp.Handler) {
 		remoteAddr: conn.remoteAddr[:0],
 		logger:     conn.logger,
 	}
+}
+
+// SetDeadline sets the read and write deadlines associated
+// with the connection. It is equivalent to calling both
+// SetReadDeadline and SetWriteDeadline. Implements [net.Conn].
+func (conn *TCPConn) SetDeadline(t time.Time) error {
+	err := conn.SetReadDeadline(t)
+	if err != nil {
+		return err
+	}
+	return conn.SetWriteDeadline(t)
+}
+
+// SetReadDeadline sets the deadline for future Read calls
+// and any currently-blocked Read call. A zero value for t means Read will not time out.
+func (conn *TCPConn) SetReadDeadline(t time.Time) error {
+	conn.trace("TCPConn.SetReadDeadline:start")
+	err := conn.checkPipeOpen()
+	if err == nil {
+		conn.rdead = t
+	}
+	return err
+}
+
+// SetWriteDeadline sets the deadline for future Write calls
+// and any currently-blocked Write call.
+// Even if write times out, it may return n > 0, indicating that
+// some of the data was successfully written.
+// A zero value for t means Write will not time out.
+func (conn *TCPConn) SetWriteDeadline(t time.Time) error {
+	conn.trace("TCPConn.SetWriteDeadline:start")
+	err := conn.checkPipeOpen()
+	if err == nil {
+		conn.wdead = t
+	}
+	return err
+}
+
+func (conn *TCPConn) deadlineExceeded(deadline time.Time) bool {
+	return !deadline.IsZero() && time.Since(deadline) > 0
 }
