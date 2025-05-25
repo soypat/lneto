@@ -1,3 +1,3 @@
 module github.com/soypat/lneto
 
-go 1.22
+go 1.23.8
