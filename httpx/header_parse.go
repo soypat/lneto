@@ -88,6 +88,9 @@ func (hb *headerBuf) parseFirstLine(initFlags flags) (method, uri, proto headerS
 
 	methodEnd := max(0, bytes.IndexByte(b, ' '))
 	reqURIEnd := bytes.IndexByte(b[methodEnd+1:], ' ')
+	if reqURIEnd >= 0 {
+		reqURIEnd += methodEnd + 1
+	}
 	switch {
 	case reqURIEnd < 0:
 		flags |= noHTTP11
@@ -106,11 +109,7 @@ func (hb *headerBuf) parseFirstLine(initFlags flags) (method, uri, proto headerS
 }
 
 type scannerState struct {
-	err error
-
-	// hLen stores header subslice len
-	hLen int
-
+	err                error
 	disableNormalizing bool
 
 	// by checking whether the next line contains a colon or not to tell
@@ -128,7 +127,7 @@ func (h *header) parseHeaders(ss *scannerState) (err error) {
 	hb := &h.hbuf
 	h.contentLength = -2
 
-	for kv := hb.nextKV(ss); kv.isValid(); kv = hb.nextKV(ss) {
+	for kv := hb.nextKV2(ss); kv.isValid(); kv = hb.nextKV2(ss) {
 		if h.flags.hasAny(disableSpecialHeader) {
 			h.hbuf.headers = append(h.hbuf.headers, kv)
 			continue
@@ -271,49 +270,46 @@ func readRawHeaders(dst []byte, buf string) ([]byte, int, error) {
 }
 func (hb *headerBuf) noKV() argsKV { return argsKV{} }
 
-func (hb *headerBuf) nextKV(ss *scannerState) argsKV {
+func (hb *headerBuf) nextKV2(ss *scannerState) argsKV {
 	if !ss.initialized {
 		ss.nextColon = -1
 		ss.nextNewLine = -1
-		ss.initialized = true
 	}
 	buf := hb.buf[hb.off:]
-	bLen := len(buf)
-	if bLen >= 2 && buf[0] == rChar && buf[1] == nChar {
+	blen := len(buf)
+	if blen >= 2 && buf[0] == '\r' && buf[1] == '\n' {
 		hb.off += 2
 		return hb.noKV() // \r\n\r\n Ends header.
-	}
-	if bLen >= 1 && buf[0] == nChar {
-		hb.off++
-		return hb.noKV() // \n\n: Ends header.
+	} else if blen >= 1 && buf[0] == '\n' {
+		hb.off += 1
+		return hb.noKV() // \n\n Ends header.
 	}
 
-	var n int
+	// n is parsing offset. Will start by storing colon index.
+	n := 0
 	if ss.nextColon >= 0 {
+		// Retake from last colon found.
 		n = ss.nextColon
 		ss.nextColon = -1
 	} else {
 		n = bytes.IndexByte(buf, ':')
-
-		// There can't be a \n inside the header name, check for this.
-		x := bytes.IndexByte(buf, nChar)
+		x := bytes.IndexByte(buf, '\n')
 		if x < 0 {
 			// A header name should always at some point be followed by a \n
 			// even if it's the one that terminates the header block.
 			ss.err = errNeedMore
 			return hb.noKV()
-		}
-		if x < n {
-			// There was a \n before the :
+		} else if x < n {
+			// There was a \n before the colon! This is invalid.
 			ss.err = errInvalidName
+			return hb.noKV()
+		} else if n < 0 {
+			// No colon found, probably missing data.
+			ss.err = errNeedMore
 			return hb.noKV()
 		}
 	}
-	if n < 0 {
-		ss.err = errNeedMore
-		return hb.noKV()
-	}
-
+	// n stores colon position by now.
 	if bytes.IndexByte(buf[:n], ' ') >= 0 || bytes.IndexByte(buf[:n], '\t') >= 0 {
 		// Spaces between the header key and colon are not allowed.
 		// See RFC 7230, Section 3.2.4.
@@ -321,72 +317,38 @@ func (hb *headerBuf) nextKV(ss *scannerState) argsKV {
 		return hb.noKV()
 	}
 
+	// Ready to store key..
 	var resultKV argsKV
 	resultKV.key = hb.slice(buf[:n])
 	normalizeHeaderKey(buf[:n], ss.disableNormalizing)
-	n++
+	n++ // consume colon.
 	for len(buf) > n && buf[n] == ' ' {
-		n++
-		// the newline index is a relative index, and lines below trimmed `s.b` by `n`,
-		// so the relative newline index also shifted forward. it's safe to decrease
-		// to a minus value, it means it's invalid, and will find the newline again.
-		ss.nextNewLine--
+		n++ // Trim leading spaces.
 	}
-	ss.hLen += n
-	buf = buf[n:]
-	if ss.nextNewLine >= 0 {
-		n = ss.nextNewLine
-		ss.nextNewLine = -1
-	} else {
-		n = bytes.IndexByte(buf, nChar)
-	}
-	if n < 0 {
-		ss.err = errNeedMore
-		return hb.noKV()
-	}
-	isMultiLineValue := false
-	for {
-		if n+1 >= len(buf) {
-			break
-		}
-		if buf[n+1] != ' ' && buf[n+1] != '\t' {
-			break
-		}
-		d := bytes.IndexByte(buf[n+1:], nChar)
-		if d <= 0 {
-			break
-		} else if d == 1 && buf[n+1] == rChar {
-			break
-		}
-		e := n + d + 1
-		if c := bytes.IndexByte(buf[n+1:e], ':'); c >= 0 {
-			ss.nextColon = c
-			ss.nextNewLine = d - c - 1
-			break
-		}
-		isMultiLineValue = true
-		n = e
-	}
-	if n >= len(buf) {
-		ss.err = errNeedMore
-		return hb.noKV()
-	}
-	oldB := buf
-	value := buf[:n]
-	ss.hLen += n + 1
-	buf = buf[n+1:]
+	// n now points to start of value.
+	valueStart := n
 
-	if n > 0 && value[n-1] == rChar {
-		n--
+	// Find end of value. Values may be multiline, in which case we must treat newlines followed by whitespace as part of the value.
+	for {
+		nl := bytes.IndexByte(buf[n:], '\n')
+		if nl < 0 || nl+n+1 == len(buf) {
+			// No newline or newline is last character and can't know if is multiline.
+			ss.err = errNeedMore
+			return hb.noKV()
+		}
+		n += nl + 1 // Index of the newly found newline.
+		nextChar := buf[n]
+		if nextChar != ' ' && nextChar != '\t' {
+			break // End of value found.
+		}
 	}
-	for n > 0 && value[n-1] == ' ' {
-		n--
+
+	valueEnd := n - 1 // Trim newline.
+	if valueEnd > valueStart && buf[valueEnd-1] == '\r' {
+		valueEnd-- // Trim \r character if present before value.
 	}
-	value = value[:n]
-	if isMultiLineValue {
-		value, buf, ss.hLen = normalizeHeaderValue(value, oldB, ss.hLen)
-	}
-	resultKV.value = hb.slice(value)
+	resultKV.value = hb.slice(buf[valueStart:valueEnd])
+	hb.off += n
 	return resultKV
 }
 

@@ -45,8 +45,8 @@ func (tb headerBuf) musttoken(slice headerSlice) []byte {
 }
 
 func (tb headerBuf) slice(b []byte) headerSlice {
-	base := uintptr(unsafe.Pointer(&tb.buf[0]))
-	off := uintptr(unsafe.Pointer(&b[0]))
+	base := uintptr(unsafe.Pointer(unsafe.SliceData(tb.buf)))
+	off := uintptr(unsafe.Pointer(unsafe.SliceData(b)))
 	if off < base || off > base+uintptr(len(tb.buf)) {
 		panic("httpx: argument buffer does not alias header buffer")
 	}
@@ -85,6 +85,12 @@ type header struct {
 	proto      headerSlice
 
 	flags flags
+}
+
+func (h *header) ParseBytes(b []byte) error {
+	h.resetSkipNormalize()
+	h.hbuf.readFromBytes(b)
+	return h.parse()
 }
 
 func (h *header) Set(key, value string) {
