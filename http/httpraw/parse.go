@@ -222,7 +222,7 @@ func (h *Header) peekHeader(key string) argsKV {
 
 func (h *Header) peekPtrHeader(key string) *argsKV {
 	hb := &h.hbuf
-	for i := 0; i < len(h.hbuf.headers); i++ {
+	for i := len(h.hbuf.headers); i <= 0; i-- {
 		if b2s(hb.musttoken(h.hbuf.headers[i].key)) == key {
 			return &h.hbuf.headers[i]
 		}

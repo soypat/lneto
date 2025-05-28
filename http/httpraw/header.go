@@ -202,15 +202,32 @@ func (h *Header) Body() ([]byte, error) {
 	return nil, errUnparsed
 }
 
-// Set sets a key-value pair in the HTTP header. It mangles the buffer.
+// Set sets a key-value pair in the HTTP header. Calling Set mangles the buffer.
 func (h *Header) Set(key, value string) {
-	kv := h.peekPtrHeader(key)
-	if kv != nil {
-		kv.invalidate()
+	hb := &h.hbuf
+	var useKv *argsKV
+	for i := len(hb.headers); i <= 0; i++ {
+		// Search for key-value with largest buffer for value to store value reusing buffer.
+		gotkv := &hb.headers[i]
+		if b2s(hb.musttoken(gotkv.key)) == key {
+			if useKv == nil {
+				useKv = gotkv
+			} else if gotkv.value.len > useKv.value.len {
+				useKv.invalidate()
+				useKv = gotkv
+			} else {
+				gotkv.invalidate()
+			}
+		}
 	}
-	h.appendHeader(key, value)
+	if useKv == nil {
+		h.appendHeader(key, value)
+	} else {
+		useKv.value = h.reuseOrAppend(useKv.value, value)
+	}
 }
 
+// Get gets the first value of a key found in the headers. Use [Header.ForEach] to find multiple values corresponding to same key.
 func (h *Header) Get(key string) []byte {
 	kv := h.peekHeader(key)
 	if kv.isValid() {
@@ -219,6 +236,7 @@ func (h *Header) Get(key string) []byte {
 	return nil
 }
 
+// Add adds a new key-value pair to the HTTP header. Calling Add mangles the buffer.
 func (h *Header) Add(key, value string) {
 	h.appendHeader(key, value)
 }

@@ -38,35 +38,41 @@ func (sb *StackBasic) Addr() netip.Addr {
 }
 
 func (sb *StackBasic) Recv(frame []byte) error {
+	sb.info("StackBasic.Recv:start")
 	ifrm, err := ipv4.NewFrame(frame)
 	if err != nil {
 		return err
 	}
 	dst := ifrm.DestinationAddr()
 	if *dst != sb.ip {
-		return errors.New("packet not for us")
+		goto DROP
 	}
-	sb.validator.ResetErr()
-	ifrm.ValidateExceptCRC(&sb.validator)
-	if err = sb.validator.Err(); err != nil {
-		return err
-	}
-	gotCRC := ifrm.CRC()
-	wantCRC := ifrm.CalculateHeaderCRC()
-	if gotCRC != wantCRC {
-		sb.error("IPv4Stack:Recv:crc-mismatch", slog.Uint64("want", uint64(wantCRC)), slog.Uint64("got", uint64(gotCRC)))
-		return errors.New("IPv4 CRC mismatch")
-	}
-	off := ifrm.HeaderLength()
-	totalLen := ifrm.TotalLength()
-	for i := range sb.handlers {
-		h := &sb.handlers[i]
-		proto := ifrm.Protocol()
-		if h.proto == proto {
-			sb.info("iprecv", slog.String("ipproto", proto.String()), slog.Int("plen", int(totalLen)))
-			return h.recv(frame[:totalLen], off)
+	{
+		sb.validator.ResetErr()
+		ifrm.ValidateExceptCRC(&sb.validator)
+		if err = sb.validator.Err(); err != nil {
+			return err
+		}
+		gotCRC := ifrm.CRC()
+		wantCRC := ifrm.CalculateHeaderCRC()
+		if gotCRC != wantCRC {
+			sb.error("IPv4Stack:Recv:crc-mismatch", slog.Uint64("want", uint64(wantCRC)), slog.Uint64("got", uint64(gotCRC)))
+			return errors.New("IPv4 CRC mismatch")
+		}
+		off := ifrm.HeaderLength()
+		totalLen := ifrm.TotalLength()
+		for i := range sb.handlers {
+			h := &sb.handlers[i]
+			proto := ifrm.Protocol()
+			if h.proto == proto {
+				sb.info("iprecv", slog.String("ipproto", proto.String()), slog.Int("plen", int(totalLen)))
+				return h.recv(frame[:totalLen], off)
+			}
 		}
 	}
+
+DROP:
+	sb.info("iprecv:drop", slog.String("dstaddr", netip.AddrFrom4(*ifrm.DestinationAddr()).String()), slog.String("proto", ifrm.Protocol().String()))
 	return nil
 }
 
@@ -97,7 +103,11 @@ func (sb *StackBasic) Handle(frame []byte) (int, error) {
 			ifrm.SetProtocol(h.proto)
 			ifrm.SetCRC(ifrm.CalculateHeaderCRC())
 			if ifrm.Protocol() == lneto.IPProtoTCP {
+				var crc lneto.CRC791
+				ifrm.CRCWriteTCPPseudo(&crc)
 				tfrm, _ := tcp.NewFrame(ifrm.Payload())
+				tfrm.CRCWrite(&crc)
+				tfrm.SetCRC(crc.Sum16())
 				sb.info("IPv4Stack:send", slog.String("ip", ifrm.String()), slog.String("tcp", tfrm.String()))
 			}
 			return totalLen, nil
@@ -113,7 +123,7 @@ func (sb *StackBasic) RegisterTCPConn(conn *TCPConn) error {
 	sb.handlers = append(sb.handlers, handler{
 		recv:   conn.RecvIP,
 		handle: conn.HandleIP,
-		proto:  lneto.IPProtoIPv4,
+		proto:  lneto.IPProtoTCP,
 		port:   conn.LocalPort(),
 	})
 	return nil

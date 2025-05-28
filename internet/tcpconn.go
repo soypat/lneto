@@ -209,6 +209,7 @@ func (conn *TCPConn) HandleIP(buf []byte, off int) (n int, err error) {
 	if err != nil {
 		return 0, err
 	}
+
 	err = setDstAddr(buf[:off], conn.remoteAddr)
 	if err != nil {
 		return 0, err

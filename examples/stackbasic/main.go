@@ -18,6 +18,7 @@ import (
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/internet"
+	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -66,14 +67,14 @@ func main() {
 			slogger.error("tap-err", slog.String("err", err.Error()))
 			log.Fatal(err)
 		} else if nread > 0 {
+			debugEthPacket(nil, "IN ", buf[:nread])
 			err = lStack.RecvEth(buf[:nread])
 			if err != nil {
 				slogger.error("recv", slog.String("err", err.Error()), slog.Int("plen", nread))
-			} else {
-				slogger.info("recv", slog.Int("plen", nread))
 			}
 		}
 		nw, err := lStack.HandleEth(buf[:])
+		debugEthPacket(nil, "OUT", buf[:nw])
 		if err != nil {
 			slogger.error("handle", slog.String("err", err.Error()))
 		} else if nw > 0 {
@@ -211,10 +212,10 @@ func (ls *LinkStack) RecvEth(ethFrame []byte) (err error) {
 	}
 	etype := efrm.EtherTypeOrSize()
 	dstaddr := efrm.DestinationHardwareAddr()
-	if !efrm.IsBroadcast() && ls.mac != *dstaddr {
-		return fmt.Errorf("incoming %s mismatch hwaddr %s", etype.String(), net.HardwareAddr(dstaddr[:]).String())
-	}
 	var vld lneto.Validator
+	if !efrm.IsBroadcast() && ls.mac != *dstaddr {
+		goto DROP
+	}
 	efrm.ValidateSize(&vld)
 	if err := vld.Err(); err != nil {
 		return err
@@ -226,7 +227,8 @@ func (ls *LinkStack) RecvEth(ethFrame []byte) (err error) {
 			return h.recv(efrm.Payload(), 0)
 		}
 	}
-
+DROP:
+	ls.info("LinkStack:drop-packet", slog.String("dsthw", net.HardwareAddr(dstaddr[:]).String()), slog.String("ethertype", efrm.EtherTypeOrSize().String()))
 	return nil
 }
 
@@ -297,4 +299,30 @@ func (l logger) debug(msg string, attrs ...slog.Attr) {
 }
 func (l logger) trace(msg string, attrs ...slog.Attr) {
 	internal.LogAttrs(l.log, internal.LevelTrace, msg, attrs...)
+}
+
+func debugEthPacket(logger *slog.Logger, prefix string, b []byte) {
+	frm, err := ethernet.NewFrame(b)
+	if err != nil {
+		return
+	}
+	if frm.EtherTypeOrSize() != ethernet.TypeIPv4 {
+		return
+	}
+	ihdr, err := ipv4.NewFrame(frm.Payload())
+	if err != nil {
+		return
+	}
+	if ihdr.Protocol() != lneto.IPProtoTCP {
+		return
+	}
+	thdr, err := tcp.NewFrame(ihdr.Payload())
+	if err != nil {
+		return
+	}
+	fmt.Println(prefix, ihdr.String()+" TCP:"+thdr.String())
+	payload := thdr.Payload()
+	if len(payload) > 0 {
+		fmt.Println("PAYLOAD:", string(payload))
+	}
 }

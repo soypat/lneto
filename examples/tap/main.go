@@ -39,7 +39,7 @@ func run() error {
 	defer sv.Close()
 	fmt.Println("listening on http://127.0.0.1:7070/recv  and  http://127.0.0.1:7070/send")
 	go http.ListenAndServe(":7070", sv)
-
+	misses := 0
 	for {
 		result, err := sv.HandleTap()
 		if err != nil {
@@ -48,7 +48,14 @@ func run() error {
 		if result.Failed {
 			return errors.New("tap failed, exit program")
 		} else if result.ReceivedSize == 0 && result.SentSize == 0 {
-			time.Sleep(200 * time.Millisecond) // No data exchanged, sleep a bit to not hog CPU.
+			misses++
+			if misses > 1000 {
+				time.Sleep(200 * time.Millisecond) // No data exchanged, sleep a bit to not hog CPU.
+			} else {
+				time.Sleep(50 * time.Millisecond) // No data exchanged, sleep a bit to not hog CPU.
+			}
+		} else {
+			misses = 0
 		}
 	}
 }
