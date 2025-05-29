@@ -129,10 +129,17 @@ func TestIPv4TCPChecksum(t *testing.T) {
 			0xfa, 0xf0, 0xde, 0x02, 0x00, 0x00, 0x02, 0x04, 0x05, 0xb4, 0x04, 0x02, 0x08, 0x0a, 0xbb, 0xac,
 			0x9b, 0xca, 0x00, 0x00, 0x00, 0x00, 0x01, 0x03, 0x03, 0x07},
 	}
+	var vld lneto.Validator
 	for _, tcpPacket := range tcpPackets {
 		efrm, _ := ethernet.NewFrame(tcpPacket)
+		efrm.ValidateSize(&vld)
 		ifrm, _ := ipv4.NewFrame(efrm.Payload())
+		ifrm.ValidateSize(&vld)
 		tfrm, _ := tcp.NewFrame(ifrm.Payload())
+		tfrm.ValidateExceptCRC(&vld)
+		if err := vld.Err(); err != nil {
+			t.Fatal(err)
+		}
 		wantCRC := ifrm.CRC()
 		gotCRC := ifrm.CalculateHeaderCRC()
 		if wantCRC != gotCRC {
