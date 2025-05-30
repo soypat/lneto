@@ -49,7 +49,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-
+	// h := &handler.H
+	// _ = h.AwaitingSynAck()
+	// _ = h.AwaitingSynResponse()
+	// _ = h.AwaitingSynSend()
+	// _ = h
 	err = handler.OpenListen(addrPort.Port(), iss)
 	if err != nil {
 		log.Fatal(err)
@@ -57,7 +61,7 @@ func main() {
 
 	tap := ltesto.NewHTTPTapClient("http://127.0.0.1:7070")
 	defer tap.Close()
-
+	tap.ReadDiscard() // Discard all unread content.
 	fmt.Println("hosting server at ", addrPort.String())
 	var buf [mtu]byte
 	var hdr httpraw.Header
@@ -68,6 +72,7 @@ func main() {
 			log.Fatal(err)
 		} else if nread > 0 {
 			debugEthPacket(nil, "IN ", buf[:nread])
+			fmt.Println("INHEX ", debugHex(buf[:nread]))
 			err = lStack.RecvEth(buf[:nread])
 			if err != nil {
 				slogger.error("recv", slog.String("err", err.Error()), slog.Int("plen", nread))
@@ -78,6 +83,7 @@ func main() {
 		if err != nil {
 			slogger.error("handle", slog.String("err", err.Error()))
 		} else if nw > 0 {
+			fmt.Println("OUTHEX ", debugHex(buf[:nread]))
 			_, err = tap.Write(buf[:nw])
 			if err != nil {
 				log.Fatal(err)
@@ -326,3 +332,15 @@ func debugEthPacket(logger *slog.Logger, prefix string, b []byte) {
 		fmt.Println("PAYLOAD:", string(payload))
 	}
 }
+
+func debugHex(b []byte) string {
+	var d []byte
+	for i := 0; i < len(b); i++ {
+		c1 := tblhex[b[i]&0xf]
+		c2 := tblhex[b[i]>>4]
+		d = append(d, c2, c1, ' ')
+	}
+	return string(d)
+}
+
+const tblhex = "0123456789abcdef"

@@ -21,6 +21,7 @@ var (
 )
 
 type TCPConn struct {
+	// deprecated: here for debugging purposes only.
 	h          tcp.Handler
 	remoteAddr []byte
 
