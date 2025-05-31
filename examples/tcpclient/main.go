@@ -55,11 +55,6 @@ func run() error {
 		}
 		const asResponse = true
 		needMore, err = hdr.TryParse(asResponse)
-		if needMore {
-			break
-		} else if err != nil {
-			break
-		}
 	}
 	if err != nil {
 		return err

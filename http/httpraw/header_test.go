@@ -64,7 +64,7 @@ func TestHeaderParseRequest(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	key := string(c.Key())
+	key := string(c.Name())
 	if key != wantCookie.Name {
 		t.Errorf("want cookie key %q, got %q", wantCookie.Name, key)
 	}
@@ -76,11 +76,11 @@ func TestHeaderParseRequest(t *testing.T) {
 	if domain != wantCookie.Domain {
 		t.Errorf("want domain %q, got %q", wantCookie.Domain, domain)
 	}
-	httpOnly := c.HasValueOrKey("HttpOnly")
+	httpOnly := c.HasKeyOrSingleValue("HttpOnly")
 	if httpOnly != wantCookie.HttpOnly {
 		t.Errorf("want cookie HttpOnly %v, got %v", wantCookie.HttpOnly, httpOnly)
 	}
-	secure := c.HasValueOrKey("Secure")
+	secure := c.HasKeyOrSingleValue("Secure")
 	if secure != wantCookie.Secure {
 		t.Errorf("want cookie HttpOnly %v, got %v", wantCookie.Secure, secure)
 	}

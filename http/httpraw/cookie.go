@@ -6,6 +6,7 @@ import (
 )
 
 // Cookie implements cookie key-value parsing. Methods function similarly to eponymous [Header] methods.
+// Cookie represents a single-line Cookie header value in a HTTP header, much like the standard library Cookie.
 type Cookie struct {
 	buf []byte
 	kvs []argsKV // first key-value pair is the data Key/Value pair.
@@ -22,13 +23,15 @@ func (c *Cookie) Reset(buf []byte) {
 	}
 }
 
-func (c *Cookie) Key() []byte {
+// Name returns the first cookie key which is commonly referred to as the cookie's name. Returns nil if not found.
+func (c *Cookie) Name() []byte {
 	if len(c.kvs) == 0 || c.kvs[0].key.len == 0 {
 		return nil
 	}
 	return tok2bytes(c.buf, c.kvs[0].key)
 }
 
+// Value returns the first cookie value associated with the name. Returns nil if not found.
 func (c *Cookie) Value() []byte {
 	if len(c.kvs) == 0 || c.kvs[0].value.len == 0 {
 		return nil
@@ -36,17 +39,20 @@ func (c *Cookie) Value() []byte {
 	return tok2bytes(c.buf, c.kvs[0].value)
 }
 
+// ParseBytes copies the argument bytes to the Cookie's underlying buffer and parses the cookie.
 func (c *Cookie) ParseBytes(cookie []byte) error {
 	c.Reset(nil)
 	c.buf = append(c.buf[:0], cookie...)
 	return c.Parse()
 }
 
+// CopyTo makes a copy of the cookie in dst argument. No memory is shared between cookies.
 func (c *Cookie) CopyTo(dst *Cookie) {
 	dst.buf = append(dst.buf[:0], c.buf...)
 	dst.kvs = append(dst.kvs[:0], c.kvs...)
 }
 
+// Parse parses the cookie's buffer in place.
 func (c *Cookie) Parse() error {
 	if len(c.kvs) > 0 {
 		return errors.New("cookies already parsed, reset before parsing again")
@@ -83,6 +89,7 @@ func (c *Cookie) ForEach(cb func(key, value []byte) error) error {
 	return nil
 }
 
+// Get gets a cookie's value from its key. Use HasValueOrKey to check if a key or single-valued cookie is present in the cookie.
 func (c *Cookie) Get(key string) []byte {
 	nc := len(c.kvs)
 	for i := 0; i < nc; i++ {
@@ -94,7 +101,7 @@ func (c *Cookie) Get(key string) []byte {
 	return nil
 }
 
-func (c *Cookie) HasValueOrKey(keyOrSingleValue string) bool {
+func (c *Cookie) HasKeyOrSingleValue(keyOrSingleValue string) bool {
 	nc := len(c.kvs)
 	for i := 0; i < nc; i++ {
 		kv := c.kvs[i]
@@ -144,11 +151,13 @@ func trimCookie(src []byte, trimQuotes bool) []byte {
 	return src
 }
 
+// String returns the string representation of the cookie value, much like the standard library http.Cookie.String method.
 func (c *Cookie) String() string {
 	buf := c.AppendKeyValues(nil)
 	return b2s(buf)
 }
 
+// AppendKeyValues appends the HTTP header value of the cookie expected after the "Cookie:" string. Does not include trailing \r\n's.
 func (c *Cookie) AppendKeyValues(dst []byte) []byte {
 	nc := len(c.kvs)
 	for i := 0; i < nc; i++ {

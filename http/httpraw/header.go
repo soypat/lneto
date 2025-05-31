@@ -37,7 +37,6 @@ func (f flags) hasAny(checkThese flags) bool {
 //   - Normalization.
 //   - Cookies (see [Cookie]).
 //   - Special header optimizations.
-//   - Safe API. Users can easily mangle HTTP body with calls.
 type Header struct {
 	hbuf headerBuf
 
@@ -54,8 +53,9 @@ type Header struct {
 	_     noCopy
 }
 
-// EnableBufferGrow disables buffer growth during parsing if b is false. Is enabled by default.
-func (h *Header) EnableBufferGrow(b bool) {
+// EnableBufferGrowth disables buffer growth during parsing if b is false. Is enabled by default.
+// Disabling buffer growth prevents allocations but methods may throw errors on insufficient memory.
+func (h *Header) EnableBufferGrowth(b bool) {
 	if !b {
 		h.flags |= flagNoBufferGrow
 	} else {
@@ -87,7 +87,7 @@ func (h *Header) Parse(asResponse bool) error {
 //		if err != nil {
 //			break
 //		}
-//		needMoreData, err = h.TryParse()
+//		needMoreData, err = h.TryParse(asResponse)
 //	}
 //	if err != nil {
 //		return err
@@ -260,6 +260,11 @@ func (h *Header) Method() []byte {
 	return h.getNonEmptyValue(h.method)
 }
 
+// SetMethod sets the request header's method.
+func (h *Header) SetMethod(method string) {
+	h.method = h.reuseOrAppend(h.method, method)
+}
+
 // SetRequestURI sets RequestURI for the first HTTP request line.
 func (h *Header) SetRequestURI(requestURI string) {
 	h.requestURI = h.reuseOrAppend(h.requestURI, requestURI)
@@ -270,19 +275,17 @@ func (h *Header) RequestURI() []byte {
 	return h.getNonEmptyValue(h.requestURI)
 }
 
-func (h *Header) SetMethod(method string) {
-	h.method = h.reuseOrAppend(h.method, method)
-}
-
-// Protocol returns HTTP protocol.
+// Protocol returns the request header's HTTP protocol. Usually "HTTP/1.1".
 func (h *Header) Protocol() []byte {
 	return h.getNonEmptyValue(h.proto)
 }
 
+// SetProtocol sets the request header's protocol. Usually "HTTP/1.1".
 func (h *Header) SetProtocol(protocol string) {
 	h.proto = h.reuseOrAppend(h.proto, protocol)
 }
 
+// Status returns the response header's status code and status text. i.e: "200" "OK".
 func (h *Header) Status() (code, statusText []byte) {
 	if h.statusCode.len == 0 {
 		return nil, nil
@@ -290,6 +293,7 @@ func (h *Header) Status() (code, statusText []byte) {
 	return h.hbuf.musttoken(h.statusCode), h.hbuf.musttoken(h.statusText)
 }
 
+// Status sets the response header's status code and status text. i.e: "200" "OK".
 func (h *Header) SetStatus(code, statusText string) {
 	h.statusCode = h.reuseOrAppend(h.statusCode, code)
 	h.statusText = h.reuseOrAppend(h.statusText, statusText)

@@ -220,16 +220,6 @@ func (h *Header) peekHeader(key string) argsKV {
 	return hb.noKV()
 }
 
-func (h *Header) peekPtrHeader(key string) *argsKV {
-	hb := &h.hbuf
-	for i := len(h.hbuf.headers); i <= 0; i-- {
-		if b2s(hb.musttoken(h.hbuf.headers[i].key)) == key {
-			return &h.hbuf.headers[i]
-		}
-	}
-	return nil
-}
-
 func (hb *headerBuf) mustAppendSlice(value string) headerSlice {
 	L := len(hb.buf)
 	copy(hb.buf[L:L+len(value)], value)
@@ -387,11 +377,6 @@ func (h *Header) ConnectionClose() bool {
 // See https://groups.google.com/forum/#!msg/Golang-Nuts/ENgbUzYvCuU/90yGx7GUAgAJ .
 func b2s(b []byte) string {
 	return unsafe.String(unsafe.SliceData(b), len(b))
-}
-
-// s2b converts string to a byte slice without memory allocation.
-func s2b(s string) []byte {
-	return unsafe.Slice(unsafe.StringData(s), len(s))
 }
 
 func tok2bytes(buf []byte, slice headerSlice) []byte {
