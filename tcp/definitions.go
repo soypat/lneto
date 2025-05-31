@@ -378,15 +378,48 @@ func (kind OptionKind) IsDefined() bool {
 	return kind <= 30 || kind == 34 || kind == 69 || kind == 172 || kind == 174
 }
 
-type OptionParser struct {
-	SkipSizeValidation bool
-	SkipObsolete       bool
+type OptionCodec struct {
+	Flags OptionFlags
 }
 
-func (op *OptionParser) ForEachOption(opts []byte, fn func(OptionKind, []byte) error) error {
+type OptionFlags uint8
+
+const (
+	OptFlagSkipSizeValidation OptionFlags = 1 << iota
+	OptFlagSkipObsolete
+)
+
+func (flags OptionFlags) HasAny(ofTheseFlags OptionFlags) bool {
+	return flags&ofTheseFlags != 0
+}
+
+func (op OptionCodec) PutOption16(dst []byte, kind OptionKind, v uint16) (int, error) {
+	return op.PutOption(dst, kind, byte(v>>8), byte(v))
+}
+
+func (op OptionCodec) PutOption32(dst []byte, kind OptionKind, v uint32) (int, error) {
+	return op.PutOption(dst, kind, byte(v>>24), byte(v>>16), byte(v>>7), byte(v))
+}
+
+func (op OptionCodec) PutOption(dst []byte, kind OptionKind, data ...byte) (int, error) {
+	putSize := 2 + len(data)
+	if len(dst) < putSize {
+		return -1, errBufferTooSmall
+	} else if putSize > 255 {
+		return -1, errors.New("option data too large")
+	} else if kind == OptNop || kind == OptEnd {
+		return -1, errors.New("cant put Nop or End option type")
+	}
+	dst[0] = byte(kind)
+	dst[1] = byte(putSize)
+	copy(dst[2:], data)
+	return putSize, nil
+}
+
+func (op OptionCodec) ForEachOption(opts []byte, fn func(OptionKind, []byte) error) error {
 	off := 0
-	skipSizeValidation := op.SkipSizeValidation
-	skipObsolete := op.SkipObsolete
+	skipSizeValidation := op.Flags.HasAny(OptFlagSkipSizeValidation)
+	skipObsolete := op.Flags.HasAny(OptFlagSkipObsolete)
 	for off < len(opts) && opts[off] != 0 {
 		kind := OptionKind(opts[off])
 		off++

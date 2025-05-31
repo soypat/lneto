@@ -30,8 +30,9 @@ type Handler struct {
 	// connid is a conenction counter that is incremented each time a new
 	// connection is established via Open calls. This disambiguate's whether
 	// Read and Write calls belong to the current connection.
-	connid  uint16
-	closing bool
+	connid   uint16
+	optcodec OptionCodec
+	closing  bool
 }
 
 func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
@@ -206,10 +207,14 @@ func (h *Handler) Send(b []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+
+	offset := uint8(5)
 	var segment Segment
 	if h.AwaitingSynSend() {
 		// Handling init syn segment.
 		segment = ClientSynSegment(h.scb.ISS(), h.scb.RecvWindow())
+		h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, uint16(len(b)))
+		offset++
 	} else {
 		var ok bool
 		available := min(h.bufTx.Buffered(), len(b)-sizeHeaderTCP)
@@ -225,6 +230,9 @@ func (h *Handler) Send(b []byte) (int, error) {
 			} else if n != int(segment.DATALEN) {
 				panic("expected n == available")
 			}
+		} else if segment.Flags == synack {
+			h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, uint16(len(b)))
+			offset++
 		}
 	}
 	prevState := h.scb.State()
@@ -236,9 +244,9 @@ func (h *Handler) Send(b []byte) (int, error) {
 	}
 	tfrm.SetSourcePort(h.localPort)
 	tfrm.SetDestinationPort(h.remotePort)
-	tfrm.SetSegment(segment, 5) // No TCP options.
+	tfrm.SetSegment(segment, offset) // No TCP options.
 	tfrm.SetUrgentPtr(0)
-	return sizeHeaderTCP + int(segment.DATALEN), nil
+	return int(offset)*4 + int(segment.DATALEN), nil
 }
 
 // Free returns the amount of space free in the transmit buffer. A call to [Handler.Write] with a larger buffer will fail.
