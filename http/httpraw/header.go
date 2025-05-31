@@ -24,6 +24,7 @@ const (
 	flagConnClose
 	flagNoHTTP11
 	flagMangledBuffer // set when header fields appended to buffer via Add,Set calls
+	flagReaderEOF
 )
 
 func (f flags) hasAny(checkThese flags) bool {
@@ -77,20 +78,21 @@ func (h *Header) Parse(asResponse bool) error {
 }
 
 // TryParse begins parsing or resumes parsing from a failed previous attempt from any of the Parse* methods.
-// It fails if HTTP data is incomplete. It panics if called after header parsing completed succesfully.
-// As long as ok returns true future calls to TryParse may succeed.
+// As long as needMoreData returns true future calls to TryParse may succeed and the header is not done parsing.
 //
-//	ok, err := h.TryParse()
-//	for ; ok; ok, err = h.TryParse() {
-//		_, err = h.ReadFrom(r, 256)
-//		if err != nil && err != io.EOF {
-//			return err
+//	needMoreData := true
+//	var err error
+//	for needMoreData {
+//		_, err = h.ReadFrom(r, 1024)
+//		if err != nil {
+//			break
 //		}
+//		needMoreData, err = h.TryParse()
 //	}
 //	if err != nil {
 //		return err
 //	}
-func (h *Header) TryParse(asResponse bool) (ok bool, err error) {
+func (h *Header) TryParse(asResponse bool) (needMoreData bool, err error) {
 	if h.flags.hasAny(flagDoneParsingHeader) {
 		return false, errors.New("TryParse called after header parsed")
 	} else if h.flags.hasAny(flagMangledBuffer) {
@@ -103,11 +105,12 @@ func (h *Header) TryParse(asResponse bool) (ok bool, err error) {
 		}
 	}
 	err = h.parseNextHeaders()
-	return err == nil || err == errNeedMore, err
+	return err == errNeedMore, err
 }
 
 // ReadFromLimited reads at most maxBytesToRead from reader and appends them to underlying buffer.
 // Used to accumulate HTTP header for later parsing with [Header.TryParse].
+// If read is successful (read length>0) and reader returns [io.EOF] then ReadFromLimited will return a nil error.
 func (h *Header) ReadFromLimited(r io.Reader, maxBytesToRead int) (int, error) {
 	if maxBytesToRead <= 0 {
 		return 0, errSmallBuffer
@@ -124,6 +127,12 @@ func (h *Header) ReadFromLimited(r io.Reader, maxBytesToRead int) (int, error) {
 	blen := len(h.hbuf.buf)
 	b := h.hbuf.buf[blen:min(blen+maxBytesToRead, cap(h.hbuf.buf))]
 	n, err := r.Read(b)
+	if err != nil && err == io.EOF {
+		h.flags |= flagReaderEOF
+		if n > 0 {
+			err = nil // Nil-out error if read was succesful so as to not spook readers.
+		}
+	}
 	h.hbuf.buf = h.hbuf.buf[:blen+n]
 	return n, err
 }
@@ -148,6 +157,11 @@ func (h *Header) ReadFromBytes(b []byte) (int, error) {
 // Free returns amount of bytes free in underlying buffer.
 func (h *Header) Free() int {
 	return h.hbuf.free()
+}
+
+// Capacity returns the total capacity of the underlying buffer.
+func (h *Header) Capacity() int {
+	return cap(h.hbuf.buf)
 }
 
 // ForEach iterates over header key-value field tuples.

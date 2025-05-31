@@ -56,7 +56,7 @@ func (h *HTTPTapClient) ensureMTU() (err error) {
 	if err != nil {
 		return err
 	}
-	var info TapInfo
+	var info tapInfo
 	err = json.NewDecoder(resp.Body).Decode(&info)
 	if err != nil {
 		return err
@@ -85,40 +85,56 @@ type HTTPTapClient struct {
 	buf     []byte
 }
 
-func (h *HTTPTapClient) ReadDiscard() {
-	var data [2048]byte
-	var n int = -1
-	for n != 0 {
-		n, _ = h.Read(data[:]) // Empty remote data.
+func (h *HTTPTapClient) ReadDiscard() error {
+	for {
+		d, _ := h.ReadBytes() // Empty remote data.
+		if len(d) == 0 {
+			break
+		}
 	}
+	return nil
+}
+
+func (h *HTTPTapClient) ReadBytes() (data []byte, err error) {
+	err = h.ensureMTU()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := h.c.Get(h.recvurl)
+	if err != nil {
+		return nil, err
+	} else if resp.StatusCode != 200 {
+		return nil, errors.New(resp.Status + " for " + h.recvurl)
+	}
+	buf := h.buf
+	err = json.NewDecoder(resp.Body).Decode(&buf)
+	if err != nil {
+		return nil, err
+	}
+	return buf, nil
 }
 
 func (h *HTTPTapClient) Read(b []byte) (int, error) {
 	err := h.ensureMTU()
 	if err != nil {
 		return 0, err
+	} else if len(b) < h.MTU() {
+		return 0, errors.New("buffer must have at least MTU size")
 	}
-	resp, err := h.c.Get(h.recvurl)
+	data, err := h.ReadBytes()
 	if err != nil {
 		return 0, err
-	} else if resp.StatusCode != 200 {
-		return 0, errors.New(resp.Status + " for " + h.recvurl)
 	}
-	var data []byte
-	err = json.NewDecoder(resp.Body).Decode(&data)
-	if err != nil {
-		return 0, err
-	} else if len(b) < len(data) {
-		return 0, fmt.Errorf("got too large packet %d for buffer %d", len(data), len(b))
-	}
-	copy(b, data)
-	return len(data), nil
+	n := copy(b, data)
+	return n, nil
 }
 
 func (h *HTTPTapClient) Write(b []byte) (int, error) {
 	err := h.ensureMTU()
 	if err != nil {
 		return 0, err
+	} else if len(b) > h.MTU() {
+		return 0, errors.New("buffer larger than MTU")
 	}
 	data, _ := json.Marshal(b)
 	resp, err := h.c.Post(h.sendurl, "application/json", bytes.NewReader(data))
@@ -140,7 +156,7 @@ type HTTPTapServer struct {
 	tapfailed bool
 }
 
-type TapInfo struct {
+type tapInfo struct {
 	MTU          int
 	IPPrefix     string
 	HardwareAddr string
@@ -185,7 +201,7 @@ func NewHTTPTapServer(iface string, ip netip.Prefix, mtu, queueOut, queueIn int)
 	})
 	ipstr := ip.String()
 	sv.HandleFunc("/info", func(w http.ResponseWriter, r *http.Request) {
-		info := TapInfo{
+		info := tapInfo{
 			MTU:      mtu,
 			IPPrefix: ipstr,
 		}

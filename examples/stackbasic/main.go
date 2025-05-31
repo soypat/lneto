@@ -61,6 +61,7 @@ func main() {
 	fmt.Println("hosting server at ", addrPort.String(), "over tap interface of mtu:", mtu, "prefix:", ippfx, "gateway:", net.HardwareAddr(gatewayMAC[:]).String())
 	buf := make([]byte, mtu)
 	var hdr httpraw.Header
+	hdr.Reset(make([]byte, 0, 1024))
 	for {
 		nread, err := tap.Read(buf[:])
 		if err != nil {
@@ -74,6 +75,7 @@ func main() {
 				slogger.error("recv", slog.String("err", err.Error()), slog.Int("plen", nread))
 			}
 		}
+		doHTTP(handler, &hdr)
 		nw, err := lStack.HandleEth(buf[:])
 		debugEthPacket(nil, "OUT", buf[:nw])
 		if err != nil {
@@ -87,27 +89,34 @@ func main() {
 				slogger.info("write", slog.Int("plen", nw))
 			}
 		}
-		if handler.State() == tcp.StateEstablished {
-			data := handler.BufferedInput()
-			if data > 0 {
-				n, err := handler.Read(buf[:])
-				if err != nil {
-					slogger.error("tcp-read", slog.String("err", err.Error()))
-				} else {
-					hdr.Reset(buf[:n])
-					err = hdr.Parse(false)
-					if err != nil {
-						slogger.error("http-parse", slog.String("err", err.Error()))
-					} else {
-						fmt.Println(hdr.String())
-					}
-				}
-			}
-		}
+
 		if nread == 0 && nw == 0 {
 			time.Sleep(5 * time.Millisecond)
 		}
 	}
+}
+
+func doHTTP(conn *internet.TCPConn, hdr *httpraw.Header) error {
+	const asRequest = false
+	if conn.State() != tcp.StateEstablished || conn.BufferedInput() == 0 {
+		return nil // No data yet.
+	}
+	fmt.Println("state is established; check request and send response")
+	_, err := hdr.ReadFromLimited(conn, hdr.Free())
+	if err != nil {
+		return err
+	}
+	needMore, err := hdr.TryParse(asRequest)
+	if err != nil {
+		if !needMore {
+			fmt.Println("IT's SO GOVER")
+			conn.Close()
+		}
+		return err
+	}
+	// HTTP parsed succesfully!
+	fmt.Println("GOT HTTP:\n", hdr.String())
+	return nil
 }
 
 func NewEthernetTCPStack(ourMAC, gwMAC [6]byte, ip netip.AddrPort, mtu uint16, slogger logger) (*LinkStack, *internet.TCPConn, error) {
