@@ -69,7 +69,7 @@ func main() {
 			log.Fatal(err)
 		} else if nread > 0 {
 			debugEthPacket(nil, "IN ", buf[:nread])
-			fmt.Println("INHEX ", debugHex(buf[:nread]))
+			// fmt.Println("INHEX ", debugHex(buf[:nread]))
 			err = lStack.RecvEth(buf[:nread])
 			if err != nil {
 				slogger.error("recv", slog.String("err", err.Error()), slog.Int("plen", nread))
@@ -81,7 +81,7 @@ func main() {
 		if err != nil {
 			slogger.error("handle", slog.String("err", err.Error()))
 		} else if nw > 0 {
-			fmt.Println("OUTHEX ", debugHex(buf[:nread]))
+			// fmt.Println("OUTHEX ", debugHex(buf[:nread]))
 			_, err = tap.Write(buf[:nw])
 			if err != nil {
 				log.Fatal(err)
@@ -116,6 +116,21 @@ func doHTTP(conn *internet.TCPConn, hdr *httpraw.Header) error {
 	}
 	// HTTP parsed succesfully!
 	fmt.Println("GOT HTTP:\n", hdr.String())
+	fmt.Println("sending response...")
+	hdr.Reset(nil)
+	hdr.SetStatus("200", "OK")
+	response, err := hdr.AppendResponse(nil)
+	if err != nil {
+		return err
+	}
+	_, err = conn.Write(response)
+	if err != nil {
+		return err
+	}
+	err = conn.Close()
+	if err != nil {
+		return err
+	}
 	return nil
 }
 

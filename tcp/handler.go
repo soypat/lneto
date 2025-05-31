@@ -192,7 +192,13 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 
 func (h *Handler) Close() error {
 	h.trace("tcp.Handler.Close")
-	return h.scb.Close()
+	if h.closing {
+		return errConnectionClosing
+	} else if h.State().IsClosed() {
+		return net.ErrClosed
+	}
+	h.closing = true
+	return nil
 }
 
 // Send writes TCP frame to be sent over the network to the remote peer to `b`.
@@ -200,14 +206,18 @@ func (h *Handler) Close() error {
 // The returned integer is the length written to the argument buffer.
 func (h *Handler) Send(b []byte) (int, error) {
 	h.trace("tcp.Handler:start", slog.Uint64("port", uint64(h.localPort)))
-	if h.isClosed() && !h.AwaitingSynSend() {
+	if h.State().IsClosed() && !h.AwaitingSynSend() {
 		return 0, net.ErrClosed
 	}
 	tfrm, err := NewFrame(b)
 	if err != nil {
 		return 0, err
 	}
-
+	buffered := h.bufTx.Buffered()
+	if buffered == 0 && h.closing {
+		err = h.scb.Close()
+		h.info("tcp.Handler:Close", slog.String("scb.Close.err", errstr(err)))
+	}
 	offset := uint8(5)
 	var segment Segment
 	if h.AwaitingSynSend() {
@@ -217,7 +227,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 		offset++
 	} else {
 		var ok bool
-		available := min(h.bufTx.Buffered(), len(b)-sizeHeaderTCP)
+		available := min(buffered, len(b)-sizeHeaderTCP)
 		segment, ok = h.scb.PendingSegment(available)
 		if !ok {
 			// No pending control segment or data to send. Yield.
@@ -257,7 +267,9 @@ func (h *Handler) Free() int {
 // Write implements [io.Writer] by copying b to a internal buffer to be sent over the network on the next
 // [Handler.Send] call that can send data to remote peer. Use [Handler.Free] to know the maximum length the argument slice can be before erroring.
 func (h *Handler) Write(b []byte) (int, error) {
-	if h.State().IsClosed() { // Reject write call if data cannot be sent.
+	if h.closing {
+		return 0, errConnectionClosing
+	} else if h.State().IsClosed() { // Reject write call if data cannot be sent.
 		return 0, net.ErrClosed
 	}
 	return h.bufTx.Write(b)
@@ -295,7 +307,7 @@ func (h *Handler) AwaitingSynSend() bool {
 }
 
 func (h *Handler) isClosed() bool {
-	return h.closing || h.scb.State().IsClosed()
+	return h.scb.State().IsClosed()
 }
 
 func min(a, b int) int {
@@ -303,4 +315,11 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func errstr(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	return err.Error()
 }
