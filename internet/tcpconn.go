@@ -30,6 +30,7 @@ type TCPConn struct {
 	lastTx time.Time
 	lastRx time.Time
 
+	ipID     uint16
 	abortErr error
 	logger
 }
@@ -102,7 +103,7 @@ func (conn *TCPConn) RecvIP(buf []byte, off int) (err error) {
 	if off >= len(buf) {
 		return errors.New("bad offset in TCPConn.Recv")
 	}
-	raddr, err := getIPAddr(buf[:off])
+	raddr, id, err := getIPAddr(buf[:off])
 	if err != nil {
 		return err
 	}
@@ -115,6 +116,7 @@ func (conn *TCPConn) RecvIP(buf []byte, off int) (err error) {
 	}
 	if !conn.isRaddrSet() && conn.h.RemotePort() != 0 {
 		conn.remoteAddr = append(conn.remoteAddr[:0], raddr...)
+		conn.ipID = ^(id - 1)
 	}
 	return nil
 }
@@ -200,7 +202,7 @@ func (conn *TCPConn) HandleIP(buf []byte, off int) (n int, err error) {
 	if len(conn.remoteAddr) == 0 {
 		return 0, errors.New("unset IP address")
 	}
-	raddr, err := getIPAddr(buf[:off])
+	raddr, _, err := getIPAddr(buf[:off])
 	if err != nil {
 		return 0, err
 	} else if len(raddr) != len(conn.remoteAddr) {
@@ -211,10 +213,11 @@ func (conn *TCPConn) HandleIP(buf []byte, off int) (n int, err error) {
 		return 0, err
 	}
 
-	err = setDstAddr(buf[:off], conn.remoteAddr)
+	err = setDstAddr(buf[:off], conn.ipID, conn.remoteAddr)
 	if err != nil {
 		return 0, err
 	}
+	conn.ipID++
 	return n, nil
 }
 
@@ -223,27 +226,28 @@ func (conn *TCPConn) Send(response []byte) (n int, err error) {
 	return conn.h.Send(response)
 }
 
-func getIPAddr(buf []byte) (addr []byte, err error) {
+func getIPAddr(buf []byte) (addr []byte, id uint16, err error) {
 	switch buf[0] >> 4 {
 	case 4:
 		ifrm4, err := ipv4.NewFrame(buf)
 		if err != nil {
-			return addr, err
+			return addr, 0, err
 		}
 		addr = ifrm4.SourceAddr()[:]
+		id = ifrm4.ID()
 	case 6:
 		ifrm6, err := ipv6.NewFrame(buf)
 		if err != nil {
-			return addr, err
+			return addr, 0, err
 		}
 		addr = ifrm6.SourceAddr()[:]
 	default:
 		err = errors.New("unsupported IP version")
 	}
-	return addr, err
+	return addr, id, err
 }
 
-func setDstAddr(buf []byte, addr []byte) (err error) {
+func setDstAddr(buf []byte, id uint16, addr []byte) (err error) {
 	var dstaddr []byte
 	switch buf[0] >> 4 {
 	case 4:
@@ -252,6 +256,7 @@ func setDstAddr(buf []byte, addr []byte) (err error) {
 			return err
 		}
 		dstaddr = ifrm4.DestinationAddr()[:]
+		ifrm4.SetID(id)
 	case 6:
 		ifrm6, err := ipv6.NewFrame(buf)
 		if err != nil {

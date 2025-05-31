@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -13,11 +14,14 @@ import (
 	"github.com/soypat/lneto/internal"
 )
 
+const minMTU = 256
+
 // NewHTTPTapClient returns a HTTPTapClient ready for use.
 func NewHTTPTapClient(baseURL string) *HTTPTapClient {
 	var h HTTPTapClient
 	h.sendurl = baseURL + "/send"
 	h.recvurl = baseURL + "/recv"
+	h.infoURL = baseURL + "/info"
 	_, err := url.Parse(h.sendurl)
 	if err != nil {
 		panic(err)
@@ -25,10 +29,59 @@ func NewHTTPTapClient(baseURL string) *HTTPTapClient {
 	return &h
 }
 
+func (h *HTTPTapClient) IPPrefix() netip.Prefix {
+	h.ensureMTU()
+	return h.ip
+}
+
+func (h *HTTPTapClient) MTU() int {
+	h.ensureMTU()
+	return len(h.buf)
+}
+
+func (h *HTTPTapClient) HardwareAddr6() [6]byte {
+	return h.hwaddr
+}
+
+func (h *HTTPTapClient) ensureMTU() (err error) {
+	if len(h.buf) != 0 {
+		return nil // MTU processed correctly.
+	}
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("unable to get MTU from server: %w", err)
+		}
+	}()
+	resp, err := h.c.Get(h.infoURL)
+	if err != nil {
+		return err
+	}
+	var info TapInfo
+	err = json.NewDecoder(resp.Body).Decode(&info)
+	if err != nil {
+		return err
+	} else if info.MTU <= minMTU {
+		return errors.New("small MTU")
+	}
+	h.ip, err = netip.ParsePrefix(info.IPPrefix)
+	if err != nil {
+		return err
+	}
+	h.buf = make([]byte, info.MTU)
+	hw, err := net.ParseMAC(info.HardwareAddr)
+	if err == nil {
+		copy(h.hwaddr[:], hw)
+	}
+	return nil
+}
+
 type HTTPTapClient struct {
 	c       http.Client
+	infoURL string
 	recvurl string
 	sendurl string
+	ip      netip.Prefix
+	hwaddr  [6]byte
 	buf     []byte
 }
 
@@ -41,6 +94,10 @@ func (h *HTTPTapClient) ReadDiscard() {
 }
 
 func (h *HTTPTapClient) Read(b []byte) (int, error) {
+	err := h.ensureMTU()
+	if err != nil {
+		return 0, err
+	}
 	resp, err := h.c.Get(h.recvurl)
 	if err != nil {
 		return 0, err
@@ -59,6 +116,10 @@ func (h *HTTPTapClient) Read(b []byte) (int, error) {
 }
 
 func (h *HTTPTapClient) Write(b []byte) (int, error) {
+	err := h.ensureMTU()
+	if err != nil {
+		return 0, err
+	}
 	data, _ := json.Marshal(b)
 	resp, err := h.c.Post(h.sendurl, "application/json", bytes.NewReader(data))
 	if err != nil {
@@ -79,7 +140,16 @@ type HTTPTapServer struct {
 	tapfailed bool
 }
 
+type TapInfo struct {
+	MTU          int
+	IPPrefix     string
+	HardwareAddr string
+}
+
 func NewHTTPTapServer(iface string, ip netip.Prefix, mtu, queueOut, queueIn int) (*HTTPTapServer, error) {
+	if mtu < minMTU {
+		return nil, errors.New("too small MTU")
+	}
 	tap, err := internal.NewTap(iface, ip)
 	if err != nil {
 		return nil, err
@@ -113,6 +183,18 @@ func NewHTTPTapServer(iface string, ip netip.Prefix, mtu, queueOut, queueIn int)
 			json.NewEncoder(w).Encode("") // send empty string.
 		}
 	})
+	ipstr := ip.String()
+	sv.HandleFunc("/info", func(w http.ResponseWriter, r *http.Request) {
+		info := TapInfo{
+			MTU:      mtu,
+			IPPrefix: ipstr,
+		}
+		hw, err := tap.HardwareAddress6()
+		if err == nil {
+			info.HardwareAddr = net.HardwareAddr(hw[:]).String()
+		}
+		json.NewEncoder(w).Encode(info)
+	})
 	taps := HTTPTapServer{
 		router: sv,
 		stack:  s,
@@ -120,6 +202,10 @@ func NewHTTPTapServer(iface string, ip netip.Prefix, mtu, queueOut, queueIn int)
 		buf:    make([]byte, mtu),
 	}
 	return &taps, nil
+}
+
+func (sv *HTTPTapServer) HardwareAddress6() (hwaddr [6]byte, err error) {
+	return sv.tap.HardwareAddress6()
 }
 
 func (sv *HTTPTapServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {

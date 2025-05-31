@@ -23,8 +23,6 @@ import (
 )
 
 const (
-	mtu       = 2048
-	iface     = "192.168.10.1/24"
 	stackIP   = "192.168.10.2"
 	stackPort = 80
 	iss       = 100
@@ -34,8 +32,10 @@ var stackHWAddr = [6]byte{0xc0, 0xff, 0xee, 0x00, 0xde, 0xad}
 
 func main() {
 	ip := netip.MustParseAddr(stackIP)
-	iface := netip.MustParsePrefix(iface)
-	if !iface.Contains(ip) {
+	tap := ltesto.NewHTTPTapClient("http://127.0.0.1:7070")
+
+	ippfx := tap.IPPrefix()
+	if !ippfx.Contains(ip) {
 		log.Fatal("interface does not contain stack address")
 	}
 	addrPort := netip.AddrPortFrom(ip, stackPort)
@@ -44,26 +44,22 @@ func main() {
 	}))
 
 	slogger := logger{lg}
-
-	lStack, handler, err := NewEthernetTCPStack(stackHWAddr, addrPort, slogger)
+	gatewayMAC := tap.HardwareAddr6()
+	mtu := tap.MTU()
+	lStack, handler, err := NewEthernetTCPStack(stackHWAddr, gatewayMAC, addrPort, uint16(mtu), slogger)
 	if err != nil {
 		log.Fatal(err)
 	}
-	// h := &handler.H
-	// _ = h.AwaitingSynAck()
-	// _ = h.AwaitingSynResponse()
-	// _ = h.AwaitingSynSend()
-	// _ = h
+
 	err = handler.OpenListen(addrPort.Port(), iss)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	tap := ltesto.NewHTTPTapClient("http://127.0.0.1:7070")
 	defer tap.Close()
 	tap.ReadDiscard() // Discard all unread content.
-	fmt.Println("hosting server at ", addrPort.String())
-	var buf [mtu]byte
+	fmt.Println("hosting server at ", addrPort.String(), "over tap interface of mtu:", mtu, "prefix:", ippfx, "gateway:", net.HardwareAddr(gatewayMAC[:]).String())
+	buf := make([]byte, mtu)
 	var hdr httpraw.Header
 	for {
 		nread, err := tap.Read(buf[:])
@@ -114,12 +110,13 @@ func main() {
 	}
 }
 
-func NewEthernetTCPStack(mac [6]byte, ip netip.AddrPort, slogger logger) (*LinkStack, *internet.TCPConn, error) {
+func NewEthernetTCPStack(ourMAC, gwMAC [6]byte, ip netip.AddrPort, mtu uint16, slogger logger) (*LinkStack, *internet.TCPConn, error) {
 	var err error
 	lStack := LinkStack{
 		logger: slogger,
-		mac:    mac,
+		mac:    ourMAC,
 		mtu:    mtu,
+		gwmac:  gwMAC,
 	}
 
 	var ipStack internet.StackBasic
@@ -161,7 +158,7 @@ func NewEthernetTCPStack(mac [6]byte, ip netip.AddrPort, slogger logger) (*LinkS
 		proto = ethernet.TypeIPv6
 	}
 	arphandler, err := arp.NewHandler(arp.HandlerConfig{
-		HardwareAddr: mac[:],
+		HardwareAddr: ourMAC[:],
 		ProtocolAddr: ip.Addr().AsSlice(),
 		MaxQueries:   4,
 		MaxPending:   4,
@@ -196,8 +193,9 @@ type handler struct {
 type LinkStack struct {
 	handlers []handler
 	logger
-	mac [6]byte
-	mtu uint16
+	mac   [6]byte
+	gwmac [6]byte
+	mtu   uint16
 }
 
 func (ls *LinkStack) Register(h handler) error {
@@ -239,23 +237,26 @@ DROP:
 }
 
 func (ls *LinkStack) HandleEth(dst []byte) (n int, err error) {
-	if len(dst) < int(ls.mtu) {
+	mtu := ls.mtu
+	if len(dst) < int(mtu) {
 		return 0, io.ErrShortBuffer
 	}
+	efrm, err := ethernet.NewFrame(dst)
+	if err != nil {
+		return 0, err
+	}
+	copy(efrm.DestinationHardwareAddr()[:], ls.gwmac[:]) // default set the gateway.
 	for i := range ls.handlers {
 		h := &ls.handlers[i]
-		n, err = h.handle(dst[:ls.mtu], 14)
+		n, err = h.handle(dst[:mtu], 14)
 		if err != nil {
 			ls.error("handling", slog.String("proto", ethernet.Type(h.proto).String()), slog.String("err", err.Error()))
 			continue
 		}
 		if n > 0 {
 			// Found packet
-			efrm, _ := ethernet.NewFrame(dst[:14])
-			copy(efrm.DestinationHardwareAddr()[:], h.raddr)
 			*efrm.SourceHardwareAddr() = ls.mac
 			efrm.SetEtherType(ethernet.Type(h.proto))
-
 			return n + 14, nil
 		}
 	}

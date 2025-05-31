@@ -13,7 +13,7 @@ import (
 )
 
 type Tap struct {
-	fd   int
+	fd   int // points to /dev/net/tun device.
 	name string
 }
 
@@ -25,19 +25,19 @@ func NewTap(name string, ip netip.Prefix) (*Tap, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open tun device: %w", err)
 	}
-
-	var ifr [syscall.IFNAMSIZ + 64]byte // extra space for compatibility
-
-	// Set the name; it will be zero-padded automatically.
-	copy(ifr[:syscall.IFNAMSIZ-1], name)
+	tap := Tap{
+		name: name,
+		fd:   fd,
+	}
+	ifr := tap.ifreq()
 
 	// Set the flags (starting at offset IFNAMSIZ).
 	flags := uint16(syscall.IFF_TAP | syscall.IFF_NO_PI)
-	*(*uint16)(unsafe.Pointer(&ifr[syscall.IFNAMSIZ])) = flags
+	ifr.setflags(flags)
 	// Issue the ioctl to create the interface.
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(syscall.TUNSETIFF), uintptr(unsafe.Pointer(&ifr[0])))
-	if errno != 0 {
-		return nil, fmt.Errorf("creating tap interface: %w", errno)
+	err = ioctl(fd, syscall.TUNSETIFF, ifr.ptr())
+	if err != nil {
+		return nil, fmt.Errorf("creating tap interface: %w", err)
 	}
 	if ip.IsValid() {
 		// Optionally, bring the interface up and assign an IP address.
@@ -65,4 +65,51 @@ func (tap *Tap) Write(b []byte) (int, error) {
 
 func (tap *Tap) Close() error {
 	return syscall.Close(tap.fd)
+}
+
+func ioctl(fd int, request uintptr, argp unsafe.Pointer) error {
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), request, uintptr(argp))
+	if errno != 0 {
+		return os.NewSyscallError("ioctl", errno)
+	}
+	return nil
+}
+
+func (tap *Tap) HardwareAddress6() (hw [6]byte, err error) {
+	// We cannot use tap.sock to query the hardware address, this is something known by the network stack, so get a sock to network stack.
+	sock, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, syscall.IPPROTO_IP)
+	if err != nil {
+		return hw, fmt.Errorf("socket open: %w", err)
+	}
+	defer syscall.Close(sock)
+	ifr := tap.ifreq()
+
+	err = ioctl(sock, syscall.SIOCGIFHWADDR, ifr.ptr())
+	if err != nil {
+		return hw, err
+	}
+	sa_family := *(*uint16)(unsafe.Pointer(&ifr.Data[0]))
+	if sa_family != 1 {
+		return hw, fmt.Errorf("expecting sa_family=1 got %d", sa_family)
+	}
+	copy(hw[:], ifr.Data[2:]) // first two bytes are sa_family
+	return hw, nil
+}
+
+type ifreq struct {
+	Name [syscall.IFNAMSIZ]byte
+	Data [64]byte // union data (covers ifr_hwaddr, etc.)
+}
+
+func (ifr *ifreq) setflags(flags uint16) {
+	*(*uint16)(unsafe.Pointer(&ifr.Data[0])) = flags
+}
+
+func (ifr *ifreq) ptr() unsafe.Pointer { return unsafe.Pointer(ifr) }
+
+func (tap *Tap) ifreq() ifreq {
+	// Set the name; it will be zero-padded automatically.
+	var ifr ifreq
+	copy(ifr.Name[:], tap.name)
+	return ifr
 }

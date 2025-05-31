@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/netip"
 	"time"
@@ -37,7 +38,11 @@ func run() error {
 		return err
 	}
 	defer sv.Close()
-	fmt.Println("listening on http://127.0.0.1:7070/recv  and  http://127.0.0.1:7070/send")
+	hwaddr, err := sv.HardwareAddress6()
+	if err != nil {
+		return err
+	}
+	fmt.Println("listening on http://127.0.0.1:7070/recv  and  http://127.0.0.1:7070/send on hwaddr:", net.HardwareAddr(hwaddr[:]).String())
 	go http.ListenAndServe(":7070", sv)
 	misses := 0
 	for {
