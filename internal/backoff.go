@@ -7,12 +7,17 @@ type BackoffFlags uint8
 const (
 	BackoffHasPriority BackoffFlags = 1 << iota
 	BackoffCriticalPath
+	BackoffTCPConn
 )
 
 func NewBackoff(priority BackoffFlags) Backoff {
 	if priority&BackoffCriticalPath != 0 {
 		return Backoff{
 			maxWait: uint32(1 * time.Millisecond),
+		}
+	} else if priority&BackoffTCPConn != 0 {
+		return Backoff{
+			maxWait: uint32(5 * time.Microsecond),
 		}
 	}
 	return Backoff{

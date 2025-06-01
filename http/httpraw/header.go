@@ -31,12 +31,13 @@ func (f flags) hasAny(checkThese flags) bool {
 	return f&checkThese != 0
 }
 
-// Header implements "raw" HTTP validation and header key-value parsing, validation and marshalling.
+// Header implements "raw" HTTP header key-value parsing, validation and marshalling.
 //
 // It does NOT implement:
 //   - Normalization.
 //   - Cookies (see [Cookie]).
 //   - Special header optimizations.
+//   - Content-Length validation and other special header field value validation.
 type Header struct {
 	hbuf headerBuf
 
@@ -79,6 +80,7 @@ func (h *Header) Parse(asResponse bool) error {
 
 // TryParse begins parsing or resumes parsing from a failed previous attempt from any of the Parse* methods.
 // As long as needMoreData returns true future calls to TryParse may succeed and the header is not done parsing.
+// Users may call [Header.ForEach] in-between TryParse calls so as to validate values before header is completely parsed.
 //
 //	needMoreData := true
 //	var err error
@@ -306,7 +308,7 @@ func (h *Header) getNonEmptyValue(s headerSlice) []byte {
 	return h.hbuf.musttoken(s)
 }
 
-// AppendRequest appends the request representation to the buffer and returns the result.
+// AppendRequest appends the request header representation to the buffer and returns the result.
 func (h *Header) AppendRequest(dst []byte) ([]byte, error) {
 	if h.flags.hasAny(flagOOMReached) {
 		return dst, errOOM
@@ -333,7 +335,7 @@ func (h *Header) AppendRequest(dst []byte) ([]byte, error) {
 	return append(dst, strCRLF...), nil
 }
 
-// AppendResponse appends the response representation to the buffer and returns the result.
+// AppendResponse appends the response header representation to the buffer and returns the result.
 func (h *Header) AppendResponse(dst []byte) ([]byte, error) {
 	if h.flags.hasAny(flagOOMReached) {
 		return dst, errOOM

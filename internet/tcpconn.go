@@ -135,7 +135,7 @@ func (conn *TCPConn) Write(b []byte) (int, error) {
 	} else if plen == 0 {
 		return 0, nil
 	}
-	backoff := internal.NewBackoff(internal.BackoffHasPriority)
+	backoff := internal.NewBackoff(internal.BackoffTCPConn)
 	n := 0
 	for {
 		if conn.abortErr != nil {
@@ -171,7 +171,7 @@ func (conn *TCPConn) Read(b []byte) (int, error) {
 	}
 	conn.trace("TCPConn.Read:start")
 	connid := conn.h.ConnectionID()
-	backoff := internal.NewBackoff(internal.BackoffHasPriority)
+	backoff := internal.NewBackoff(internal.BackoffTCPConn)
 	for conn.h.BufferedInput() == 0 && conn.State() == tcp.StateEstablished {
 		if conn.abortErr != nil {
 			return 0, conn.abortErr

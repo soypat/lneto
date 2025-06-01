@@ -2,6 +2,7 @@ package tcp
 
 import (
 	"errors"
+	"io"
 	"net"
 
 	"log/slog"
@@ -108,6 +109,7 @@ func (h *Handler) OpenListen(localPort uint16, iss Value) error {
 // Abort forcibly terminates all state associated to current connection.
 // After a call to abort no more data can be sent nor received over the connection.
 func (h *Handler) Abort() {
+	h.info("tcp.Handler.Abort")
 	h.scb.Abort()
 	h.reset(0, 0, 0)
 }
@@ -215,8 +217,14 @@ func (h *Handler) Send(b []byte) (int, error) {
 	}
 	buffered := h.bufTx.Buffered()
 	if buffered == 0 && h.closing {
+		// If Close called and no more data to be sent, terminate connection!
+		h.closing = false
 		err = h.scb.Close()
-		h.info("tcp.Handler:Close", slog.String("scb.Close.err", errstr(err)))
+		if err != nil {
+			h.logerr("tcp.Handler.Close", slog.String("err", errstr(err)), slog.String("state", h.State().String()))
+			h.Abort()
+			return 0, io.EOF
+		}
 	}
 	offset := uint8(5)
 	var segment Segment

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"runtime"
 	"time"
 
 	"github.com/soypat/lneto/internal/ltesto"
@@ -44,7 +45,8 @@ func run() error {
 	}
 	fmt.Println("listening on http://127.0.0.1:7070/recv  and  http://127.0.0.1:7070/send on hwaddr:", net.HardwareAddr(hwaddr[:]).String())
 	go http.ListenAndServe(":7070", sv)
-	misses := 0
+	const standbyDuration = 5 * time.Second
+	lastHit := time.Now().Add(-standbyDuration)
 	for {
 		result, err := sv.HandleTap()
 		if err != nil {
@@ -53,14 +55,13 @@ func run() error {
 		if result.Failed {
 			return errors.New("tap failed, exit program")
 		} else if result.ReceivedSize == 0 && result.SentSize == 0 {
-			misses++
-			if misses > 1000 {
-				time.Sleep(200 * time.Millisecond) // No data exchanged, sleep a bit to not hog CPU.
+			if time.Since(lastHit) > standbyDuration {
+				time.Sleep(5 * time.Millisecond) // Enter standby.
 			} else {
-				time.Sleep(50 * time.Millisecond) // No data exchanged, sleep a bit to not hog CPU.
+				runtime.Gosched()
 			}
 		} else {
-			misses = 0
+			lastHit = time.Now()
 		}
 	}
 }

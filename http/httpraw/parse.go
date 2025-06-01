@@ -222,6 +222,9 @@ func (h *Header) peekHeader(key string) argsKV {
 
 func (hb *headerBuf) mustAppendSlice(value string) headerSlice {
 	L := len(hb.buf)
+	if L == 0 {
+		L++ // Valid key-values start after 0.
+	}
 	copy(hb.buf[L:L+len(value)], value)
 	hb.buf = hb.buf[:L+len(value)]
 	return hb.slice(hb.buf[L : L+len(value)])

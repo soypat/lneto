@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -19,6 +20,9 @@ func main() {
 }
 
 func run() error {
+	var port int
+	flag.IntVar(&port, "lport", 13337, "Local port over which to hit server")
+	flag.Parse()
 	// Prepare GET request.
 	var hdr httpraw.Header
 	hdr.SetMethod("GET")
@@ -30,7 +34,7 @@ func run() error {
 	}
 
 	fmt.Println("dialing...")
-	conn, err := net.DialTCP("tcp4", &net.TCPAddr{IP: []byte{192, 168, 10, 1}, Port: 1337}, &net.TCPAddr{IP: []byte{192, 168, 10, 2}, Port: 80})
+	conn, err := net.DialTCP("tcp4", &net.TCPAddr{IP: []byte{192, 168, 10, 1}, Port: port}, &net.TCPAddr{IP: []byte{192, 168, 10, 2}, Port: 80})
 	if err != nil {
 		return err
 	}

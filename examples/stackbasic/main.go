@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/soypat/lneto"
@@ -62,13 +63,15 @@ func main() {
 	buf := make([]byte, mtu)
 	var hdr httpraw.Header
 	hdr.Reset(make([]byte, 0, 1024))
+	const standbyDuration = 5 * time.Second
+	lastHit := time.Now().Add(-standbyDuration)
 	for {
 		nread, err := tap.Read(buf[:])
 		if err != nil {
 			slogger.error("tap-err", slog.String("err", err.Error()))
 			log.Fatal(err)
 		} else if nread > 0 {
-			debugEthPacket(nil, "IN ", buf[:nread])
+			// debugEthPacket(nil, "IN ", buf[:nread])
 			// fmt.Println("INHEX ", debugHex(buf[:nread]))
 			err = lStack.RecvEth(buf[:nread])
 			if err != nil {
@@ -85,13 +88,18 @@ func main() {
 			_, err = tap.Write(buf[:nw])
 			if err != nil {
 				log.Fatal(err)
-			} else {
-				slogger.info("write", slog.Int("plen", nw))
 			}
 		}
-
-		if nread == 0 && nw == 0 {
-			time.Sleep(5 * time.Millisecond)
+		hit := nread > 0 || nw > 0
+		if hit {
+			slogger.info("exchange", slog.Int("read", nread), slog.Int("nwrite", nw))
+			lastHit = time.Now()
+		} else {
+			if time.Since(lastHit) > standbyDuration {
+				time.Sleep(5 * time.Millisecond)
+			} else {
+				runtime.Gosched()
+			}
 		}
 	}
 }
@@ -119,10 +127,12 @@ func doHTTP(conn *internet.TCPConn, hdr *httpraw.Header) error {
 	fmt.Println("sending response...")
 	hdr.Reset(nil)
 	hdr.SetStatus("200", "OK")
+	data := `{"ok":true}`
 	response, err := hdr.AppendResponse(nil)
 	if err != nil {
 		return err
 	}
+	response = append(response, data...)
 	_, err = conn.Write(response)
 	if err != nil {
 		return err
