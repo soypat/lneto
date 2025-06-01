@@ -138,9 +138,11 @@ func (afrm Frame) SwapTargetSender() {
 func (afrm Frame) ValidateSize(v *lneto.Validator) {
 	_, hlen := afrm.Hardware()
 	_, ilen := afrm.Protocol()
-	minLen := 8 + 2*(hlen+ilen)
+	minLen := 8 + 2*(int(hlen)+int(ilen))
 	if len(afrm.buf) < int(minLen) {
 		v.AddError(errShortARP)
+	} else if minLen > 255 {
+		v.AddError(errLargeSizes) // We don't want a uint8 overflow somewhere. This is probably a maliciously crafted packet.
 	}
 }
 

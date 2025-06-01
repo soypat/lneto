@@ -97,7 +97,7 @@ func (tfrm Frame) SetOffsetAndFlags(offset uint8, flags Flags) {
 
 // HeaderLength uses Offset field to calculate the total length of
 // the TCP header including options. Performs no validation.
-func (tfrm Frame) HeaderLength() (tcpWords int) {
+func (tfrm Frame) HeaderLength() (lengthInBytes int) {
 	offset, _ := tfrm.OffsetAndFlags()
 	return 4 * int(offset)
 }

@@ -14,6 +14,7 @@ var (
 	errARPBufferFull  = errors.New("ARP client need handling:too many ops pending")
 	errShortARP       = errors.New("packet too short to be ARP")
 	errARPUnsupported = errors.New("ARP not supprortedf")
+	errLargeSizes     = errors.New("size of ARP protocol+hardware is unusually large")
 )
 
 // Operation represents the type of ARP packet, either request or reply/response.
