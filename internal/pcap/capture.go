@@ -1,7 +1,9 @@
-package ltesto
+package pcap
 
 import (
+	"encoding/binary"
 	"errors"
+	"math"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/arp"
@@ -16,9 +18,9 @@ type PacketBreakdown struct {
 	vld lneto.Validator
 }
 
-func (pc *PacketBreakdown) CaptureEthernet(dst []FrameInfo, pkt []byte, bitOffset int) ([]FrameInfo, error) {
+func (pc *PacketBreakdown) CaptureEthernet(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
 	if bitOffset%8 != 0 {
-		return dst, errors.New("Ethernet must be parsed at byte boundary")
+		return dst, errors.New("ethernet must be parsed at byte boundary")
 	}
 	efrm, err := ethernet.NewFrame(pkt[bitOffset/8:])
 	if err != nil {
@@ -29,7 +31,7 @@ func (pc *PacketBreakdown) CaptureEthernet(dst []FrameInfo, pkt []byte, bitOffse
 		return dst, pc.validator().Err()
 	}
 
-	finfo := FrameInfo{
+	finfo := Frame{
 		Protocol:        "Ethernet",
 		PacketBitOffset: bitOffset,
 	}
@@ -37,15 +39,15 @@ func (pc *PacketBreakdown) CaptureEthernet(dst []FrameInfo, pkt []byte, bitOffse
 	etype := efrm.EtherTypeOrSize()
 	end := 14*octet + bitOffset
 	if etype.IsSize() {
-		finfo.Fields[len(finfo.Fields)-1].Class = classSize
+		finfo.Fields[len(finfo.Fields)-1].Class = FieldClassSize
 		dst = append(dst, finfo)
-		dst = append(dst, remainingFrameInfo("Ethernet payload", classPayload, end, octet*len(pkt)))
+		dst = append(dst, remainingFrameInfo("Ethernet payload", FieldClassPayload, end, octet*len(pkt)))
 		return dst, nil
 	}
 	dst = append(dst, finfo)
 	if efrm.IsVLAN() {
-		finfo.Fields = append(finfo.Fields, FrameField{Name: "VLAN Tag", Class: classType, FrameBitOffset: end, BitLength: 2 * octet})
-		dst = append(dst, remainingFrameInfo("Ethernet VLAN", classPayload, end+2*octet, octet*len(pkt)))
+		finfo.Fields = append(finfo.Fields, FrameField{Name: "VLAN Tag", Class: FieldClassType, FrameBitOffset: end, BitLength: 2 * octet})
+		dst = append(dst, remainingFrameInfo("Ethernet VLAN", FieldClassPayload, end+2*octet, octet*len(pkt)))
 		return dst, nil
 	}
 	switch etype {
@@ -56,7 +58,7 @@ func (pc *PacketBreakdown) CaptureEthernet(dst []FrameInfo, pkt []byte, bitOffse
 	return dst, err
 }
 
-func (pc *PacketBreakdown) CaptureARP(dst []FrameInfo, pkt []byte, bitOffset int) ([]FrameInfo, error) {
+func (pc *PacketBreakdown) CaptureARP(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
 	if bitOffset%8 != 0 {
 		return dst, errors.New("ARP must be parsed at byte boundary")
 	}
@@ -69,7 +71,7 @@ func (pc *PacketBreakdown) CaptureARP(dst []FrameInfo, pkt []byte, bitOffset int
 		return dst, pc.validator().Err()
 	}
 
-	finfo := FrameInfo{
+	finfo := Frame{
 		Protocol:        ethernet.TypeARP,
 		PacketBitOffset: bitOffset,
 	}
@@ -81,25 +83,25 @@ func (pc *PacketBreakdown) CaptureARP(dst []FrameInfo, pkt []byte, bitOffset int
 	finfo.Fields = append(finfo.Fields,
 		FrameField{
 			Name:           "Sender hardware address",
-			Class:          classSrc,
+			Class:          FieldClassSrc,
 			FrameBitOffset: varstart,
 			BitLength:      int(hlen) * octet,
 		},
 		FrameField{
 			Name:           "Sender protocol address",
-			Class:          classSrc,
+			Class:          FieldClassSrc,
 			FrameBitOffset: int(hlen)*octet + varstart,
 			BitLength:      int(plen) * octet,
 		},
 		FrameField{
 			Name:           "Target hardware address",
-			Class:          classSrc,
+			Class:          FieldClassSrc,
 			FrameBitOffset: int(hlen+plen)*octet + varstart,
 			BitLength:      int(hlen) * octet,
 		},
 		FrameField{
 			Name:           "Target protocol address",
-			Class:          classSrc,
+			Class:          FieldClassSrc,
 			FrameBitOffset: (2*int(hlen)+int(plen))*octet + varstart,
 			BitLength:      int(plen) * octet,
 		},
@@ -108,7 +110,7 @@ func (pc *PacketBreakdown) CaptureARP(dst []FrameInfo, pkt []byte, bitOffset int
 	return dst, nil
 }
 
-func (pc *PacketBreakdown) CaptureIPv4(dst []FrameInfo, pkt []byte, bitOffset int) ([]FrameInfo, error) {
+func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
 	if bitOffset%8 != 0 {
 		return dst, errors.New("IPv4 must be parsed at byte boundary")
 	}
@@ -120,14 +122,14 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []FrameInfo, pkt []byte, bitOffset in
 	if pc.validator().HasError() {
 		return dst, pc.validator().Err()
 	}
-	finfo := FrameInfo{
+	finfo := Frame{
 		Protocol:        ethernet.TypeIPv4,
 		PacketBitOffset: bitOffset,
 	}
 	finfo.Fields = append(finfo.Fields, baseIPv4Fields[:]...)
 	options := ifrm4.Options()
 	finfo.Fields = append(finfo.Fields, FrameField{
-		Class:          classOptions,
+		Class:          FieldClassOptions,
 		FrameBitOffset: 20 * octet,
 		BitLength:      octet * len(options),
 	})
@@ -143,7 +145,7 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []FrameInfo, pkt []byte, bitOffset in
 	return dst, err
 }
 
-func (pc *PacketBreakdown) CaptureTCP(dst []FrameInfo, pkt []byte, bitOffset int) ([]FrameInfo, error) {
+func (pc *PacketBreakdown) CaptureTCP(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
 	if bitOffset%8 != 0 {
 		return dst, errors.New("TCP must be parsed at byte boundary")
 	}
@@ -156,14 +158,14 @@ func (pc *PacketBreakdown) CaptureTCP(dst []FrameInfo, pkt []byte, bitOffset int
 		return dst, pc.validator().Err()
 	}
 	end := bitOffset + octet*tfrm.HeaderLength()
-	finfo := FrameInfo{
+	finfo := Frame{
 		Protocol:        lneto.IPProtoTCP,
 		PacketBitOffset: bitOffset,
 	}
 	finfo.Fields = append(finfo.Fields, baseTCPFields[:]...)
 	options := tfrm.Options()
 	finfo.Fields = append(finfo.Fields, FrameField{
-		Class:          classOptions,
+		Class:          FieldClassOptions,
 		FrameBitOffset: 20 * octet,
 		BitLength:      octet * len(options),
 	})
@@ -172,13 +174,14 @@ func (pc *PacketBreakdown) CaptureTCP(dst []FrameInfo, pkt []byte, bitOffset int
 	if len(payload) > 0 {
 		dst, err = pc.CaptureHTTP(dst, pkt, end)
 		if err != nil {
-			dst = append(dst, remainingFrameInfo(nil, classPayload, end, len(pkt)))
+			dst = append(dst, remainingFrameInfo(nil, FieldClassPayload, end, len(pkt)))
 		}
 	}
 	return dst, nil
 }
 
-func (pc *PacketBreakdown) CaptureHTTP(dst []FrameInfo, pkt []byte, bitOffset int) ([]FrameInfo, error) {
+func (pc *PacketBreakdown) CaptureHTTP(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
+	const protocol = "HTTP"
 	if bitOffset%8 != 0 {
 		return nil, errors.New("HTTP must be parsed at byte boundary")
 	}
@@ -188,13 +191,13 @@ func (pc *PacketBreakdown) CaptureHTTP(dst []FrameInfo, pkt []byte, bitOffset in
 	pc.hdr.Reset(httpData)
 	err := pc.hdr.Parse(asResponse)
 	if err == nil {
-		dst = append(dst, remainingFrameInfo("HTTP Response", classText, bitOffset, len(pkt)))
+		dst = append(dst, remainingFrameInfo(protocol, FieldClassText, bitOffset, len(pkt)))
 		return dst, nil
 	}
 	pc.hdr.Reset(httpData)
 	err = pc.hdr.Parse(asRequest)
 	if err == nil {
-		dst = append(dst, remainingFrameInfo(string(pc.hdr.Protocol()), classText, bitOffset, len(pkt)))
+		dst = append(dst, remainingFrameInfo(protocol, FieldClassText, bitOffset, len(pkt)))
 		return dst, nil
 	}
 	return dst, err
@@ -210,46 +213,156 @@ type FrameField struct {
 	FrameBitOffset int
 	BitLength      int
 	SubFields      []FrameField
+	RightAligned   bool
 }
 
-type FrameInfo struct {
+type Frame struct {
 	Protocol        any
 	Fields          []FrameField
 	PacketBitOffset int
 }
 
-type FieldClass uint16
+// FieldByClass gets the frame field index with the argument FieldClass Class field set.
+// If there are multiple fields with same class it will get the one with empty name.
+// If there are multiple fields with same class and none have empty name then it will return an error.
+func (frm Frame) FieldByClass(c FieldClass) (int, error) {
+	Nfields := len(frm.Fields)
+	selected := -1
+	multiple := false
+	for i := range Nfields {
+		field := &frm.Fields[i]
+		if field.Class != c {
+			continue
+		}
+		if field.Name == "" { // Prioritize "canonical" fields with no name.
+			if selected >= 0 && frm.Fields[selected].Name == "" {
+				return -1, errors.New("multiple class fields with no name")
+			}
+			selected = i
+		} else if selected >= 0 {
+			multiple = true
+		} else {
+			selected = i
+		}
+	}
+	if selected < 0 {
+		return -1, errors.New("field by class not found")
+	}
+	if multiple && frm.Fields[selected].Name != "" {
+		return -1, errors.New("multiple classes found and none have empty name")
+	}
+	return selected, nil
+}
+
+// FieldAsUint evaluates the field as a 64-bit integer.
+func (frm *Frame) FieldAsUint(fieldIdx int, pkt []byte) (uint64, error) {
+	const badUint64 = math.MaxUint64
+	if fieldIdx < 0 || fieldIdx >= len(frm.Fields) {
+		return badUint64, errors.New("invalid field index")
+	}
+	field := frm.Fields[fieldIdx]
+	octets := (field.BitLength + 7) / 8
+	if octets > 8 {
+		return badUint64, errors.New("field too long to be represented by uint64")
+	}
+	var buf [8]byte
+	_, err := frm.AppendField(buf[8-octets:8-octets], fieldIdx, pkt)
+	if err != nil {
+		return badUint64, err
+	}
+	v := binary.BigEndian.Uint64(buf[:])
+	return v, nil
+}
+
+func (frm *Frame) AppendField(dst []byte, fieldIdx int, pkt []byte) ([]byte, error) {
+	if fieldIdx < 0 || fieldIdx >= len(frm.Fields) {
+		return dst, errors.New("invalid field index")
+	}
+	field := frm.Fields[fieldIdx]
+	fieldBitStart := frm.PacketBitOffset + field.FrameBitOffset
+	fieldBitEnd := fieldBitStart + field.BitLength
+	octets := (field.BitLength + 7) / 8 // total octets needed to represent field.
+	octetsStart := fieldBitStart / 8
+	if octets+octetsStart > len(pkt) {
+		return dst, errors.New("buffer overflow")
+	}
+	firstBitOffset := fieldBitStart % 8
+	lastOctetExcessBits := fieldBitEnd % 8
+	if firstBitOffset == 0 {
+		if field.RightAligned {
+			return dst, errors.New("invalid right aligned set for fully aligned field")
+		}
+		// Optimized path: field starts at byte boundary.
+		dst = append(dst, pkt[octetsStart:octetsStart+octets]...)
+		if lastOctetExcessBits != 0 {
+			dst[len(dst)-1] >>= lastOctetExcessBits
+		}
+		return dst, nil
+	}
+
+	mask := byte(1<<firstBitOffset) - 1
+	if field.RightAligned {
+		if lastOctetExcessBits == 0 {
+			// Right aligned with no loose trailing bits. i.e: TCP flags.
+			dst = append(dst, pkt[octetsStart]&mask)
+			dst = append(dst, pkt[octetsStart+1:octetsStart+octets]...)
+			return dst, nil
+		}
+		// Right aligned with trailing bits. i.e: ???
+		for i := 1; i < octets; i++ {
+			b := pkt[octetsStart+i] >> (8 - lastOctetExcessBits)
+			b |= pkt[octetsStart+i-1] & mask
+			dst = append(dst, b)
+		}
+		return dst, nil
+	}
+
+	// LEFT ALIGNED: TODO: test this.
+	for i := 0; i < octets-1; i++ {
+		// Append all octets except last one due to excess bits special handling.
+		b := pkt[i+octetsStart] & mask
+		b |= pkt[i+octetsStart+1] >> firstBitOffset
+		dst = append(dst, b)
+	}
+	lastOctet := pkt[octetsStart+octets-1] & mask
+	lastOctet >>= lastOctetExcessBits
+	dst = append(dst, lastOctet)
+	return dst, nil
+}
+
+type FieldClass uint8
 
 const (
-	_             FieldClass = iota
-	classSrc                 // Source
-	classDst                 // Destination
-	classProto               // Protocol
-	classType                // Type
-	classSize                // Field Size
-	classFlags               // Flags
-	classID                  // Identification
-	classChecksum            // Checksum
-	classOptions             // Options
-	classPayload             // Payload
-	classText                // Text
+	fieldClassUndefined FieldClass = iota // undefined
+	FieldClassSrc                         // source
+	FieldClassDst                         // destination
+	FieldClassProto                       // protocol
+	FieldClassVersion                     // version
+	FieldClassType                        // type
+	FieldClassSize                        // field size
+	FieldClassFlags                       // flags
+	FieldClassID                          // identification
+	FieldClassChecksum                    // checksum
+	FieldClassOptions                     // options
+	FieldClassPayload                     // payload
+	FieldClassText                        // text
 )
 
 const octet = 8
 
 var baseEthernetFields = [...]FrameField{
 	{
-		Class:          classDst,
+		Class:          FieldClassDst,
 		FrameBitOffset: 0,
 		BitLength:      6 * octet,
 	},
 	{
-		Class:          classSrc,
+		Class:          FieldClassSrc,
 		FrameBitOffset: 6 * octet,
 		BitLength:      6 * octet,
 	},
 	{
-		Class:          classProto,
+		Class:          FieldClassProto,
 		FrameBitOffset: 12 * octet,
 		BitLength:      2 * octet,
 	},
@@ -258,31 +371,31 @@ var baseEthernetFields = [...]FrameField{
 var baseARPFields = [...]FrameField{
 	{
 		Name:           "Hardware type",
-		Class:          classType,
+		Class:          FieldClassType,
 		FrameBitOffset: 0,
 		BitLength:      2 * octet,
 	},
 	{
 		Name:           "Protocol type",
-		Class:          classType,
+		Class:          FieldClassType,
 		FrameBitOffset: 2 * octet,
 		BitLength:      2 * octet,
 	},
 	{
 		Name:           "Hardware size",
-		Class:          classSize,
+		Class:          FieldClassSize,
 		FrameBitOffset: 4 * octet,
 		BitLength:      1 * octet,
 	},
 	{
 		Name:           "Protocol size",
-		Class:          classSize,
+		Class:          FieldClassSize,
 		FrameBitOffset: 5 * octet,
 		BitLength:      1 * octet,
 	},
 	{
 		Name:           "Opcode",
-		Class:          classType,
+		Class:          FieldClassType,
 		FrameBitOffset: 6 * octet,
 		BitLength:      2 * octet,
 	},
@@ -290,41 +403,40 @@ var baseARPFields = [...]FrameField{
 
 var baseIPv4Fields = [...]FrameField{
 	{
-		Name:           "Version",
-		Class:          classType,
+		Class:          FieldClassVersion,
 		FrameBitOffset: 0,
 		BitLength:      4,
 	},
 	{
 		Name:           "Header Length",
-		Class:          classSize,
+		Class:          FieldClassSize,
 		FrameBitOffset: 4,
 		BitLength:      4,
 	},
 	{
-		Name:           "Differentiated services",
-		Class:          classFlags,
+		Name:           "Type of Service",
+		Class:          FieldClassFlags,
 		FrameBitOffset: 1 * octet,
 		BitLength:      1 * octet,
 	},
 	{
 		Name:           "Total Length",
-		Class:          classSize,
+		Class:          FieldClassSize,
 		FrameBitOffset: 2 * octet,
 		BitLength:      2 * octet,
 	},
 	{
-		Class:          classID,
+		Class:          FieldClassID,
 		FrameBitOffset: 4 * octet,
 		BitLength:      2 * octet,
 	},
 	{
-		Class:          classID,
+		Class:          FieldClassID,
 		FrameBitOffset: 4 * octet,
 		BitLength:      2 * octet,
 	},
 	{
-		Class:          classFlags,
+		Class:          FieldClassFlags,
 		FrameBitOffset: 6 * octet,
 		BitLength:      2 * octet,
 	},
@@ -334,22 +446,22 @@ var baseIPv4Fields = [...]FrameField{
 		BitLength:      1 * octet,
 	},
 	{
-		Class:          classProto,
+		Class:          FieldClassProto,
 		FrameBitOffset: 9 * octet,
 		BitLength:      1 * octet,
 	},
 	{
-		Class:          classChecksum,
+		Class:          FieldClassChecksum,
 		FrameBitOffset: 10 * octet,
 		BitLength:      2 * octet,
 	},
 	{
-		Class:          classSrc,
+		Class:          FieldClassSrc,
 		FrameBitOffset: 12 * octet,
 		BitLength:      4 * octet,
 	},
 	{
-		Class:          classDst,
+		Class:          FieldClassDst,
 		FrameBitOffset: 16 * octet,
 		BitLength:      4 * octet,
 	},
@@ -358,47 +470,48 @@ var baseIPv4Fields = [...]FrameField{
 var baseTCPFields = [...]FrameField{
 	{
 		Name:           "Source port",
-		Class:          classSrc,
+		Class:          FieldClassSrc,
 		FrameBitOffset: 0,
 		BitLength:      2 * octet,
 	},
 	{
 		Name:           "Destination port",
-		Class:          classSrc,
+		Class:          FieldClassSrc,
 		FrameBitOffset: 2 * octet,
 		BitLength:      2 * octet,
 	},
 	{
 		Name:           "Sequence number",
-		Class:          classID,
+		Class:          FieldClassID,
 		FrameBitOffset: 4 * octet,
 		BitLength:      4 * octet,
 	},
 	{
 		Name:           "Acknowledgement number",
-		Class:          classID,
+		Class:          FieldClassID,
 		FrameBitOffset: 8 * octet,
 		BitLength:      4 * octet,
 	},
 	{
 		Name:           "Header length",
-		Class:          classID,
+		Class:          FieldClassSize,
 		FrameBitOffset: 12 * octet,
 		BitLength:      4,
 	},
 	{
-		Class:          classFlags,
+		Class:          FieldClassFlags,
 		FrameBitOffset: 12*octet + 4,
 		BitLength:      12,
+		RightAligned:   true,
 	},
 	{
 		Name:           "Window",
-		Class:          classSize,
+		Class:          0,
 		FrameBitOffset: 14 * octet,
 		BitLength:      2 * octet,
 	},
 	{
-		Class:          classChecksum,
+		Class:          FieldClassChecksum,
 		FrameBitOffset: 16 * octet,
 		BitLength:      2 * octet,
 	},
@@ -410,9 +523,9 @@ var baseTCPFields = [...]FrameField{
 	},
 }
 
-func remainingFrameInfo(proto any, class FieldClass, pktBitOffset, pktBitLen int) FrameInfo {
-	return FrameInfo{
-		Protocol:        "Ethernet data payload",
+func remainingFrameInfo(proto any, class FieldClass, pktBitOffset, pktBitLen int) Frame {
+	return Frame{
+		Protocol:        proto,
 		PacketBitOffset: pktBitOffset,
 		Fields: []FrameField{
 			{

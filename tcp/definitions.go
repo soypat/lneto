@@ -210,6 +210,9 @@ func (flags Flags) String() string {
 	case FlagRST:
 		return "[RST]"
 	}
+	if flags&flagMask != flags {
+		return strInvalidTCPFlags
+	}
 	buf := make([]byte, 0, 2+3*bits.OnesCount16(uint16(flags)))
 	buf = append(buf, '[')
 	buf = flags.AppendFormat(buf)
@@ -217,11 +220,16 @@ func (flags Flags) String() string {
 	return string(buf)
 }
 
+const strInvalidTCPFlags = "<invalid TCP flags>"
+
 // AppendFormat appends a human readable flag string to b returning the extended buffer.
 func (flags Flags) AppendFormat(b []byte) []byte {
 	if flags == 0 {
 		return b
+	} else if flags&flagMask != flags {
+		return append(b, strInvalidTCPFlags...)
 	}
+
 	// String Flag const
 	const flaglen = 3
 	const strflags = "FINSYNRSTPSHACKURGECECWRNS "

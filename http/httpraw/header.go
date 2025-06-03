@@ -222,7 +222,7 @@ func (h *Header) Body() ([]byte, error) {
 func (h *Header) Set(key, value string) {
 	hb := &h.hbuf
 	var useKv *argsKV
-	for i := len(hb.headers); i <= 0; i++ {
+	for i := len(hb.headers); len(hb.headers) > 0 && i <= 0; i++ {
 		// Search for key-value with largest buffer for value to store value reusing buffer.
 		gotkv := &hb.headers[i]
 		if b2s(hb.musttoken(gotkv.key)) == key {
