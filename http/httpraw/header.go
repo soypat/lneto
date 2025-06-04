@@ -119,7 +119,7 @@ func (h *Header) ReadFromLimited(r io.Reader, maxBytesToRead int) (int, error) {
 	} else if h.flags.hasAny(flagMangledBuffer) {
 		return 0, errMangledBuffer
 	}
-	free := h.Free()
+	free := h.BufferFree()
 	if free < maxBytesToRead {
 		if h.flags.hasAny(flagNoBufferGrow) {
 			return 0, errSmallBuffer
@@ -145,7 +145,7 @@ func (h *Header) ReadFromBytes(b []byte) (int, error) {
 	if len(b) == 0 {
 		return 0, errSmallBuffer
 	}
-	free := h.Free()
+	free := h.BufferFree()
 	if free < len(b) {
 		if h.flags.hasAny(flagNoBufferGrow) {
 			return 0, errSmallBuffer
@@ -156,13 +156,23 @@ func (h *Header) ReadFromBytes(b []byte) (int, error) {
 	return len(b), nil
 }
 
-// Free returns amount of bytes free in underlying buffer.
-func (h *Header) Free() int {
+// BufferParsed returns the amount of bytes parsed during a call to Parse* methods.
+// If the Parse* method completed without error then BufferParsed returns the header's length including the final "\r\n\r\n" text.
+// BufferParsed returns 0 if the buffer is invalid/mangled or if no header data has been parsed succesfully.
+func (h *Header) BufferParsed() int {
+	if h.flags.hasAny(flagMangledBuffer | flagOOMReached) {
+		return 0
+	}
+	return h.hbuf.off
+}
+
+// BufferFree returns amount of bytes free in underlying buffer.
+func (h *Header) BufferFree() int {
 	return h.hbuf.free()
 }
 
-// Capacity returns the total capacity of the underlying buffer.
-func (h *Header) Capacity() int {
+// BufferCapacity returns the total capacity of the underlying buffer.
+func (h *Header) BufferCapacity() int {
 	return cap(h.hbuf.buf)
 }
 

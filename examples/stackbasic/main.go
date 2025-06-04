@@ -110,7 +110,7 @@ func doHTTP(conn *internet.TCPConn, hdr *httpraw.Header) error {
 		return nil // No data yet.
 	}
 	fmt.Println("state is established; check request and send response")
-	_, err := hdr.ReadFromLimited(conn, hdr.Free())
+	_, err := hdr.ReadFromLimited(conn, hdr.BufferFree())
 	if err != nil {
 		return err
 	}

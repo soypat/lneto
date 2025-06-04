@@ -181,7 +181,7 @@ func (pc *PacketBreakdown) CaptureTCP(dst []Frame, pkt []byte, bitOffset int) ([
 }
 
 func (pc *PacketBreakdown) CaptureHTTP(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
-	const protocol = "HTTP"
+	const httpProtocol = "HTTP"
 	if bitOffset%8 != 0 {
 		return nil, errors.New("HTTP must be parsed at byte boundary")
 	}
@@ -190,16 +190,32 @@ func (pc *PacketBreakdown) CaptureHTTP(dst []Frame, pkt []byte, bitOffset int) (
 	httpData := pkt[bitOffset/8:]
 	pc.hdr.Reset(httpData)
 	err := pc.hdr.Parse(asResponse)
-	if err == nil {
-		dst = append(dst, remainingFrameInfo(protocol, FieldClassText, bitOffset, len(pkt)))
-		return dst, nil
+	if err != nil {
+		pc.hdr.Reset(httpData)
+		err = pc.hdr.Parse(asRequest) // try as request.
 	}
-	pc.hdr.Reset(httpData)
-	err = pc.hdr.Parse(asRequest)
-	if err == nil {
-		dst = append(dst, remainingFrameInfo(protocol, FieldClassText, bitOffset, len(pkt)))
-		return dst, nil
+	if err != nil {
+		return dst, err
 	}
+	hdrLen := pc.hdr.BufferParsed()
+	body, _ := pc.hdr.Body()
+	dst = append(dst, Frame{
+		Protocol:        httpProtocol,
+		PacketBitOffset: bitOffset,
+		Fields: []FrameField{
+			{
+				Name:           "HTTP Header",
+				Class:          FieldClassText,
+				FrameBitOffset: 0,
+				BitLength:      hdrLen * octet,
+			},
+			{
+				Class:          FieldClassPayload,
+				FrameBitOffset: hdrLen * octet,
+				BitLength:      len(body) * octet,
+			},
+		},
+	})
 	return dst, err
 }
 

@@ -15,6 +15,7 @@ import (
 
 func TestCap(t *testing.T) {
 	const mtu = 1500
+	const httpBody = "{200,ok}"
 	var buf [mtu]byte
 	var gen ltesto.PacketGen
 	rng := rand.New(rand.NewSource(1))
@@ -29,6 +30,8 @@ func TestCap(t *testing.T) {
 	var hdr httpraw.Header
 	hdr.SetStatus("200", "OK")
 	hdr.Set("Cookie", "ABC=123")
+	pkt, _ = hdr.AppendResponse(pkt)
+	pkt = append(pkt, httpBody...)
 	var pbreak PacketBreakdown
 	frames, err := pbreak.CaptureEthernet(nil, pkt, 0)
 	if err != nil {
@@ -55,11 +58,19 @@ func TestCap(t *testing.T) {
 		}
 		return math.MaxUint64
 	}
+	getClassData := func(frame Frame, class FieldClass) []byte {
+		idx, err := frame.FieldByClass(class)
+		if err != nil {
+			return nil
+		}
+		v, _ := frame.AppendField(nil, idx, pkt)
+		return v
+	}
 	efrm, _ := ethernet.NewFrame(pkt)
 	pefrm := frames[0]
 	pifrm := frames[1]
 	ptfrm := frames[2]
-	// phfrm := frames[3]
+	phfrm := frames[3]
 	gotEproto := ethernet.Type(getClass(pefrm, FieldClassProto))
 	if gotEproto != efrm.EtherTypeOrSize() {
 		t.Errorf("want %s ethernet type, got %s", efrm.EtherTypeOrSize().String(), gotEproto.String())
@@ -94,5 +105,9 @@ func TestCap(t *testing.T) {
 	gotHeaderLen := getClass(ptfrm, FieldClassSize)
 	if gotHeaderLen != uint64(wantHeaderLen) {
 		t.Errorf("want %d TCP header length, got %d", wantHeaderLen, gotHeaderLen)
+	}
+	gotBody := getClassData(phfrm, FieldClassPayload)
+	if string(gotBody) != httpBody {
+		t.Errorf("want %q HTTP body, got %q", httpBody, gotBody)
 	}
 }
