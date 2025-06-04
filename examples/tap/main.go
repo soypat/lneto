@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/soypat/lneto/internal/ltesto"
+	"github.com/soypat/lneto/internet/pcap"
 )
 
 func main() {
@@ -39,6 +40,14 @@ func run() error {
 		return err
 	}
 	defer sv.Close()
+	var cap pcap.PacketBreakdown
+	sv.OnTransfer(func(channel int, pkt []byte) {
+		captime := time.Now()
+		frames, err := cap.CaptureEthernet(nil, pkt, 0)
+		if err == nil {
+			fmt.Println(channel, captime.Format("15:04:05.000"), frames)
+		}
+	})
 	hwaddr, err := sv.HardwareAddress6()
 	if err != nil {
 		return err

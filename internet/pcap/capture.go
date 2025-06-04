@@ -1,8 +1,10 @@
 package pcap
 
+//go:generate stringer -type=FieldClass -linecomment -output stringers.go .
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math"
 
 	"github.com/soypat/lneto"
@@ -56,7 +58,7 @@ func (pc *PacketBreakdown) CaptureEthernet(dst []Frame, pkt []byte, bitOffset in
 	case ethernet.TypeIPv4:
 		dst, err = pc.CaptureIPv4(dst, pkt, end)
 	default:
-		dst = append(dst, remainingFrameInfo(nil, FieldClassPayload, end, octet*len(pkt)))
+		dst = append(dst, remainingFrameInfo(etype, FieldClassPayload, end, octet*len(pkt)))
 	}
 	return dst, err
 }
@@ -131,11 +133,13 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 	}
 	finfo.Fields = append(finfo.Fields, baseIPv4Fields[:]...)
 	options := ifrm4.Options()
-	finfo.Fields = append(finfo.Fields, FrameField{
-		Class:          FieldClassOptions,
-		FrameBitOffset: 20 * octet,
-		BitLength:      octet * len(options),
-	})
+	if len(options) > 0 {
+		finfo.Fields = append(finfo.Fields, FrameField{
+			Class:          FieldClassOptions,
+			FrameBitOffset: 20 * octet,
+			BitLength:      octet * len(options),
+		})
+	}
 	proto := ifrm4.Protocol()
 	dst = append(dst, finfo)
 	end := bitOffset + octet*ifrm4.HeaderLength()
@@ -167,11 +171,13 @@ func (pc *PacketBreakdown) CaptureTCP(dst []Frame, pkt []byte, bitOffset int) ([
 	}
 	finfo.Fields = append(finfo.Fields, baseTCPFields[:]...)
 	options := tfrm.Options()
-	finfo.Fields = append(finfo.Fields, FrameField{
-		Class:          FieldClassOptions,
-		FrameBitOffset: 20 * octet,
-		BitLength:      octet * len(options),
-	})
+	if len(options) > 0 {
+		finfo.Fields = append(finfo.Fields, FrameField{
+			Class:          FieldClassOptions,
+			FrameBitOffset: 20 * octet,
+			BitLength:      octet * len(options),
+		})
+	}
 	dst = append(dst, finfo)
 	payload := tfrm.Payload()
 	if len(payload) > 0 {
@@ -274,7 +280,7 @@ func (frm Frame) FieldByClass(c FieldClass) (int, error) {
 }
 
 // FieldAsUint evaluates the field as a 64-bit integer.
-func (frm *Frame) FieldAsUint(fieldIdx int, pkt []byte) (uint64, error) {
+func (frm Frame) FieldAsUint(fieldIdx int, pkt []byte) (uint64, error) {
 	const badUint64 = math.MaxUint64
 	if fieldIdx < 0 || fieldIdx >= len(frm.Fields) {
 		return badUint64, errors.New("invalid field index")
@@ -293,7 +299,7 @@ func (frm *Frame) FieldAsUint(fieldIdx int, pkt []byte) (uint64, error) {
 	return v, nil
 }
 
-func (frm *Frame) AppendField(dst []byte, fieldIdx int, pkt []byte) ([]byte, error) {
+func (frm Frame) AppendField(dst []byte, fieldIdx int, pkt []byte) ([]byte, error) {
 	if fieldIdx < 0 || fieldIdx >= len(frm.Fields) {
 		return dst, errors.New("invalid field index")
 	}
@@ -347,6 +353,37 @@ func (frm *Frame) AppendField(dst []byte, fieldIdx int, pkt []byte) ([]byte, err
 	lastOctet >>= lastOctetExcessBits
 	dst = append(dst, lastOctet)
 	return dst, nil
+}
+
+func (frm Frame) String() string {
+	iopt, err := frm.FieldByClass(FieldClassOptions)
+
+	hasOpts := ""
+	if err == nil {
+		hasOpts = fmt.Sprintf(" optlen=%d", (frm.Fields[iopt].BitLength+7)/8)
+	}
+	bitlen := frm.LenBits()
+	if bitlen%8 == 0 {
+		return fmt.Sprintf("%s len=%d%s", frm.Protocol, bitlen/8, hasOpts)
+	}
+	return fmt.Sprintf("%s bits=%d%s", frm.Protocol, bitlen, hasOpts)
+}
+
+func (frm Frame) LenBits() (totalBitlen int) {
+	for i := range frm.Fields {
+		totalBitlen = max(totalBitlen, frm.Fields[i].FrameBitOffset+frm.Fields[i].BitLength)
+	}
+	return totalBitlen
+}
+
+func (ff FrameField) String() string {
+	if ff.Class == FieldClassPayload {
+		return fmt.Sprintf("Payload len=%d", ff.BitLength/8)
+	}
+	if ff.Name != "" {
+		return fmt.Sprintf("%s (%s)", ff.Name, ff.Class.String())
+	}
+	return ff.Class.String()
 }
 
 type FieldClass uint8

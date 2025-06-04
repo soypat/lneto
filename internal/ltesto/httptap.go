@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -153,6 +152,7 @@ type HTTPTapServer struct {
 	stack     stack
 	tap       *internal.Tap
 	buf       []byte
+	onTx      func(channel int, pkt []byte)
 	tapfailed bool
 }
 
@@ -160,6 +160,10 @@ type tapInfo struct {
 	MTU          int
 	IPPrefix     string
 	HardwareAddr string
+}
+
+func (sv *HTTPTapServer) OnTransfer(cb func(channel int, pkt []byte)) {
+	sv.onTx = cb
 }
 
 func NewHTTPTapServer(iface string, ip netip.Prefix, mtu, queueOut, queueIn int) (*HTTPTapServer, error) {
@@ -176,15 +180,23 @@ func NewHTTPTapServer(iface string, ip netip.Prefix, mtu, queueOut, queueIn int)
 		in:  make(chan []byte, queueIn),
 	}
 	sv := http.NewServeMux()
+	taps := &HTTPTapServer{
+		router: sv,
+		stack:  s,
+		tap:    tap,
+		buf:    make([]byte, mtu),
+	}
 	sv.HandleFunc("/send", func(w http.ResponseWriter, r *http.Request) {
 		var data []byte
 		err := json.NewDecoder(r.Body).Decode(&data)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		} else {
+			if taps.onTx != nil {
+				taps.onTx(1, data)
+			}
 			select {
 			case s.out <- data:
-				slog.Info("http-send", slog.Int("plen", len(data)))
 			default:
 				http.Error(w, "outgoing packet queue full", http.StatusInternalServerError)
 			}
@@ -194,7 +206,6 @@ func NewHTTPTapServer(iface string, ip netip.Prefix, mtu, queueOut, queueIn int)
 		select {
 		case data := <-s.in:
 			json.NewEncoder(w).Encode(data)
-			slog.Info("http-recv", slog.Int("plen", len(data)))
 		default:
 			json.NewEncoder(w).Encode("") // send empty string.
 		}
@@ -211,13 +222,8 @@ func NewHTTPTapServer(iface string, ip netip.Prefix, mtu, queueOut, queueIn int)
 		}
 		json.NewEncoder(w).Encode(info)
 	})
-	taps := HTTPTapServer{
-		router: sv,
-		stack:  s,
-		tap:    tap,
-		buf:    make([]byte, mtu),
-	}
-	return &taps, nil
+
+	return taps, nil
 }
 
 func (sv *HTTPTapServer) HardwareAddress6() (hwaddr [6]byte, err error) {
@@ -262,6 +268,9 @@ func (sv *HTTPTapServer) readTap() (int, error) {
 		sv.tapfailed = true
 		return n, err
 	} else if n > 0 {
+		if sv.onTx != nil {
+			sv.onTx(0, buf[:n])
+		}
 		err = sv.stack.recv(buf[:n])
 		if err != nil {
 			return n, err
