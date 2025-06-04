@@ -11,7 +11,9 @@ Userspace networking primitives.
 
 ## Packages
 - `lneto`: Low-level Networking Operations, or "El Neto", the networking package. Zero copy network frame marshalling and unmarshalling.
-    - [`lneto/frames.go`](./frames.go): Ethernet, IPv4/IPv6, ARP, TCP, UDP packet marshalling/unmarshalling.
+    - [`lneto/validation.go`](./validation.go): Packet validation utilities
+- [`lneto/internet`](./internet): Userspace IP/TCP networking stack. This is where the magic happens. Integrates many of the listed packages.
+    - [`lneto/internet/pcap`](./internal/pcap): Packet capture and field breakdown utilities. Wireshark in the making.
 - [`lneto/http/httpraw`](./http/httpraw/): Heapless HTTP header processing and validation. Does no implement header normalization.
 - [`lneto/tcp`](./ntp): TCP implementation and low level logic.
 - [`lneto/dhcpv4`](./dhcpv4): DHCP version 4 protocol implementation and low level logic.

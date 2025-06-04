@@ -52,8 +52,11 @@ func (pc *PacketBreakdown) CaptureEthernet(dst []Frame, pkt []byte, bitOffset in
 	}
 	switch etype {
 	case ethernet.TypeARP:
+		dst, err = pc.CaptureARP(dst, pkt, end)
 	case ethernet.TypeIPv4:
 		dst, err = pc.CaptureIPv4(dst, pkt, end)
+	default:
+		dst = append(dst, remainingFrameInfo(nil, FieldClassPayload, end, octet*len(pkt)))
 	}
 	return dst, err
 }
