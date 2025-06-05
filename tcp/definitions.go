@@ -308,15 +308,17 @@ func (s State) IsSynchronized() bool {
 	return s >= StateEstablished && !s.IsClosed()
 }
 
-// txOpen returns true if the TCP state machine allows data to be sent by user.
-func (s State) txOpen() bool {
+// TxDataOpen returns true if the state allows for outgoing data segments to be sent.
+// Combine with [State.IsPreestablished] to know whether there is no more data to be sent over the network.
+func (s State) TxDataOpen() bool {
 	// In CloseWait state the remote endpoint has closed
 	// our receive hald of the connection but we can still transmit indefinitely.
 	return s == StateEstablished || s == StateCloseWait
 }
 
-// rxOpen returns true if the TCP state machine allows data to be received from remote endpoint.
-func (s State) rxOpen() bool {
+// RxDataOpen returns true if the state allows the receiving of incoming data segments.
+// Combine with [State.IsPreestablished] to know whether there is no more data to be received over the network.
+func (s State) RxDataOpen() bool {
 	return s == StateEstablished || s == StateFinWait1 || s == StateFinWait2
 }
 

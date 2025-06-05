@@ -11,8 +11,10 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/internet/pcap"
+	"github.com/soypat/lneto/tcp"
 )
 
 func main() {
@@ -45,7 +47,14 @@ func run() error {
 		captime := time.Now()
 		frames, err := cap.CaptureEthernet(nil, pkt, 0)
 		if err == nil {
-			fmt.Println(channel, captime.Format("15:04:05.000"), frames)
+			flags, src, dst := getTCPData(frames, pkt)
+			if flags != 0 {
+				fmt.Println(channel, captime.Format("15:04:05.000"), frames, flags.String(), src, "->", dst)
+			} else {
+				fmt.Println(channel, captime.Format("15:04:05.000"), frames)
+			}
+		} else {
+			fmt.Println(channel, captime.Format("15:04:05.000"), "ERR", frames, err.Error())
 		}
 	})
 	hwaddr, err := sv.HardwareAddress6()
@@ -73,4 +82,28 @@ func run() error {
 			lastHit = time.Now()
 		}
 	}
+}
+
+func getTCPData(frames []pcap.Frame, pkt []byte) (flags tcp.Flags, src, dst uint16) {
+	for i := range frames {
+		if frames[i].Protocol != lneto.IPProtoTCP {
+			continue
+		}
+		return tcp.Flags(getFrameClassUint(frames[i], pkt, pcap.FieldClassFlags)),
+			uint16(getFrameClassUint(frames[i], pkt, pcap.FieldClassSrc)),
+			uint16(getFrameClassUint(frames[i], pkt, pcap.FieldClassDst))
+	}
+	return 0, 0, 0
+}
+
+func getFrameClassUint(frame pcap.Frame, pkt []byte, class pcap.FieldClass) uint64 {
+	iflags, err := frame.FieldByClass(class)
+	if err != nil {
+		return 0
+	}
+	v, err := frame.FieldAsUint(iflags, pkt)
+	if err != nil {
+		return 0
+	}
+	return v
 }

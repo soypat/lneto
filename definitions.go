@@ -13,7 +13,7 @@ const (
 	IPProtoGGP             IPProto = 3   // Gateway-to-Gateway [RFC823]
 	IPProtoIPv4            IPProto = 4   // IPv4 encapsulation [RFC2003]
 	IPProtoST              IPProto = 5   // Stream [RFC1190, RFC1819]
-	IPProtoTCP             IPProto = 6   // Transmission Control [RFC9293]
+	IPProtoTCP             IPProto = 6   // TCP [RFC9293]
 	IPProtoCBT             IPProto = 7   // CBT [Ballardie]
 	IPProtoEGP             IPProto = 8   // Exterior Gateway Protocol [RFC888]
 	IPProtoIGP             IPProto = 9   // any private interior gateway (used by Cisco for their IGRP)
@@ -24,7 +24,7 @@ const (
 	IPProtoEMCON           IPProto = 14  // EMCON
 	IPProtoXNET            IPProto = 15  // Cross Net Debugger
 	IPProtoCHAOS           IPProto = 16  // Chaos
-	IPProtoUDP             IPProto = 17  // User Datagram [RFC768]
+	IPProtoUDP             IPProto = 17  // UDP [RFC768]
 	IPProtoMUX             IPProto = 18  // Multiplexing
 	IPProtoDCNMEAS         IPProto = 19  // DCN Measurement Subsystems
 	IPProtoHMP             IPProto = 20  // Host Monitoring [RFC869]

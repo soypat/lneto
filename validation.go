@@ -65,7 +65,7 @@ func (v *Validator) AddBitPosErr(bitStart, bitLen int, err error) {
 	if err == nil {
 		panic("err argument to bitPosErr cannot be nil")
 	} else if bitLen <= 0 {
-		panic("")
+		panic("zero bitlen")
 	}
 	v.accumBitpos = append(v.accumBitpos, BitPosErr{BitStart: bitStart, BitLen: bitLen, Err: err})
 	v.accum = append(v.accum, &v.accumBitpos[len(v.accumBitpos)-1])

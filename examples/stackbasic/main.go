@@ -19,6 +19,7 @@ import (
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/internet"
+	"github.com/soypat/lneto/internet/pcap"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
 )
@@ -65,14 +66,22 @@ func main() {
 	hdr.Reset(make([]byte, 0, 1024))
 	const standbyDuration = 5 * time.Second
 	lastHit := time.Now().Add(-standbyDuration)
+	var cap pcap.PacketBreakdown
 	for {
 		nread, err := tap.Read(buf[:])
 		if err != nil {
 			slogger.error("tap-err", slog.String("err", err.Error()))
 			log.Fatal(err)
 		} else if nread > 0 {
-			// debugEthPacket(nil, "IN ", buf[:nread])
-			// fmt.Println("INHEX ", debugHex(buf[:nread]))
+			frames, err := cap.CaptureEthernet(nil, buf[:nread], 0)
+			if err == nil {
+				flags := getTCPFlags(frames, buf[:nread])
+				if flags == 0 {
+					fmt.Println("IN", time.Now().Format("15:04:05.000"), frames)
+				} else {
+					fmt.Println("IN", time.Now().Format("15:04:05.000"), frames, flags.String())
+				}
+			}
 			err = lStack.RecvEth(buf[:nread])
 			if err != nil {
 				slogger.error("recv", slog.String("err", err.Error()), slog.Int("plen", nread))
@@ -80,11 +89,18 @@ func main() {
 		}
 		doHTTP(handler, &hdr)
 		nw, err := lStack.HandleEth(buf[:])
-		debugEthPacket(nil, "OUT", buf[:nw])
 		if err != nil {
 			slogger.error("handle", slog.String("err", err.Error()))
 		} else if nw > 0 {
-			// fmt.Println("OUTHEX ", debugHex(buf[:nread]))
+			frames, err := cap.CaptureEthernet(nil, buf[:nread], 0)
+			if err == nil {
+				flags := getTCPFlags(frames, buf[:nread])
+				if flags == 0 {
+					fmt.Println("OU", time.Now().Format("15:04:05.000"), frames)
+				} else {
+					fmt.Println("OU", time.Now().Format("15:04:05.000"), frames, flags.String())
+				}
+			}
 			_, err = tap.Write(buf[:nw])
 			if err != nil {
 				log.Fatal(err)
@@ -92,7 +108,7 @@ func main() {
 		}
 		hit := nread > 0 || nw > 0
 		if hit {
-			slogger.info("exchange", slog.Int("read", nread), slog.Int("nwrite", nw))
+			// slogger.info("exchange", slog.Int("read", nread), slog.Int("nwrite", nw))
 			lastHit = time.Now()
 		} else {
 			if time.Since(lastHit) > standbyDuration {
@@ -379,3 +395,21 @@ func debugHex(b []byte) string {
 }
 
 const tblhex = "0123456789abcdef"
+
+func getTCPFlags(frames []pcap.Frame, pkt []byte) (flags tcp.Flags) {
+	for i := range frames {
+		if frames[i].Protocol != lneto.IPProtoTCP {
+			continue
+		}
+		iflags, err := frames[i].FieldByClass(pcap.FieldClassFlags)
+		if err != nil {
+			return 0
+		}
+		v, err := frames[i].FieldAsUint(iflags, pkt)
+		if err != nil {
+			return 0
+		}
+		return tcp.Flags(v)
+	}
+	return 0
+}

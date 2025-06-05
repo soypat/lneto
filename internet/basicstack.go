@@ -4,7 +4,9 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/netip"
+	"slices"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -66,7 +68,12 @@ func (sb *StackBasic) Recv(frame []byte) error {
 			proto := ifrm.Protocol()
 			if h.proto == proto {
 				sb.info("iprecv", slog.String("ipproto", proto.String()), slog.Int("plen", int(totalLen)))
-				return h.recv(frame[:totalLen], off)
+				err = h.recv(frame[:totalLen], off)
+				if err == net.ErrClosed {
+					sb.info("ipclose", slog.String("proto", proto.String()))
+					sb.handlers = slices.Delete(sb.handlers, i, i+1)
+				}
+				return err
 			}
 		}
 	}

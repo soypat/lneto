@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/soypat/lneto/http/httpraw"
 )
@@ -33,7 +34,7 @@ func run() error {
 		return err
 	}
 
-	fmt.Println("dialing...")
+	fmt.Println(time.Now().Format("15:04:05.000"), "dialing...")
 	conn, err := net.DialTCP("tcp4", &net.TCPAddr{IP: []byte{192, 168, 10, 1}, Port: port}, &net.TCPAddr{IP: []byte{192, 168, 10, 2}, Port: 80})
 	if err != nil {
 		return err
@@ -47,9 +48,8 @@ func run() error {
 		conn.Close()
 		os.Exit(0)
 	}()
-	fmt.Println("reading...")
+	fmt.Println(time.Now().Format("15:04:05.000"), "writing...")
 	conn.Write(req)
-
 	hdr.Reset(nil)
 	var needMore bool = true
 	for needMore {
@@ -63,6 +63,6 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("got HTTP:\n", hdr.String())
+	fmt.Println(time.Now().Format("15:04:05.000"), "got HTTP:\n", hdr.String())
 	return nil
 }

@@ -12,8 +12,12 @@ import (
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/http/httpraw"
 	"github.com/soypat/lneto/ipv4"
+	"github.com/soypat/lneto/ipv6"
 	"github.com/soypat/lneto/tcp"
+	"github.com/soypat/lneto/udp"
 )
+
+const unknownPayloadProto = "payload?"
 
 type PacketBreakdown struct {
 	hdr httpraw.Header
@@ -115,6 +119,29 @@ func (pc *PacketBreakdown) CaptureARP(dst []Frame, pkt []byte, bitOffset int) ([
 	return dst, nil
 }
 
+func (pc *PacketBreakdown) CaptureIPv6(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
+	if bitOffset%8 != 0 {
+		return dst, errors.New("IPv6 must be parsed at byte boundary")
+	}
+	ifrm6, err := ipv6.NewFrame(pkt[bitOffset/8:])
+	if err != nil {
+		return dst, err
+	}
+	ifrm6.ValidateSize(pc.validator())
+	if pc.validator().HasError() {
+		return dst, pc.validator().Err()
+	}
+	finfo := Frame{
+		Protocol:        ethernet.TypeIPv6,
+		PacketBitOffset: bitOffset,
+	}
+	finfo.Fields = append(finfo.Fields, baseIPv6Fields[:]...)
+	dst = append(dst, finfo)
+	proto := ifrm6.NextHeader()
+	end := 40 * octet
+	return pc.captureIPProto(proto, dst, pkt, end)
+}
+
 func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
 	if bitOffset%8 != 0 {
 		return dst, errors.New("IPv4 must be parsed at byte boundary")
@@ -143,11 +170,17 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 	proto := ifrm4.Protocol()
 	dst = append(dst, finfo)
 	end := bitOffset + octet*ifrm4.HeaderLength()
+	return pc.captureIPProto(proto, dst, pkt, end)
+}
+
+func (pc *PacketBreakdown) captureIPProto(proto lneto.IPProto, dst []Frame, pkt []byte, bitOffset int) (_ []Frame, err error) {
 	switch proto {
 	case lneto.IPProtoTCP:
-		dst, err = pc.CaptureTCP(dst, pkt, end)
+		dst, err = pc.CaptureTCP(dst, pkt, bitOffset)
+	case lneto.IPProtoUDP:
+		dst, err = pc.CaptureUDP(dst, pkt, bitOffset)
 	default:
-		dst = append(dst, remainingFrameInfo(proto, 0, end, octet*len(pkt)))
+		dst = append(dst, remainingFrameInfo(proto, 0, bitOffset, octet*len(pkt)))
 	}
 	return dst, err
 }
@@ -183,9 +216,32 @@ func (pc *PacketBreakdown) CaptureTCP(dst []Frame, pkt []byte, bitOffset int) ([
 	if len(payload) > 0 {
 		dst, err = pc.CaptureHTTP(dst, pkt, end)
 		if err != nil {
-			dst = append(dst, remainingFrameInfo(nil, FieldClassPayload, end, len(pkt)))
+			dst = append(dst, remainingFrameInfo(unknownPayloadProto, FieldClassPayload, end, octet*len(pkt)))
 		}
 	}
+	return dst, nil
+}
+
+func (pc *PacketBreakdown) CaptureUDP(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
+	if bitOffset%8 != 0 {
+		return dst, errors.New("UDP must be parsed at byte boundary")
+	}
+	ufrm, err := udp.NewFrame(pkt[bitOffset/8:])
+	if err != nil {
+		return dst, err
+	}
+	ufrm.ValidateSize(pc.validator())
+	if pc.validator().HasError() {
+		return dst, pc.validator().Err()
+	}
+	finfo := Frame{
+		Protocol:        lneto.IPProtoUDP,
+		PacketBitOffset: bitOffset,
+	}
+	finfo.Fields = append(finfo.Fields, baseUDPFields[:]...)
+	dst = append(dst, finfo)
+	end := bitOffset + 8*octet
+	dst = append(dst, remainingFrameInfo(unknownPayloadProto, FieldClassPayload, end, octet*len(pkt)))
 	return dst, nil
 }
 
@@ -357,7 +413,6 @@ func (frm Frame) AppendField(dst []byte, fieldIdx int, pkt []byte) ([]byte, erro
 
 func (frm Frame) String() string {
 	iopt, err := frm.FieldByClass(FieldClassOptions)
-
 	hasOpts := ""
 	if err == nil {
 		hasOpts = fmt.Sprintf(" optlen=%d", (frm.Fields[iopt].BitLength+7)/8)
@@ -457,6 +512,56 @@ var baseARPFields = [...]FrameField{
 	},
 }
 
+var baseIPv6Fields = [...]FrameField{
+	{
+		Class:          FieldClassVersion,
+		FrameBitOffset: 0,
+		BitLength:      4,
+	},
+	{
+		Name:           "Type of Service",
+		Class:          FieldClassFlags,
+		FrameBitOffset: 4,
+		BitLength:      1 * octet,
+		RightAligned:   true,
+	},
+	{
+		Name:           "Flow Label",
+		Class:          FieldClassID,
+		FrameBitOffset: 12,
+		BitLength:      20,
+		RightAligned:   true,
+	},
+	{
+		Name:           "Total Length",
+		Class:          FieldClassSize,
+		FrameBitOffset: 4 * octet,
+		BitLength:      2 * octet,
+	},
+	{
+		Name:           "Next Header",
+		Class:          0,
+		FrameBitOffset: 6 * octet,
+		BitLength:      1 * octet,
+	},
+	{
+		Name:           "Hop Limit",
+		Class:          0,
+		FrameBitOffset: 7 * octet,
+		BitLength:      1 * octet,
+	},
+	{
+		Class:          FieldClassSrc,
+		FrameBitOffset: 8 * octet,
+		BitLength:      16 * octet,
+	},
+	{
+		Class:          FieldClassSrc,
+		FrameBitOffset: 24 * octet,
+		BitLength:      16 * octet,
+	},
+}
+
 var baseIPv4Fields = [...]FrameField{
 	{
 		Class:          FieldClassVersion,
@@ -532,7 +637,7 @@ var baseTCPFields = [...]FrameField{
 	},
 	{
 		Name:           "Destination port",
-		Class:          FieldClassSrc,
+		Class:          FieldClassDst,
 		FrameBitOffset: 2 * octet,
 		BitLength:      2 * octet,
 	},
@@ -575,6 +680,31 @@ var baseTCPFields = [...]FrameField{
 		Name:           "Urgent pointer",
 		Class:          0,
 		FrameBitOffset: 18 * octet,
+		BitLength:      2 * octet,
+	},
+}
+
+var baseUDPFields = [...]FrameField{
+	{
+		Name:           "Source port",
+		Class:          FieldClassSrc,
+		FrameBitOffset: 0,
+		BitLength:      2 * octet,
+	},
+	{
+		Name:           "Destination port",
+		Class:          FieldClassDst,
+		FrameBitOffset: 2 * octet,
+		BitLength:      2 * octet,
+	},
+	{
+		Class:          FieldClassSize,
+		FrameBitOffset: 4 * octet,
+		BitLength:      2 * octet,
+	},
+	{
+		Class:          FieldClassChecksum,
+		FrameBitOffset: 6 * octet,
 		BitLength:      2 * octet,
 	},
 }

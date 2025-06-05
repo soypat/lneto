@@ -57,7 +57,7 @@ type ControlBlock struct {
 	challengeAck bool
 }
 
-// State returns the current state of the TCP connection.
+// State returns the current state of the TCP connection. See [State].
 func (tcb *ControlBlock) State() State { return tcb._state }
 
 // RecvNext returns the next sequence number expected to be received from remote.

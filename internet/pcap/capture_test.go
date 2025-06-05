@@ -102,6 +102,16 @@ func TestCap(t *testing.T) {
 	if gotTCPFlags != wantTCPflags {
 		t.Errorf("want %s TCP flags, got %s", wantTCPflags.String(), gotTCPFlags.String())
 	}
+	wanDstPort := gen.DstTCP
+	wantSrcPort := gen.SrcTCP
+	gotSrcPort := uint16(getClass(ptfrm, FieldClassSrc))
+	gotDstPort := uint16(getClass(ptfrm, FieldClassDst))
+	if wantSrcPort != gotSrcPort {
+		t.Errorf("want %d TCP src port, got %d", wantSrcPort, gotSrcPort)
+	}
+	if wanDstPort != gotDstPort {
+		t.Errorf("want %d TCP dst port, got %d", wanDstPort, gotDstPort)
+	}
 	gotHeaderLen := getClass(ptfrm, FieldClassSize)
 	if gotHeaderLen != uint64(wantHeaderLen) {
 		t.Errorf("want %d TCP header length, got %d", wantHeaderLen, gotHeaderLen)
