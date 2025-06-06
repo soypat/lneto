@@ -9,38 +9,64 @@ import (
 	"slices"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
 )
 
-type StackBasic struct {
+var _ StackNode = (*StackIP)(nil)
+
+type StackIP struct {
+	connID    uint64
 	ip        [4]byte
 	validator lneto.Validator
-	handlers  []handler
+	handlers  []node
 	logger
 }
 
-type handler struct {
-	recv   func([]byte, int) error
-	handle func([]byte, int) (int, error)
-	proto  lneto.IPProto
-	port   uint16
+func (sb *StackIP) Reset(addr netip.Addr) error {
+	err := sb.SetAddr(addr)
+	if err != nil {
+		return err
+	}
+	*sb = StackIP{
+		connID:    sb.connID + 1,
+		validator: sb.validator,
+		handlers:  sb.handlers[:0],
+		logger:    sb.logger,
+		ip:        sb.ip,
+	}
+	return nil
 }
 
-func (sb *StackBasic) SetAddr(addr netip.Addr) {
-	if !addr.Is4() {
-		panic("only support IPv4")
+func (sb *StackIP) SetAddr(addr netip.Addr) error {
+	if !addr.IsValid() {
+		return errors.New("invalid IP")
+	} else if !addr.Is4() {
+		return errors.New("require IPv4")
 	}
 	sb.ip = addr.As4()
+	return nil
 }
 
-func (sb *StackBasic) Addr() netip.Addr {
+func (sb *StackIP) ConnectionID() *uint64 {
+	return &sb.connID
+}
+
+func (sb *StackIP) Protocol() uint64 {
+	return uint64(ethernet.TypeIPv4) // Only support ipv4 for now.
+}
+
+func (sb *StackIP) LocalPort() uint16 { return 0 }
+
+func (sb *StackIP) Addr() netip.Addr {
 	return netip.AddrFrom4(sb.ip)
 }
 
-func (sb *StackBasic) Recv(frame []byte) error {
-	sb.info("StackBasic.Recv:start")
+func (sb *StackIP) Demux(carrierData []byte, offset int) error {
+	sb.info("StackIP.Demux:start")
+	frame := carrierData[offset:] // we don't care about carrier data in IP.
 	ifrm, err := ipv4.NewFrame(frame)
 	if err != nil {
 		return err
@@ -58,7 +84,7 @@ func (sb *StackBasic) Recv(frame []byte) error {
 		gotCRC := ifrm.CRC()
 		wantCRC := ifrm.CalculateHeaderCRC()
 		if gotCRC != wantCRC {
-			sb.error("IPv4Stack:Recv:crc-mismatch", slog.Uint64("want", uint64(wantCRC)), slog.Uint64("got", uint64(gotCRC)))
+			sb.error("StackIP:Demux:crc-mismatch", slog.Uint64("want", uint64(wantCRC)), slog.Uint64("got", uint64(gotCRC)))
 			return errors.New("IPv4 CRC mismatch")
 		}
 		off := ifrm.HeaderLength()
@@ -66,9 +92,9 @@ func (sb *StackBasic) Recv(frame []byte) error {
 		for i := range sb.handlers {
 			h := &sb.handlers[i]
 			proto := ifrm.Protocol()
-			if h.proto == proto {
-				sb.info("iprecv", slog.String("ipproto", proto.String()), slog.Int("plen", int(totalLen)))
-				err = h.recv(frame[:totalLen], off)
+			if h.proto == uint16(proto) {
+				sb.info("ipDemux", slog.String("ipproto", proto.String()), slog.Int("plen", int(totalLen)))
+				err = h.demux(frame[:totalLen], off)
 				if err == net.ErrClosed {
 					sb.info("ipclose", slog.String("proto", proto.String()))
 					sb.handlers = slices.Delete(sb.handlers, i, i+1)
@@ -83,7 +109,8 @@ DROP:
 	return nil
 }
 
-func (sb *StackBasic) Handle(frame []byte) (int, error) {
+func (sb *StackIP) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
+	frame := carrierData[frameOffset:]
 	if len(frame) < 256 {
 		return 0, io.ErrShortBuffer
 	}
@@ -91,14 +118,15 @@ func (sb *StackBasic) Handle(frame []byte) (int, error) {
 	const ihl = 5
 	const headerlen = ihl * 4
 	ifrm.SetVersionAndIHL(4, 5)
-	*ifrm.SourceAddr() = sb.ip
 	ifrm.SetToS(0)
 	ifrm.SetID(0)
+	*ifrm.SourceAddr() = sb.ip
 	for i := range sb.handlers {
 		h := &sb.handlers[i]
-		n, err := h.handle(frame[:], headerlen)
+		proto := lneto.IPProto(h.proto)
+		n, err := h.encapsulate(frame[:], headerlen)
 		if err != nil {
-			sb.error("IPv4Stack:handle", slog.String("proto", h.proto.String()), slog.String("err", err.Error()))
+			sb.error("StackIP:handle", slog.String("proto", proto.String()), slog.String("err", err.Error()))
 			continue
 		}
 		if n > 0 {
@@ -107,7 +135,7 @@ func (sb *StackBasic) Handle(frame []byte) (int, error) {
 			ifrm.SetTotalLength(uint16(totalLen))
 			ifrm.SetFlags(dontFrag)
 			ifrm.SetTTL(64)
-			ifrm.SetProtocol(h.proto)
+			ifrm.SetProtocol(proto)
 			ifrm.SetCRC(ifrm.CalculateHeaderCRC())
 			if ifrm.Protocol() == lneto.IPProtoTCP {
 				var crc lneto.CRC791
@@ -115,7 +143,7 @@ func (sb *StackBasic) Handle(frame []byte) (int, error) {
 				tfrm, _ := tcp.NewFrame(ifrm.Payload())
 				tfrm.CRCWrite(&crc)
 				tfrm.SetCRC(crc.Sum16())
-				sb.info("IPv4Stack:send", slog.String("ip", ifrm.String()), slog.String("tcp", tfrm.String()))
+				sb.info("StackIP:send", slog.String("ip", ifrm.String()), slog.String("tcp", tfrm.String()))
 			}
 			return totalLen, nil
 		}
@@ -123,15 +151,32 @@ func (sb *StackBasic) Handle(frame []byte) (int, error) {
 	return 0, nil
 }
 
-func (sb *StackBasic) RegisterTCPConn(conn *TCPConn) error {
-	if conn.LocalPort() == 0 {
-		return errors.New("undefined local port")
+func (sb *StackIP) Register(h StackNode) error {
+	port := h.LocalPort()
+	proto := h.Protocol()
+	if port <= 0 {
+		return errZeroPort
+	} else if proto > 255 {
+		return errInvalidProto
 	}
-	sb.handlers = append(sb.handlers, handler{
-		recv:   conn.RecvIP,
-		handle: conn.HandleIP,
-		proto:  lneto.IPProtoTCP,
-		port:   conn.LocalPort(),
+	sb.handlers = append(sb.handlers, node{
+		demux:       h.Demux,
+		encapsulate: h.Encapsulate,
+		proto:       uint16(proto),
+		port:        port,
+	})
+	return nil
+}
+
+func (sb *StackIP) RegisterTCPConn(conn *TCPConn) error {
+	if conn.LocalPort() == 0 {
+		return errZeroPort
+	}
+	sb.handlers = append(sb.handlers, node{
+		demux:       conn.RecvIP,
+		encapsulate: conn.HandleIP,
+		proto:       uint16(lneto.IPProtoTCP),
+		port:        conn.LocalPort(),
 	})
 	return nil
 }

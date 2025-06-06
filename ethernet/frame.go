@@ -39,7 +39,7 @@ func (efrm Frame) HeaderLength() int {
 	return sizeHeaderNoVLAN
 }
 
-// Payload returns the data portion of the ethernet packet with handling of VLAN packets.
+// Payload returns the data portion of the ethernet packet with correct handling of VLAN packets.
 func (efrm Frame) Payload() []byte {
 	hl := efrm.HeaderLength()
 	et := efrm.EtherTypeOrSize()

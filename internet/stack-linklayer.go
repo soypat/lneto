@@ -1,0 +1,118 @@
+package internet
+
+import (
+	"errors"
+	"io"
+	"log/slog"
+	"math"
+	"net"
+
+	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/ethernet"
+)
+
+type StackLinkLayer struct {
+	connID   uint64
+	handlers []node
+	logger
+	mac   [6]byte
+	gwmac [6]byte
+	mtu   uint16
+}
+
+func (ls *StackLinkLayer) Reset6(mac, gateway [6]byte, mtu int) error {
+	if mtu > math.MaxUint16 || mtu < 256 {
+		return errors.New("invalid MTU")
+	}
+	*ls = StackLinkLayer{
+		connID:   ls.connID + 1,
+		handlers: ls.handlers[:0],
+		logger:   ls.logger,
+		mac:      mac,
+		gwmac:    gateway,
+		mtu:      uint16(mtu),
+	}
+	return nil
+}
+
+func (ls *StackLinkLayer) ConnectionID() *uint64 { return &ls.connID }
+
+func (ls *StackLinkLayer) LocalPort() uint16 { return 0 }
+
+func (ls *StackLinkLayer) Protocol() uint64 { return 1 }
+
+func (ls *StackLinkLayer) Register(h StackNode) error {
+	proto := h.Protocol()
+	if proto > math.MaxUint16 || proto <= 1500 {
+		return errInvalidProto
+	}
+	eproto := uint16(proto)
+	for i := range ls.handlers {
+		hgot := &ls.handlers[i]
+		if hgot.proto == eproto {
+			return errProtoRegistered
+		}
+	}
+	ls.handlers = append(ls.handlers, node{
+		demux:       h.Demux,
+		encapsulate: h.Encapsulate,
+		proto:       eproto,
+	})
+	return nil
+}
+
+func (ls *StackLinkLayer) Demux(carrierData []byte, frameOffset int) (err error) {
+	pkt := carrierData[frameOffset:]
+	efrm, err := ethernet.NewFrame(pkt)
+	if err != nil {
+		return err
+	}
+	etype := efrm.EtherTypeOrSize()
+	dstaddr := efrm.DestinationHardwareAddr()
+	var vld lneto.Validator
+	if !efrm.IsBroadcast() && ls.mac != *dstaddr {
+		goto DROP
+	}
+	efrm.ValidateSize(&vld)
+	if vld.HasError() {
+		return vld.Err()
+	}
+
+	for i := range ls.handlers {
+		h := &ls.handlers[i]
+		if h.proto == uint16(etype) {
+			return h.demux(efrm.Payload(), 0)
+		}
+	}
+DROP:
+	ls.info("LinkStack:drop-packet", slog.String("dsthw", net.HardwareAddr(dstaddr[:]).String()), slog.String("ethertype", efrm.EtherTypeOrSize().String()))
+	return nil
+}
+
+func (ls *StackLinkLayer) Encapsulate(carrierData []byte, frameOffset int) (n int, err error) {
+	mtu := ls.mtu
+	dst := carrierData[frameOffset:]
+	if len(dst) < int(mtu) {
+		return 0, io.ErrShortBuffer
+	}
+	efrm, err := ethernet.NewFrame(dst)
+	if err != nil {
+		return 0, err
+	}
+	*efrm.DestinationHardwareAddr() = ls.gwmac
+	for i := range ls.handlers {
+		h := &ls.handlers[i]
+		n, err = h.encapsulate(dst[:mtu], 14)
+		if err != nil {
+			ls.error("handling", slog.String("proto", ethernet.Type(h.proto).String()), slog.String("err", err.Error()))
+			continue
+		}
+		if n > 0 {
+			// Found packet
+			*efrm.SourceHardwareAddr() = ls.mac
+			efrm.SetEtherType(ethernet.Type(h.proto))
+			return n + 14, nil
+		}
+	}
+	return 0, err
+}

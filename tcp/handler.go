@@ -21,9 +21,10 @@ var (
 // Does NOT implement IP related logic, so no CRC calculation/validation or pseudo header logic.
 // Does NOT implement connection lifetime handling, so NO deadlines, keepalives, backoffs or anything that requires use of time package.
 type Handler struct {
-	scb   ControlBlock
-	bufTx ringTx
-	bufRx internal.Ring
+	connid uint64
+	scb    ControlBlock
+	bufTx  ringTx
+	bufRx  internal.Ring
 	logger
 	validator  lneto.Validator
 	localPort  uint16
@@ -31,7 +32,7 @@ type Handler struct {
 	// connid is a conenction counter that is incremented each time a new
 	// connection is established via Open calls. This disambiguate's whether
 	// Read and Write calls belong to the current connection.
-	connid   uint16
+
 	optcodec OptionCodec
 	closing  bool
 }
@@ -42,8 +43,8 @@ func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
 }
 
 // ConnectionID returns the connection identifier which is incremented every time the connection is closed or open.
-func (h *Handler) ConnectionID() int {
-	return int(h.connid)
+func (h *Handler) ConnectionID() *uint64 {
+	return &h.connid
 }
 
 // State returns the state of the TCP state machine as per RFC9293. See [State].

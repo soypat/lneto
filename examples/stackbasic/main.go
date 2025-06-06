@@ -169,21 +169,17 @@ func NewEthernetTCPStack(ourMAC, gwMAC [6]byte, ip netip.AddrPort, mtu uint16, s
 		gwmac:  gwMAC,
 	}
 
-	var ipStack internet.StackBasic
+	var ipStack internet.StackIP
 	addr := ip.Addr()
 	addr4 := addr.As4()
 	_ = addr4
 	ipStack.SetAddr(addr)
 	lStack.Register(handler{
-		raddr: nil, //addr4[:],
-		recv: func(b []byte, i int) error {
-			return ipStack.Recv(b[i:])
-		},
-		handle: func(b []byte, i int) (int, error) {
-			return ipStack.Handle(b[i:])
-		},
-		proto: ethernet.TypeIPv4,
-		lport: 0,
+		raddr:  nil, //addr4[:],
+		recv:   ipStack.Demux,
+		handle: ipStack.Encapsulate,
+		proto:  ethernet.TypeIPv4,
+		lport:  0,
 	})
 	var conn internet.TCPConn
 	err = conn.Configure(&internet.TCPConnConfig{

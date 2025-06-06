@@ -10,7 +10,7 @@ import (
 
 func TestBasicStack(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
-	var sbCl, sbSv StackBasic
+	var sbCl, sbSv StackIP
 	var connCl, connSv TCPConn
 	setupClientServer(t, rng, &sbCl, &sbSv, &connCl, &connSv)
 	var buf [2048]byte
@@ -36,28 +36,28 @@ func TestBasicStack(t *testing.T) {
 
 func TestBasicStack2(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
-	var sbCl, sbSv StackBasic
+	var sbCl, sbSv StackIP
 	var connCl, connSv TCPConn
 	setupClientServerEstablished(t, rng, &sbCl, &sbSv, &connCl, &connSv)
 
 }
 
-func expectExchange(t *testing.T, from, to *StackBasic, buf []byte) {
+func expectExchange(t *testing.T, from, to *StackIP, buf []byte) {
 	t.Helper()
-	n, err := from.Handle(buf)
+	n, err := from.Encapsulate(buf, 0)
 	if err != nil {
 		t.Error("expectExchange:Handle:", err)
 	} else if n == 0 {
 		t.Error("expected data exchange")
 		return
 	}
-	err = to.Recv(buf[:n])
+	err = to.Demux(buf[:n], 0)
 	if err != nil {
 		t.Error("expectExchange:Recv:", err)
 	}
 }
 
-func setupClientServerEstablished(t *testing.T, rng *rand.Rand, client, server *StackBasic, connClient, connServer *TCPConn) {
+func setupClientServerEstablished(t *testing.T, rng *rand.Rand, client, server *StackIP, connClient, connServer *TCPConn) {
 	t.Helper()
 	setupClientServer(t, rng, client, server, connClient, connServer)
 	var buf [2048]byte
@@ -85,7 +85,7 @@ func setupClientServerEstablished(t *testing.T, rng *rand.Rand, client, server *
 	}
 }
 
-func setupClientServer(t *testing.T, rng *rand.Rand, client, server *StackBasic, connClient, connServer *TCPConn) {
+func setupClientServer(t *testing.T, rng *rand.Rand, client, server *StackIP, connClient, connServer *TCPConn) {
 	bufsize := 2048
 	// Ensure buffer sizes are OK with reused buffers.
 	svip := netip.AddrPortFrom(netip.AddrFrom4([4]byte{192, 168, 1, 0}), 80)

@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/ipv6"
@@ -21,7 +22,6 @@ var (
 )
 
 type TCPConn struct {
-	// deprecated: here for debugging purposes only.
 	h          tcp.Handler
 	remoteAddr []byte
 
@@ -221,9 +221,8 @@ func (conn *TCPConn) HandleIP(buf []byte, off int) (n int, err error) {
 	return n, nil
 }
 
-func (conn *TCPConn) Send(response []byte) (n int, err error) {
-	conn.trace("tcpconn.Send:start")
-	return conn.h.Send(response)
+func (conn *TCPConn) Protocol() uint64 {
+	return uint64(lneto.IPProtoTCP)
 }
 
 func getIPAddr(buf []byte) (addr []byte, id uint16, err error) {
@@ -323,4 +322,8 @@ func (conn *TCPConn) SetWriteDeadline(t time.Time) error {
 
 func (conn *TCPConn) deadlineExceeded(deadline time.Time) bool {
 	return !deadline.IsZero() && time.Since(deadline) > 0
+}
+
+func (conn *TCPConn) ConnectionID() *uint64 {
+	return conn.h.ConnectionID()
 }
