@@ -120,7 +120,7 @@ func main() {
 	}
 }
 
-func doHTTP(conn *internet.TCPConn, hdr *httpraw.Header) error {
+func doHTTP(conn *tcp.Conn, hdr *httpraw.Header) error {
 	const asRequest = false
 	if conn.State() != tcp.StateEstablished || conn.BufferedInput() == 0 {
 		return nil // No data yet.
@@ -160,7 +160,7 @@ func doHTTP(conn *internet.TCPConn, hdr *httpraw.Header) error {
 	return nil
 }
 
-func NewEthernetTCPStack(ourMAC, gwMAC [6]byte, ip netip.AddrPort, mtu uint16, slogger logger) (*LinkStack, *internet.TCPConn, error) {
+func NewEthernetTCPStack(ourMAC, gwMAC [6]byte, ip netip.AddrPort, mtu uint16, slogger logger) (*LinkStack, *tcp.Conn, error) {
 	var err error
 	lStack := LinkStack{
 		logger: slogger,
@@ -181,8 +181,8 @@ func NewEthernetTCPStack(ourMAC, gwMAC [6]byte, ip netip.AddrPort, mtu uint16, s
 		proto:  ethernet.TypeIPv4,
 		lport:  0,
 	})
-	var conn internet.TCPConn
-	err = conn.Configure(&internet.TCPConnConfig{
+	var conn tcp.Conn
+	err = conn.Configure(&tcp.ConnConfig{
 		RxBuf:             make([]byte, mtu),
 		TxBuf:             make([]byte, mtu),
 		TxPacketQueueSize: 3,

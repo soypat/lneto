@@ -11,7 +11,7 @@ import (
 func TestBasicStack(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	var sbCl, sbSv StackIP
-	var connCl, connSv TCPConn
+	var connCl, connSv tcp.Conn
 	setupClientServer(t, rng, &sbCl, &sbSv, &connCl, &connSv)
 	var buf [2048]byte
 	nextToSend := &sbCl
@@ -37,7 +37,7 @@ func TestBasicStack(t *testing.T) {
 func TestBasicStack2(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	var sbCl, sbSv StackIP
-	var connCl, connSv TCPConn
+	var connCl, connSv tcp.Conn
 	setupClientServerEstablished(t, rng, &sbCl, &sbSv, &connCl, &connSv)
 
 }
@@ -57,7 +57,7 @@ func expectExchange(t *testing.T, from, to *StackIP, buf []byte) {
 	}
 }
 
-func setupClientServerEstablished(t *testing.T, rng *rand.Rand, client, server *StackIP, connClient, connServer *TCPConn) {
+func setupClientServerEstablished(t *testing.T, rng *rand.Rand, client, server *StackIP, connClient, connServer *tcp.Conn) {
 	t.Helper()
 	setupClientServer(t, rng, client, server, connClient, connServer)
 	var buf [2048]byte
@@ -85,7 +85,7 @@ func setupClientServerEstablished(t *testing.T, rng *rand.Rand, client, server *
 	}
 }
 
-func setupClientServer(t *testing.T, rng *rand.Rand, client, server *StackIP, connClient, connServer *TCPConn) {
+func setupClientServer(t *testing.T, rng *rand.Rand, client, server *StackIP, connClient, connServer *tcp.Conn) {
 	bufsize := 2048
 	// Ensure buffer sizes are OK with reused buffers.
 	svip := netip.AddrPortFrom(netip.AddrFrom4([4]byte{192, 168, 1, 0}), 80)
@@ -93,7 +93,7 @@ func setupClientServer(t *testing.T, rng *rand.Rand, client, server *StackIP, co
 	server.SetAddr(svip.Addr())
 	client.SetAddr(clip.Addr())
 
-	err := connServer.Configure(&TCPConnConfig{
+	err := connServer.Configure(&tcp.ConnConfig{
 		RxBuf:             make([]byte, bufsize),
 		TxBuf:             make([]byte, bufsize),
 		TxPacketQueueSize: 3,
@@ -102,7 +102,7 @@ func setupClientServer(t *testing.T, rng *rand.Rand, client, server *StackIP, co
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = connClient.Configure(&TCPConnConfig{
+	err = connClient.Configure(&tcp.ConnConfig{
 		RxBuf:             make([]byte, bufsize),
 		TxBuf:             make([]byte, bufsize),
 		TxPacketQueueSize: 3,

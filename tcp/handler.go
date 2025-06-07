@@ -20,6 +20,8 @@ var (
 // related to data buffering, frame sequencing and connection state handling.
 // Does NOT implement IP related logic, so no CRC calculation/validation or pseudo header logic.
 // Does NOT implement connection lifetime handling, so NO deadlines, keepalives, backoffs or anything that requires use of time package.
+//
+// See [Conn] for a higher level abstraction of a TCP connection, and see [ControlBlock] for the lower level bits of a TCP connection.
 type Handler struct {
 	connid uint64
 	scb    ControlBlock
@@ -117,10 +119,10 @@ func (h *Handler) Abort() {
 
 func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 	*h = Handler{
+		connid:     h.connid + 1,
 		scb:        h.scb,
 		bufTx:      h.bufTx,
 		bufRx:      h.bufRx,
-		connid:     h.connid + 1,
 		localPort:  localPort,
 		remotePort: remotePort,
 		validator:  h.validator,
@@ -300,7 +302,12 @@ func (h *Handler) BufferedInput() int {
 	return h.bufRx.Buffered()
 }
 
-// AwaitingSynResponse checks if the Handler is waiting for a Syn to arrive.
+// InUse returns true if the connection has been initialized and is being used to reach a remote port or if it is awaiting a remote packet.
+func (h *Handler) InUse() bool {
+	return h.remotePort != 0 || !h.State().IsClosed()
+}
+
+// AwaitingSynResponse returns true if the Handler is an active client opened with [Handler.OpenActive] and has already sent out the first SYN packet to the remote client.
 func (h *Handler) AwaitingSynResponse() bool {
 	return h.remotePort != 0 && h.scb.State() == StateSynSent
 }

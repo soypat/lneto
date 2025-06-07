@@ -164,7 +164,7 @@ func (sb *StackIP) Register(h StackNode) error {
 	return nil
 }
 
-func (sb *StackIP) RegisterTCPConn(conn *TCPConn) error {
+func (sb *StackIP) RegisterTCPConn(conn *tcp.Conn) error {
 	if conn.LocalPort() == 0 {
 		return errZeroPort
 	}

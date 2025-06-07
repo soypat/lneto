@@ -19,6 +19,10 @@ import (
 // A ControlBlock's internal state is modified by the available "System Calls" as defined in
 // RFC9293, such as Close, Listen/Open, Send, and Receive.
 // Sent and received data is represented with the [Segment] struct type.
+//
+// Note that [ControlBlock] is the lowest level implementation of TCP and as such is missing most useful functionality.
+// See [Handler], which uses ControlBlock, for a higher level implementation. [Conn] is an even higher level implementation
+// which makes use of a [Handler].
 type ControlBlock struct {
 	// # Send Sequence Space
 	//

@@ -43,7 +43,9 @@ func main() {
 
 	gatewayMAC := tap.HardwareAddr6()
 	mtu := tap.MTU()
-	stack, err := NewEthernetTCPStack(stackHWAddr, gatewayMAC, addrPort, uint16(mtu))
+
+	var stack Stack
+	err := stack.Reset(stackHWAddr, gatewayMAC, addrPort.Addr(), mtu)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -113,7 +115,7 @@ func main() {
 	}
 }
 
-func doHTTP(conn *internet.TCPConn, hdr *httpraw.Header) error {
+func doHTTP(conn *tcp.Conn, hdr *httpraw.Header) error {
 	const asRequest = false
 	if conn.State() != tcp.StateEstablished || conn.BufferedInput() == 0 {
 		return nil // No data yet.
@@ -160,10 +162,57 @@ type Stack struct {
 	arp      internet.NodeARP
 }
 
-func (stack *Stack) OpenPassiveTCP(port uint16, iss tcp.Value) (*internet.TCPConn, error) {
+func (stack *Stack) Reset(ourMAC, gwMAC [6]byte, ip netip.Addr, mtu int) (err error) {
+	err = stack.ethernet.Reset6(ourMAC, gwMAC, mtu)
+	if err != nil {
+		return err
+	}
+	err = stack.ip.Reset(ip)
+	if err != nil {
+		return err
+	}
+	stack.tcpports.Reset(uint64(lneto.IPProtoTCP), 2)
+	ipaddr := ip.As4()
+	err = stack.arp.Reset(arp.HandlerConfig{
+		HardwareAddr: ourMAC[:],
+		ProtocolAddr: ipaddr[:],
+		MaxQueries:   2,
+		MaxPending:   2,
+		HardwareType: 1,
+		ProtocolType: ethernet.TypeIPv4,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Register stacks and nodes.
+	err = stack.ethernet.Register(&stack.arp)
+	if err != nil {
+		return err
+	}
+	err = stack.ethernet.Register(&stack.ip)
+	if err != nil {
+		return err
+	}
+	err = stack.ip.Register(&stack.tcpports)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (stack *Stack) Recv(b []byte) error {
+	return stack.ethernet.Demux(b, 0)
+}
+
+func (stack *Stack) Send(b []byte) (int, error) {
+	return stack.ethernet.Encapsulate(b, 0)
+}
+
+func (stack *Stack) OpenPassiveTCP(port uint16, iss tcp.Value) (*tcp.Conn, error) {
 	mtu := stack.ethernet.MTU()
-	conn := new(internet.TCPConn)
-	err := conn.Configure(&internet.TCPConnConfig{
+	conn := new(tcp.Conn)
+	err := conn.Configure(&tcp.ConnConfig{
 		RxBuf:             make([]byte, mtu),
 		TxBuf:             make([]byte, mtu),
 		TxPacketQueueSize: 3,
@@ -180,57 +229,6 @@ func (stack *Stack) OpenPassiveTCP(port uint16, iss tcp.Value) (*internet.TCPCon
 		return nil, err
 	}
 	return conn, nil
-}
-
-func NewEthernetTCPStack(ourMAC, gwMAC [6]byte, ip netip.AddrPort, mtu uint16) (*Stack, error) {
-	var stack Stack
-	var err error
-	err = stack.ethernet.Reset6(ourMAC, gwMAC, int(mtu))
-	if err != nil {
-		return nil, err
-	}
-	err = stack.ip.Reset(ip.Addr())
-	if err != nil {
-		return nil, err
-	}
-	stack.tcpports.Reset(uint64(lneto.IPProtoTCP), 2)
-	ipaddr := ip.Addr().As4()
-	err = stack.arp.Reset(arp.HandlerConfig{
-		HardwareAddr: ourMAC[:],
-		ProtocolAddr: ipaddr[:],
-		MaxQueries:   2,
-		MaxPending:   2,
-		HardwareType: 1,
-		ProtocolType: ethernet.TypeIPv4,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// Register stacks and nodes.
-	err = stack.ethernet.Register(&stack.arp)
-	if err != nil {
-		return nil, err
-	}
-	err = stack.ethernet.Register(&stack.ip)
-	if err != nil {
-		return nil, err
-	}
-	err = stack.ip.Register(&stack.tcpports)
-	if err != nil {
-		return nil, err
-	}
-	return &stack, nil
-}
-
-func debugHex(b []byte) string {
-	var d []byte
-	for i := 0; i < len(b); i++ {
-		c1 := tblhex[b[i]&0xf]
-		c2 := tblhex[b[i]>>4]
-		d = append(d, c2, c1, ' ')
-	}
-	return string(d)
 }
 
 const tblhex = "0123456789abcdef"
