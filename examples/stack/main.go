@@ -51,7 +51,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	defer tap.Close()
 	tap.ReadDiscard() // Discard all unread content.
 	fmt.Println("hosting server at ", addrPort.String(), "over tap interface of mtu:", mtu, "prefix:", ippfx, "gateway:", net.HardwareAddr(gatewayMAC[:]).String())
@@ -155,12 +154,10 @@ func doHTTP(conn *internet.TCPConn, hdr *httpraw.Header) error {
 }
 
 type Stack struct {
-	ethernet internet.StackLinkLayer
+	ethernet internet.StackEthernet
 	ip       internet.StackIP
 	tcpports internet.StackPorts
 	arp      internet.NodeARP
-
-	onlyConn internet.TCPConn
 }
 
 func (stack *Stack) OpenPassiveTCP(port uint16, iss tcp.Value) (*internet.TCPConn, error) {

@@ -11,7 +11,7 @@ import (
 	"github.com/soypat/lneto/ethernet"
 )
 
-type StackLinkLayer struct {
+type StackEthernet struct {
 	connID   uint64
 	handlers []node
 	logger
@@ -20,11 +20,11 @@ type StackLinkLayer struct {
 	mtu   uint16
 }
 
-func (ls *StackLinkLayer) Reset6(mac, gateway [6]byte, mtu int) error {
+func (ls *StackEthernet) Reset6(mac, gateway [6]byte, mtu int) error {
 	if mtu > math.MaxUint16 || mtu < 256 {
 		return errors.New("invalid MTU")
 	}
-	*ls = StackLinkLayer{
+	*ls = StackEthernet{
 		connID:   ls.connID + 1,
 		handlers: ls.handlers[:0],
 		logger:   ls.logger,
@@ -35,15 +35,15 @@ func (ls *StackLinkLayer) Reset6(mac, gateway [6]byte, mtu int) error {
 	return nil
 }
 
-func (ls *StackLinkLayer) MTU() int { return int(ls.mtu) }
+func (ls *StackEthernet) MTU() int { return int(ls.mtu) }
 
-func (ls *StackLinkLayer) ConnectionID() *uint64 { return &ls.connID }
+func (ls *StackEthernet) ConnectionID() *uint64 { return &ls.connID }
 
-func (ls *StackLinkLayer) LocalPort() uint16 { return 0 }
+func (ls *StackEthernet) LocalPort() uint16 { return 0 }
 
-func (ls *StackLinkLayer) Protocol() uint64 { return 1 }
+func (ls *StackEthernet) Protocol() uint64 { return 1 }
 
-func (ls *StackLinkLayer) Register(h StackNode) error {
+func (ls *StackEthernet) Register(h StackNode) error {
 	proto := h.Protocol()
 	if proto > math.MaxUint16 || proto <= 1500 {
 		return errInvalidProto
@@ -63,7 +63,7 @@ func (ls *StackLinkLayer) Register(h StackNode) error {
 	return nil
 }
 
-func (ls *StackLinkLayer) Demux(carrierData []byte, frameOffset int) (err error) {
+func (ls *StackEthernet) Demux(carrierData []byte, frameOffset int) (err error) {
 	pkt := carrierData[frameOffset:]
 	efrm, err := ethernet.NewFrame(pkt)
 	if err != nil {
@@ -91,7 +91,7 @@ DROP:
 	return nil
 }
 
-func (ls *StackLinkLayer) Encapsulate(carrierData []byte, frameOffset int) (n int, err error) {
+func (ls *StackEthernet) Encapsulate(carrierData []byte, frameOffset int) (n int, err error) {
 	mtu := ls.mtu
 	dst := carrierData[frameOffset:]
 	if len(dst) < int(mtu) {
