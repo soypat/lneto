@@ -152,18 +152,14 @@ func (sb *StackIP) Encapsulate(carrierData []byte, frameOffset int) (int, error)
 }
 
 func (sb *StackIP) Register(h StackNode) error {
-	port := h.LocalPort()
 	proto := h.Protocol()
-	if port <= 0 {
-		return errZeroPort
-	} else if proto > 255 {
+	if proto > 255 {
 		return errInvalidProto
 	}
 	sb.handlers = append(sb.handlers, node{
 		demux:       h.Demux,
 		encapsulate: h.Encapsulate,
 		proto:       uint16(proto),
-		port:        port,
 	})
 	return nil
 }
@@ -173,8 +169,8 @@ func (sb *StackIP) RegisterTCPConn(conn *TCPConn) error {
 		return errZeroPort
 	}
 	sb.handlers = append(sb.handlers, node{
-		demux:       conn.RecvIP,
-		encapsulate: conn.HandleIP,
+		demux:       conn.Demux,
+		encapsulate: conn.Encapsulate,
 		proto:       uint16(lneto.IPProtoTCP),
 		port:        conn.LocalPort(),
 	})

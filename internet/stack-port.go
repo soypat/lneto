@@ -5,28 +5,28 @@ import (
 	"io"
 )
 
-type StackPort struct {
+type StackPorts struct {
 	connID     uint64
 	protocol   uint64
 	handlers   []node
 	dstPortOff int
 }
 
-func (ps *StackPort) Reset(protocol uint64, dstPortOffset int) {
-	*ps = StackPort{
+func (ps *StackPorts) Reset(protocol uint64, dstPortOffset int) {
+	*ps = StackPorts{
 		connID:     ps.connID + 1,
 		handlers:   ps.handlers[:0],
 		dstPortOff: dstPortOffset,
 		protocol:   protocol,
 	}
 }
-func (ps *StackPort) LocalPort() uint16 { return 0 }
+func (ps *StackPorts) LocalPort() uint16 { return 0 }
 
-func (ps *StackPort) Protocol() uint64 { return ps.protocol }
+func (ps *StackPorts) Protocol() uint64 { return ps.protocol }
 
-func (ps *StackPort) ConnectionID() *uint64 { return &ps.connID }
+func (ps *StackPorts) ConnectionID() *uint64 { return &ps.connID }
 
-func (ps *StackPort) Encapsulate(b []byte, offset int) (n int, err error) {
+func (ps *StackPorts) Encapsulate(b []byte, offset int) (n int, err error) {
 	if ps.dstPortOff+offset+2 > len(b) {
 		return 0, io.ErrShortBuffer
 	}
@@ -41,7 +41,7 @@ func (ps *StackPort) Encapsulate(b []byte, offset int) (n int, err error) {
 	return n, err
 }
 
-func (ps *StackPort) Demux(b []byte, offset int) (err error) {
+func (ps *StackPorts) Demux(b []byte, offset int) (err error) {
 	if ps.dstPortOff+offset+2 > len(b) {
 		return io.ErrShortBuffer
 	}
@@ -60,7 +60,7 @@ func (ps *StackPort) Demux(b []byte, offset int) (err error) {
 	return err
 }
 
-func (ps *StackPort) Register(h StackNode) error {
+func (ps *StackPorts) Register(h StackNode) error {
 	port := h.LocalPort()
 	proto := h.Protocol()
 	if port <= 0 {
@@ -76,6 +76,6 @@ func (ps *StackPort) Register(h StackNode) error {
 	return nil
 }
 
-func (ps *StackPort) handleResult(handlerIdx, n int, err error) {
+func (ps *StackPorts) handleResult(handlerIdx, n int, err error) {
 	handleNodeError(&ps.handlers, handlerIdx, err)
 }

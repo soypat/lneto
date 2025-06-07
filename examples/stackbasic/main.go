@@ -203,7 +203,8 @@ func NewEthernetTCPStack(ourMAC, gwMAC [6]byte, ip netip.AddrPort, mtu uint16, s
 	if ip.Addr().Is6() {
 		proto = ethernet.TypeIPv6
 	}
-	arphandler, err := arp.NewHandler(arp.HandlerConfig{
+	var narp arp.Handler
+	err = narp.Reset(arp.HandlerConfig{
 		HardwareAddr: ourMAC[:],
 		ProtocolAddr: ip.Addr().AsSlice(),
 		MaxQueries:   4,
@@ -215,7 +216,7 @@ func NewEthernetTCPStack(ourMAC, gwMAC [6]byte, ip netip.AddrPort, mtu uint16, s
 		return nil, nil, err
 	}
 	arpStack := ARPStack{
-		handler: *arphandler,
+		handler: narp,
 	}
 	err = lStack.Register(handler{
 		recv:   arpStack.Recv,

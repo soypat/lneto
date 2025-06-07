@@ -9,6 +9,7 @@ import (
 )
 
 type Handler struct {
+	connID       uint64
 	ourHWAddr    []byte
 	ourProtoAddr []byte
 	htype        uint16
@@ -26,22 +27,31 @@ type HandlerConfig struct {
 	ProtocolType ethernet.Type
 }
 
-func NewHandler(cfg HandlerConfig) (*Handler, error) {
+func (c *Handler) Reset(cfg HandlerConfig) error {
 	if len(cfg.HardwareAddr) == 0 || len(cfg.HardwareAddr) > 255 ||
 		len(cfg.ProtocolAddr) == 0 || len(cfg.ProtocolAddr) > 255 {
-		return nil, errors.New("invalid Handler address config")
+		return errors.New("invalid Handler address config")
 	} else if cfg.MaxQueries <= 0 || cfg.MaxPending <= 0 {
-		return nil, errors.New("invalid Handler query or pending config")
+		return errors.New("invalid Handler query or pending config")
 	}
-	h := &Handler{
-		pending:      make([][sizeHeaderv6]byte, 0, cfg.MaxPending),
+	*c = Handler{
+		connID:       c.connID + 1,
+		ourHWAddr:    c.ourHWAddr[:0],
+		ourProtoAddr: c.ourProtoAddr[:0],
 		htype:        cfg.HardwareType,
 		protoType:    cfg.ProtocolType,
-		ourHWAddr:    cfg.HardwareAddr,
-		ourProtoAddr: cfg.ProtocolAddr,
-		queries:      make([]queryResult, 0, cfg.MaxQueries),
+		pending:      c.pending[:0],
+		queries:      c.queries[:0],
 	}
-	return h, nil
+	c.ourHWAddr = append(c.ourHWAddr, cfg.HardwareAddr...)
+	c.ourProtoAddr = append(c.ourProtoAddr, cfg.ProtocolAddr...)
+	if cap(c.pending) < cfg.MaxPending {
+		c.pending = make([][52]byte, cfg.MaxPending)[:0]
+	}
+	if cap(c.queries) < cfg.MaxQueries {
+		c.queries = make([]queryResult, cfg.MaxQueries)[:0]
+	}
+	return nil
 }
 
 type queryResult struct {
@@ -50,14 +60,18 @@ type queryResult struct {
 	querysent bool
 }
 
-// ResetState drops pending queries and incoming requests.
-func (c *Handler) ResetState() {
+// AbortPending drops pending queries and incoming requests.
+func (c *Handler) AbortPending() {
 	c.pending = c.pending[:0]
 	c.queries = c.queries[:0]
 }
 
 func (c *Handler) expectSize() int {
 	return sizeHeader + 2*len(c.ourHWAddr) + 2*len(c.ourProtoAddr)
+}
+
+func (c *Handler) ConnectionID() *uint64 {
+	return &c.connID
 }
 
 func (c *Handler) QueryResult(protoAddr []byte) (hwAddr []byte, err error) {

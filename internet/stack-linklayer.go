@@ -35,6 +35,8 @@ func (ls *StackLinkLayer) Reset6(mac, gateway [6]byte, mtu int) error {
 	return nil
 }
 
+func (ls *StackLinkLayer) MTU() int { return int(ls.mtu) }
+
 func (ls *StackLinkLayer) ConnectionID() *uint64 { return &ls.connID }
 
 func (ls *StackLinkLayer) LocalPort() uint16 { return 0 }

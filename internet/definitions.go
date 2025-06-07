@@ -52,10 +52,10 @@ var (
 )
 
 func handleNodeError(nodesPtr *[]node, nodeIdx int, err error) {
-	if nodeIdx >= len(*nodesPtr) {
-		panic("unreachable")
-	}
 	if err != nil {
+		if nodeIdx >= len(*nodesPtr) {
+			panic("unreachable")
+		}
 		nodes := *nodesPtr
 		badConnID := nodes[nodeIdx].connID != nil && *nodes[nodeIdx].connID != nodes[nodeIdx].currConnID
 		if err == net.ErrClosed || nodes[nodeIdx].lastErrs[0] == err || nodes[nodeIdx].lastErrs[1] == err || badConnID {

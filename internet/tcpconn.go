@@ -98,7 +98,7 @@ func (conn *TCPConn) Close() error {
 	return conn.h.Close()
 }
 
-func (conn *TCPConn) RecvIP(buf []byte, off int) (err error) {
+func (conn *TCPConn) Demux(buf []byte, off int) (err error) {
 	conn.trace("tcpconn.Recv:start")
 	if off >= len(buf) {
 		return errors.New("bad offset in TCPConn.Recv")
@@ -198,7 +198,7 @@ func (conn *TCPConn) checkPipeOpen() error {
 	return nil
 }
 
-func (conn *TCPConn) HandleIP(buf []byte, off int) (n int, err error) {
+func (conn *TCPConn) Encapsulate(buf []byte, off int) (n int, err error) {
 	if len(conn.remoteAddr) == 0 {
 		return 0, errors.New("unset IP address")
 	}

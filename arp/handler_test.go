@@ -5,11 +5,13 @@ import (
 	"log"
 	"testing"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 )
 
 func TestHandler(t *testing.T) {
-	c1, err := NewHandler(HandlerConfig{
+	var c1, c2 Handler
+	err := c1.Reset(HandlerConfig{
 		HardwareAddr: []byte{0xde, 0xad, 0xbe, 0xef, 0x00, 0x00},
 		ProtocolAddr: []byte{192, 168, 1, 1},
 		MaxQueries:   1,
@@ -20,7 +22,7 @@ func TestHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c2, err := NewHandler(HandlerConfig{
+	err = c2.Reset(HandlerConfig{
 		HardwareAddr: []byte{0xc0, 0xff, 0xee, 0xc0, 0xff, 0xee},
 		ProtocolAddr: []byte{192, 168, 1, 2},
 		MaxQueries:   1,
@@ -58,6 +60,7 @@ func TestHandler(t *testing.T) {
 	} else if n == 0 {
 		t.Fatal("expected send of data after first query")
 	}
+	validateARP(t, buf[:])
 	err = c2.Recv(buf[:n]) // Receive request.
 	if err != nil {
 		t.Fatal(err)
@@ -69,6 +72,7 @@ func TestHandler(t *testing.T) {
 	} else if n == 0 {
 		t.Fatal("got no response to request")
 	}
+	validateARP(t, buf[:])
 	n, err = c2.Send(discard[:]) // Double tap check, should send nothing.
 	if err != nil {
 		t.Fatal("double tap send error:", err)
@@ -97,5 +101,21 @@ func TestHandler(t *testing.T) {
 		t.Fatal(err)
 	} else if n > 0 {
 		t.Fatal("expected no data")
+	}
+}
+
+func validateARP(t *testing.T, buf []byte) {
+	t.Helper()
+	afrm, err := NewFrame(buf)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	var vld lneto.Validator
+	afrm.ValidateSize(&vld)
+	if vld.HasError() {
+		t.Errorf("invalid arp: %s", vld.Err())
+	} else if err := vld.Err(); err != nil {
+		panic("unreachable: " + err.Error())
 	}
 }

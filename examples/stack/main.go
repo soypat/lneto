@@ -1,29 +1,26 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	"io"
 	"log"
 	"log/slog"
 	"net"
 	"net/netip"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/ethernet"
-	"github.com/soypat/lneto/internal"
+	"github.com/soypat/lneto/http/httpraw"
 	"github.com/soypat/lneto/internal/ltesto"
-	"github.com/soypat/lneto/ipv4"
-	"github.com/soypat/lneto/ipv6"
+	"github.com/soypat/lneto/internet"
+	"github.com/soypat/lneto/internet/pcap"
 	"github.com/soypat/lneto/tcp"
 )
 
 const (
-	mtu       = 2048
-	iface     = "192.168.10.1/24"
 	stackIP   = "192.168.10.2"
 	stackPort = 80
 	iss       = 100
@@ -33,513 +30,228 @@ var stackHWAddr = [6]byte{0xc0, 0xff, 0xee, 0x00, 0xde, 0xad}
 
 func main() {
 	ip := netip.MustParseAddr(stackIP)
-	iface := netip.MustParsePrefix(iface)
-	if !iface.Contains(ip) {
+	tap := ltesto.NewHTTPTapClient("http://127.0.0.1:7070")
+
+	ippfx := tap.IPPrefix()
+	if !ippfx.Contains(ip) {
 		log.Fatal("interface does not contain stack address")
 	}
 	addrPort := netip.AddrPortFrom(ip, stackPort)
-	slogger := logger{slog.Default()}
-	lStack, handler, err := NewEthernetTCPStack(stackHWAddr, addrPort, slogger)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+	lg := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
-	handler.SetLoggers(logger, logger)
 
-	err = handler.OpenListen(addrPort.Port(), iss)
+	gatewayMAC := tap.HardwareAddr6()
+	mtu := tap.MTU()
+	stack, err := NewEthernetTCPStack(stackHWAddr, gatewayMAC, addrPort, uint16(mtu))
+	if err != nil {
+		log.Fatal(err)
+	}
+	handler, err := stack.OpenPassiveTCP(addrPort.Port(), iss)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	tap := ltesto.NewHTTPTapClient("http://127.0.0.1:7070")
 	defer tap.Close()
-
-	fmt.Println("hosting server at ", addrPort.String())
-	var buf [mtu]byte
+	tap.ReadDiscard() // Discard all unread content.
+	fmt.Println("hosting server at ", addrPort.String(), "over tap interface of mtu:", mtu, "prefix:", ippfx, "gateway:", net.HardwareAddr(gatewayMAC[:]).String())
+	buf := make([]byte, mtu)
+	var hdr httpraw.Header
+	hdr.Reset(make([]byte, 0, 1024))
+	const standbyDuration = 5 * time.Second
+	lastHit := time.Now().Add(-standbyDuration)
+	var cap pcap.PacketBreakdown
 	for {
 		nread, err := tap.Read(buf[:])
 		if err != nil {
-			slogger.error("tap-err", slog.String("err", err.Error()))
+			lg.Error("tap-err", slog.String("err", err.Error()))
 			log.Fatal(err)
 		} else if nread > 0 {
-			err = lStack.RecvEth(buf[:nread])
+			frames, err := cap.CaptureEthernet(nil, buf[:nread], 0)
+			if err == nil {
+				flags := getTCPFlags(frames, buf[:nread])
+				if flags == 0 {
+					fmt.Println("IN", time.Now().Format("15:04:05.000"), frames)
+				} else {
+					fmt.Println("IN", time.Now().Format("15:04:05.000"), frames, flags.String())
+				}
+			}
+			err = stack.ethernet.Demux(buf[:nread], 0)
 			if err != nil {
-				slogger.error("recv", slog.String("err", err.Error()), slog.Int("plen", nread))
-			} else {
-				slogger.info("recv", slog.Int("plen", nread))
+				lg.Error("recv", slog.String("err", err.Error()), slog.Int("plen", nread))
 			}
 		}
-		nw, err := lStack.HandleEth(buf[:])
+		doHTTP(handler, &hdr)
+		nw, err := stack.ethernet.Encapsulate(buf[:], 0)
 		if err != nil {
-			slogger.error("handle", slog.String("err", err.Error()))
+			lg.Error("handle", slog.String("err", err.Error()))
 		} else if nw > 0 {
+			frames, err := cap.CaptureEthernet(nil, buf[:nread], 0)
+			if err == nil {
+				flags := getTCPFlags(frames, buf[:nread])
+				if flags == 0 {
+					fmt.Println("OU", time.Now().Format("15:04:05.000"), frames)
+				} else {
+					fmt.Println("OU", time.Now().Format("15:04:05.000"), frames, flags.String())
+				}
+			}
 			_, err = tap.Write(buf[:nw])
 			if err != nil {
 				log.Fatal(err)
-			} else {
-				slogger.info("write", slog.Int("plen", nw))
 			}
 		}
-		if nread == 0 && nw == 0 {
-			time.Sleep(5 * time.Millisecond)
+		hit := nread > 0 || nw > 0
+		if hit {
+			// slogger.info("exchange", slog.Int("read", nread), slog.Int("nwrite", nw))
+			lastHit = time.Now()
+		} else {
+			if time.Since(lastHit) > standbyDuration {
+				time.Sleep(5 * time.Millisecond)
+			} else {
+				runtime.Gosched()
+			}
 		}
 	}
 }
 
-func NewEthernetTCPStack(mac [6]byte, ip netip.AddrPort, slogger logger) (*LinkStack, *tcp.Handler, error) {
-	lStack := LinkStack{
-		logger: slogger,
-		mac:    mac,
-		mtu:    mtu,
+func doHTTP(conn *internet.TCPConn, hdr *httpraw.Header) error {
+	const asRequest = false
+	if conn.State() != tcp.StateEstablished || conn.BufferedInput() == 0 {
+		return nil // No data yet.
 	}
-	ipStack := &IPv4Stack{
-		ip:     ip.Addr().As4(),
-		logger: slogger,
+	fmt.Println("state is established; check request and send response")
+	_, err := hdr.ReadFromLimited(conn, hdr.BufferFree())
+	if err != nil {
+		return err
 	}
-	tcpStack := &TCPStack{
-		logger: slogger,
+	needMore, err := hdr.TryParse(asRequest)
+	if err != nil {
+		if !needMore {
+			fmt.Println("IT's SO GOVER")
+			conn.Close()
+		}
+		return err
 	}
-	tcpPortStack := &TCPPort{
-		handler: tcp.Handler{},
+	// HTTP parsed succesfully!
+	fmt.Println("GOT HTTP:\n", hdr.String())
+	fmt.Println("sending response...")
+	hdr.Reset(nil)
+	hdr.SetStatus("200", "OK")
+	data := `{"ok":true}`
+	response, err := hdr.AppendResponse(nil)
+	if err != nil {
+		return err
 	}
-	proto := ethernet.TypeIPv4
-	if ip.Addr().Is6() {
-		proto = ethernet.TypeIPv6
+	response = append(response, data...)
+	_, err = conn.Write(response)
+	if err != nil {
+		return err
 	}
-	arphandler, err := arp.NewHandler(arp.HandlerConfig{
-		HardwareAddr: mac[:],
-		ProtocolAddr: ip.Addr().AsSlice(),
-		MaxQueries:   1,
-		MaxPending:   1,
-		HardwareType: 1,
-		ProtocolType: proto,
+	err = conn.Close()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+type Stack struct {
+	ethernet internet.StackLinkLayer
+	ip       internet.StackIP
+	tcpports internet.StackPorts
+	arp      internet.NodeARP
+
+	onlyConn internet.TCPConn
+}
+
+func (stack *Stack) OpenPassiveTCP(port uint16, iss tcp.Value) (*internet.TCPConn, error) {
+	mtu := stack.ethernet.MTU()
+	conn := new(internet.TCPConn)
+	err := conn.Configure(&internet.TCPConnConfig{
+		RxBuf:             make([]byte, mtu),
+		TxBuf:             make([]byte, mtu),
+		TxPacketQueueSize: 3,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	arpStack := ARPStack{
-		handler: *arphandler,
-	}
-
-	port := ip.Port()
-	txbuf := make([]byte, mtu)
-	rxbuf := make([]byte, mtu)
-	err = tcpPortStack.handler.SetBuffers(txbuf, rxbuf, 3)
+	err = conn.OpenListen(port, iss)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	err = ipStack.Register(tcpStack, nil)
+	err = stack.tcpports.Register(conn)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	err = lStack.Register(ipStack, mac)
-	if err != nil {
-		return nil, nil, err
-	}
-	err = lStack.Register(&arpStack, [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff})
-	if err != nil {
-		return nil, nil, err
-	}
-	err = tcpStack.Register(tcpPortStack, port)
-	if err != nil {
-		return nil, nil, err
-	}
-	return &lStack, &tcpPortStack.handler, nil
+	return conn, nil
 }
 
-type Handler interface {
-	Protocol() uint32
-	Recv(frame []byte, off int) error
-	Handle(dstAndFrame []byte, dstOff int) (int, error)
-}
-
-// handler is abstraction of a frame marshaller.
-type handler struct {
-	raddr  []byte
-	recv   func([]byte, int) error
-	handle func([]byte, int) (int, error)
-	proto  uint32
-	lport  uint16
-}
-
-type LinkStack struct {
-	handlers []handler
-	logger
-	mac [6]byte
-	mtu uint16
-}
-
-func (ls *LinkStack) Register(h Handler, remoteHWAddr [6]byte) error {
-	proto := h.Protocol()
-	for i := range ls.handlers {
-		if proto == ls.handlers[i].proto {
-			return errors.New("protocol already registered")
-		}
-	}
-	// Pattern to add a handler and reuse underlying memory.
-	ls.handlers = append(ls.handlers, handler{})
-	hh := &ls.handlers[len(ls.handlers)-1]
-	hh.handle = h.Handle
-	hh.recv = h.Recv
-	hh.proto = proto
-	hh.raddr = append(hh.raddr[:0], remoteHWAddr[:]...)
-	return nil
-}
-
-func (ls *LinkStack) RecvEth(ethFrame []byte) (err error) {
-
-	efrm, err := ethernet.NewFrame(ethFrame)
+func NewEthernetTCPStack(ourMAC, gwMAC [6]byte, ip netip.AddrPort, mtu uint16) (*Stack, error) {
+	var stack Stack
+	var err error
+	err = stack.ethernet.Reset6(ourMAC, gwMAC, int(mtu))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	etype := efrm.EtherTypeOrSize()
-	dstaddr := efrm.DestinationHardwareAddr()
-	if !efrm.IsBroadcast() && ls.mac != *dstaddr {
-		return fmt.Errorf("incoming %s mismatch hwaddr %s", etype.String(), net.HardwareAddr(dstaddr[:]).String())
+	err = stack.ip.Reset(ip.Addr())
+	if err != nil {
+		return nil, err
 	}
-	var vld lneto.Validator
-	efrm.ValidateSize(&vld)
-	if err := vld.Err(); err != nil {
-		return err
+	stack.tcpports.Reset(uint64(lneto.IPProtoTCP), 2)
+	ipaddr := ip.Addr().As4()
+	err = stack.arp.Reset(arp.HandlerConfig{
+		HardwareAddr: ourMAC[:],
+		ProtocolAddr: ipaddr[:],
+		MaxQueries:   2,
+		MaxPending:   2,
+		HardwareType: 1,
+		ProtocolType: ethernet.TypeIPv4,
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	for i := range ls.handlers {
-		h := &ls.handlers[i]
-		if h.proto == uint32(etype) {
-			return h.recv(efrm.Payload(), 0)
-		}
+	// Register stacks and nodes.
+	err = stack.ethernet.Register(&stack.arp)
+	if err != nil {
+		return nil, err
 	}
-
-	return nil
+	err = stack.ethernet.Register(&stack.ip)
+	if err != nil {
+		return nil, err
+	}
+	err = stack.ip.Register(&stack.tcpports)
+	if err != nil {
+		return nil, err
+	}
+	return &stack, nil
 }
 
-func (ls *LinkStack) HandleEth(dst []byte) (n int, err error) {
-	if len(dst) < int(ls.mtu) {
-		return 0, io.ErrShortBuffer
+func debugHex(b []byte) string {
+	var d []byte
+	for i := 0; i < len(b); i++ {
+		c1 := tblhex[b[i]&0xf]
+		c2 := tblhex[b[i]>>4]
+		d = append(d, c2, c1, ' ')
 	}
-	for i := range ls.handlers {
-		h := &ls.handlers[i]
-		n, err = h.handle(dst[:ls.mtu], 14)
-		if err != nil {
-			ls.error("handling", slog.String("proto", ethernet.Type(h.proto).String()), slog.String("err", err.Error()))
+	return string(d)
+}
+
+const tblhex = "0123456789abcdef"
+
+func getTCPFlags(frames []pcap.Frame, pkt []byte) (flags tcp.Flags) {
+	for i := range frames {
+		if frames[i].Protocol != lneto.IPProtoTCP {
 			continue
 		}
-		if n > 0 {
-			// Found packet
-			efrm, _ := ethernet.NewFrame(dst[:14])
-			copy(efrm.DestinationHardwareAddr()[:], h.raddr)
-			*efrm.SourceHardwareAddr() = ls.mac
-			efrm.SetEtherType(ethernet.Type(h.proto))
-
-			return n + 14, nil
-		}
-	}
-	return 0, err
-}
-
-type IPv4Stack struct {
-	ip        [4]byte
-	validator lneto.Validator
-	handlers  []handler
-	logger
-}
-
-func (is *IPv4Stack) Protocol() uint32 { return uint32(ethernet.TypeIPv4) }
-
-func (is *IPv4Stack) Register(h Handler, remoteAddr *[4]byte) error {
-	proto := h.Protocol()
-	for i := range is.handlers {
-		if proto == is.handlers[i].proto {
-			return errors.New("protocol already registered")
-		}
-	}
-	// Pattern to add a handler and reuse underlying memory.
-	is.handlers = append(is.handlers, handler{})
-	hh := &is.handlers[len(is.handlers)-1]
-	hh.handle = h.Handle
-	hh.recv = h.Recv
-	hh.proto = proto
-	if remoteAddr != nil {
-		// Remote IP address specified.
-		hh.raddr = append(hh.raddr, remoteAddr[:]...)
-	}
-	return nil
-}
-
-func (is *IPv4Stack) Recv(ethFrame []byte, ipOff int) error {
-
-	ifrm, err := ipv4.NewFrame(ethFrame[ipOff:])
-	if err != nil {
-		return err
-	}
-	if *ifrm.DestinationAddr() != is.ip {
-		return errors.New("packet not for us")
-	}
-	is.validator.ResetErr()
-	ifrm.ValidateExceptCRC(&is.validator)
-	if err = is.validator.Err(); err != nil {
-		return err
-	}
-	gotCRC := ifrm.CRC()
-	wantCRC := ifrm.CalculateHeaderCRC()
-	if gotCRC != wantCRC {
-		is.error("IPv4Stack:Recv:crc-mismatch", slog.Uint64("want", uint64(wantCRC)), slog.Uint64("got", uint64(gotCRC)))
-		return errors.New("IPv4 CRC mismatch")
-	}
-	off := ifrm.HeaderLength()
-	totalLen := ifrm.TotalLength()
-	for i := range is.handlers {
-		h := &is.handlers[i]
-		if h.proto == uint32(ifrm.Protocol()) {
-			return h.recv(ethFrame[ipOff:totalLen], off)
-		}
-	}
-	return nil
-}
-
-func (is *IPv4Stack) Handle(ethFrame []byte, ipOff int) (int, error) {
-	if len(ethFrame)-ipOff < 256 {
-		return 0, io.ErrShortBuffer
-	}
-	ifrm, _ := ipv4.NewFrame(ethFrame[ipOff:])
-	const ihl = 5
-	const headerlen = ihl * 4
-	ifrm.SetVersionAndIHL(4, 5)
-	*ifrm.SourceAddr() = is.ip
-	ifrm.SetToS(0)
-	for i := range is.handlers {
-		h := &is.handlers[i]
-		proto := lneto.IPProto(h.proto)
-		ifrm.SetProtocol(proto)
-		if len(h.raddr) == 4 {
-			copy(ifrm.DestinationAddr()[:], h.raddr)
-		} else {
-			copy(ifrm.DestinationAddr()[:], "\x00\x00\x00\x00")
-		}
-
-		n, err := h.handle(ethFrame[ipOff:], headerlen)
+		iflags, err := frames[i].FieldByClass(pcap.FieldClassFlags)
 		if err != nil {
-			is.error("IPv4Stack:handle", slog.String("proto", proto.String()), slog.String("err", err.Error()))
-			continue
+			return 0
 		}
-		if n > 0 {
-			const dontFrag = 0x4000
-			totalLen := n + headerlen
-			ifrm.SetTotalLength(uint16(totalLen))
-			ifrm.SetID(0)
-			ifrm.SetFlags(dontFrag)
-			ifrm.SetTTL(64)
-			ifrm.SetCRC(ifrm.CalculateHeaderCRC())
-			if ifrm.Protocol() == lneto.IPProtoTCP {
-				tfrm, _ := tcp.NewFrame(ifrm.Payload())
-				is.info("IPv4Stack:send", slog.String("ip", ifrm.String()), slog.String("tcp", tfrm.String()))
-			}
-			return totalLen, nil
-		}
-	}
-	return 0, nil
-}
-
-type TCPStack struct {
-	validator lneto.Validator
-	handlers  []handler
-	logger
-}
-
-func (ts *TCPStack) Protocol() uint32 { return uint32(lneto.IPProtoTCP) }
-
-func (ts *TCPStack) Register(h Handler, lport uint16) error {
-	if lport == 0 {
-		return errors.New("got zero port")
-	}
-	ts.handlers = append(ts.handlers, handler{})
-	hh := &ts.handlers[len(ts.handlers)-1]
-	hh.handle = h.Handle
-	hh.recv = h.Recv
-	hh.lport = lport
-	return nil
-}
-
-func (ts *TCPStack) Recv(ipFrame []byte, tcpOff int) error {
-	ipVersion := ipFrame[0] >> 4
-	if ipVersion != 4 && ipVersion != 6 {
-		return errors.New("invalid IP version")
-	}
-	tfrm, err := tcp.NewFrame(ipFrame[tcpOff:])
-	if err != nil {
-		return err
-	}
-	lport := tfrm.DestinationPort()
-	var h *handler
-	for i := range ts.handlers {
-		if lport == ts.handlers[i].lport {
-			h = &ts.handlers[i]
-			break
-		}
-	}
-	if h == nil {
-		return errors.New("port not found")
-	}
-	ts.validator.ResetErr()
-	tfrm.ValidateSize(&ts.validator)
-	if err = ts.validator.Err(); err != nil {
-		return err
-	}
-	crc := tcpChecksum(ipFrame, len(tfrm.RawData()))
-	gotCRC := tfrm.CRC()
-	if crc != gotCRC {
-		ts.error("TCPStack:Recv:crc-mismatch", slog.Uint64("lport", uint64(lport)), slog.Uint64("want", uint64(crc)), slog.Uint64("got", uint64(gotCRC)))
-		return errors.New("TCP crc mismatch")
-	}
-	return h.recv(ipFrame[tcpOff:], 0)
-}
-
-func (ts *TCPStack) Handle(ipFrame []byte, tcpOff int) (n int, err error) {
-	ipVersion := ipFrame[0] >> 4
-	if ipVersion != 4 && ipVersion != 6 {
-		return 0, errors.New("invalid IP version")
-	}
-	var h *handler
-	for i := range ts.handlers {
-		h = &ts.handlers[i]
-		n, err = h.handle(ipFrame[tcpOff:], 0)
+		v, err := frames[i].FieldAsUint(iflags, pkt)
 		if err != nil {
-			if err == io.EOF {
-				ts.handlers = removeHandler(ts.handlers, i)
-				err = nil
-			} else {
-				ts.error("TCPStack:Handle", slog.Uint64("lport", uint64(h.lport)))
-				continue
-			}
+			return 0
 		}
-		if n > 0 {
-			ipFrame = ipFrame[:tcpOff+n]
-			break
-		}
+		return tcp.Flags(v)
 	}
-	if n == 0 {
-		return 0, err
-	}
-	// TCP packet written.
-	tfrm, _ := tcp.NewFrame(ipFrame[tcpOff:])
-
-	ts.validator.ResetErr()
-	tfrm.ValidateSize(&ts.validator) // Perform basic validation.
-	if err = ts.validator.Err(); err != nil {
-		return 0, err
-	}
-	crc := tcpChecksum(ipFrame, n)
-	tfrm.SetCRC(crc)
-	return n, nil
-}
-
-type ARPStack struct {
-	handler arp.Handler
-}
-
-func (as *ARPStack) Protocol() uint32 { return uint32(ethernet.TypeARP) }
-
-func (as *ARPStack) Recv(EtherFrame []byte, arpOff int) error {
-	afrm, _ := arp.NewFrame(EtherFrame[arpOff:])
-	slog.Info("recv", slog.String("in", afrm.String()))
-	return as.handler.Recv(EtherFrame[arpOff:])
-}
-
-func (as *ARPStack) Handle(EtherFrame []byte, arpOff int) (int, error) {
-	n, err := as.handler.Send(EtherFrame[arpOff:])
-	if err != nil || n == 0 {
-		return 0, err
-	}
-	afrm, _ := arp.NewFrame(EtherFrame[arpOff:])
-	hwaddr, _ := afrm.Target()
-	efrm, _ := ethernet.NewFrame(EtherFrame)
-	copy(efrm.DestinationHardwareAddr()[:], hwaddr)
-	slog.Info("handle", slog.String("out", afrm.String()))
-	return n, err
-}
-
-type TCPPort struct {
-	handler tcp.Handler
-}
-
-func (tp *TCPPort) Protocol() uint32 { return uint32(lneto.IPProtoTCP) }
-
-func (tp *TCPPort) Recv(tcpFrame []byte, off int) error {
-	if off != 0 {
-		return errors.New("TCP API expected 0 offset")
-	}
-	return tp.handler.Recv(tcpFrame)
-}
-
-func (tp *TCPPort) Handle(tcpFrame []byte, off int) (n int, err error) {
-	if off != 0 {
-		return 0, errors.New("TCP API expected 0 offset")
-	}
-	return tp.handler.Send(tcpFrame)
-}
-
-type logger struct {
-	log *slog.Logger
-}
-
-func (l logger) error(msg string, attrs ...slog.Attr) {
-	internal.LogAttrs(l.log, slog.LevelError, msg, attrs...)
-}
-func (l logger) info(msg string, attrs ...slog.Attr) {
-	internal.LogAttrs(l.log, slog.LevelInfo, msg, attrs...)
-}
-func (l logger) warn(msg string, attrs ...slog.Attr) {
-	internal.LogAttrs(l.log, slog.LevelWarn, msg, attrs...)
-}
-func (l logger) debug(msg string, attrs ...slog.Attr) {
-	internal.LogAttrs(l.log, slog.LevelDebug, msg, attrs...)
-}
-
-func removeHandler(handlers []handler, idxRemoved int) []handler {
-	return append(handlers[:idxRemoved], handlers[idxRemoved+1:]...)
-}
-
-func addHandler(handlers []handler, h Handler, remoteAddr []byte, lport uint16) []handler {
-	// Pattern to add a handler and reuse underlying memory.
-	handlers = append(handlers, handler{})
-	hh := &handlers[len(handlers)-1]
-	hh.handle = h.Handle
-	hh.recv = h.Recv
-	hh.proto = h.Protocol()
-	if remoteAddr != nil {
-		// Remote IP address specified.
-		hh.raddr = append(hh.raddr, remoteAddr[:]...)
-	}
-	hh.lport = lport
-	return handlers
-}
-
-func tcpChecksum(ipFrame []byte, tcpPayload int) uint16 {
-	version := ipFrame[0] >> 4
-	var tfrm tcp.Frame
-	var crc lneto.CRC791
-	switch version {
-	case 4:
-		ifrm, _ := ipv4.NewFrame(ipFrame)
-		crc.Write(ifrm.SourceAddr()[:])
-		crc.Write(ifrm.DestinationAddr()[:])
-		crc.AddUint16(uint16(tcpPayload))
-		crc.AddUint16(6)
-		tfrm, _ = tcp.NewFrame(ifrm.Payload())
-	case 6:
-		i6frm, _ := ipv6.NewFrame(ipFrame)
-		crc.Write(i6frm.SourceAddr()[:])
-		crc.Write(i6frm.DestinationAddr()[:])
-		crc.AddUint32(uint32(tcpPayload))
-		crc.AddUint32(6)
-		i6frm.CRCWritePseudo(&crc)
-		tfrm, _ = tcp.NewFrame(i6frm.Payload())
-	default:
-		panic("invalid IP version")
-	}
-	tfrm.CRCWrite(&crc)
-	return crc.Sum16()
+	return 0
 }
