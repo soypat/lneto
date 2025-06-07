@@ -6,10 +6,10 @@ import (
 )
 
 type StackPort struct {
+	connID     uint64
+	protocol   uint64
 	handlers   []node
 	dstPortOff int
-	protocol   uint64
-	connID     uint64
 }
 
 func (ps *StackPort) Reset(protocol uint64, dstPortOffset int) {

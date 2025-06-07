@@ -28,6 +28,7 @@ type StackNode interface {
 	Demux(carrierData []byte, frameOffset int) error
 	LocalPort() uint16
 	Protocol() uint64
+	// Connect
 	ConnectionID() *uint64
 	// SetFlagPending(flagPending func(numPendingEncapsulations int))
 }
@@ -50,15 +51,19 @@ var (
 	_                  = net.ErrClosed
 )
 
-func handleNodeError(nodes *[]node, nodeIdx int, err error) {
+func handleNodeError(nodesPtr *[]node, nodeIdx int, err error) {
+	if nodeIdx >= len(*nodesPtr) {
+		panic("unreachable")
+	}
 	if err != nil {
-		badConnID := (*nodes)[nodeIdx].connID != nil && *(*nodes)[nodeIdx].connID != (*nodes)[nodeIdx].currConnID
-		if err == net.ErrClosed || (*nodes)[nodeIdx].lastErrs[0] == err || (*nodes)[nodeIdx].lastErrs[1] == err || badConnID {
-			*nodes = slices.Delete(*nodes, nodeIdx, nodeIdx+1)
+		nodes := *nodesPtr
+		badConnID := nodes[nodeIdx].connID != nil && *nodes[nodeIdx].connID != nodes[nodeIdx].currConnID
+		if err == net.ErrClosed || nodes[nodeIdx].lastErrs[0] == err || nodes[nodeIdx].lastErrs[1] == err || badConnID {
+			*nodesPtr = slices.Delete(nodes, nodeIdx, nodeIdx+1)
 		} else {
 			// Advance Queue of errors
-			(*nodes)[nodeIdx].lastErrs[1] = (*nodes)[nodeIdx].lastErrs[0]
-			(*nodes)[nodeIdx].lastErrs[0] = err
+			nodes[nodeIdx].lastErrs[1] = nodes[nodeIdx].lastErrs[0]
+			nodes[nodeIdx].lastErrs[0] = err
 		}
 	}
 }
