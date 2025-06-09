@@ -137,7 +137,7 @@ func TestIPv4TCPChecksum(t *testing.T) {
 		ifrm.ValidateSize(&vld)
 		tfrm, _ := tcp.NewFrame(ifrm.Payload())
 		tfrm.ValidateExceptCRC(&vld)
-		if err := vld.Err(); err != nil {
+		if err := vld.ErrPop(); err != nil {
 			t.Fatal(err)
 		}
 		wantCRC := ifrm.CRC()

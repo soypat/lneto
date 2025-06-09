@@ -143,15 +143,15 @@ func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand, seg 
 	}
 	var vld lneto.Validator
 	efrm.ValidateSize(&vld)
-	if err = vld.Err(); err != nil {
+	if err = vld.ErrPop(); err != nil {
 		panic(err)
 	}
 	ifrm.ValidateExceptCRC(&vld)
-	if err = vld.Err(); err != nil {
+	if err = vld.ErrPop(); err != nil {
 		panic(err)
 	}
 	tfrm.ValidateSize(&vld)
-	if err = vld.Err(); err != nil {
+	if err = vld.ErrPop(); err != nil {
 		panic(err)
 	}
 	return dst

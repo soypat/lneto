@@ -150,7 +150,7 @@ func (c *Handler) Recv(b []byte) error {
 	var vld lneto.Validator
 	afrm.ValidateSize(&vld)
 	if vld.HasError() {
-		return vld.Err()
+		return vld.ErrPop()
 	}
 	htype, hlen := afrm.Hardware()
 	if htype != c.htype || int(hlen) != len(c.ourHWAddr) {

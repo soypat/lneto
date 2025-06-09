@@ -39,13 +39,16 @@ func (v *Validator) HasError() bool {
 	return len(v.accum) != 0
 }
 
-func (v *Validator) Err() error {
+// ErrPop returns the error(s) accumulated in the validator and clears them.
+func (v *Validator) ErrPop() (err error) {
 	if len(v.accum) == 1 {
-		return v.accum[0]
-	} else if len(v.accum) == 0 {
-		return nil
+		err = v.accum[0]
+		v.ResetErr()
+	} else if len(v.accum) > 0 {
+		err = errors.Join(v.accum...)
+		v.ResetErr()
 	}
-	return errors.Join(v.accum...)
+	return err
 }
 
 func (v *Validator) gotErr(err error) {

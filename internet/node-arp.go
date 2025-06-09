@@ -31,7 +31,7 @@ func (narp *NodeARP) Demux(EtherFrame []byte, arpOff int) error {
 	}
 	afrm.ValidateSize(&narp.vld)
 	if narp.vld.HasError() {
-		slog.Error("invalid-ARP", slog.String("err", narp.vld.Err().Error()))
+		slog.Error("invalid-ARP", slog.String("err", narp.vld.ErrPop().Error()))
 		return nil
 	}
 	return narp.handler.Recv(EtherFrame[arpOff:])

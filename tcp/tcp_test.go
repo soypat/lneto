@@ -596,8 +596,8 @@ func parseSegment(t *testing.T, b []byte) (tcp.Segment, []byte) {
 		t.Fatalf("not IPv4")
 	}
 	efrm.ValidateSize(&vld)
-	if err := vld.Err(); err != nil {
-		t.Fatal(vld.Err())
+	if err := vld.ErrPop(); err != nil {
+		t.Fatal(vld.ErrPop())
 	}
 	ifrm, err := ipv4.NewFrame(efrm.Payload())
 	if err != nil {
@@ -611,8 +611,8 @@ func parseSegment(t *testing.T, b []byte) (tcp.Segment, []byte) {
 		t.Fatal("invalid IP version", v)
 	}
 	ifrm.ValidateSize(&vld)
-	if err := vld.Err(); err != nil {
-		t.Fatal(vld.Err())
+	if err := vld.ErrPop(); err != nil {
+		t.Fatal(vld.ErrPop())
 	}
 
 	ipl := ifrm.Payload()
@@ -621,7 +621,7 @@ func parseSegment(t *testing.T, b []byte) (tcp.Segment, []byte) {
 		t.Fatal(err)
 	}
 	tfrm.ValidateSize(&vld)
-	if err := vld.Err(); err != nil {
+	if err := vld.ErrPop(); err != nil {
 		t.Fatal(err)
 	}
 	_ = tfrm.String()

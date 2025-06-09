@@ -144,7 +144,7 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		return err
 	}
 	tfrm.ValidateExceptCRC(&h.validator)
-	err = h.validator.Err()
+	err = h.validator.ErrPop()
 	if err != nil {
 		return err
 	}

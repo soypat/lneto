@@ -77,7 +77,7 @@ func (ls *StackEthernet) Demux(carrierData []byte, frameOffset int) (err error) 
 	}
 	efrm.ValidateSize(&vld)
 	if vld.HasError() {
-		return vld.Err()
+		return vld.ErrPop()
 	}
 
 	for i := range ls.handlers {

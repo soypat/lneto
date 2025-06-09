@@ -65,9 +65,36 @@ func (listener *NodeTCPListener) Reset(port uint16, pool tcpPool) error {
 	return nil
 }
 
+func (listener *NodeTCPListener) NumberOfReadyToAccept() (nready int) {
+	if listener.isClosed() {
+		return 0
+	}
+	for _, conn := range listener.ready {
+		if conn == nil {
+			continue
+		}
+		nready++
+	}
+	return nready
+}
+
+func (listener *NodeTCPListener) TryAccept() (*tcp.Conn, error) {
+	if listener.isClosed() {
+		return nil, net.ErrClosed
+	}
+	for i, conn := range listener.ready {
+		if conn == nil {
+			continue
+		}
+		listener.accepted = append(listener.accepted, conn)
+		listener.ready[i] = nil // discard from ready.
+		return conn, nil
+	}
+	return nil, errors.New("no conns available")
+}
+
 func (listener *NodeTCPListener) AcceptRaw() (*tcp.Conn, error) {
 	connid := listener.connID
-
 	for {
 		if listener.isClosed() || connid != listener.connID {
 			return nil, net.ErrClosed

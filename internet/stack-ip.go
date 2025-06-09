@@ -78,7 +78,7 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 	{
 		sb.validator.ResetErr()
 		ifrm.ValidateExceptCRC(&sb.validator)
-		if err = sb.validator.Err(); err != nil {
+		if err = sb.validator.ErrPop(); err != nil {
 			return err
 		}
 		gotCRC := ifrm.CRC()

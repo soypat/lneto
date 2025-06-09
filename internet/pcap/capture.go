@@ -34,7 +34,7 @@ func (pc *PacketBreakdown) CaptureEthernet(dst []Frame, pkt []byte, bitOffset in
 	}
 	efrm.ValidateSize(pc.validator())
 	if pc.validator().HasError() {
-		return dst, pc.validator().Err()
+		return dst, pc.validator().ErrPop()
 	}
 
 	finfo := Frame{
@@ -61,6 +61,8 @@ func (pc *PacketBreakdown) CaptureEthernet(dst []Frame, pkt []byte, bitOffset in
 		dst, err = pc.CaptureARP(dst, pkt, end)
 	case ethernet.TypeIPv4:
 		dst, err = pc.CaptureIPv4(dst, pkt, end)
+	case ethernet.TypeIPv6:
+		dst, err = pc.CaptureIPv6(dst, pkt, end)
 	default:
 		dst = append(dst, remainingFrameInfo(etype, FieldClassPayload, end, octet*len(pkt)))
 	}
@@ -77,7 +79,7 @@ func (pc *PacketBreakdown) CaptureARP(dst []Frame, pkt []byte, bitOffset int) ([
 	}
 	afrm.ValidateSize(pc.validator())
 	if pc.validator().HasError() {
-		return dst, pc.validator().Err()
+		return dst, pc.validator().ErrPop()
 	}
 
 	finfo := Frame{
@@ -129,7 +131,7 @@ func (pc *PacketBreakdown) CaptureIPv6(dst []Frame, pkt []byte, bitOffset int) (
 	}
 	ifrm6.ValidateSize(pc.validator())
 	if pc.validator().HasError() {
-		return dst, pc.validator().Err()
+		return dst, pc.validator().ErrPop()
 	}
 	finfo := Frame{
 		Protocol:        ethernet.TypeIPv6,
@@ -138,7 +140,7 @@ func (pc *PacketBreakdown) CaptureIPv6(dst []Frame, pkt []byte, bitOffset int) (
 	finfo.Fields = append(finfo.Fields, baseIPv6Fields[:]...)
 	dst = append(dst, finfo)
 	proto := ifrm6.NextHeader()
-	end := 40 * octet
+	end := bitOffset + 40*octet
 	return pc.captureIPProto(proto, dst, pkt, end)
 }
 
@@ -152,7 +154,7 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 	}
 	ifrm4.ValidateSize(pc.validator())
 	if pc.validator().HasError() {
-		return dst, pc.validator().Err()
+		return dst, pc.validator().ErrPop()
 	}
 	finfo := Frame{
 		Protocol:        ethernet.TypeIPv4,
@@ -195,7 +197,7 @@ func (pc *PacketBreakdown) CaptureTCP(dst []Frame, pkt []byte, bitOffset int) ([
 	}
 	tfrm.ValidateSize(pc.validator())
 	if pc.validator().HasError() {
-		return dst, pc.validator().Err()
+		return dst, pc.validator().ErrPop()
 	}
 	end := bitOffset + octet*tfrm.HeaderLength()
 	finfo := Frame{
@@ -232,7 +234,7 @@ func (pc *PacketBreakdown) CaptureUDP(dst []Frame, pkt []byte, bitOffset int) ([
 	}
 	ufrm.ValidateSize(pc.validator())
 	if pc.validator().HasError() {
-		return dst, pc.validator().Err()
+		return dst, pc.validator().ErrPop()
 	}
 	finfo := Frame{
 		Protocol:        lneto.IPProtoUDP,

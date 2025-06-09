@@ -268,7 +268,7 @@ func (ls *LinkStack) RecvEth(ethFrame []byte) (err error) {
 		goto DROP
 	}
 	efrm.ValidateSize(&vld)
-	if err := vld.Err(); err != nil {
+	if err := vld.ErrPop(); err != nil {
 		return err
 	}
 

@@ -45,8 +45,8 @@ func TestFrame(t *testing.T) {
 		wantDst := *dst
 		ifrm.ValidateExceptCRC(v)
 		ifrm.ValidateSize(v)
-		if v.Err() != nil {
-			t.Error(v.Err())
+		if v.ErrPop() != nil {
+			t.Error(v.ErrPop())
 		}
 
 		// OPTION+PAYLOAD VALIDATION:

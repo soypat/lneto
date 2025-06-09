@@ -114,8 +114,8 @@ func validateARP(t *testing.T, buf []byte) {
 	var vld lneto.Validator
 	afrm.ValidateSize(&vld)
 	if vld.HasError() {
-		t.Errorf("invalid arp: %s", vld.Err())
-	} else if err := vld.Err(); err != nil {
+		t.Errorf("invalid arp: %s", vld.ErrPop())
+	} else if err := vld.ErrPop(); err != nil {
 		panic("unreachable: " + err.Error())
 	}
 }

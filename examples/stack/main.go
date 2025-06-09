@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"log/slog"
@@ -49,7 +51,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	handler, err := stack.OpenPassiveTCP(addrPort.Port(), iss)
+	listener, err := stack.OpenTCPListener(addrPort.Port())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -62,6 +64,7 @@ func main() {
 	const standbyDuration = 5 * time.Second
 	lastHit := time.Now().Add(-standbyDuration)
 	var cap pcap.PacketBreakdown
+	var conn *tcp.Conn
 	for {
 		nread, err := tap.Read(buf[:])
 		if err != nil {
@@ -82,7 +85,25 @@ func main() {
 				lg.Error("recv", slog.String("err", err.Error()), slog.Int("plen", nread))
 			}
 		}
-		doHTTP(handler, &hdr)
+		if conn == nil && listener.NumberOfReadyToAccept() > 0 {
+			conn, err = listener.TryAccept()
+			if err != nil {
+				lg.Error("tryaccept", slog.String("err", err.Error()))
+			}
+			lg.Info("ACCEPT!")
+		}
+		if conn != nil {
+			done, err := doHTTP(conn, &hdr)
+			if done {
+				lg.Info("close forever")
+				conn.Close()
+				conn = nil
+			}
+			if err != nil {
+				lg.Error("doHTTP", slog.String("err", err.Error()))
+			}
+		}
+
 		nw, err := stack.ethernet.Encapsulate(buf[:], 0)
 		if err != nil {
 			lg.Error("handle", slog.String("err", err.Error()))
@@ -115,23 +136,21 @@ func main() {
 	}
 }
 
-func doHTTP(conn *tcp.Conn, hdr *httpraw.Header) error {
+func doHTTP(conn *tcp.Conn, hdr *httpraw.Header) (done bool, err error) {
 	const asRequest = false
 	if conn.State() != tcp.StateEstablished || conn.BufferedInput() == 0 {
-		return nil // No data yet.
+		return false, nil // No data yet.
 	}
 	fmt.Println("state is established; check request and send response")
-	_, err := hdr.ReadFromLimited(conn, hdr.BufferFree())
+	_, err = hdr.ReadFromLimited(conn, hdr.BufferFree())
 	if err != nil {
-		return err
+		return false, err
 	}
 	needMore, err := hdr.TryParse(asRequest)
-	if err != nil {
-		if !needMore {
-			fmt.Println("IT's SO GOVER")
-			conn.Close()
-		}
-		return err
+	if needMore {
+		return false, nil
+	} else if err != nil {
+		return true, err
 	}
 	// HTTP parsed succesfully!
 	fmt.Println("GOT HTTP:\n", hdr.String())
@@ -141,18 +160,18 @@ func doHTTP(conn *tcp.Conn, hdr *httpraw.Header) error {
 	data := `{"ok":true}`
 	response, err := hdr.AppendResponse(nil)
 	if err != nil {
-		return err
+		return true, err
 	}
 	response = append(response, data...)
 	_, err = conn.Write(response)
 	if err != nil {
-		return err
+		return true, err
 	}
 	err = conn.Close()
 	if err != nil {
-		return err
+		return true, err
 	}
-	return nil
+	return true, nil
 }
 
 type Stack struct {
@@ -198,6 +217,7 @@ func (stack *Stack) Reset(ourMAC, gwMAC [6]byte, ip netip.Addr, mtu int) (err er
 	if err != nil {
 		return err
 	}
+
 	return nil
 }
 
@@ -207,6 +227,19 @@ func (stack *Stack) Recv(b []byte) error {
 
 func (stack *Stack) Send(b []byte) (int, error) {
 	return stack.ethernet.Encapsulate(b, 0)
+}
+
+func (stack *Stack) OpenTCPListener(port uint16) (*internet.NodeTCPListener, error) {
+	var listener internet.NodeTCPListener
+	err := listener.Reset(port, naiveTCPPool{})
+	if err != nil {
+		return nil, err
+	}
+	err = stack.tcpports.Register(&listener)
+	if err != nil {
+		return nil, err
+	}
+	return &listener, nil
 }
 
 func (stack *Stack) OpenPassiveTCP(port uint16, iss tcp.Value) (*tcp.Conn, error) {
@@ -250,3 +283,25 @@ func getTCPFlags(frames []pcap.Frame, pkt []byte) (flags tcp.Flags) {
 	}
 	return 0
 }
+
+type naiveTCPPool struct {
+}
+
+func (naiveTCPPool) GetTCP() (*tcp.Conn, tcp.Value) {
+	var buf [4]byte
+	rand.Read(buf[:])
+	randVal := binary.LittleEndian.Uint32(buf[:])
+	var conn tcp.Conn
+	err := conn.Configure(&tcp.ConnConfig{
+		RxBuf:             make([]byte, 1024),
+		TxBuf:             make([]byte, 1024),
+		TxPacketQueueSize: 3,
+		Logger:            slog.Default(),
+	})
+	if err != nil {
+		panic(err)
+	}
+	return &conn, tcp.Value(randVal)
+}
+
+func (naiveTCPPool) PutTCP(*tcp.Conn) {}
