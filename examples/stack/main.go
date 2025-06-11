@@ -65,6 +65,7 @@ func main() {
 	lastHit := time.Now().Add(-standbyDuration)
 	var cap pcap.PacketBreakdown
 	var conn *tcp.Conn
+	accepted := 0
 	for {
 		nread, err := tap.Read(buf[:])
 		if err != nil {
@@ -90,6 +91,8 @@ func main() {
 			if err != nil {
 				lg.Error("tryaccept", slog.String("err", err.Error()))
 			}
+			accepted++
+			hdr.Reset(nil)
 			lg.Info("ACCEPT!")
 		}
 		if conn != nil {

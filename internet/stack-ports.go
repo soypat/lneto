@@ -77,5 +77,7 @@ func (ps *StackPorts) Register(h StackNode) error {
 }
 
 func (ps *StackPorts) handleResult(handlerIdx, n int, err error) {
-	handleNodeError(&ps.handlers, handlerIdx, err)
+	if handleNodeError(&ps.handlers, handlerIdx, err) {
+		println("DISCARD", handlerIdx, "witherr", err.Error())
+	}
 }

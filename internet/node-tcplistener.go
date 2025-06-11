@@ -82,6 +82,7 @@ func (listener *NodeTCPListener) TryAccept() (*tcp.Conn, error) {
 	if listener.isClosed() {
 		return nil, net.ErrClosed
 	}
+	listener.maintainConns()
 	for i, conn := range listener.ready {
 		if conn == nil {
 			continue
@@ -99,9 +100,13 @@ func (listener *NodeTCPListener) AcceptRaw() (*tcp.Conn, error) {
 		if listener.isClosed() || connid != listener.connID {
 			return nil, net.ErrClosed
 		}
-		for i, conn := range listener.ready {
+		for i, conn := range listener.ready { // Scan ready to see if we can accept.
 			if conn == nil {
 				continue
+			}
+			state := conn.State()
+			if state != tcp.StateEstablished {
+				continue // Do not accept until established.
 			}
 			listener.accepted = append(listener.accepted, conn)
 			listener.ready[i] = nil // discard from ready.
@@ -124,7 +129,7 @@ func (listener *NodeTCPListener) Encapsulate(carrierData []byte, tcpFrameOffset 
 		}
 		n, err := conn.Encapsulate(carrierData, tcpFrameOffset)
 		if err != nil {
-			listener.maintainAccepted(i, err)
+			err = listener.maintainConn(listener.accepted, i, err)
 		}
 		if n == 0 {
 			continue
@@ -151,17 +156,17 @@ func (listener *NodeTCPListener) Demux(carrierData []byte, tcpFrameOffset int) e
 	if dst != listener.port {
 		return errors.New("not our port")
 	}
-	src := tfrm.DestinationPort()
-	for i, conn := range listener.accepted {
-		if conn == nil || conn.RemotePort() != src || !bytes.Equal(conn.RemoteAddr(), addr) {
-			continue
-		}
-		err := conn.Demux(carrierData, tcpFrameOffset)
-		if err != nil {
-			listener.maintainAccepted(i, err)
-		}
+	src := tfrm.SourcePort()
+	// Try to demux in accepted:
+	demuxed, err := listener.tryDemux(listener.accepted, src, addr, carrierData, tcpFrameOffset)
+	if demuxed {
 		return err
 	}
+	demuxed, err = listener.tryDemux(listener.ready, src, addr, carrierData, tcpFrameOffset)
+	if demuxed {
+		return err
+	}
+	// Connection not in ready nor accepted.
 	_, flags := tfrm.OffsetAndFlags()
 	if flags != tcp.FlagSYN {
 		return nil // Not a synchronizing packet, drop it.
@@ -184,6 +189,18 @@ func (listener *NodeTCPListener) Demux(carrierData []byte, tcpFrameOffset int) e
 	}
 	listener.ready = append(listener.ready, conn)
 	return nil
+}
+
+func (listener *NodeTCPListener) tryDemux(conns []*tcp.Conn, remotePort uint16, remoteAddr, carrierData []byte, tcpFrameOffset int) (demuxed bool, err error) {
+	idx := getConn(conns, remotePort, remoteAddr)
+	if idx >= 0 {
+		err := conns[idx].Demux(carrierData, tcpFrameOffset)
+		if err != nil {
+			err = listener.maintainConn(conns, idx, err)
+		}
+		return true, err
+	}
+	return false, nil
 }
 
 func (listener *NodeTCPListener) maintainAccepted(connIdx int, err error) {
@@ -213,4 +230,29 @@ func removeZeros[S ~[]E, E comparable](s S) S {
 		}
 	}
 	return s[:putIdx]
+}
+
+func getConn(conns []*tcp.Conn, remotePort uint16, remoteAddr []byte) int {
+	for i, conn := range conns {
+		if conn == nil {
+			continue
+		}
+		gotPort := conn.RemotePort()
+		gotaddr := conn.RemoteAddr()
+		if remotePort == gotPort && bytes.Equal(remoteAddr, gotaddr) {
+			return i
+		}
+	}
+	return -1
+}
+
+func (listener *NodeTCPListener) maintainConn(conns []*tcp.Conn, idx int, err error) error {
+	if err == net.ErrClosed {
+		println("CLOSING CONN")
+		conn := conns[idx]
+		listener.poolReturn(conn)
+		conns[idx] = nil
+		return nil // avoid closing listener entirely.
+	}
+	return err
 }

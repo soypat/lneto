@@ -51,21 +51,23 @@ var (
 	_                  = net.ErrClosed
 )
 
-func handleNodeError(nodesPtr *[]node, nodeIdx int, err error) {
+func handleNodeError(nodesPtr *[]node, nodeIdx int, err error) (discarded bool) {
 	if err != nil {
 		if nodeIdx >= len(*nodesPtr) {
 			panic("unreachable")
 		}
 		nodes := *nodesPtr
 		badConnID := nodes[nodeIdx].connID != nil && *nodes[nodeIdx].connID != nodes[nodeIdx].currConnID
-		if err == net.ErrClosed || nodes[nodeIdx].lastErrs[0] == err || nodes[nodeIdx].lastErrs[1] == err || badConnID {
+		if err == net.ErrClosed || badConnID {
 			*nodesPtr = slices.Delete(nodes, nodeIdx, nodeIdx+1)
+			discarded = true
 		} else {
 			// Advance Queue of errors
 			nodes[nodeIdx].lastErrs[1] = nodes[nodeIdx].lastErrs[0]
 			nodes[nodeIdx].lastErrs[0] = err
 		}
 	}
+	return discarded
 }
 
 func addNode(nodes *[]node, h StackNode, port uint16, protocol uint64) {
