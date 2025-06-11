@@ -8,8 +8,8 @@ type IPProto uint8
 // IP protocol numbers.
 const (
 	IPProtoHopByHop        IPProto = 0   // IPv6 Hop-by-Hop Option [RFC8200]
-	IPProtoICMP            IPProto = 1   // Internet Control Message [RFC792]
-	IPProtoIGMP            IPProto = 2   // Internet Group Management [RFC1112]
+	IPProtoICMP            IPProto = 1   // ICMP [RFC792]
+	IPProtoIGMP            IPProto = 2   // IGMP [RFC1112]
 	IPProtoGGP             IPProto = 3   // Gateway-to-Gateway [RFC823]
 	IPProtoIPv4            IPProto = 4   // IPv4 encapsulation [RFC2003]
 	IPProtoST              IPProto = 5   // Stream [RFC1190, RFC1819]
@@ -138,7 +138,7 @@ const (
 	IPProtoFC              IPProto = 133 // Fibre Channel
 	IPProtoRSVP_E2E_IGNORE IPProto = 134 // RSVP-E2E-IGNORE
 	IPProtoMobilityHeader  IPProto = 135 // Mobility Header
-	IPProtoUDPLite         IPProto = 136 // UDPLite
+	IPProtoUDPLite         IPProto = 136 // UDP-Lite [RFC3828]
 	IPProtoMPLSInIP        IPProto = 137 // MPLS-in-IP
 	IPProtoMANET           IPProto = 138 // MANET Protocols
 	IPProtoHIP             IPProto = 139 // Host Identity Protocol

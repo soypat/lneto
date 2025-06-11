@@ -141,7 +141,32 @@ func (pc *PacketBreakdown) CaptureIPv6(dst []Frame, pkt []byte, bitOffset int) (
 	dst = append(dst, finfo)
 	proto := ifrm6.NextHeader()
 	end := bitOffset + 40*octet
-	return pc.captureIPProto(proto, dst, pkt, end)
+	var protoErrs []error
+	var crc lneto.CRC791
+	if proto == lneto.IPProtoTCP {
+		ifrm6.CRCWritePseudo(&crc)
+		tfrm, err := tcp.NewFrame(ifrm6.Payload())
+		if err == nil {
+			tfrm.CRCWrite(&crc)
+			wantSum := crc.Sum16()
+			gotSum := tfrm.CRC()
+			if wantSum != gotSum {
+				protoErrs = append(protoErrs, &crcError16{protocol: "ipv6+tcp", want: wantSum, got: gotSum})
+			}
+		}
+	} else if proto == lneto.IPProtoUDP || proto == lneto.IPProtoUDPLite {
+		ifrm6.CRCWritePseudo(&crc)
+		ufrm, err := udp.NewFrame(ifrm6.Payload())
+		if err == nil {
+			ufrm.CRCWriteIPv6(&crc)
+			wantSum := crc.Sum16()
+			gotSum := ufrm.CRC()
+			if wantSum != gotSum {
+				protoErrs = append(protoErrs, &crcError16{protocol: "ipv6+udp", want: wantSum, got: gotSum})
+			}
+		}
+	}
+	return pc.captureIPProto(proto, dst, pkt, end, protoErrs...)
 }
 
 func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
@@ -169,20 +194,60 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 			BitLength:      octet * len(options),
 		})
 	}
-	proto := ifrm4.Protocol()
+	gotSum := ifrm4.CRC()
+	wantSum := ifrm4.CalculateHeaderCRC()
+	if gotSum != wantSum {
+		finfo.Errors = append(finfo.Errors, &crcError16{protocol: "ipv4", want: wantSum, got: gotSum})
+	}
 	dst = append(dst, finfo)
+	proto := ifrm4.Protocol()
 	end := bitOffset + octet*ifrm4.HeaderLength()
-	return pc.captureIPProto(proto, dst, pkt, end)
+	var protoErrs []error
+	var crc lneto.CRC791
+	if proto == lneto.IPProtoTCP {
+		ifrm4.CRCWriteTCPPseudo(&crc)
+		tfrm, err := tcp.NewFrame(ifrm4.Payload())
+		if err == nil {
+			tfrm.CRCWrite(&crc)
+			wantSum := crc.Sum16()
+			gotSum := tfrm.CRC()
+			if wantSum != gotSum {
+				protoErrs = append(protoErrs, &crcError16{protocol: "ipv4+tcp", want: wantSum, got: gotSum})
+			}
+		}
+	} else if proto == lneto.IPProtoUDP || proto == lneto.IPProtoUDPLite {
+		ifrm4.CRCWriteUDPPseudo(&crc)
+		ufrm, err := udp.NewFrame(ifrm4.Payload())
+		if err == nil {
+			ufrm.CRCWriteIPv4(&crc)
+			wantSum := crc.Sum16()
+			gotSum := ufrm.CRC()
+			if wantSum != gotSum {
+				protoErrs = append(protoErrs, &crcError16{protocol: "ipv4+udp", want: wantSum, got: gotSum})
+			}
+		}
+	}
+	return pc.captureIPProto(proto, dst, pkt, end, protoErrs...)
+
 }
 
-func (pc *PacketBreakdown) captureIPProto(proto lneto.IPProto, dst []Frame, pkt []byte, bitOffset int) (_ []Frame, err error) {
+func (pc *PacketBreakdown) captureIPProto(proto lneto.IPProto, dst []Frame, pkt []byte, bitOffset int, ipProtoErrs ...error) (_ []Frame, err error) {
+	nextFrame := len(dst)
 	switch proto {
 	case lneto.IPProtoTCP:
 		dst, err = pc.CaptureTCP(dst, pkt, bitOffset)
 	case lneto.IPProtoUDP:
 		dst, err = pc.CaptureUDP(dst, pkt, bitOffset)
+	case lneto.IPProtoUDPLite:
+		dst, err = pc.CaptureUDP(dst, pkt, bitOffset)
+		if len(dst) > nextFrame {
+			dst[nextFrame].Protocol = lneto.IPProtoUDPLite
+		}
 	default:
 		dst = append(dst, remainingFrameInfo(proto, 0, bitOffset, octet*len(pkt)))
+	}
+	if len(ipProtoErrs) > 0 && len(dst) > nextFrame {
+		dst[nextFrame].Errors = append(dst[nextFrame].Errors, ipProtoErrs...)
 	}
 	return dst, err
 }
@@ -303,6 +368,7 @@ type Frame struct {
 	Protocol        any
 	Fields          []FrameField
 	PacketBitOffset int
+	Errors          []error
 }
 
 // FieldByClass gets the frame field index with the argument FieldClass Class field set.
@@ -414,16 +480,25 @@ func (frm Frame) AppendField(dst []byte, fieldIdx int, pkt []byte) ([]byte, erro
 }
 
 func (frm Frame) String() string {
-	iopt, err := frm.FieldByClass(FieldClassOptions)
-	hasOpts := ""
-	if err == nil {
-		hasOpts = fmt.Sprintf(" optlen=%d", (frm.Fields[iopt].BitLength+7)/8)
-	}
+	return string(frm.AppendString(nil))
+}
+
+func (frm Frame) AppendString(b []byte) []byte {
 	bitlen := frm.LenBits()
+	b = fmt.Appendf(b, "%s", frm.Protocol)
 	if bitlen%8 == 0 {
-		return fmt.Sprintf("%s len=%d%s", frm.Protocol, bitlen/8, hasOpts)
+		b = fmt.Appendf(b, " len=%d", bitlen/8)
+	} else {
+		b = fmt.Appendf(b, " bits=%d", bitlen)
 	}
-	return fmt.Sprintf("%s bits=%d%s", frm.Protocol, bitlen, hasOpts)
+	iopt, err := frm.FieldByClass(FieldClassOptions)
+	if err == nil {
+		b = fmt.Appendf(b, " optlen=%d", (frm.Fields[iopt].BitLength+7)/8)
+	}
+	for _, err := range frm.Errors {
+		b = fmt.Appendf(b, " %s", err.Error())
+	}
+	return b
 }
 
 func (frm Frame) LenBits() (totalBitlen int) {
@@ -721,4 +796,14 @@ func remainingFrameInfo(proto any, class FieldClass, pktBitOffset, pktBitLen int
 				BitLength: pktBitLen - pktBitOffset,
 			}},
 	}
+}
+
+type crcError16 struct {
+	protocol string
+	want     uint16
+	got      uint16
+}
+
+func (cerr *crcError16) Error() string {
+	return fmt.Sprintf("%s:incorrect checksum. want 0x%x, got 0x%x", cerr.protocol, cerr.want, cerr.got)
 }

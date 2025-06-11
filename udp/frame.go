@@ -79,6 +79,21 @@ func (ufrm Frame) Payload() []byte {
 	return ufrm.buf[sizeHeader:l]
 }
 
+func (ufrm Frame) CRCWriteIPv4(crc *lneto.CRC791) {
+	crc.AddUint16(ufrm.Length())
+	crc.AddUint16(ufrm.SourcePort())
+	crc.AddUint16(ufrm.DestinationPort())
+	crc.AddUint16(ufrm.Length()) // Length double tap for IPv4.
+	crc.Write(ufrm.Payload())
+}
+
+func (ufrm Frame) CRCWriteIPv6(crc *lneto.CRC791) {
+	crc.AddUint16(ufrm.SourcePort())
+	crc.AddUint16(ufrm.DestinationPort())
+	crc.AddUint16(ufrm.Length())
+	crc.Write(ufrm.Payload())
+}
+
 // func (ufrm Frame) CalculateIPv4Checksum(ifrm IPv4Frame) uint16 {
 // 	var crc lneto.CRC791
 // 	ifrm.crcWriteUDPPseudo(&crc)
