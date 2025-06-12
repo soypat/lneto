@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"net"
-	"time"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -92,30 +91,6 @@ func (listener *NodeTCPListener) TryAccept() (*tcp.Conn, error) {
 		return conn, nil
 	}
 	return nil, errors.New("no conns available")
-}
-
-func (listener *NodeTCPListener) AcceptRaw() (*tcp.Conn, error) {
-	connid := listener.connID
-	for {
-		if listener.isClosed() || connid != listener.connID {
-			return nil, net.ErrClosed
-		}
-		for i, conn := range listener.ready { // Scan ready to see if we can accept.
-			if conn == nil {
-				continue
-			}
-			state := conn.State()
-			if state != tcp.StateEstablished {
-				continue // Do not accept until established.
-			}
-			listener.accepted = append(listener.accepted, conn)
-			listener.ready[i] = nil // discard from ready.
-			return conn, nil
-		}
-		listener.maintainConns()
-		time.Sleep(5 * time.Millisecond)
-	}
-	panic("unreachable")
 }
 
 // Encapsulate implements [StackNode].

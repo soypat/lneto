@@ -136,7 +136,7 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 // Recv receives an incoming TCP packet frame with the first byte being the first octet of the TCP frame.
 // The [Handler]'s internal state is updated if the packet is admitted successfully.
 func (h *Handler) Recv(incomingPacket []byte) error {
-	if h.isClosed() {
+	if h.IsTxOver() {
 		return net.ErrClosed
 	}
 	tfrm, err := NewFrame(incomingPacket)
@@ -211,7 +211,7 @@ func (h *Handler) Close() error {
 // The returned integer is the length written to the argument buffer.
 func (h *Handler) Send(b []byte) (int, error) {
 	h.trace("tcp.Handler:start", slog.Uint64("port", uint64(h.localPort)))
-	if h.State().IsClosed() && !h.AwaitingSynSend() {
+	if h.IsTxOver() {
 		return 0, net.ErrClosed
 	}
 	tfrm, err := NewFrame(b)
@@ -302,11 +302,6 @@ func (h *Handler) BufferedInput() int {
 	return h.bufRx.Buffered()
 }
 
-// InUse returns true if the connection has been initialized and is being used to reach a remote port or if it is awaiting a remote packet.
-func (h *Handler) InUse() bool {
-	return h.remotePort != 0 || !h.State().IsClosed()
-}
-
 // AwaitingSynResponse returns true if the Handler is an active client opened with [Handler.OpenActive] and has already sent out the first SYN packet to the remote client.
 func (h *Handler) AwaitingSynResponse() bool {
 	return h.remotePort != 0 && h.scb.State() == StateSynSent
@@ -322,8 +317,12 @@ func (h *Handler) AwaitingSynSend() bool {
 	return h.remotePort != 0 && h.scb.State() == StateClosed
 }
 
-func (h *Handler) isClosed() bool {
-	return h.scb.State().IsClosed()
+// IsTxOver returns true if there is no more frames to encapsulate over the network.
+// The connection is pretty much over in this case if packets made it succesfully to remote.
+func (h *Handler) IsTxOver() bool {
+	state := h.State()
+	return state == StateClosed && !h.AwaitingSynSend() ||
+		state == StateTimeWait && !h.scb.HasPending()
 }
 
 func min(a, b int) int {

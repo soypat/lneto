@@ -112,29 +112,6 @@ func (conn *Conn) Abort() {
 	}
 }
 
-func (conn *Conn) Demux(buf []byte, off int) (err error) {
-	conn.trace("tcpconn.Recv:start")
-	if off >= len(buf) {
-		return errors.New("bad offset in TCPConn.Recv")
-	}
-	raddr, id, err := internal.GetIPSourceAddr(buf[:off])
-	if err != nil {
-		return err
-	}
-	if conn.isRaddrSet() && !bytes.Equal(conn.remoteAddr, raddr) {
-		return errors.New("IP addr mismatch on TCPConn")
-	}
-	err = conn.h.Recv(buf[off:])
-	if err != nil {
-		return err
-	}
-	if !conn.isRaddrSet() && conn.h.RemotePort() != 0 {
-		conn.remoteAddr = append(conn.remoteAddr[:0], raddr...)
-		conn.ipID = ^(id - 1)
-	}
-	return nil
-}
-
 // Write writes argument data to the TCPConns's output buffer which is queued to be sent.
 func (conn *Conn) Write(b []byte) (int, error) {
 	err := conn.checkPipeOpen()
@@ -208,6 +185,29 @@ func (conn *Conn) checkPipeOpen() error {
 	state := conn.State()
 	if state.IsClosed() {
 		return net.ErrClosed
+	}
+	return nil
+}
+
+func (conn *Conn) Demux(buf []byte, off int) (err error) {
+	conn.trace("tcpconn.Recv:start")
+	if off >= len(buf) {
+		return errors.New("bad offset in TCPConn.Recv")
+	}
+	raddr, id, err := internal.GetIPSourceAddr(buf[:off])
+	if err != nil {
+		return err
+	}
+	if conn.isRaddrSet() && !bytes.Equal(conn.remoteAddr, raddr) {
+		return errors.New("IP addr mismatch on TCPConn")
+	}
+	err = conn.h.Recv(buf[off:])
+	if err != nil {
+		return err
+	}
+	if !conn.isRaddrSet() && conn.h.RemotePort() != 0 {
+		conn.remoteAddr = append(conn.remoteAddr[:0], raddr...)
+		conn.ipID = ^(id - 1)
 	}
 	return nil
 }

@@ -27,15 +27,31 @@ func NewClient(now func() time.Time) *Client {
 }
 
 type Client struct {
-	start time.Time
-	_now  func() time.Time
-	t     [4]Timestamp
+	connID uint64
+	start  time.Time
+	_now   func() time.Time
+	t      [4]Timestamp
 	// org      Timestamp
 	// rec      Timestamp
 	xmt           Timestamp
 	state         state
 	serverStratum Stratum
 	_sysprec      int8
+}
+
+func (c *Client) Reset(now func() time.Time) {
+	if c._sysprec == 0 {
+		c._sysprec = sysprecRecalcNeeded
+	}
+	*c = Client{
+		connID:   c.connID + 1,
+		_now:     now,
+		_sysprec: c._sysprec,
+	}
+}
+
+func (c *Client) ConnectionID() *uint64 {
+	return &c.connID
 }
 
 func (c *Client) Send(payload []byte) (int, error) {
