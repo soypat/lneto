@@ -21,6 +21,26 @@ Userspace networking primitives.
 - [`lneto/ntp`](./ntp): NTP implementation and low level logic. Includes NTP time primitives manipulation and conversion to Go native types.
 - [`lneto/internal`](./internal): Lightweight and flexible ring buffer implementation and debugging primitives.
 
+### Abstractions
+The following interface is implemented by networking stack nodes and the stack themselves.
+
+```go
+type StackNode interface {
+    // Encapsulate receives a buffer the receiver must fill with data. 
+    // The receiver's start byte is at carrierData[frameOffset].
+	Encapsulate(carrierData []byte, frameOffset int) (int, error)
+	// Demux receives a buffer the receiver must decode and pass on to corresponding child StackNode(s).
+    // The receiver's start byte is at carrierData[frameOffset].
+	Demux(carrierData []byte, frameOffset int) error
+    // LocalPort returns the port of the node if applicable or zero. Used for UDP/TCP nodes.
+	LocalPort() uint16
+    // Protocol returns the protocol of this node if applicable or zero. Usually either a ethernet.Type (EtherType) or lneto.IPProto (IP Protocol number).
+	Protocol() uint64
+    // ConnectionID returns a pointer to the connection ID of the StackNode.
+    // A change in the ID means the node is no longer valid and should be discarded.
+    // A change in the ID could mean the connection was closed by the user or that the node will not send nor receive any more data over said connection ID.
+	ConnectionID() *uint64
+```
 
 ## Install
 How to install package with newer versions of Go (+1.16):

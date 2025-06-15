@@ -3,14 +3,19 @@
 package internal
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"math/bits"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
 	"syscall"
 	"unsafe"
 )
+
+const safamily_hw6 = 1
 
 type Tap struct {
 	fd   int // points to /dev/net/tun device.
@@ -25,12 +30,7 @@ func NewTap(name string, ip netip.Prefix) (*Tap, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open tun device: %w", err)
 	}
-	tap := Tap{
-		name: name,
-		fd:   fd,
-	}
-	ifr := tap.ifreq()
-
+	ifr := makeifreq(name)
 	// Set the flags (starting at offset IFNAMSIZ).
 	flags := uint16(syscall.IFF_TAP | syscall.IFF_NO_PI)
 	ifr.setflags(flags)
@@ -55,6 +55,14 @@ func NewTap(name string, ip netip.Prefix) (*Tap, error) {
 	return &Tap{fd: fd, name: name}, nil
 }
 
+func (tap *Tap) IPMask() (netip.Prefix, error) {
+	sockfd, err := tap.getSock()
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	return getSocketMask(sockfd, tap.name)
+}
+
 func (tap *Tap) Read(b []byte) (int, error) {
 	return syscall.Read(tap.fd, b)
 }
@@ -75,25 +83,106 @@ func ioctl(fd int, request uintptr, argp unsafe.Pointer) error {
 	return nil
 }
 
-func (tap *Tap) HardwareAddress6() (hw [6]byte, err error) {
-	// We cannot use tap.sock to query the hardware address, this is something known by the network stack, so get a sock to network stack.
-	sock, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, syscall.IPPROTO_IP)
+func (tap *Tap) MTU() (int, error) {
+	sock, err := tap.getSock()
 	if err != nil {
-		return hw, fmt.Errorf("socket open: %w", err)
+		return 0, err
 	}
 	defer syscall.Close(sock)
-	ifr := tap.ifreq()
+	return getSocketMTU(sock, tap.name)
+}
 
-	err = ioctl(sock, syscall.SIOCGIFHWADDR, ifr.ptr())
+func (tap *Tap) HardwareAddress6() (hw [6]byte, err error) {
+	// We cannot use tap.sock to query the hardware address, this is something known by the network stack, so get a sock to network stack.
+	sock, err := tap.getSock()
 	if err != nil {
 		return hw, err
 	}
-	sa_family := *(*uint16)(unsafe.Pointer(&ifr.Data[0]))
-	if sa_family != 1 {
+	defer syscall.Close(sock)
+	return getSocketHW(sock, tap.name)
+}
+
+func (tap *Tap) getSock() (int, error) {
+	sock, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, syscall.IPPROTO_IP)
+	if err != nil {
+		return 0, fmt.Errorf("tap socket open: %w", err)
+	}
+	return sock, err
+}
+
+func getSocketMTU(sockfd int, ifaceName string) (int, error) {
+	ifr := makeifreq(ifaceName)
+	err := ioctl(sockfd, syscall.SIOCGIFMTU, ifr.ptr())
+	if err != nil {
+		return 0, err
+	}
+	mtu := *(*int32)(unsafe.Pointer(&ifr.Data[0]))
+	return int(mtu), nil
+}
+
+func getSocketHW(sockfd int, ifaceName string) (hw [6]byte, err error) {
+	ifr := makeifreq(ifaceName)
+	err = ioctl(sockfd, syscall.SIOCGIFHWADDR, ifr.ptr())
+	if err != nil {
+		return hw, err
+	}
+	sa_family := *(*uint16)(unsafe.Pointer(&ifr.Data[0])) // Host order.
+	if sa_family != safamily_hw6 {
 		return hw, fmt.Errorf("expecting sa_family=1 got %d", sa_family)
 	}
 	copy(hw[:], ifr.Data[2:]) // first two bytes are sa_family
 	return hw, nil
+}
+
+func getSocketMask(sockfd int, ifaceName string) (netip.Prefix, error) {
+	addrp, err := getSocketIP(sockfd, ifaceName)
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	ifr := makeifreq(ifaceName)
+	err = ioctl(sockfd, syscall.SIOCGIFNETMASK, ifr.ptr())
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	addr32 := binary.BigEndian.Uint32(ifr.Data[4:8])
+	cidr := bits.OnesCount32(addr32)
+	return netip.PrefixFrom(addrp.Addr(), cidr), nil
+}
+
+func setSocketHW(sockfd int, ifaceName string, hw [6]byte) error {
+	ifr := makeifreq(ifaceName)
+	*(*uint16)(unsafe.Pointer(&ifr.Data[0])) = safamily_hw6
+	copy(ifr.Data[2:], hw[:])
+	err := ioctl(sockfd, syscall.SIOCSIFHWADDR, ifr.ptr())
+	if err != nil {
+		return fmt.Errorf("setting hw addr: %w", err)
+	}
+	return nil
+}
+
+func getSocketIP(sockfd int, ifaceName string) (addrp netip.AddrPort, err error) {
+	ifr := makeifreq(ifaceName)
+	err = ioctl(sockfd, syscall.SIOCGIFADDR, ifr.ptr())
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+	safamily := *(*uint16)(unsafe.Pointer(&ifr.Data[0]))
+	port := *(*uint16)(unsafe.Pointer(&ifr.Data[2]))
+	switch safamily {
+	case 2:
+		addr, _ := netip.AddrFromSlice(ifr.Data[4:8])
+		addrp = netip.AddrPortFrom(addr, port)
+	default:
+		return addrp, fmt.Errorf("unsupported IP addr sa_family=%d", safamily)
+	}
+	return addrp, nil
+}
+
+func makeifreq(name string) ifreq {
+	// Set the name; it will be zero-padded automatically.
+	var ifr ifreq
+	copy(ifr.Name[:], name)
+	return ifr
 }
 
 type ifreq struct {
@@ -107,9 +196,69 @@ func (ifr *ifreq) setflags(flags uint16) {
 
 func (ifr *ifreq) ptr() unsafe.Pointer { return unsafe.Pointer(ifr) }
 
-func (tap *Tap) ifreq() ifreq {
-	// Set the name; it will be zero-padded automatically.
-	var ifr ifreq
-	copy(ifr.Name[:], tap.name)
-	return ifr
+// Bridge serves as a virtual socket that "bridges" to an existing interface (could be TAP or an actual NIC that connects to internet).
+// Bridge is used in this project to
+type Bridge struct {
+	fd    int
+	name  string
+	index int
 }
+
+func NewBridge(name string) (*Bridge, error) {
+	iface, err := net.InterfaceByName(name)
+	if err != nil {
+		return nil, err
+	}
+	proto := htons(syscall.ETH_P_IP)
+	fd, err := syscall.Socket(syscall.AF_PACKET, syscall.SOCK_RAW, int(proto))
+	if err != nil {
+		return nil, err
+	}
+	ll := syscall.SockaddrLinklayer{
+		Protocol: proto,
+		Ifindex:  iface.Index,
+	}
+	if err := syscall.Bind(fd, &ll); err != nil {
+		return nil, err
+	}
+	return &Bridge{fd: fd, name: iface.Name, index: iface.Index}, nil
+}
+
+func (br *Bridge) Write(frame []byte) (int, error) {
+	return syscall.Write(br.fd, frame)
+}
+
+func (br *Bridge) Read(frame []byte) (int, error) {
+	return syscall.Read(br.fd, frame)
+}
+
+func (br *Bridge) Close() error {
+	return syscall.Close(br.fd)
+}
+
+func (br *Bridge) HardwareAddress6() (hw [6]byte, err error) {
+	return getSocketHW(br.fd, br.name)
+}
+
+func (br *Bridge) SetHardwareAddress6(hw [6]byte) error {
+	return setSocketHW(br.fd, br.name, hw)
+}
+
+func (br *Bridge) IPMask() (netip.Prefix, error) {
+	return getSocketMask(br.fd, br.name)
+}
+
+func (br *Bridge) Addr() (netip.Addr, error) {
+	addrp, err := getSocketIP(br.fd, br.name)
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	return addrp.Addr(), nil
+}
+
+func (br *Bridge) MTU() (int, error) {
+	return getSocketMTU(br.fd, br.name)
+}
+
+// htons converts a uint16 from host to network byte order.
+func htons(i uint16) uint16 { return (i<<8)&0xff00 | i>>8 }

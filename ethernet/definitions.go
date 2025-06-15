@@ -4,6 +4,10 @@ const (
 	sizeHeaderNoVLAN = 14
 )
 
+func BroadcastAddr() [6]byte {
+	return [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+}
+
 //go:generate stringer -type=Type -linecomment -output stringers.go .
 
 type Type uint16

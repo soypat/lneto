@@ -4,15 +4,14 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"net"
 	"net/netip"
-	"slices"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
+	"github.com/soypat/lneto/udp"
 )
 
 var _ StackNode = (*StackIP)(nil)
@@ -73,40 +72,60 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 	}
 	dst := ifrm.DestinationAddr()
 	if *dst != sb.ip {
-		goto DROP
-	}
-	{
-		sb.validator.ResetErr()
-		ifrm.ValidateExceptCRC(&sb.validator)
-		if err = sb.validator.ErrPop(); err != nil {
-			return err
-		}
-		gotCRC := ifrm.CRC()
-		wantCRC := ifrm.CalculateHeaderCRC()
-		if gotCRC != wantCRC {
-			sb.error("StackIP:Demux:crc-mismatch", slog.Uint64("want", uint64(wantCRC)), slog.Uint64("got", uint64(gotCRC)))
-			return errors.New("IPv4 CRC mismatch")
-		}
-		off := ifrm.HeaderLength()
-		totalLen := ifrm.TotalLength()
-		for i := range sb.handlers {
-			h := &sb.handlers[i]
-			proto := ifrm.Protocol()
-			if h.proto == uint16(proto) {
-				sb.info("ipDemux", slog.String("ipproto", proto.String()), slog.Int("plen", int(totalLen)))
-				err = h.demux(frame[:totalLen], off)
-				if err == net.ErrClosed {
-					sb.info("ipclose", slog.String("proto", proto.String()))
-					sb.handlers = slices.Delete(sb.handlers, i, i+1)
-				}
-				return err
-			}
-		}
+		return nil // Not meant for us.
 	}
 
-DROP:
-	sb.info("iprecv:drop", slog.String("dstaddr", netip.AddrFrom4(*ifrm.DestinationAddr()).String()), slog.String("proto", ifrm.Protocol().String()))
-	return nil
+	sb.validator.ResetErr()
+	ifrm.ValidateExceptCRC(&sb.validator)
+	if err = sb.validator.ErrPop(); err != nil {
+		return err
+	}
+	gotCRC := ifrm.CRC()
+	wantCRC := ifrm.CalculateHeaderCRC()
+	if gotCRC != wantCRC {
+		sb.error("StackIP:Demux:crc-mismatch", slog.Uint64("want", uint64(wantCRC)), slog.Uint64("got", uint64(gotCRC)))
+		return errors.New("IPv4 CRC mismatch")
+	}
+	off := ifrm.HeaderLength()
+	totalLen := ifrm.TotalLength()
+	proto := ifrm.Protocol()
+	nodeIdx := getNodeByProto(sb.handlers, uint16(proto))
+	if nodeIdx < 0 {
+		// Drop packet.
+		sb.info("iprecv:drop", slog.String("dstaddr", netip.AddrFrom4(*ifrm.DestinationAddr()).String()), slog.String("proto", ifrm.Protocol().String()))
+		return nil
+	}
+	// Incoming CRC Validation of common IP Protocols.
+	var crc lneto.CRC791
+	switch proto {
+	case lneto.IPProtoTCP:
+		ifrm.CRCWriteTCPPseudo(&crc)
+		tfrm, err := tcp.NewFrame(ifrm.Payload())
+		if err != nil {
+			return err
+		}
+		tfrm.CRCWrite(&crc)
+		if crc.Sum16() != tfrm.CRC() {
+			return errors.New("TCP CRC mismatch")
+		}
+	case lneto.IPProtoUDP:
+		ifrm.CRCWriteUDPPseudo(&crc)
+		ufrm, err := udp.NewFrame(ifrm.Payload())
+		if err != nil {
+			return err
+		}
+		ufrm.CRCWriteIPv4(&crc)
+		if crc.Sum16() != ufrm.CRC() {
+			return errors.New("UDP CRC mismatch")
+		}
+	}
+	sb.info("ipDemux", slog.String("ipproto", proto.String()), slog.Int("plen", int(totalLen)))
+	err = sb.handlers[nodeIdx].demux(frame[:totalLen], off)
+	if handleNodeError(&sb.handlers, nodeIdx, err) {
+		sb.info("ipclose", slog.String("proto", proto.String()))
+		err = nil
+	}
+	return err
 }
 
 func (sb *StackIP) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
@@ -117,7 +136,7 @@ func (sb *StackIP) Encapsulate(carrierData []byte, frameOffset int) (int, error)
 	ifrm, _ := ipv4.NewFrame(frame)
 	const ihl = 5
 	const headerlen = ihl * 4
-	ifrm.SetVersionAndIHL(4, 5)
+	ifrm.SetVersionAndIHL(4, ihl)
 	ifrm.SetToS(0)
 	ifrm.SetID(0)
 	*ifrm.SourceAddr() = sb.ip
@@ -128,25 +147,31 @@ func (sb *StackIP) Encapsulate(carrierData []byte, frameOffset int) (int, error)
 		if err != nil {
 			sb.error("StackIP:handle", slog.String("proto", proto.String()), slog.String("err", err.Error()))
 			continue
+		} else if n == 0 {
+			continue
 		}
-		if n > 0 {
-			const dontFrag = 0x4000
-			totalLen := n + headerlen
-			ifrm.SetTotalLength(uint16(totalLen))
-			ifrm.SetFlags(dontFrag)
-			ifrm.SetTTL(64)
-			ifrm.SetProtocol(proto)
-			ifrm.SetCRC(ifrm.CalculateHeaderCRC())
-			if ifrm.Protocol() == lneto.IPProtoTCP {
-				var crc lneto.CRC791
-				ifrm.CRCWriteTCPPseudo(&crc)
-				tfrm, _ := tcp.NewFrame(ifrm.Payload())
-				tfrm.CRCWrite(&crc)
-				tfrm.SetCRC(crc.Sum16())
-				sb.info("StackIP:send", slog.String("ip", ifrm.String()), slog.String("tcp", tfrm.String()))
-			}
-			return totalLen, nil
+		const dontFrag = 0x4000
+		totalLen := n + headerlen
+		ifrm.SetTotalLength(uint16(totalLen))
+		ifrm.SetFlags(dontFrag)
+		ifrm.SetTTL(64)
+		ifrm.SetProtocol(proto)
+		ifrm.SetCRC(ifrm.CalculateHeaderCRC())
+		// Calculate CRC for our newly generated packet.
+		var crc lneto.CRC791
+		switch proto {
+		case lneto.IPProtoTCP:
+			ifrm.CRCWriteTCPPseudo(&crc)
+			tfrm, _ := tcp.NewFrame(ifrm.Payload())
+			tfrm.CRCWrite(&crc)
+			tfrm.SetCRC(crc.Sum16())
+		case lneto.IPProtoUDP:
+			ifrm.CRCWriteUDPPseudo(&crc)
+			ufrm, _ := udp.NewFrame(ifrm.Payload())
+			ufrm.CRCWriteIPv4(&crc)
+			ufrm.SetCRC(crc.Sum16())
 		}
+		return totalLen, nil
 	}
 	return 0, nil
 }

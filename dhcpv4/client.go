@@ -7,9 +7,13 @@ import (
 	"io"
 	"math"
 	"math/bits"
+	"net"
+
+	"github.com/soypat/lneto"
 )
 
 type Client struct {
+	connID      uint64
 	reqHostname string
 	hostname    []byte
 	dns         [][4]byte
@@ -41,8 +45,13 @@ type RequestConfig struct {
 func (c *Client) BeginRequest(xid uint32, cfg RequestConfig) error {
 	if len(cfg.Hostname) > 36 {
 		return errors.New("requested hostname too long")
+	} else if c.state != StateInit && c.state != 0 {
+		return errors.New("dhcp client must be closed/done before new request")
+	} else if xid == 0 {
+		return errors.New("zero xid")
 	}
 	c.reset(xid)
+	c.state = StateInit
 	c.currentXID = xid
 	c.reqHostname = cfg.Hostname
 	c.reqIP = cfg.RequestedAddr
@@ -50,14 +59,19 @@ func (c *Client) BeginRequest(xid uint32, cfg RequestConfig) error {
 	return nil
 }
 
-func (c *Client) Send(dst []byte) (int, error) {
+func (c *Client) Protocol() uint64      { return uint64(lneto.IPProtoUDP) }
+func (c *Client) LocalPort() uint16     { return DefaultClientPort }
+func (c *Client) ConnectionID() *uint64 { return &c.connID }
+
+func (c *Client) Encapsulate(carrierFrame []byte, frameOffset int) (int, error) {
 	if c.isClosed() {
-		return 0, io.EOF
+		return 0, net.ErrClosed
 	} else if c.state == StateSelecting && c.offer == [4]byte{} {
 		return 0, nil // No offer received yet.
 	} else if c.state == StateBound {
 		return 0, nil // Done!
 	}
+	dst := carrierFrame[frameOffset:]
 	frm, err := NewFrame(dst)
 	if err != nil {
 		return 0, err
@@ -108,10 +122,11 @@ func (c *Client) Send(dst []byte) (int, error) {
 	return optionsOffset + n, nil
 }
 
-func (c *Client) Recv(pkt []byte) error {
+func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 	if c.isClosed() {
-		return io.EOF
+		return net.ErrClosed
 	}
+	pkt := carrierData[frameOffset:]
 	frm, err := NewFrame(pkt)
 	if err != nil {
 		return err
@@ -217,6 +232,7 @@ func (c *Client) setHeader(frm Frame) {
 
 func (c *Client) reset(xid uint32) {
 	*c = Client{
+		connID:      c.connID + 1,
 		reqHostname: c.reqHostname,
 		currentXID:  xid,
 		reqIP:       c.reqIP,

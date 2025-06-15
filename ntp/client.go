@@ -19,13 +19,6 @@ const (
 
 const sysprecRecalcNeeded int8 = 127
 
-func NewClient(now func() time.Time) *Client {
-	return &Client{
-		_now:     now,
-		_sysprec: sysprecRecalcNeeded,
-	}
-}
-
 type Client struct {
 	connID uint64
 	start  time.Time
@@ -54,10 +47,11 @@ func (c *Client) ConnectionID() *uint64 {
 	return &c.connID
 }
 
-func (c *Client) Send(payload []byte) (int, error) {
+func (c *Client) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
 	if c.isDone() {
 		return 0, io.EOF
 	}
+	payload := carrierData[frameOffset:]
 	frm, err := NewFrame(payload)
 	if err != nil {
 		return 0, err
@@ -88,10 +82,11 @@ func (c *Client) Send(payload []byte) (int, error) {
 	return SizeHeader, nil
 }
 
-func (c *Client) Read(payload []byte) error {
+func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 	if c.isDone() {
 		return io.EOF
 	}
+	payload := carrierData[frameOffset:]
 	frm, err := NewFrame(payload)
 	if err != nil {
 		return err

@@ -24,7 +24,6 @@ type StackNode interface {
 	Encapsulate(carrierData []byte, frameOffset int) (int, error)
 	// Demux reads from the argument buffer where frameOffset is the offset of this StackNode's frame first byte.
 	// The stack node then dispatches(demuxes) the encapsulated frames to its corresponding sub-stack-node(s).
-	//
 	Demux(carrierData []byte, frameOffset int) error
 	LocalPort() uint16
 	Protocol() uint64
@@ -39,7 +38,6 @@ type node struct {
 	connID      *uint64
 	demux       func([]byte, int) error
 	encapsulate func([]byte, int) (int, error)
-	lastErrs    [2]error
 	proto       uint16
 	port        uint16
 }
@@ -57,34 +55,66 @@ func handleNodeError(nodesPtr *[]node, nodeIdx int, err error) (discarded bool) 
 			panic("unreachable")
 		}
 		nodes := *nodesPtr
-		badConnID := nodes[nodeIdx].connID != nil && *nodes[nodeIdx].connID != nodes[nodeIdx].currConnID
-		if err == net.ErrClosed || badConnID {
+		if checkNodeErr(&nodes[nodeIdx], err) {
 			*nodesPtr = slices.Delete(nodes, nodeIdx, nodeIdx+1)
 			discarded = true
-		} else {
-			// Advance Queue of errors
-			nodes[nodeIdx].lastErrs[1] = nodes[nodeIdx].lastErrs[0]
-			nodes[nodeIdx].lastErrs[0] = err
 		}
 	}
 	return discarded
 }
 
+func checkNode(node *node) (discard bool) {
+	return node.demux == nil || node.connID != nil && node.currConnID != *node.connID
+}
+
+func checkNodeErr(node *node, err error) (discard bool) {
+	return checkNode(node) || (err != nil && err == net.ErrClosed)
+}
+
 func addNode(nodes *[]node, h StackNode, port uint16, protocol uint64) {
+	*nodes = append(*nodes, nodeFromStackNode(h, port, protocol))
+}
+
+func nodeFromStackNode(s StackNode, port uint16, protocol uint64) node {
 	if protocol > math.MaxUint16 {
 		panic(">16bit protocol number unsupported")
 	}
 	var currConnID uint64
-	connIDPtr := h.ConnectionID()
+	connIDPtr := s.ConnectionID()
 	if connIDPtr != nil {
 		currConnID = *connIDPtr
 	}
-	*nodes = append(*nodes, node{
+	return node{
 		currConnID:  currConnID,
 		connID:      connIDPtr,
-		demux:       h.Demux,
-		encapsulate: h.Encapsulate,
+		demux:       s.Demux,
+		encapsulate: s.Encapsulate,
 		proto:       uint16(protocol),
 		port:        port,
-	})
+	}
+}
+
+func getNode(nodes []node, port uint16, protocol uint16) (node *node) {
+	for i := range nodes {
+		node := &nodes[i]
+		if node.port == port && node.proto == protocol {
+			return node
+		}
+	}
+	return nil
+}
+
+// destroy removes all references to underlying StackNode. Allows garbage collection of node if possible.
+func (n *node) destroy() {
+	*n = node{}
+}
+
+func getNodeByProto(nodes []node, protocol uint16) int {
+	for i := range nodes {
+		node := &nodes[i]
+		if node.proto == protocol {
+			return i
+		}
+	}
+	return -1
 }

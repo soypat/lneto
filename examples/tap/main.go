@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"log/slog"
@@ -9,9 +10,11 @@ import (
 	"net/http"
 	"net/netip"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/internet/pcap"
 	"github.com/soypat/lneto/tcp"
@@ -28,16 +31,34 @@ func main() {
 
 func run() error {
 	var (
+		flagInterface = "tap0"
+	)
+	flag.StringVar(&flagInterface, "i", flagInterface, "Interface to select. tap* creates a tap interface. Any other name will create a bridge to the name of the interface i.e: 'enp7s0', 'wlp8s0', 'lo'")
+	var (
 		flagNet             = "192.168.10.1/24"
 		flagiface           = "tap0"
-		flagMTU             = 1500
 		flagPacketQueueSize = 2048
 	)
-	ip, err := netip.ParsePrefix(flagNet)
-	if err != nil {
-		return err
+	var iface ltesto.Interface
+	if strings.HasPrefix(flagInterface, "tap") {
+		pfx, err := netip.ParsePrefix(flagNet)
+		if err != nil {
+			return err
+		}
+		tap, err := internal.NewTap(flagiface, pfx)
+		if err != nil {
+			return err
+		}
+		iface = tap
+	} else {
+		br, err := internal.NewBridge(flagInterface)
+		if err != nil {
+			return err
+		}
+		iface = br
 	}
-	sv, err := ltesto.NewHTTPTapServer(flagiface, ip, flagMTU, flagPacketQueueSize, flagPacketQueueSize)
+
+	sv, err := ltesto.NewHTTPTapServer(iface, flagPacketQueueSize, flagPacketQueueSize)
 	if err != nil {
 		return err
 	}
@@ -48,8 +69,12 @@ func run() error {
 		frames, err := cap.CaptureEthernet(nil, pkt, 0)
 		if err == nil {
 			flags, src, dst := getTCPData(frames, pkt)
-			if flags != 0 {
-				fmt.Println(channel, captime.Format("15:04:05.000"), frames, flags.String(), src, "->", dst)
+			if src != 0 {
+				if flags != 0 {
+					fmt.Println(channel, captime.Format("15:04:05.000"), frames, flags.String(), src, "->", dst)
+				} else {
+					fmt.Println(channel, captime.Format("15:04:05.000"), frames, src, "->", dst)
+				}
 			} else {
 				fmt.Println(channel, captime.Format("15:04:05.000"), frames)
 			}
@@ -86,12 +111,16 @@ func run() error {
 
 func getTCPData(frames []pcap.Frame, pkt []byte) (flags tcp.Flags, src, dst uint16) {
 	for i := range frames {
-		if frames[i].Protocol != lneto.IPProtoTCP {
-			continue
+		proto := frames[i].Protocol
+		if proto == lneto.IPProtoTCP {
+			return tcp.Flags(getFrameClassUint(frames[i], pkt, pcap.FieldClassFlags)),
+				uint16(getFrameClassUint(frames[i], pkt, pcap.FieldClassSrc)),
+				uint16(getFrameClassUint(frames[i], pkt, pcap.FieldClassDst))
+		} else if proto == lneto.IPProtoUDP {
+			return 0,
+				uint16(getFrameClassUint(frames[i], pkt, pcap.FieldClassSrc)),
+				uint16(getFrameClassUint(frames[i], pkt, pcap.FieldClassDst))
 		}
-		return tcp.Flags(getFrameClassUint(frames[i], pkt, pcap.FieldClassFlags)),
-			uint16(getFrameClassUint(frames[i], pkt, pcap.FieldClassSrc)),
-			uint16(getFrameClassUint(frames[i], pkt, pcap.FieldClassDst))
 	}
 	return 0, 0, 0
 }

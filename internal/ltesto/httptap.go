@@ -9,11 +9,18 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-
-	"github.com/soypat/lneto/internal"
 )
 
 const minMTU = 256
+
+type Interface interface {
+	Read(b []byte) (int, error)
+	Write(b []byte) (int, error)
+	Close() error
+	HardwareAddress6() ([6]byte, error)
+	MTU() (int, error)
+	IPMask() (netip.Prefix, error)
+}
 
 // NewHTTPTapClient returns a HTTPTapClient ready for use.
 func NewHTTPTapClient(baseURL string) *HTTPTapClient {
@@ -150,7 +157,7 @@ func (h *HTTPTapClient) Close() error { return nil }
 type HTTPTapServer struct {
 	router    *http.ServeMux
 	stack     stack
-	tap       *internal.Tap
+	tap       Interface
 	buf       []byte
 	onTx      func(channel int, pkt []byte)
 	tapfailed bool
@@ -166,11 +173,17 @@ func (sv *HTTPTapServer) OnTransfer(cb func(channel int, pkt []byte)) {
 	sv.onTx = cb
 }
 
-func NewHTTPTapServer(iface string, ip netip.Prefix, mtu, queueOut, queueIn int) (*HTTPTapServer, error) {
-	if mtu < minMTU {
+func NewHTTPTapServer(iface Interface, queueOut, queueIn int) (*HTTPTapServer, error) {
+	if iface == nil {
+		return nil, errors.New("nil interface argument to HTTP interface server")
+	}
+	mtu, err := iface.MTU()
+	if err != nil {
+		return nil, err
+	} else if mtu < minMTU {
 		return nil, errors.New("too small MTU")
 	}
-	tap, err := internal.NewTap(iface, ip)
+	netmask, err := iface.IPMask()
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +196,7 @@ func NewHTTPTapServer(iface string, ip netip.Prefix, mtu, queueOut, queueIn int)
 	taps := &HTTPTapServer{
 		router: sv,
 		stack:  s,
-		tap:    tap,
+		tap:    iface,
 		buf:    make([]byte, mtu),
 	}
 	sv.HandleFunc("/send", func(w http.ResponseWriter, r *http.Request) {
@@ -210,13 +223,14 @@ func NewHTTPTapServer(iface string, ip netip.Prefix, mtu, queueOut, queueIn int)
 			json.NewEncoder(w).Encode("") // send empty string.
 		}
 	})
-	ipstr := ip.String()
+
+	ipstr := netmask.String()
 	sv.HandleFunc("/info", func(w http.ResponseWriter, r *http.Request) {
 		info := tapInfo{
 			MTU:      mtu,
 			IPPrefix: ipstr,
 		}
-		hw, err := tap.HardwareAddress6()
+		hw, err := iface.HardwareAddress6()
 		if err == nil {
 			info.HardwareAddr = net.HardwareAddr(hw[:]).String()
 		}

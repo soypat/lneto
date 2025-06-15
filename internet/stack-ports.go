@@ -3,26 +3,32 @@ package internet
 import (
 	"encoding/binary"
 	"io"
+	"math"
 )
 
 type StackPorts struct {
 	connID     uint64
-	protocol   uint64
 	handlers   []node
 	dstPortOff int
+	protocol   uint16
 }
 
-func (ps *StackPorts) Reset(protocol uint64, dstPortOffset int) {
+func (ps *StackPorts) Reset(protocol uint64, dstPortOffset int) error {
+	if protocol > math.MaxUint16 {
+		return errInvalidProto
+	}
 	*ps = StackPorts{
 		connID:     ps.connID + 1,
 		handlers:   ps.handlers[:0],
 		dstPortOff: dstPortOffset,
-		protocol:   protocol,
+		protocol:   uint16(protocol),
 	}
+	return nil
 }
+
 func (ps *StackPorts) LocalPort() uint16 { return 0 }
 
-func (ps *StackPorts) Protocol() uint64 { return ps.protocol }
+func (ps *StackPorts) Protocol() uint64 { return uint64(ps.protocol) }
 
 func (ps *StackPorts) ConnectionID() *uint64 { return &ps.connID }
 
@@ -65,13 +71,13 @@ func (ps *StackPorts) Register(h StackNode) error {
 	proto := h.Protocol()
 	if port <= 0 {
 		return errZeroPort
-	} else if proto != ps.protocol {
+	} else if proto != uint64(ps.protocol) {
 		return errInvalidProto
 	}
 	ps.handlers = append(ps.handlers, node{
 		demux:       h.Demux,
 		encapsulate: h.Encapsulate,
-		port:        uint16(port),
+		port:        port,
 	})
 	return nil
 }

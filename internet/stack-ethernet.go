@@ -20,6 +20,18 @@ type StackEthernet struct {
 	mtu   uint16
 }
 
+func (ls *StackEthernet) SetGateway6(gw [6]byte) {
+	ls.gwmac = gw
+}
+
+func (ls *StackEthernet) SetHardwareAddr6(mac [6]byte) {
+	ls.mac = mac
+}
+
+func (ls *StackEthernet) HardwareAddr6() [6]byte {
+	return ls.mac
+}
+
 func (ls *StackEthernet) Reset6(mac, gateway [6]byte, mtu int) error {
 	if mtu > math.MaxUint16 || mtu < 256 {
 		return errors.New("invalid MTU")

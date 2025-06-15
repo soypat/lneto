@@ -208,6 +208,11 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 		ifrm4.CRCWriteTCPPseudo(&crc)
 		tfrm, err := tcp.NewFrame(ifrm4.Payload())
 		if err == nil {
+			tfrm.ValidateSize(pc.validator())
+			if pc.vld.HasError() {
+				println("BAD TCP")
+				return dst, pc.vld.ErrPop()
+			}
 			tfrm.CRCWrite(&crc)
 			wantSum := crc.Sum16()
 			gotSum := tfrm.CRC()
@@ -215,10 +220,15 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 				protoErrs = append(protoErrs, &crcError16{protocol: "ipv4+tcp", want: wantSum, got: gotSum})
 			}
 		}
-	} else if proto == lneto.IPProtoUDP || proto == lneto.IPProtoUDPLite {
+	} else if proto == lneto.IPProtoUDP {
 		ifrm4.CRCWriteUDPPseudo(&crc)
 		ufrm, err := udp.NewFrame(ifrm4.Payload())
 		if err == nil {
+			ufrm.ValidateSize(pc.validator())
+			if pc.vld.HasError() {
+				println("BAD UDP")
+				return dst, pc.vld.ErrPop()
+			}
 			ufrm.CRCWriteIPv4(&crc)
 			wantSum := crc.Sum16()
 			gotSum := ufrm.CRC()
@@ -288,6 +298,9 @@ func (pc *PacketBreakdown) CaptureTCP(dst []Frame, pkt []byte, bitOffset int) ([
 	}
 	return dst, nil
 }
+
+// func (pc *PacketBreakdown) CaptureDHCPv4(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
+// }
 
 func (pc *PacketBreakdown) CaptureUDP(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
 	if bitOffset%8 != 0 {
