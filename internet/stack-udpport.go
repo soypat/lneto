@@ -47,7 +47,7 @@ func (sudp *StackUDPPort) Demux(carrierData []byte, frameOffset int) error {
 	if sudp.rmport != 0 && src != sudp.rmport {
 		return nil // Not from our target remote port.
 	}
-	err = sudp.h.demux(ufrm.Payload(), 8)
+	err = sudp.h.demux(carrierData, frameOffset+8)
 	if err != nil {
 		if checkNodeErr(&sudp.h, err) {
 			sudp.h.destroy()
@@ -68,11 +68,14 @@ func (sudp *StackUDPPort) Encapsulate(carrierData []byte, frameOffset int) (int,
 	}
 	ufrm.SetSourcePort(sudp.h.port)
 	ufrm.SetDestinationPort(sudp.rmport)
-	n, err := sudp.h.encapsulate(carrierData[frameOffset:], 8)
-	if err != nil {
-		slog.Error("stackudp:demux", slog.String("err", err.Error()))
+	n, err := sudp.h.encapsulate(carrierData, frameOffset+8)
+	if n == 0 {
+		if err != nil {
+			slog.Error("stackudp:demux", slog.String("err", err.Error()))
+		}
+		return 0, err
 	}
-	ufrm.SetLength(8 + uint16(n))
-	// UDP CRC left to IP layer.
-	return n, err
+	// UDP CRC and length left to IP layer.
+	length := 8 + n
+	return length, err
 }

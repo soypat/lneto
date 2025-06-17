@@ -104,6 +104,28 @@ func getNode(nodes []node, port uint16, protocol uint16) (node *node) {
 	return nil
 }
 
+func getEncapsulateNode(nodes *[]node, carrierData []byte, frameOffset int) (nodeIdx int, written int, err error) {
+	destroyed := false
+	for i := range *nodes {
+		node := &(*nodes)[i]
+		if checkNode(node) {
+			destroyed = true
+			node.destroy()
+			continue
+		}
+		written, err = node.encapsulate(carrierData, frameOffset)
+		if written > 0 {
+			return i, written, err
+		} else if err != nil {
+
+		}
+	}
+	if destroyed {
+		*nodes = nodesCompact(*nodes)
+	}
+	return -1, 0, nil
+}
+
 // destroy removes all references to underlying StackNode. Allows garbage collection of node if possible.
 func (n *node) destroy() {
 	*n = node{}
@@ -116,5 +138,17 @@ func getNodeByProto(nodes []node, protocol uint16) int {
 			return i
 		}
 	}
+
 	return -1
+}
+
+func nodesCompact(nodes []node) []node {
+	nilOff := 0
+	for i := 0; i < len(nodes); i++ {
+		if !checkNode(&nodes[i]) {
+			nodes[nilOff] = nodes[i]
+			nilOff++
+		}
+	}
+	return nodes[:nilOff]
 }

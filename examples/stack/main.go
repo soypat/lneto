@@ -34,7 +34,7 @@ func main() {
 	ip := netip.MustParseAddr(stackIP)
 	tap := ltesto.NewHTTPTapClient("http://127.0.0.1:7070")
 
-	ippfx := tap.IPPrefix()
+	ippfx, _ := tap.IPMask()
 	if !ippfx.Contains(ip) {
 		log.Fatal("interface does not contain stack address")
 	}
@@ -43,8 +43,8 @@ func main() {
 		Level: slog.LevelDebug,
 	}))
 
-	gatewayMAC := tap.HardwareAddr6()
-	mtu := tap.MTU()
+	gatewayMAC, _ := tap.HardwareAddress6()
+	mtu, _ := tap.MTU()
 
 	var stack Stack
 	err := stack.Reset(stackHWAddr, gatewayMAC, addrPort.Addr(), mtu)

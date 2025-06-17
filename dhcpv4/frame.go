@@ -3,6 +3,8 @@ package dhcpv4
 import (
 	"encoding/binary"
 	"errors"
+
+	"github.com/soypat/lneto"
 )
 
 const (
@@ -25,7 +27,7 @@ const (
 // An error is returned if the buffer size is smaller than 240.
 func NewFrame(buf []byte) (Frame, error) {
 	if len(buf) < optionsOffset {
-		return Frame{}, errors.New("DHCPv4 short frame")
+		return Frame{}, errSmallFrame
 	}
 	return Frame{buf: buf}, nil
 }
@@ -41,7 +43,7 @@ type Frame struct {
 
 // OptionsPayload returns the options portion of the DHCP frame. May be zero lengthed.
 func (frm Frame) OptionsPayload() []byte {
-	return frm.buf[:optionsOffset]
+	return frm.buf[optionsOffset:]
 }
 
 func (frm Frame) Op() Op      { return Op(frm.buf[0]) }
@@ -97,7 +99,10 @@ func (frm Frame) CHAddr() *[16]byte {
 	return (*[16]byte)(frm.buf[28:44])
 }
 
+// MagicCookie returns the magic cookie of the header. Expect this to always be [MagicCookie].
 func (frm Frame) MagicCookie() uint32 { return binary.BigEndian.Uint32(frm.buf[magicCookieOffset:]) }
+
+// SetMagicCookie sets the MagicCookie. Call this with [MagicCookie] to create a valid DHCP header.
 func (frm Frame) SetMagicCookie(cookie uint32) {
 	binary.BigEndian.PutUint32(frm.buf[magicCookieOffset:], cookie)
 }
@@ -109,18 +114,20 @@ func (frm Frame) ClearHeader() {
 	}
 }
 
+// ForEachOption iterates over all DHCPv4 options returning an error on a malformed option or when user provided callback returns an error.
+// If the user provided callback is nil then only option buffer validation is performed.
 func (frm Frame) ForEachOption(fn func(op OptNum, data []byte) error) error {
-	if fn == nil {
-		return errors.New("nil function to parse DHCP")
-	}
 	// Parse DHCP options.
 	ptr := optionsOffset
-	if ptr >= len(frm.buf) {
-		return errors.New("short payload to parse DHCP options")
+	if ptr > len(frm.buf) {
+		return errSmallFrame
+	} else if len(frm.buf[ptr:]) == 0 {
+		return errNoOptions
 	}
+	callback := fn != nil
 	for ptr+1 < len(frm.buf) {
 		if int(frm.buf[ptr+1]) >= len(frm.buf) {
-			return errors.New("DHCP option length exceeds payload")
+			return errDHCPBadOption
 		}
 		optnum := OptNum(frm.buf[ptr])
 		if optnum == 0xff {
@@ -130,11 +137,31 @@ func (frm Frame) ForEachOption(fn func(op OptNum, data []byte) error) error {
 			continue
 		}
 		optlen := frm.buf[ptr+1]
-		optionData := frm.buf[ptr+2 : ptr+2+int(optlen)]
-		if err := fn(optnum, optionData); err != nil {
-			return err
+		if callback {
+			optionData := frm.buf[ptr+2 : ptr+2+int(optlen)]
+			if err := fn(optnum, optionData); err != nil {
+				return err
+			}
 		}
 		ptr += int(optlen) + 2
 	}
 	return nil
+}
+
+//
+// Validation API.
+//
+
+var (
+	errSmallFrame    = errors.New("DHCPv4: frame size <240")
+	errDHCPBadOption = errors.New("DHCPv4: opt length exceeds payload")
+	errNoOptions     = errors.New("DHCPv4: no options")
+	errOptionNotFit  = errors.New("DHCPv4: options dont fit")
+)
+
+func (frm Frame) ValidateSize(vld *lneto.Validator) {
+	err := frm.ForEachOption(nil) // Does all necessary validation.
+	if err != nil {
+		vld.AddError(errDHCPBadOption)
+	}
 }

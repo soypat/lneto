@@ -18,6 +18,7 @@ var _ StackNode = (*StackIP)(nil)
 
 type StackIP struct {
 	connID    uint64
+	ipID      uint16
 	ip        [4]byte
 	validator lneto.Validator
 	handlers  []node
@@ -136,24 +137,31 @@ func (sb *StackIP) Encapsulate(carrierData []byte, frameOffset int) (int, error)
 	ifrm, _ := ipv4.NewFrame(frame)
 	const ihl = 5
 	const headerlen = ihl * 4
+	const dontFrag = 0x4000
 	ifrm.SetVersionAndIHL(4, ihl)
 	ifrm.SetToS(0)
-	ifrm.SetID(0)
+	seed := sb.ipID + uint16(sb.connID)
+	id := internal.Prand16(seed)
+	ifrm.SetID(id)
+	ifrm.SetFlags(dontFrag)
 	*ifrm.SourceAddr() = sb.ip
+	sb.ipID = id
 	for i := range sb.handlers {
 		h := &sb.handlers[i]
 		proto := lneto.IPProto(h.proto)
 		n, err := h.encapsulate(frame[:], headerlen)
 		if err != nil {
+			if handleNodeError(&sb.handlers, i, err) {
+				println("NODE REMOVED", proto.String(), h.port)
+				h.destroy()
+			}
 			sb.error("StackIP:handle", slog.String("proto", proto.String()), slog.String("err", err.Error()))
 			continue
 		} else if n == 0 {
 			continue
 		}
-		const dontFrag = 0x4000
 		totalLen := n + headerlen
 		ifrm.SetTotalLength(uint16(totalLen))
-		ifrm.SetFlags(dontFrag)
 		ifrm.SetTTL(64)
 		ifrm.SetProtocol(proto)
 		ifrm.SetCRC(ifrm.CalculateHeaderCRC())
@@ -168,8 +176,13 @@ func (sb *StackIP) Encapsulate(carrierData []byte, frameOffset int) (int, error)
 		case lneto.IPProtoUDP:
 			ifrm.CRCWriteUDPPseudo(&crc)
 			ufrm, _ := udp.NewFrame(ifrm.Payload())
+			ufrm.SetLength(uint16(n))
 			ufrm.CRCWriteIPv4(&crc)
 			ufrm.SetCRC(crc.Sum16())
+			if n != int(ufrm.Length()) {
+				sb.error("StackIP:encaps", slog.Int("n", n), slog.Int("un", int(ufrm.Length())))
+				return 0, errors.New("invalid UDP length")
+			}
 		}
 		return totalLen, nil
 	}

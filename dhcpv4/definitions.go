@@ -2,6 +2,7 @@ package dhcpv4
 
 import (
 	"errors"
+	"unsafe"
 )
 
 //go:generate stringer -type=OptNum,Op,MessageType,ClientState -linecomment -output stringers.go
@@ -36,6 +37,11 @@ func AppendOption(dst []byte, opt OptNum, data ...byte) []byte {
 	dst = append(dst, byte(opt), byte(len(data)))
 	dst = append(dst, data...)
 	return dst
+}
+
+func AppendOptionString(dst []byte, opt OptNum, data string) []byte {
+	bdata := unsafe.Slice(unsafe.StringData(data), len(data))
+	return AppendOption(dst, opt, bdata...)
 }
 
 func EncodeOption(dst []byte, opt OptNum, data ...byte) (int, error) {

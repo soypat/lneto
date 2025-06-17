@@ -123,7 +123,7 @@ func (listener *NodeTCPListener) Demux(carrierData []byte, tcpFrameOffset int) e
 	if err != nil {
 		return err
 	}
-	addr, _, err := internal.GetIPSourceAddr(carrierData)
+	addr, _, _, err := internal.GetIPSourceAddr(carrierData)
 	if err != nil {
 		return err
 	}

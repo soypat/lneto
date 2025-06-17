@@ -5,10 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
+	"sync"
+	"time"
 )
 
 const minMTU = 256
@@ -21,6 +25,8 @@ type Interface interface {
 	MTU() (int, error)
 	IPMask() (netip.Prefix, error)
 }
+
+var _ Interface = (*HTTPTapClient)(nil)
 
 // NewHTTPTapClient returns a HTTPTapClient ready for use.
 func NewHTTPTapClient(baseURL string) *HTTPTapClient {
@@ -35,18 +41,19 @@ func NewHTTPTapClient(baseURL string) *HTTPTapClient {
 	return &h
 }
 
-func (h *HTTPTapClient) IPPrefix() netip.Prefix {
-	h.ensureMTU()
-	return h.ip
+func (h *HTTPTapClient) IPMask() (netip.Prefix, error) {
+	err := h.ensureMTU()
+	return h.ip, err
 }
 
-func (h *HTTPTapClient) MTU() int {
-	h.ensureMTU()
-	return len(h.buf)
+func (h *HTTPTapClient) MTU() (int, error) {
+	err := h.ensureMTU()
+	return len(h.buf), err
 }
 
-func (h *HTTPTapClient) HardwareAddr6() [6]byte {
-	return h.hwaddr
+func (h *HTTPTapClient) HardwareAddress6() ([6]byte, error) {
+	err := h.ensureMTU()
+	return h.hwaddr, err
 }
 
 func (h *HTTPTapClient) ensureMTU() (err error) {
@@ -91,14 +98,15 @@ type HTTPTapClient struct {
 	buf     []byte
 }
 
-func (h *HTTPTapClient) ReadDiscard() error {
+func (h *HTTPTapClient) ReadDiscard() (err error) {
 	for {
-		d, _ := h.ReadBytes() // Empty remote data.
+		d, err2 := h.ReadBytes() // Empty remote data.
 		if len(d) == 0 {
+			err = err2
 			break
 		}
 	}
-	return nil
+	return err
 }
 
 func (h *HTTPTapClient) ReadBytes() (data []byte, err error) {
@@ -110,7 +118,8 @@ func (h *HTTPTapClient) ReadBytes() (data []byte, err error) {
 	if err != nil {
 		return nil, err
 	} else if resp.StatusCode != 200 {
-		return nil, errors.New(resp.Status + " for " + h.recvurl)
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("bad server response %s %s: %s", h.sendurl, resp.Status, b)
 	}
 	buf := h.buf
 	err = json.NewDecoder(resp.Body).Decode(&buf)
@@ -124,7 +133,7 @@ func (h *HTTPTapClient) Read(b []byte) (int, error) {
 	err := h.ensureMTU()
 	if err != nil {
 		return 0, err
-	} else if len(b) < h.MTU() {
+	} else if len(b) < len(h.buf) {
 		return 0, errors.New("buffer must have at least MTU size")
 	}
 	data, err := h.ReadBytes()
@@ -139,7 +148,7 @@ func (h *HTTPTapClient) Write(b []byte) (int, error) {
 	err := h.ensureMTU()
 	if err != nil {
 		return 0, err
-	} else if len(b) > h.MTU() {
+	} else if len(b) > len(h.buf) {
 		return 0, errors.New("buffer larger than MTU")
 	}
 	data, _ := json.Marshal(b)
@@ -147,7 +156,8 @@ func (h *HTTPTapClient) Write(b []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	} else if resp.StatusCode != 200 {
-		return 0, errors.New(resp.Status + " for " + h.sendurl)
+		b, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("bad server response for plen %d @ %s %s: %s", len(b), h.sendurl, resp.Status, b)
 	}
 	return len(b), nil
 }
@@ -155,12 +165,12 @@ func (h *HTTPTapClient) Write(b []byte) (int, error) {
 func (h *HTTPTapClient) Close() error { return nil }
 
 type HTTPTapServer struct {
-	router    *http.ServeMux
-	stack     stack
-	tap       Interface
-	buf       []byte
-	onTx      func(channel int, pkt []byte)
-	tapfailed bool
+	sendmu sync.Mutex
+	recvmu sync.Mutex
+	router *http.ServeMux
+	tap    Interface
+	buf    []byte
+	onTx   func(channel int, pkt []byte)
 }
 
 type tapInfo struct {
@@ -188,51 +198,68 @@ func NewHTTPTapServer(iface Interface, queueOut, queueIn int) (*HTTPTapServer, e
 		return nil, err
 	}
 
-	s := stack{
-		out: make(chan []byte, queueOut),
-		in:  make(chan []byte, queueIn),
-	}
 	sv := http.NewServeMux()
 	taps := &HTTPTapServer{
 		router: sv,
-		stack:  s,
 		tap:    iface,
 		buf:    make([]byte, mtu),
 	}
 	sv.HandleFunc("/send", func(w http.ResponseWriter, r *http.Request) {
+		retries := 10
+		for {
+			if taps.sendmu.TryLock() {
+				defer taps.sendmu.Unlock()
+				break
+			} else if retries == 0 {
+				slog.Error("send-overload")
+				http.Error(w, "resource in use", http.StatusInternalServerError)
+				return
+			}
+			retries--
+			time.Sleep(100 * time.Microsecond) // approx duration of what one request processing takes on my machine.
+		}
 		var data []byte
 		err := json.NewDecoder(r.Body).Decode(&data)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
-		} else {
-			if taps.onTx != nil {
-				taps.onTx(1, data)
-			}
-			select {
-			case s.out <- data:
-			default:
-				http.Error(w, "outgoing packet queue full", http.StatusInternalServerError)
-			}
+			return
+		}
+		_, err = taps.tap.Write(data)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if taps.onTx != nil {
+			taps.onTx(1, data)
 		}
 	})
 	sv.HandleFunc("/recv", func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case data := <-s.in:
-			json.NewEncoder(w).Encode(data)
-		default:
-			json.NewEncoder(w).Encode("") // send empty string.
+		if !taps.recvmu.TryLock() {
+			http.Error(w, "resource in use: recv may take a while, are you using concurrent access or have you restarted your client? please wait!", http.StatusInternalServerError)
+			return
 		}
+		defer taps.recvmu.Unlock()
+		n, err := taps.tap.Read(taps.buf)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if taps.onTx != nil {
+			taps.onTx(0, taps.buf[:n])
+		}
+		json.NewEncoder(w).Encode(taps.buf[:n])
 	})
-
+	hw6, err := iface.HardwareAddress6()
+	if err != nil {
+		return nil, fmt.Errorf("acquiring hardware address: %w", err)
+	}
+	hwstr := net.HardwareAddr(hw6[:]).String()
 	ipstr := netmask.String()
 	sv.HandleFunc("/info", func(w http.ResponseWriter, r *http.Request) {
 		info := tapInfo{
-			MTU:      mtu,
-			IPPrefix: ipstr,
-		}
-		hw, err := iface.HardwareAddress6()
-		if err == nil {
-			info.HardwareAddr = net.HardwareAddr(hw[:]).String()
+			MTU:          mtu,
+			IPPrefix:     ipstr,
+			HardwareAddr: hwstr,
 		}
 		json.NewEncoder(w).Encode(info)
 	})
@@ -256,82 +283,4 @@ type HandleTapResult struct {
 	Failed       bool
 	SentSize     int
 	ReceivedSize int
-}
-
-func (sv *HTTPTapServer) HandleTap() (result HandleTapResult, err error) {
-	result.ReceivedSize, err = sv.readTap()
-	result.Failed = sv.tapfailed
-	if result.Failed && err != nil {
-		return result, err
-	}
-	var err2 error
-	result.ReceivedSize, err2 = sv.writeTap()
-	result.Failed = result.Failed || sv.tapfailed
-	if err2 != nil && err == nil {
-		err = err2
-	} else if err2 != nil {
-		err = errors.Join(err, err2)
-	}
-	return result, err
-}
-
-func (sv *HTTPTapServer) readTap() (int, error) {
-	buf := sv.buf
-	n, err := sv.tap.Read(buf[:])
-	if err != nil {
-		sv.tapfailed = true
-		return n, err
-	} else if n > 0 {
-		if sv.onTx != nil {
-			sv.onTx(0, buf[:n])
-		}
-		err = sv.stack.recv(buf[:n])
-		if err != nil {
-			return n, err
-		}
-	}
-	return n, nil
-}
-
-func (sv *HTTPTapServer) writeTap() (int, error) {
-	buf := sv.buf
-	n, err := sv.stack.handle(buf[:])
-	if err != nil {
-		return n, err
-	} else if n > 0 {
-		n, err = sv.tap.Write(buf[:n])
-		if err != nil {
-			sv.tapfailed = true
-			return n, err
-		}
-	}
-	return n, err
-}
-
-type stack struct {
-	out chan []byte
-	in  chan []byte
-}
-
-func (s *stack) recv(b []byte) (err error) {
-	bcopy := append([]byte{}, b...)
-RETRY:
-	select {
-	case s.in <- bcopy:
-	default:
-		err = errors.New("receive queue packet full, dropping packet")
-		<-s.in
-		goto RETRY
-	}
-	return err
-}
-
-func (s *stack) handle(b []byte) (n int, _ error) {
-	select {
-	case incoming := <-s.out:
-		n = copy(b, incoming)
-	default:
-		// pass if no data available.
-	}
-	return n, nil
 }

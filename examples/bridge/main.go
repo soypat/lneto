@@ -3,16 +3,19 @@ package main
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"flag"
 	"fmt"
 	"net"
 	"net/netip"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/dhcpv4"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/internet"
 	"github.com/soypat/lneto/internet/pcap"
@@ -28,16 +31,47 @@ func main() {
 }
 
 func run() (err error) {
-	br := ltesto.NewHTTPTapClient("http://127.0.0.1:7070")
-	defer br.Close()
+	var (
+		flagInterface = "tap0"
+		flagUseHTTP   = false
+	)
+	flag.StringVar(&flagInterface, "i", flagInterface, "Interface to use. Either tap* or the name of an existing interface to bridge to.")
+	flag.BoolVar(&flagUseHTTP, "http", flagUseHTTP, "Use HTTP tap interface.")
+	flag.Parse()
+	var iface ltesto.Interface
+	if flagUseHTTP {
+		iface = ltesto.NewHTTPTapClient("http://127.0.0.1:7070")
+	} else {
+		if strings.HasPrefix(flagInterface, "tap") {
+			tap, err := internal.NewTap(flagInterface, netip.MustParsePrefix("192.168.1.1/24"))
+			if err != nil {
+				return err
+			}
+			iface = tap
+		} else {
+			bridge, err := internal.NewBridge(flagInterface)
+			if err != nil {
+				return err
+			}
+			iface = bridge
+		}
+	}
+	defer iface.Close()
 
-	nicHW := br.HardwareAddr6()
-
+	nicHW, err := iface.HardwareAddress6()
+	if err != nil {
+		return err
+	}
 	brHW := nicHW
 	brHW[5]++ // We'll be using a similar HW address but with NIC specific identifier modified.
-	mtu := br.MTU()
-	nicAddr := br.IPPrefix()
-
+	mtu, err := iface.MTU()
+	if err != nil {
+		return err
+	}
+	nicAddr, err := iface.IPMask()
+	if err != nil {
+		return err
+	}
 	fmt.Println("NIC hardware address:", net.HardwareAddr(nicHW[:]).String(), "bridgeHW:", net.HardwareAddr(brHW[:]).String(), "mtu:", mtu, "addr:", nicAddr.String())
 	var stack Stack
 	err = stack.Reset(brHW, nicAddr.Addr().Next(), uint16(mtu))
@@ -64,7 +98,7 @@ func run() (err error) {
 			} else {
 				fmt.Println("OU", iframes)
 			}
-			n, err := br.Write(buf[:nwrite])
+			n, err := iface.Write(buf[:nwrite])
 			if err != nil {
 				return err
 			} else if n != nwrite {
@@ -73,7 +107,7 @@ func run() (err error) {
 		}
 
 		clear(buf)
-		nread, err := br.Read(buf)
+		nread, err := iface.Read(buf)
 		if err != nil {
 			return err
 		} else if nread > 0 {

@@ -10,6 +10,7 @@ import (
 	"net"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/ipv4"
 )
 
 type Client struct {
@@ -63,6 +64,24 @@ func (c *Client) Protocol() uint64      { return uint64(lneto.IPProtoUDP) }
 func (c *Client) LocalPort() uint16     { return DefaultClientPort }
 func (c *Client) ConnectionID() *uint64 { return &c.connID }
 
+func (c *Client) setIP(b []byte, frameOffset int) {
+	if frameOffset < 28 {
+		return // Not an IP/UDP frame.
+	}
+	ifrm, _ := ipv4.NewFrame(b)
+	ifrm.SetID((uint16(c.currentXID) ^ uint16(c.currentXID>>16)) + uint16(c.state))
+	if c.state > StateInit {
+		// TODO(soypat): Document why disabling ToS used by DHCP server may cause Request to fail.
+		// Apparently server sets ToS=192. Uncommenting this line causes DHCP to fail on my setup.
+		// If left fixed at 192, DHCP does not work.
+		// If left fixed at 0, DHCP does not work.
+		// Apparently ToS is a function of which state of DHCP one is in. Not sure why code below works.
+		// Note: Not exactly needed for all servers.
+		const ecnmask = 0b1100_0000
+		ifrm.SetToS(ecnmask)
+	}
+}
+
 func (c *Client) Encapsulate(carrierFrame []byte, frameOffset int) (int, error) {
 	if c.isClosed() {
 		return 0, net.ErrClosed
@@ -98,6 +117,9 @@ func (c *Client) Encapsulate(carrierFrame []byte, frameOffset int) (int, error) 
 		nextState = StateSelecting
 
 	case StateSelecting:
+		if c.offer == ([4]byte{}) {
+			return 0, nil // Offer not yet received.
+		}
 		// Send out request, we know we've received an offer by now.
 		optBuf = AppendOption(optBuf, OptMessageType, byte(MsgRequest))
 		optBuf = AppendOption(optBuf, OptRequestedIPaddress, c.offer[:]...)
@@ -108,8 +130,7 @@ func (c *Client) Encapsulate(carrierFrame []byte, frameOffset int) (int, error) 
 		return 0, errors.New("unhandled state")
 	}
 	if len(c.reqHostname) > 0 {
-		optBuf = append(optBuf, byte(OptHostName), byte(len(c.hostname)))
-		optBuf = append(optBuf, c.hostname...)
+		optBuf = AppendOptionString(optBuf, OptHostName, c.reqHostname)
 	}
 	optBuf = append(optBuf, 0xff) // End mark.
 	options := frm.OptionsPayload()
@@ -118,6 +139,7 @@ func (c *Client) Encapsulate(carrierFrame []byte, frameOffset int) (int, error) 
 	}
 	c.setHeader(frm)
 	n := copy(options, optBuf)
+	c.setIP(carrierFrame, frameOffset)
 	c.state = nextState
 	return optionsOffset + n, nil
 }
@@ -155,6 +177,7 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 			// Lock in on this offer.
 			c.gateway = *frm.GIAddr()
 			c.offer = *frm.YIAddr()
+			c.svip = *frm.SIAddr()
 		}
 
 	case StateRequesting:
@@ -223,7 +246,9 @@ func (c *Client) setHeader(frm Frame) {
 	frm.SetXID(c.currentXID)
 	frm.SetHardware(1, 6, 0)
 	frm.SetSecs(1)
-	// copy(frm.CIAddr()[:], c.offer[:])
+	if c.state == StateBound {
+		// copy(frm.CIAddr()[:], c.offer[:])
+	}
 	copy(frm.SIAddr()[:], c.svip[:])
 	copy(frm.YIAddr()[:], c.offer[:])
 	copy(frm.CHAddrAs6()[:], c.clientMAC[:])
