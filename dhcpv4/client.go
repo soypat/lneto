@@ -246,8 +246,8 @@ func (c *Client) setHeader(frm Frame) {
 	frm.SetXID(c.currentXID)
 	frm.SetHardware(1, 6, 0)
 	frm.SetSecs(1)
-	if c.state == StateBound {
-		// copy(frm.CIAddr()[:], c.offer[:])
+	if c.state == StateRequesting || c.state == StateSelecting || c.state == StateBound || c.state == StateRenewing {
+		copy(frm.CIAddr()[:], c.offer[:])
 	}
 	copy(frm.SIAddr()[:], c.svip[:])
 	copy(frm.YIAddr()[:], c.offer[:])

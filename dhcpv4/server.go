@@ -140,7 +140,7 @@ func (sv *Server) Demux(carrierData []byte, frameOffset int) error {
 			err = errors.New("DHCP request unexpected state")
 			break
 		}
-		client.state = StateBound
+		client.state = StateRequesting
 		sv.pending++
 
 	default:

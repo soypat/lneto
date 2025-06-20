@@ -32,7 +32,7 @@ func TestClientServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	} else if n == 0 {
-		t.Fatal("no data exchanged")
+		t.Fatal("no client discover")
 	}
 	assertClState(StateSelecting)
 	err = sv.Demux(buf[:n], 0)
@@ -44,23 +44,37 @@ func TestClientServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	} else if n == 0 {
-		t.Fatal("no data exchanged")
+		t.Fatal("no server offer")
 	}
 	err = cl.Demux(buf[:n], 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertClState(StateRequesting)
+	assertClState(StateSelecting)
 
-	// CLIENT SEND OUT ACK.
+	// CLIENT SEND OUT REQUEST.
 	n, err = cl.Encapsulate(buf[:], 0)
 	if err != nil {
 		t.Fatal(err)
 	} else if n == 0 {
-		t.Fatal("no data exchanged")
+		t.Fatal("no client request")
 	}
+	assertClState(StateRequesting)
 	err = sv.Demux(buf[:n], 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// SERVER REPLIES WITH ACK.
+	n, err = sv.Encapsulate(buf[:], 0)
+	if err != nil {
+		t.Fatal(err)
+	} else if n == 0 {
+		t.Fatal("no server reply")
+	}
+	err = cl.Demux(buf[:n], 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertClState(StateBound)
 }
