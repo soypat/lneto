@@ -13,7 +13,7 @@ var (
 	errNoNullTerm         = errors.New("DNS name missing null terminator")
 	errCalcLen            = errors.New("DNS calculated name label length exceeds remaining buffer length")
 	errCantAddLabel       = errors.New("long/empty/zterm/escape DNS label or not enough space")
-	errBaseLen            = errors.New("insufficient data for base length type")
+	errBaseLen            = errors.New("DNS frame length too short")
 	errReserved           = errors.New("segment prefix is reserved")
 	errTooManyPtr         = errors.New("too many pointers (>10)")
 	errInvalidPtr         = errors.New("invalid pointer")
@@ -41,8 +41,11 @@ type Frame struct {
 	buf []byte
 }
 
-func NewFrame(buf []byte) Frame {
-	return Frame{buf: buf}
+func NewFrame(buf []byte) (Frame, error) {
+	if len(buf) < SizeHeader {
+		return Frame{}, errBaseLen
+	}
+	return Frame{buf: buf}, nil
 }
 
 func (frm Frame) TxID() uint16 {

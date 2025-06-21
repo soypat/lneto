@@ -66,7 +66,10 @@ func (m *Message) Decode(msg []byte) (_ uint16, incompleteButOK bool, err error)
 		return 0, false, errResTooLong
 	}
 	m.Reset()
-	hdr := NewFrame(msg)
+	hdr, err := NewFrame(msg)
+	if err != nil {
+		return 0, false, err
+	}
 	nq := int(hdr.QDCount())
 	off := uint16(SizeHeader)
 	// Return tooManyErr if found to flag to the caller that the message was
@@ -175,7 +178,10 @@ func (m *Message) AppendTo(buf []byte, txid uint16, flags HeaderFlags) (_ []byte
 	nauth := uint16(len(m.Authorities))
 	nadd := uint16(len(m.Additionals))
 	var hdr [SizeHeader]byte
-	f := NewFrame(hdr[:])
+	f, err := NewFrame(hdr[:])
+	if err != nil {
+		return buf, err
+	}
 	f.SetTxID(txid)
 	f.SetFlags(flags)
 	f.SetQDCount(nq)
@@ -406,6 +412,9 @@ func NewName(domain string) (Name, error) {
 
 // Len returns the length over-the-wire of the encoded Name.
 func (n *Name) Len() uint16 {
+	if len(n.data) > math.MaxUint16 {
+		panic("size of DNS name data overflows 16bits")
+	}
 	return uint16(len(n.data))
 }
 

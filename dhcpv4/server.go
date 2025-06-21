@@ -203,7 +203,10 @@ func (sv *Server) Encapsulate(carrierData []byte, frameOffset int) (int, error) 
 	copy(dfrm.CHAddrAs6()[:], client.hwaddr[:])
 	dfrm.SetMagicCookie(MagicCookie)
 	if carrierIsIP {
-		internal.SetIPDestinationAddr(carrierData, 0, client.addr[:])
+		err = internal.SetIPAddrs(carrierData, 0, sv.siaddr[:], client.addr[:])
+		if err != nil {
+			return 0, err
+		}
 	}
 	client.state = futureState
 
@@ -227,13 +230,13 @@ func (sv *Server) getClientByIP(ip [4]byte) (serverEntry, [36]byte, bool) {
 	return serverEntry{}, [36]byte{}, false
 }
 
-func getSrcIPPort(ipCarrier []byte) (addr []byte, port uint16, err error) {
-	addr, _, off, err := internal.GetIPSourceAddr(ipCarrier)
+func getSrcIPPort(ipCarrier []byte) (srcaddr []byte, port uint16, err error) {
+	srcaddr, _, _, off, err := internal.GetIPAddr(ipCarrier)
 	if err != nil {
-		return addr, port, err
+		return srcaddr, port, err
 	} else if len(ipCarrier[off:]) < 2 {
-		return addr, port, errors.New("getSrcIPPort got only IP layer")
+		return srcaddr, port, errors.New("getSrcIPPort got only IP layer")
 	}
 	port = binary.BigEndian.Uint16(ipCarrier[off:]) // TCP and UDP share same port offsets.
-	return addr, port, nil
+	return srcaddr, port, nil
 }

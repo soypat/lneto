@@ -12,11 +12,13 @@ type StackUDPPort struct {
 	h      node
 	vld    lneto.Validator
 	rmport uint16
+	raddr  []byte
 }
 
-func (sudp *StackUDPPort) SetStackNode(node StackNode, rmport uint16) {
+func (sudp *StackUDPPort) SetStackNode(node StackNode, raddr []byte, rmport uint16) {
 	sudp.h = nodeFromStackNode(node, node.LocalPort(), node.Protocol())
 	sudp.rmport = rmport
+	sudp.raddr = append(sudp.raddr[:0], raddr...)
 }
 
 func (sudp *StackUDPPort) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
@@ -42,6 +44,7 @@ func (sudp *StackUDPPort) Demux(carrierData []byte, frameOffset int) error {
 	if dst != sudp.h.port {
 		return nil // Not meant for us.
 	}
+	// TODO remote ip address handling.
 
 	src := ufrm.SourcePort()
 	if sudp.rmport != 0 && src != sudp.rmport {

@@ -14,6 +14,7 @@ import (
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/dhcpv4"
+	"github.com/soypat/lneto/dns"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internal/ltesto"
@@ -138,6 +139,7 @@ type Stack struct {
 	arp  internet.NodeARP
 	udps internet.StackPorts
 	dhcp dhcpv4.Client
+	dns  dns.Client
 }
 
 func (s *Stack) Demux(b []byte, _ int) error {
@@ -194,6 +196,34 @@ func (s *Stack) Reset(mac [6]byte, addr netip.Addr, mtu uint16) error {
 	return nil
 }
 
+func (s *Stack) StartLookupNetIP(host string) error {
+	name, err := dns.NewName(host)
+	if err != nil {
+		return err
+	}
+	err = s.dns.StartResolve(dns.ResolveConfig{
+		Questions: []dns.Question{
+			{
+				Name:  name,
+				Type:  dns.TypeA,
+				Class: dns.ClassINET,
+			},
+		},
+		EnableRecursion: true,
+	})
+	if err != nil {
+		return err
+	}
+	var u internet.StackUDPPort
+	u.SetStackNode(&s.dns, nil, dns.ServerPort)
+	err = s.udps.Register(&u)
+	if err != nil {
+		return err
+	}
+	return err
+	return nil
+}
+
 func (s *Stack) BeginDHCPRequest() error {
 	addr4 := s.ip.Addr().As4()
 	var buf [4]byte
@@ -208,7 +238,7 @@ func (s *Stack) BeginDHCPRequest() error {
 		return err
 	}
 	var u internet.StackUDPPort
-	u.SetStackNode(&s.dhcp, dhcpv4.DefaultServerPort)
+	u.SetStackNode(&s.dhcp, nil, dhcpv4.DefaultServerPort)
 	err = s.udps.Register(&u)
 	if err != nil {
 		return err

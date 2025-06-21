@@ -123,7 +123,7 @@ func (listener *NodeTCPListener) Demux(carrierData []byte, tcpFrameOffset int) e
 	if err != nil {
 		return err
 	}
-	addr, _, _, err := internal.GetIPSourceAddr(carrierData)
+	srcaddr, _, _, _, err := internal.GetIPAddr(carrierData)
 	if err != nil {
 		return err
 	}
@@ -133,11 +133,11 @@ func (listener *NodeTCPListener) Demux(carrierData []byte, tcpFrameOffset int) e
 	}
 	src := tfrm.SourcePort()
 	// Try to demux in accepted:
-	demuxed, err := listener.tryDemux(listener.accepted, src, addr, carrierData, tcpFrameOffset)
+	demuxed, err := listener.tryDemux(listener.accepted, src, srcaddr, carrierData, tcpFrameOffset)
 	if demuxed {
 		return err
 	}
-	demuxed, err = listener.tryDemux(listener.ready, src, addr, carrierData, tcpFrameOffset)
+	demuxed, err = listener.tryDemux(listener.ready, src, srcaddr, carrierData, tcpFrameOffset)
 	if demuxed {
 		return err
 	}

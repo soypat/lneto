@@ -194,7 +194,7 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 	if off >= len(buf) {
 		return errors.New("bad offset in TCPConn.Recv")
 	}
-	raddr, id, _, err := internal.GetIPSourceAddr(buf[:off])
+	raddr, _, id, _, err := internal.GetIPAddr(buf[:off])
 	if err != nil {
 		return err
 	}
@@ -216,7 +216,7 @@ func (conn *Conn) Encapsulate(buf []byte, off int) (n int, err error) {
 	if len(conn.remoteAddr) == 0 {
 		return 0, errors.New("unset IP address")
 	}
-	raddr, _, _, err := internal.GetIPSourceAddr(buf[:off])
+	raddr, _, _, _, err := internal.GetIPAddr(buf[:off])
 	if err != nil {
 		return 0, err
 	} else if len(raddr) != len(conn.remoteAddr) {
@@ -226,7 +226,7 @@ func (conn *Conn) Encapsulate(buf []byte, off int) (n int, err error) {
 	if err != nil {
 		return 0, err
 	}
-	err = internal.SetIPDestinationAddr(buf[:off], conn.ipID, conn.remoteAddr)
+	err = internal.SetIPAddrs(buf[:off], conn.ipID, nil, conn.remoteAddr)
 	if err != nil {
 		return 0, err
 	}
