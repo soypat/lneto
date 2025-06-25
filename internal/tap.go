@@ -209,7 +209,7 @@ func NewBridge(name string) (*Bridge, error) {
 	if err != nil {
 		return nil, err
 	}
-	proto := htons(syscall.ETH_P_IP)
+	proto := htons(syscall.ETH_P_ALL)
 	fd, err := syscall.Socket(syscall.AF_PACKET, syscall.SOCK_RAW, int(proto))
 	if err != nil {
 		return nil, err

@@ -46,8 +46,8 @@ func (c *Cookie) ParseBytes(cookie []byte) error {
 	return c.Parse()
 }
 
-// CopyTo makes a copy of the cookie in dst argument. No memory is shared between cookies.
-func (c *Cookie) CopyTo(dst *Cookie) {
+// CopyFrom makes a copy of the argument cookie to the receiver dst argument. No memory is shared between cookies.
+func (dst *Cookie) CopyFrom(c Cookie) {
 	dst.buf = append(dst.buf[:0], c.buf...)
 	dst.kvs = append(dst.kvs[:0], c.kvs...)
 }

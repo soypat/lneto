@@ -134,12 +134,13 @@ func run() (err error) {
 }
 
 type Stack struct {
-	link internet.StackEthernet
-	ip   internet.StackIP
-	arp  internet.NodeARP
-	udps internet.StackPorts
-	dhcp dhcpv4.Client
-	dns  dns.Client
+	link   internet.StackEthernet
+	ip     internet.StackIP
+	arp    internet.NodeARP
+	udps   internet.StackPorts
+	dhcp   dhcpv4.Client
+	dns    dns.Client
+	lookup dns.Message
 }
 
 func (s *Stack) Demux(b []byte, _ int) error {
@@ -196,7 +197,7 @@ func (s *Stack) Reset(mac [6]byte, addr netip.Addr, mtu uint16) error {
 	return nil
 }
 
-func (s *Stack) StartLookupNetIP(host string) error {
+func (s *Stack) StartLookupIP(host string) error {
 	name, err := dns.NewName(host)
 	if err != nil {
 		return err
@@ -222,6 +223,12 @@ func (s *Stack) StartLookupNetIP(host string) error {
 	}
 	return err
 	return nil
+}
+
+func (s *Stack) ResultLookupIP() ([]netip.Addr, error) {
+	s.dns.MessageCopyTo()
+	// s.dns.Answers()
+	return nil, nil
 }
 
 func (s *Stack) BeginDHCPRequest() error {

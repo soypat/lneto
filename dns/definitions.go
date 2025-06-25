@@ -9,6 +9,7 @@ import (
 
 // common errors. Taken from golang.org/x/net/dns/dnsmessage module.
 var (
+	errNoResponse         = errors.New("no DNS response")
 	errNameTooLong        = errors.New("DNS name exceeds maximum length")
 	errNoNullTerm         = errors.New("DNS name missing null terminator")
 	errCalcLen            = errors.New("DNS calculated name label length exceeds remaining buffer length")
@@ -139,6 +140,10 @@ func (flags HeaderFlags) ResponseCode() RCode { return RCode(flags & 0b1111) }
 func (flags HeaderFlags) String() string {
 	buf := make([]byte, 0, 16)
 	return string(flags.appendF(buf))
+}
+
+func (flags RCode) Error() string {
+	return flags.String()
 }
 
 func (flags HeaderFlags) appendF(buf []byte) []byte {

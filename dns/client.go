@@ -91,6 +91,18 @@ func (c *Client) isClosed() bool {
 	return c.state == dnsClosed || c.state == dnsAborted
 }
 
+func (c *Client) MessageCopyTo(dst *Message) (done bool, err error) {
+	if !c.respFlags.IsResponse() {
+		return false, nil
+	}
+	dst.CopyFrom(c.msg)
+	rcode := c.respFlags.ResponseCode()
+	if rcode != 0 {
+		return true, rcode
+	}
+	return true, nil
+}
+
 func (c *Client) Answers() []Resource {
 	if c.state != dnsDone {
 		return nil

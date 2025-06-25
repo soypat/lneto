@@ -245,7 +245,7 @@ func (m *Message) AddQuestions(questions []Question) {
 	m.Questions = slices.Grow(m.Questions, len(questions))
 	m.Questions = m.Questions[:qoff+len(questions)]
 	for i := range questions {
-		m.Questions[qoff+i].Name.CloneFrom(questions[i].Name)
+		m.Questions[qoff+i].Name.CopyFrom(questions[i].Name)
 		m.Questions[qoff+i].Type = questions[i].Type
 		m.Questions[qoff+i].Class = questions[i].Class
 	}
@@ -418,7 +418,7 @@ func (n *Name) Len() uint16 {
 	return uint16(len(n.data))
 }
 
-func (n *Name) CloneFrom(ex Name) {
+func (n *Name) CopyFrom(ex Name) {
 	n.data = append(n.data[:0], ex.data...)
 }
 
@@ -572,4 +572,49 @@ LOOP:
 		newOff = currOff
 	}
 	return newOff, nil
+}
+
+func (dst *Message) CopyFrom(m Message) {
+	reuseGrowSlice(&dst.Questions, len(m.Questions))
+	reuseGrowSlice(&dst.Answers, len(m.Answers))
+	reuseGrowSlice(&dst.Authorities, len(m.Authorities))
+	reuseGrowSlice(&dst.Additionals, len(m.Additionals))
+	for i := range dst.Questions {
+		dst.Questions[i].CopyFrom(m.Questions[i])
+	}
+	for i := range dst.Answers {
+		dst.Answers[i].CopyFrom(m.Answers[i])
+	}
+	for i := range dst.Answers {
+		dst.Authorities[i].CopyFrom(m.Authorities[i])
+	}
+	for i := range dst.Answers {
+		dst.Additionals[i].CopyFrom(m.Additionals[i])
+	}
+}
+
+func (dst *Question) CopyFrom(q Question) {
+	dst.Name.CopyFrom(q.Name)
+	dst.Class = q.Class
+	dst.Type = q.Type
+}
+
+func (dst *Resource) CopyFrom(r Resource) {
+	dst.Header.CopyFrom(r.Header)
+	dst.data = append(dst.data[:0], r.data...)
+}
+
+func (dst *ResourceHeader) CopyFrom(rh ResourceHeader) {
+	dst.Name.CopyFrom(rh.Name)
+	dst.Type = rh.Type
+	dst.Class = rh.Class
+	dst.TTL = rh.TTL
+	dst.Length = rh.Length
+}
+
+func reuseGrowSlice[T any](dst *[]T, n int) {
+	if n == 0 {
+		return
+	}
+	*dst = slices.Grow(*dst, n)[:n]
 }
