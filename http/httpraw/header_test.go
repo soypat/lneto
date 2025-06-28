@@ -144,3 +144,61 @@ func strSameSite(mode http.SameSite) string {
 		panic("invalid same site")
 	}
 }
+
+func TestHeaderNormalizeKey(t *testing.T) {
+	var tests = []struct {
+		key      string
+		wantnorm string
+	}{
+		{key: "", wantnorm: ""},
+		{key: "a-a-a", wantnorm: "A-A-A"},
+		{key: "a-a-a-", wantnorm: "A-A-A-"},
+		{key: "-", wantnorm: "-"},
+		{key: "CONTENT", wantnorm: "Content"},
+		{key: "cONTENT", wantnorm: "Content"},
+		{key: "Content-Length", wantnorm: "Content-Length"},
+		{key: "Content-length", wantnorm: "Content-Length"},
+		{key: "content-length", wantnorm: "Content-Length"},
+		{key: "conTent-lENgth", wantnorm: "Content-Length"},
+		{key: "conTent-lENgth-", wantnorm: "Content-Length-"},
+	}
+	for _, test := range tests {
+		gotKey := []byte(test.key)
+		modified := NormalizeHeaderKey(gotKey)
+		if string(gotKey) != test.wantnorm {
+			t.Errorf("mismatch want %q got %q", test.wantnorm, gotKey)
+		}
+		wantMod := string(gotKey) != test.key
+		if wantMod != modified {
+			t.Errorf("mismatch want mod=%v, got mod=%v", wantMod, modified)
+		}
+	}
+}
+
+func TestCopyNormalizedHeaderValue(t *testing.T) {
+	var tests = []struct {
+		value    string
+		wantnorm string
+	}{
+		{value: "abc\r\n\tdef\r\n\tghi", wantnorm: "abc def ghi"},
+		{value: "abc\r\n\tabc", wantnorm: "abc abc"},
+		{value: "abc\n\tdef\n\tghi", wantnorm: "abc def ghi"},
+		{value: "abc\n\tdef\n\tghi\n\t", wantnorm: "abc def ghi "},
+		{value: "abc\n\tdef\n\tghi\r\n\t", wantnorm: "abc def ghi "},
+		{value: "", wantnorm: ""},
+		{value: "abc", wantnorm: "abc"},
+	}
+	dst := make([]byte, 256)
+	for _, test := range tests {
+		value := []byte(test.value)
+		n, modified := CopyNormalizedHeaderValue(dst[:len(value)], value)
+		got := dst[:n]
+		if string(got) != test.wantnorm {
+			t.Errorf("mismatch want %q got %q", test.wantnorm, got)
+		}
+		wantMod := string(got) != test.value
+		if wantMod != modified {
+			t.Errorf("mismatch want mod=%v, got mod=%v", wantMod, modified)
+		}
+	}
+}

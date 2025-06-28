@@ -412,10 +412,12 @@ func (*noCopy) Unlock() {}
 //   - content-length -> Content-Length
 //   - cOnTeNt-LenGtH -> Content-Length
 func NormalizeHeaderKey(b []byte) (modified bool) {
+	if len(b) == 0 {
+		return false
+	}
 	const asciiCapDiff = 'a' - 'A'
 	for i := -1; i < len(b); i++ {
-		ch := b[i]
-		nextToUpper := i == -1 || (ch == '-' && i < len(b)-1)
+		nextToUpper := i == -1 || (b[i] == '-' && i < len(b)-1)
 		if nextToUpper {
 			i++
 			isLower := b[i] >= 'a' && b[i] <= 'z'
@@ -442,7 +444,6 @@ func CopyNormalizedHeaderValue(dst []byte, value []byte) (n int, modified bool) 
 	if len(dst) < len(value) {
 		panic("httpraw.CopyNormalizedHeaderValue: dst buffer shorter than length")
 	}
-	lineStart := false
 	write := 0
 	read := 0
 	for {
@@ -453,34 +454,18 @@ func CopyNormalizedHeaderValue(dst []byte, value []byte) (n int, modified bool) 
 		}
 		omit := 1
 		rmStart += read
-		if rmStart > 0 && value[rmStart] == '\r' {
-			rmStart--
-			omit++
-		}
-
 		if rmStart+1 < len(value) && value[rmStart+1] == '\t' {
 			omit++
 		}
-		n := copy(dst[write:], value[:rmStart])
-		read += omit + n
-		write += n
-	}
-	return write, modified
-	for read := 0; read < len(value); read++ {
-		c := value[read]
-		switch {
-		case c == '\r' || c == '\n':
-			lineStart = c == '\n'
-			continue
-		case lineStart && c == '\t':
-			c = ' '
-			modified = true
-		default:
-			lineStart = false
+		if rmStart > 0 && value[rmStart-1] == '\r' {
+			rmStart--
+			omit++
 		}
-		dst[write] = c
-		write++
+		modified = true
+		n := copy(dst[write:], value[read:rmStart])
+		dst[write+n] = ' '
+		read += omit + n
+		write += n + 1
 	}
-	modified = modified || n != len(value)
 	return write, modified
 }
