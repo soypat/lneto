@@ -1,6 +1,7 @@
 package httpraw
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"net/http"
@@ -404,3 +405,82 @@ type noCopy struct{}
 
 func (*noCopy) Lock()   {}
 func (*noCopy) Unlock() {}
+
+// NormalizeKey normalizes a HTTP header key in-place. Returns true if buffer modified.
+// Examples of normalization:
+//   - CONTENT -> Content
+//   - content-length -> Content-Length
+//   - cOnTeNt-LenGtH -> Content-Length
+func NormalizeHeaderKey(b []byte) (modified bool) {
+	const asciiCapDiff = 'a' - 'A'
+	for i := -1; i < len(b); i++ {
+		ch := b[i]
+		nextToUpper := i == -1 || (ch == '-' && i < len(b)-1)
+		if nextToUpper {
+			i++
+			isLower := b[i] >= 'a' && b[i] <= 'z'
+			if isLower {
+				modified = true
+				b[i] -= asciiCapDiff
+			}
+		} else {
+			isUpper := b[i] >= 'A' && b[i] <= 'Z'
+			if isUpper {
+				modified = true
+				b[i] += asciiCapDiff
+			}
+		}
+	}
+	return modified
+}
+
+// CopyNormalizedHeaderValue copies the header value in the value buffer to dst.
+// The result may be shrunk. The target and source buffers can only alias if the
+// destination buffer 0 address is equal to value's 0 address.
+// Header value normalization implies the replacement of \r\n\t with a single space.
+func CopyNormalizedHeaderValue(dst []byte, value []byte) (n int, modified bool) {
+	if len(dst) < len(value) {
+		panic("httpraw.CopyNormalizedHeaderValue: dst buffer shorter than length")
+	}
+	lineStart := false
+	write := 0
+	read := 0
+	for {
+		rmStart := bytes.IndexByte(value[read:], '\n')
+		if rmStart < 0 {
+			write += copy(dst[write:], value[read:])
+			break
+		}
+		omit := 1
+		rmStart += read
+		if rmStart > 0 && value[rmStart] == '\r' {
+			rmStart--
+			omit++
+		}
+
+		if rmStart+1 < len(value) && value[rmStart+1] == '\t' {
+			omit++
+		}
+		n := copy(dst[write:], value[:rmStart])
+		read += omit + n
+		write += n
+	}
+	return write, modified
+	for read := 0; read < len(value); read++ {
+		c := value[read]
+		switch {
+		case c == '\r' || c == '\n':
+			lineStart = c == '\n'
+			continue
+		case lineStart && c == '\t':
+			c = ' '
+			modified = true
+		default:
+			lineStart = false
+		}
+		dst[write] = c
+		write++
+	}
+	modified = modified || n != len(value)
+	return write, modified
+}

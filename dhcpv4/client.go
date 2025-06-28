@@ -267,6 +267,16 @@ func (c *Client) reset(xid uint32) {
 
 func (d *Client) State() ClientState { return d.state }
 
+func (d *Client) BroadcastAddr() [4]byte                   { return d.broadcast }
+func (d *Client) AssignedAddr() [4]byte                    { return d.offer }
+func (d *Client) ServerAddr() [4]byte                      { return d.svip }
+func (d *Client) RouterAddr() [4]byte                      { return d.router }
+func (d *Client) GatewayAddr() [4]byte                     { return d.gateway }
+func (d *Client) RebindingSeconds() uint32                 { return d.tRebind }
+func (d *Client) RenewalSeconds() uint32                   { return d.tRenew }
+func (d *Client) IPLeaseSeconds() uint32                   { return d.tIPLease }
+func (d *Client) AppendDNSServers(dst [][4]byte) [][4]byte { return append(dst, d.dns...) }
+
 func (d *Client) CIDRBits() uint8 {
 	if d.subnet == [4]byte{} {
 		return 0
@@ -287,7 +297,7 @@ var defaultParamReqList = []byte{
 }
 
 func maybeU32(b []byte) uint32 {
-	if len(b) < 4 {
+	if len(b) != 4 {
 		return 0
 	}
 	return binary.BigEndian.Uint32(b)

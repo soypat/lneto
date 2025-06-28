@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -33,12 +34,19 @@ func main() {
 
 func run() (err error) {
 	var (
-		flagInterface = "tap0"
-		flagUseHTTP   = false
+		flagInterface     = "tap0"
+		flagUseHTTP       = false
+		flagHostToResolve = ""
 	)
 	flag.StringVar(&flagInterface, "i", flagInterface, "Interface to use. Either tap* or the name of an existing interface to bridge to.")
 	flag.BoolVar(&flagUseHTTP, "http", flagUseHTTP, "Use HTTP tap interface.")
+	flag.StringVar(&flagHostToResolve, "host", flagHostToResolve, "Hostname to resolve via DNS.")
 	flag.Parse()
+	_, err = dns.NewName(flagHostToResolve)
+	if err != nil {
+		flag.Usage()
+		return err
+	}
 	var iface ltesto.Interface
 	if flagUseHTTP {
 		iface = ltesto.NewHTTPTapClient("http://127.0.0.1:7070")
@@ -87,7 +95,26 @@ func run() (err error) {
 	buf := make([]byte, mtu)
 	var iframes []pcap.Frame
 	lastAction := time.Now()
+	dnsOngoing := false
 	for {
+		dhcpIsDone := stack.dhcp.State() == dhcpv4.StateBound
+		if dhcpIsDone {
+			if !dnsOngoing {
+				err = stack.StartLookupIP(flagHostToResolve)
+				if err != nil {
+					return err
+				}
+				dnsOngoing = true
+			} else {
+				addrs, err := stack.ResultLookupIP()
+				if err == nil {
+					// END PROGRAM.
+					fmt.Println(flagHostToResolve, "resolved to", addrs)
+					return nil
+				}
+			}
+		}
+		_ = dhcpIsDone
 		clear(buf)
 		nwrite, err := stack.Encapsulate(buf[:], 0)
 		if err != nil {
@@ -226,9 +253,23 @@ func (s *Stack) StartLookupIP(host string) error {
 }
 
 func (s *Stack) ResultLookupIP() ([]netip.Addr, error) {
-	s.dns.MessageCopyTo()
-	// s.dns.Answers()
-	return nil, nil
+	done, err := s.dns.MessageCopyTo(&s.lookup)
+	if err != nil {
+		return nil, err
+	} else if !done {
+		return nil, errors.New("DNS not done")
+	}
+	var addrs []netip.Addr
+	ans := s.lookup.Answers
+	for i := range ans {
+		data := ans[i].RawData()
+		if len(data) == 4 {
+			addrs = append(addrs, netip.AddrFrom4([4]byte(data)))
+		} else if len(data) == 16 {
+			addrs = append(addrs, netip.AddrFrom16([16]byte(data)))
+		}
+	}
+	return addrs, nil
 }
 
 func (s *Stack) BeginDHCPRequest() error {
