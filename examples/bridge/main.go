@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,8 @@ import (
 	"github.com/soypat/lneto/internet"
 	"github.com/soypat/lneto/internet/pcap"
 )
+
+var softRand = time.Now().Unix()
 
 func main() {
 	err := run()
@@ -37,11 +40,14 @@ func run() (err error) {
 		flagInterface     = "tap0"
 		flagUseHTTP       = false
 		flagHostToResolve = ""
+		flagRequestedIP   = ""
 	)
 	flag.StringVar(&flagInterface, "i", flagInterface, "Interface to use. Either tap* or the name of an existing interface to bridge to.")
 	flag.BoolVar(&flagUseHTTP, "http", flagUseHTTP, "Use HTTP tap interface.")
 	flag.StringVar(&flagHostToResolve, "host", flagHostToResolve, "Hostname to resolve via DNS.")
+	flag.StringVar(&flagRequestedIP, "addr", flagRequestedIP, "IP address to request via DHCP.")
 	flag.Parse()
+	fmt.Println("softrand", softRand)
 	_, err = dns.NewName(flagHostToResolve)
 	if err != nil {
 		flag.Usage()
@@ -72,7 +78,7 @@ func run() (err error) {
 		return err
 	}
 	brHW := nicHW
-	brHW[5]++ // We'll be using a similar HW address but with NIC specific identifier modified.
+	brHW[5] += byte(softRand)%128 + 1 // We'll be using a similar HW address but with NIC specific identifier modified.
 	mtu, err := iface.MTU()
 	if err != nil {
 		return err
@@ -87,7 +93,7 @@ func run() (err error) {
 	if err != nil {
 		return err
 	}
-	err = stack.BeginDHCPRequest()
+	err = stack.BeginDHCPRequest([4]byte{192, 168, 1, 199})
 	if err != nil {
 		return err
 	}
@@ -272,15 +278,14 @@ func (s *Stack) ResultLookupIP() ([]netip.Addr, error) {
 	return addrs, nil
 }
 
-func (s *Stack) BeginDHCPRequest() error {
-	addr4 := s.ip.Addr().As4()
+func (s *Stack) BeginDHCPRequest(request [4]byte) error {
 	var buf [4]byte
 	rand.Read(buf[:])
 	xid := binary.LittleEndian.Uint32(buf[:])
 	err := s.dhcp.BeginRequest(xid, dhcpv4.RequestConfig{
-		RequestedAddr:      addr4,
+		RequestedAddr:      request,
 		ClientHardwareAddr: s.link.HardwareAddr6(),
-		Hostname:           "lneto",
+		Hostname:           "lneto" + strconv.FormatInt(softRand%100, 16),
 	})
 	if err != nil {
 		return err

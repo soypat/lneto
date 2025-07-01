@@ -40,6 +40,7 @@ type StackNode interface {
     // A change in the ID means the node is no longer valid and should be discarded.
     // A change in the ID could mean the connection was closed by the user or that the node will not send nor receive any more data over said connection ID.
 	ConnectionID() *uint64
+}
 ```
 
 ## Install
