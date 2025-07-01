@@ -30,6 +30,11 @@ const (
 	StateRebooting  // rebooting
 )
 
+// HasIP returns true if the state indicates the Client has an IP address assigned by server.
+func (state ClientState) HasIP() bool {
+	return state == StateBound || state == StateRenewing || state == StateRebinding
+}
+
 func AppendOption(dst []byte, opt OptNum, data ...byte) []byte {
 	if len(data) > 255 {
 		panic("option data too long")

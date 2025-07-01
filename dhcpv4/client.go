@@ -25,7 +25,8 @@ type Client struct {
 	currentXID uint32
 	state      ClientState
 	offer      [4]byte
-	svip       [4]byte
+	svip       [4]byte // OptServerIdentification.
+	siip       [4]byte // SIAddr.
 	reqIP      [4]byte
 	router     [4]byte
 	subnet     [4]byte
@@ -79,6 +80,18 @@ func (c *Client) setIP(b []byte, frameOffset int) {
 		// Note: Not exactly needed for all servers.
 		const ecnmask = 0b1100_0000
 		ifrm.SetToS(ecnmask)
+	}
+	src := ifrm.SourceAddr()
+	for i := range src {
+		src[i] = 0
+	}
+	dst := ifrm.DestinationAddr()[:]
+	if c.svip == ([4]byte{}) {
+		for i := range dst {
+			dst[i] = 255
+		}
+	} else {
+		copy(dst, c.svip[:])
 	}
 }
 
@@ -177,7 +190,7 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 			// Lock in on this offer.
 			c.gateway = *frm.GIAddr()
 			c.offer = *frm.YIAddr()
-			c.svip = *frm.SIAddr()
+			c.siip = *frm.SIAddr()
 		}
 
 	case StateRequesting:
@@ -246,10 +259,16 @@ func (c *Client) setHeader(frm Frame) {
 	frm.SetXID(c.currentXID)
 	frm.SetHardware(1, 6, 0)
 	frm.SetSecs(1)
-	if c.state == StateRequesting || c.state == StateSelecting || c.state == StateBound || c.state == StateRenewing {
+	if c.state.HasIP() {
 		copy(frm.CIAddr()[:], c.offer[:])
 	}
-	copy(frm.SIAddr()[:], c.svip[:])
+	if c.state == StateInit {
+		siaddr := frm.SIAddr()[:]
+		for i := range siaddr {
+			siaddr[i] = 255
+		}
+	}
+
 	copy(frm.YIAddr()[:], c.offer[:])
 	copy(frm.CHAddrAs6()[:], c.clientMAC[:])
 	frm.SetMagicCookie(MagicCookie)

@@ -57,9 +57,11 @@ func (frm Frame) SetHardware(Type, Len, Ops uint8) {
 	frm.buf[1], frm.buf[2], frm.buf[3] = Type, Len, Ops
 }
 
+// XID is the transaction ID. Is unique and constant for a DHCP request/response exchange of packets.
 func (frm Frame) XID() uint32       { return binary.BigEndian.Uint32(frm.buf[4:8]) }
 func (frm Frame) SetXID(xid uint32) { binary.BigEndian.PutUint32(frm.buf[4:8], xid) }
 
+// Secs is seconds elapsed.
 func (frm Frame) Secs() uint16        { return binary.BigEndian.Uint16(frm.buf[8:10]) }
 func (frm Frame) SetSecs(secs uint16) { binary.BigEndian.PutUint16(frm.buf[8:10], secs) }
 
@@ -72,7 +74,7 @@ func (frm Frame) CIAddr() *[4]byte {
 	return (*[4]byte)(frm.buf[12:16])
 }
 
-// YIAddr is the IP address offered by the server to the client.
+// YIAddr is the IP address offered by the server to the client. Your (client) IP Address.
 func (frm Frame) YIAddr() *[4]byte {
 	return (*[4]byte)(frm.buf[16:20])
 }
@@ -83,7 +85,7 @@ func (frm Frame) SIAddr() *[4]byte {
 	return (*[4]byte)(frm.buf[20:24])
 }
 
-// GIAddr is the gateway IP address.
+// GIAddr is the gateway IP address. Is also known as the Relay Agent IP Address.
 func (frm Frame) GIAddr() *[4]byte {
 	return (*[4]byte)(frm.buf[24:28])
 }
