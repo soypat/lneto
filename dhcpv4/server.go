@@ -136,8 +136,14 @@ func (sv *Server) Demux(carrierData []byte, frameOffset int) error {
 		sv.pending++
 
 	case MsgRequest:
-		if client.state != StateSelecting && client.state != StateRequesting {
+		if !clientExists {
+			err = errors.New("request for non existing client?")
+		} else if dfrm.XID() != client.xid {
+			err = errors.New("unexpected XID for client")
+		} else if client.state != StateSelecting && client.state != StateRequesting {
 			err = errors.New("DHCP request unexpected state")
+		}
+		if err != nil {
 			break
 		}
 		client.state = StateRequesting
@@ -151,16 +157,15 @@ func (sv *Server) Demux(carrierData []byte, frameOffset int) error {
 	}
 	sv.hosts[clientIDRaw] = client
 	return nil
-	// n := copy(dfrm.OptionsPayload(), optBuf)
 }
 
 func (sv *Server) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
 	carrierIsIP := frameOffset >= 28
 	dfrm, err := NewFrame(carrierData[frameOffset:])
-	optBuf := dfrm.OptionsPayload()[:0]
+	optBuf := dfrm.OptionsPayload()[:]
 	if err != nil {
 		return 0, err
-	} else if cap(optBuf) < 255 {
+	} else if len(optBuf) < 255 {
 		return 0, errOptionNotFit
 	}
 	if sv.pending == 0 {
@@ -181,15 +186,27 @@ func (sv *Server) Encapsulate(carrierData []byte, frameOffset int) (int, error) 
 		return 0, nil // Nothing to do.
 	}
 	futureState := ClientState(0)
+	var nopt int
 	switch client.state {
 	case StateInit:
 		futureState = StateSelecting
-		optBuf = AppendOption(optBuf, OptMessageType, byte(MsgOffer))
+		nopt, err = EncodeOption(optBuf[nopt:], OptMessageType, byte(MsgOffer))
 	case StateRequesting:
 		futureState = StateBound
-		optBuf = AppendOption(optBuf, OptMessageType, byte(MsgAck))
+		nopt, err = EncodeOption(optBuf[nopt:], OptMessageType, byte(MsgAck))
 		*dfrm.CIAddr() = client.addr
 	}
+	if err != nil {
+		return 0, err
+	}
+	n, _ := EncodeOption(optBuf[nopt:], OptServerIdentification, sv.siaddr[:]...)
+	nopt += n
+	if sv.gwaddr != [4]byte{} {
+		n, _ = EncodeOption(optBuf[nopt:], OptRouter, sv.gwaddr[:]...)
+		nopt += n
+	}
+	optBuf[nopt] = byte(OptEnd)
+	nopt++
 
 	dfrm.ClearHeader()
 	dfrm.SetOp(OpReply)
@@ -208,12 +225,13 @@ func (sv *Server) Encapsulate(carrierData []byte, frameOffset int) (int, error) 
 			return 0, err
 		}
 	}
+
 	client.state = futureState
 
 	// Set server state.
 	sv.hosts[clientID] = client
 	sv.pending--
-	return optionsOffset + len(optBuf), nil
+	return optionsOffset + nopt, nil
 }
 
 func (sv *Server) getClient(clientID [36]byte) (serverEntry, bool) {

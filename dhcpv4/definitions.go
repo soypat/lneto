@@ -35,18 +35,19 @@ func (state ClientState) HasIP() bool {
 	return state == StateBound || state == StateRenewing || state == StateRebinding
 }
 
-func AppendOption(dst []byte, opt OptNum, data ...byte) []byte {
-	if len(data) > 255 {
-		panic("option data too long")
-	}
-	dst = append(dst, byte(opt), byte(len(data)))
-	dst = append(dst, data...)
-	return dst
+func EncodeOptionString(dst []byte, opt OptNum, data string) (int, error) {
+	bdata := unsafe.Slice(unsafe.StringData(data), len(data))
+	return EncodeOption(dst, opt, bdata...)
 }
 
-func AppendOptionString(dst []byte, opt OptNum, data string) []byte {
-	bdata := unsafe.Slice(unsafe.StringData(data), len(data))
-	return AppendOption(dst, opt, bdata...)
+func EncodeOption16(dst []byte, opt OptNum, v uint16) (int, error) {
+	// See binary.BigEndian.PutUint16()
+	return EncodeOption(dst, opt, byte(v>>8), byte(v))
+}
+
+func EncodeOption32(dst []byte, opt OptNum, v uint32) (int, error) {
+	// See binary.BigEndian.PutUint32()
+	return EncodeOption(dst, opt, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
 }
 
 func EncodeOption(dst []byte, opt OptNum, data ...byte) (int, error) {
@@ -66,6 +67,8 @@ type OptNum uint8
 
 // DHCP options. Taken from https://help.sonicwall.com/help/sw/eng/6800/26/2/3/content/Network_DHCP_Server.042.12.htm.
 const (
+	OptEnd OptNum = 255 // end options
+
 	OptWordAligned                 OptNum = 0  // word-aligned
 	OptSubnetMask                  OptNum = 1  // subnet mask
 	OptTimeOffset                  OptNum = 2  // Time offset in seconds from UTC
@@ -128,6 +131,7 @@ const (
 	OptRebindingTimeValue          OptNum = 59 // DHCP rebinding (T2) time
 	OptClientIdentifier            OptNum = 60 // Client identifier
 	OptClientIdentifier1           OptNum = 61 // Client identifier(1)
+
 )
 
 type Op byte

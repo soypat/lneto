@@ -42,6 +42,7 @@ type RequestConfig struct {
 	ClientHardwareAddr [6]byte
 	// Optional hostname to request.
 	Hostname string
+	ClientID string
 }
 
 func (c *Client) BeginRequest(xid uint32, cfg RequestConfig) error {
@@ -108,24 +109,29 @@ func (c *Client) Encapsulate(carrierFrame []byte, frameOffset int) (int, error) 
 	if err != nil {
 		return 0, err
 	}
+	opts := frm.OptionsPayload()
+	if len(opts) < 255 {
+		return 0, errors.New("too short packet for options")
+	}
 
-	// var options []Option
-	// var nextState ClientState
-	optBuf := c.auxbuf[:0]
 	var nextState ClientState
+	var numOpts int
 	switch c.state {
 	case StateInit:
 		// Send out discover.
-		optBuf = AppendOption(optBuf, OptMessageType, byte(MsgDiscover))
-		optBuf = AppendOption(optBuf, OptParameterRequestList, defaultParamReqList...)
-		optBuf = AppendOption(optBuf, OptClientIdentifier, c.clientMAC[:]...)
+		n, _ := EncodeOption(opts[numOpts:], OptMessageType, byte(MsgDiscover))
+		numOpts += n
+		n, _ = EncodeOption(opts[numOpts:], OptParameterRequestList, defaultParamReqList...)
+		numOpts += n
 		maxlen := len(dst)
 		if maxlen > math.MaxUint16 {
 			maxlen = math.MaxUint16
 		}
-		optBuf = AppendOption(optBuf, OptMaximumMessageSize, byte(maxlen>>8), byte(maxlen))
+		n, _ = EncodeOption16(opts[numOpts:], OptMaximumMessageSize, uint16(maxlen))
+		numOpts += n
 		if c.reqIP != [4]byte{} {
-			optBuf = AppendOption(optBuf, OptRequestedIPaddress, c.reqIP[:]...)
+			n, _ = EncodeOption(opts[numOpts:], OptRequestedIPaddress, c.reqIP[:]...)
+			numOpts += n
 		}
 		nextState = StateSelecting
 
@@ -134,27 +140,33 @@ func (c *Client) Encapsulate(carrierFrame []byte, frameOffset int) (int, error) 
 			return 0, nil // Offer not yet received.
 		}
 		// Send out request, we know we've received an offer by now.
-		optBuf = AppendOption(optBuf, OptMessageType, byte(MsgRequest))
-		optBuf = AppendOption(optBuf, OptRequestedIPaddress, c.offer[:]...)
-		optBuf = AppendOption(optBuf, OptServerIdentification, c.svip[:]...)
+		n, _ := EncodeOption(opts[numOpts:], OptMessageType, byte(MsgRequest))
+		numOpts += n
+		n, _ = EncodeOption(opts[numOpts:], OptRequestedIPaddress, c.offer[:]...)
+		numOpts += n
+		n, _ = EncodeOption(opts[numOpts:], OptServerIdentification, c.svip[:]...)
+		numOpts += n
 		nextState = StateRequesting
 
 	default:
 		return 0, errors.New("unhandled state")
 	}
+	n, _ := EncodeOption(opts[numOpts:], OptClientIdentifier, c.clientMAC[:]...)
+	numOpts += n
 	if len(c.reqHostname) > 0 {
-		optBuf = AppendOptionString(optBuf, OptHostName, c.reqHostname)
+		n, err := EncodeOptionString(opts[numOpts:], OptHostName, c.reqHostname)
+		numOpts += n
+		if err != nil {
+			return 0, err
+		}
 	}
-	optBuf = append(optBuf, 0xff) // End mark.
-	options := frm.OptionsPayload()
-	if len(optBuf) > len(options) {
-		return 0, errors.New("DHCPv4 short buffer for options")
-	}
+
+	opts[numOpts] = byte(OptEnd)
+	numOpts++
 	c.setHeader(frm)
-	n := copy(options, optBuf)
 	c.setIP(carrierFrame, frameOffset)
 	c.state = nextState
-	return optionsOffset + n, nil
+	return optionsOffset + numOpts, nil
 }
 
 func (c *Client) Demux(carrierData []byte, frameOffset int) error {
