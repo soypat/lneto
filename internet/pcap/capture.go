@@ -9,6 +9,7 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/arp"
+	"github.com/soypat/lneto/dhcpv4"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/http/httpraw"
 	"github.com/soypat/lneto/ipv4"
@@ -238,7 +239,6 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 		}
 	}
 	return pc.captureIPProto(proto, dst, pkt, end, protoErrs...)
-
 }
 
 func (pc *PacketBreakdown) captureIPProto(proto lneto.IPProto, dst []Frame, pkt []byte, bitOffset int, ipProtoErrs ...error) (_ []Frame, err error) {
@@ -321,7 +321,49 @@ func (pc *PacketBreakdown) CaptureUDP(dst []Frame, pkt []byte, bitOffset int) ([
 	finfo.Fields = append(finfo.Fields, baseUDPFields[:]...)
 	dst = append(dst, finfo)
 	end := bitOffset + 8*octet
-	dst = append(dst, remainingFrameInfo(unknownPayloadProto, FieldClassPayload, end, octet*len(pkt)))
+	payload := ufrm.Payload()
+	if dhcpv4.PayloadIsDHCPv4(payload) {
+		return pc.CaptureDHCPv4(dst, pkt, end)
+	} else {
+		dst = append(dst, remainingFrameInfo(unknownPayloadProto, FieldClassPayload, end, octet*len(pkt)))
+	}
+	return dst, nil
+}
+
+func (pc *PacketBreakdown) CaptureDHCPv4(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
+	if bitOffset%8 != 0 {
+		return nil, errors.New("DHCP must be parsed at byte boundary")
+	}
+	dhcpData := pkt[bitOffset/8:]
+	dfrm, err := dhcpv4.NewFrame(dhcpData)
+	if err != nil {
+		return nil, err
+	}
+	finfo := Frame{
+		Protocol:        "DHCPv4",
+		PacketBitOffset: bitOffset,
+	}
+	magic := dfrm.MagicCookie()
+	if magic != dhcpv4.MagicCookie {
+		finfo.Errors = append(finfo.Errors, errors.New("incorrect DHCPv4 magic cookie"))
+	}
+	finfo.Fields = append(finfo.Fields, baseDHCPv4Fields[:]...)
+	options := dfrm.OptionsPayload()
+	if len(options) > 0 {
+		err = dfrm.ForEachOption(func(optoff int, op dhcpv4.OptNum, data []byte) error {
+			finfo.Fields = append(finfo.Fields, FrameField{
+				Name:           op.String(),
+				Class:          FieldClassOptions,
+				FrameBitOffset: optoff * octet,
+				BitLength:      (2 + len(data)) * octet,
+			})
+			return nil
+		})
+		if err != nil {
+			finfo.Errors = append(finfo.Errors, err)
+		}
+	}
+	dst = append(dst, finfo)
 	return dst, nil
 }
 
@@ -547,6 +589,7 @@ const (
 	FieldClassOptions                     // options
 	FieldClassPayload                     // payload
 	FieldClassText                        // text
+	FieldClassAddress                     // address
 )
 
 const octet = 8
@@ -796,6 +839,87 @@ var baseUDPFields = [...]FrameField{
 		Class:          FieldClassChecksum,
 		FrameBitOffset: 6 * octet,
 		BitLength:      2 * octet,
+	},
+}
+
+var baseDHCPv4Fields = [...]FrameField{
+	{
+		Name:           "Opcode",
+		Class:          FieldClassType,
+		FrameBitOffset: 0,
+		BitLength:      1 * octet,
+	},
+	{
+		Name:           "Hardware Address Type",
+		Class:          FieldClassProto,
+		FrameBitOffset: 1 * octet,
+		BitLength:      1 * octet,
+	},
+	{
+		Name:           "Hardware Address Length",
+		Class:          FieldClassSize,
+		FrameBitOffset: 2 * octet,
+		BitLength:      1 * octet,
+	},
+	{
+		Name:           "Hops",
+		Class:          fieldClassUndefined,
+		FrameBitOffset: 3 * octet,
+		BitLength:      1 * octet,
+	},
+	{
+		Name:           "Transaction ID",
+		Class:          FieldClassID,
+		FrameBitOffset: 4 * octet,
+		BitLength:      4 * octet,
+	},
+	{
+		Name:           "Start Time",
+		Class:          fieldClassUndefined,
+		FrameBitOffset: 8 * octet,
+		BitLength:      2 * octet,
+	},
+	{
+		Name:           "Flags",
+		Class:          FieldClassFlags,
+		FrameBitOffset: 10 * octet,
+		BitLength:      2 * octet,
+	},
+	{
+		Name:           "Client Address",
+		Class:          FieldClassAddress,
+		FrameBitOffset: 12 * octet,
+		BitLength:      4 * octet,
+	},
+	{
+		Name:           "Offered Address",
+		Class:          FieldClassAddress,
+		FrameBitOffset: 16 * octet,
+		BitLength:      4 * octet,
+	},
+	{
+		Name:           "Server Next Address",
+		Class:          FieldClassAddress,
+		FrameBitOffset: 20 * octet,
+		BitLength:      4 * octet,
+	},
+	{
+		Name:           "Relay Agent Address",
+		Class:          FieldClassAddress,
+		FrameBitOffset: 24 * octet,
+		BitLength:      4 * octet,
+	},
+	{
+		Name:           "Client Hardware Address",
+		Class:          FieldClassAddress,
+		FrameBitOffset: 28 * octet,
+		BitLength:      16 * octet,
+	},
+	{
+		Name:           "BOOTP",
+		Class:          FieldClassAddress,
+		FrameBitOffset: (28 + 16) * octet,
+		BitLength:      (dhcpv4.OptionsOffset - (28 + 16)) * octet,
 	},
 }
 

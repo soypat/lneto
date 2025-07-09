@@ -17,7 +17,7 @@ const (
 	// Expected Magic Cookie value.
 	MagicCookie uint32 = 0x63825363
 	// DHCP Options offset measured from the start of the UDP payload.
-	optionsOffset = magicCookieOffset + 4
+	OptionsOffset = magicCookieOffset + 4
 
 	DefaultClientPort = 68
 	DefaultServerPort = 67
@@ -26,10 +26,14 @@ const (
 // NewFrame returns a new DHCPv4 Frame with data set to buf.
 // An error is returned if the buffer size is smaller than 240.
 func NewFrame(buf []byte) (Frame, error) {
-	if len(buf) < optionsOffset {
+	if len(buf) < OptionsOffset {
 		return Frame{}, errSmallFrame
 	}
 	return Frame{buf: buf}, nil
+}
+
+func PayloadIsDHCPv4(payload []byte) bool {
+	return len(payload) >= OptionsOffset && binary.BigEndian.Uint32(payload[magicCookieOffset:]) == MagicCookie
 }
 
 // Frame encapsulates the raw data of a DHCP packet
@@ -43,7 +47,7 @@ type Frame struct {
 
 // OptionsPayload returns the options portion of the DHCP frame. May be zero lengthed.
 func (frm Frame) OptionsPayload() []byte {
-	return frm.buf[optionsOffset:]
+	return frm.buf[OptionsOffset:]
 }
 
 func (frm Frame) Op() Op      { return Op(frm.buf[0]) }
@@ -111,16 +115,16 @@ func (frm Frame) SetMagicCookie(cookie uint32) {
 
 // ClearHeader zeros out the header contents.
 func (frm Frame) ClearHeader() {
-	for i := range frm.buf[:optionsOffset] {
+	for i := range frm.buf[:OptionsOffset] {
 		frm.buf[i] = 0
 	}
 }
 
 // ForEachOption iterates over all DHCPv4 options returning an error on a malformed option or when user provided callback returns an error.
 // If the user provided callback is nil then only option buffer validation is performed.
-func (frm Frame) ForEachOption(fn func(op OptNum, data []byte) error) error {
+func (frm Frame) ForEachOption(fn func(off int, op OptNum, data []byte) error) error {
 	// Parse DHCP options.
-	ptr := optionsOffset
+	ptr := OptionsOffset
 	if ptr > len(frm.buf) {
 		return errSmallFrame
 	} else if len(frm.buf[ptr:]) == 0 {
@@ -141,7 +145,7 @@ func (frm Frame) ForEachOption(fn func(op OptNum, data []byte) error) error {
 		optlen := frm.buf[ptr+1]
 		if callback {
 			optionData := frm.buf[ptr+2 : ptr+2+int(optlen)]
-			if err := fn(optnum, optionData); err != nil {
+			if err := fn(ptr, optnum, optionData); err != nil {
 				return err
 			}
 		}

@@ -74,7 +74,7 @@ func (sudp *StackUDPPort) Encapsulate(carrierData []byte, frameOffset int) (int,
 	n, err := sudp.h.encapsulate(carrierData, frameOffset+8)
 	if n == 0 {
 		if err != nil {
-			slog.Error("stackudp:demux", slog.String("err", err.Error()))
+			slog.Error("stackudp:encapsulate", slog.String("err", err.Error()))
 		}
 		return 0, err
 	}

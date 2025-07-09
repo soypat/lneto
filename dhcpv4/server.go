@@ -77,7 +77,7 @@ func (sv *Server) Demux(carrierData []byte, frameOffset int) error {
 	var reqlist []byte
 	var reqAddr []byte
 	var hostname []byte
-	err = dfrm.ForEachOption(func(op OptNum, data []byte) error {
+	err = dfrm.ForEachOption(func(off int, op OptNum, data []byte) error {
 		switch op {
 		case OptMessageType:
 			if len(data) == 1 {
@@ -231,7 +231,7 @@ func (sv *Server) Encapsulate(carrierData []byte, frameOffset int) (int, error) 
 	// Set server state.
 	sv.hosts[clientID] = client
 	sv.pending--
-	return optionsOffset + nopt, nil
+	return OptionsOffset + nopt, nil
 }
 
 func (sv *Server) getClient(clientID [36]byte) (serverEntry, bool) {

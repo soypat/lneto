@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
@@ -89,7 +90,7 @@ func run() (err error) {
 	}
 	fmt.Println("NIC hardware address:", net.HardwareAddr(nicHW[:]).String(), "bridgeHW:", net.HardwareAddr(brHW[:]).String(), "mtu:", mtu, "addr:", nicAddr.String())
 	var stack Stack
-	err = stack.Reset(brHW, nicAddr.Addr().Next(), uint16(mtu))
+	err = stack.Reset(brHW, netip.AddrFrom4([4]byte{}), uint16(mtu))
 	if err != nil {
 		return err
 	}
@@ -97,9 +98,7 @@ func run() (err error) {
 	if err != nil {
 		return err
 	}
-	var shark pcap.PacketBreakdown
 	buf := make([]byte, mtu)
-	var iframes []pcap.Frame
 	lastAction := time.Now()
 	dnsOngoing := false
 	for {
@@ -126,12 +125,6 @@ func run() (err error) {
 		if err != nil {
 			fmt.Println("ERR:ENCAPSULATE", err)
 		} else if nwrite > 0 {
-			iframes, err = shark.CaptureEthernet(iframes[:0], buf[:nwrite], 0)
-			if err != nil {
-				fmt.Println("OU", iframes, err.Error())
-			} else {
-				fmt.Println("OU", iframes)
-			}
 			n, err := iface.Write(buf[:nwrite])
 			if err != nil {
 				return err
@@ -145,12 +138,6 @@ func run() (err error) {
 		if err != nil {
 			return err
 		} else if nread > 0 {
-			iframes, err = shark.CaptureEthernet(iframes[:0], buf[:nread], 0)
-			if err != nil {
-				fmt.Println("IN", iframes, err.Error())
-			} else {
-				fmt.Println("IN", iframes)
-			}
 			err = stack.Demux(buf[:nread], 0)
 			if err != nil {
 				fmt.Println("ERR:DEMUX", err)
@@ -174,14 +161,36 @@ type Stack struct {
 	dhcp   dhcpv4.Client
 	dns    dns.Client
 	lookup dns.Message
+
+	// Packet capture and top level filtering.
+	shark pcap.PacketBreakdown
+	aux   []pcap.Frame
 }
 
-func (s *Stack) Demux(b []byte, _ int) error {
+func (s *Stack) Demux(b []byte, _ int) (err error) {
+	s.aux, err = s.shark.CaptureEthernet(s.aux[:0], b, 0)
+	if s.aux[len(s.aux)-1].Protocol != "DHCPv4" {
+		return nil
+	}
+	if err != nil {
+		fmt.Println("IN", s.aux, err.Error())
+	} else {
+		fmt.Println("IN", s.aux)
+	}
 	return s.link.Demux(b, 0)
 }
 
 func (s *Stack) Encapsulate(b []byte, _ int) (int, error) {
-	return s.link.Encapsulate(b, 0)
+	n, err := s.link.Encapsulate(b, 0)
+	if n > 0 {
+		iframes, errpcap := s.shark.CaptureEthernet(s.aux[:0], b[:n], 0)
+		if errpcap != nil {
+			fmt.Println("OU", iframes, errpcap.Error())
+		} else {
+			fmt.Println("OU", iframes)
+		}
+	}
+	return n, err
 }
 
 func (s *Stack) Reset(mac [6]byte, addr netip.Addr, mtu uint16) error {
@@ -227,6 +236,7 @@ func (s *Stack) Reset(mac [6]byte, addr netip.Addr, mtu uint16) error {
 	if err != nil {
 		return err
 	}
+	s.ip.SetLogger(slog.Default())
 	return nil
 }
 

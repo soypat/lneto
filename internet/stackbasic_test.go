@@ -46,7 +46,7 @@ func expectExchange(t *testing.T, from, to *StackIP, buf []byte) {
 	t.Helper()
 	n, err := from.Encapsulate(buf, 0)
 	if err != nil {
-		t.Error("expectExchange:Handle:", err)
+		t.Error("expectExchange:encapsulate:", err)
 	} else if n == 0 {
 		t.Error("expected data exchange")
 		return

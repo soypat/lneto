@@ -64,6 +64,10 @@ func (sb *StackIP) Addr() netip.Addr {
 	return netip.AddrFrom4(sb.ip)
 }
 
+func (sb *StackIP) SetLogger(logger *slog.Logger) {
+	sb.logger.log = logger
+}
+
 func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 	sb.info("StackIP.Demux:start")
 	frame := carrierData[offset:] // we don't care about carrier data in IP.
@@ -72,8 +76,8 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 		return err
 	}
 	dst := ifrm.DestinationAddr()
-	if *dst != sb.ip {
-		return nil // Not meant for us.
+	if sb.ip != ([4]byte{}) && *dst != sb.ip {
+		return errors.New("not meant for us") // Not meant for us.
 	}
 
 	sb.validator.ResetErr()
@@ -155,7 +159,7 @@ func (sb *StackIP) Encapsulate(carrierData []byte, frameOffset int) (int, error)
 				println("NODE REMOVED", proto.String(), h.port)
 				h.destroy()
 			}
-			sb.error("StackIP:handle", slog.String("proto", proto.String()), slog.String("err", err.Error()))
+			sb.error("StackIP:encapsulate", slog.String("proto", proto.String()), slog.String("err", err.Error()))
 			continue
 		} else if n == 0 {
 			continue

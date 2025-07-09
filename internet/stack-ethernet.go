@@ -100,7 +100,7 @@ func (ls *StackEthernet) Demux(carrierData []byte, frameOffset int) (err error) 
 	}
 DROP:
 	ls.info("LinkStack:drop-packet", slog.String("dsthw", net.HardwareAddr(dstaddr[:]).String()), slog.String("ethertype", efrm.EtherTypeOrSize().String()))
-	return nil
+	return errors.New("drop packet")
 }
 
 func (ls *StackEthernet) Encapsulate(carrierData []byte, frameOffset int) (n int, err error) {

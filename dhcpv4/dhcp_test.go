@@ -98,13 +98,18 @@ func TestExample(t *testing.T) {
 		Hostname:           clientHostname,
 	})
 	buf := make([]byte, 2048)
+	buf2 := make([]byte, len(buf))
 	n, err := cl.Encapsulate(buf, 0)
 	if err != nil {
 		t.Fatal(err)
 	} else if n <= 0 {
 		t.Fatal("no data sent out by client after starting request")
 	}
-
+	n, err = cl.Encapsulate(buf2, 0)
+	if err != nil {
+		t.Error("client encaps double tap after discover:", err)
+	}
+	// Fabricate server OFFER response.
 	dfrm, _ := NewFrame(buf)
 	dfrm.ClearHeader()
 	dfrm.SetOp(OpReply)
@@ -116,27 +121,36 @@ func TestExample(t *testing.T) {
 	copy(dfrm.CHAddr()[:], clientHwaddr[:])
 	dfrm.SetMagicCookie(MagicCookie)
 	ntot := 0
-	nopt, _ := EncodeOption(buf[optionsOffset+ntot:], OptMessageType, byte(MsgOffer))
+	nopt, _ := EncodeOption(buf[OptionsOffset+ntot:], OptMessageType, byte(MsgOffer))
 	ntot += nopt
-	nopt, _ = EncodeOption(buf[optionsOffset+ntot:], OptServerIdentification, serverIP[:]...)
+	nopt, _ = EncodeOption(buf[OptionsOffset+ntot:], OptServerIdentification, serverIP[:]...)
 	ntot += nopt
-	nopt, _ = EncodeOption32(buf[optionsOffset+ntot:], OptServerIdentification, offerLease)
+	nopt, _ = EncodeOption32(buf[OptionsOffset+ntot:], OptServerIdentification, offerLease)
 	ntot += nopt
-	nopt, _ = EncodeOption(buf[optionsOffset+ntot:], OptSubnetMask, subnetMask[:]...)
+	nopt, _ = EncodeOption(buf[OptionsOffset+ntot:], OptSubnetMask, subnetMask[:]...)
 	ntot += nopt
-	nopt, _ = EncodeOption(buf[optionsOffset+ntot:], OptRouter, routerAddr[:]...)
+	nopt, _ = EncodeOption(buf[OptionsOffset+ntot:], OptRouter, routerAddr[:]...)
 	ntot += nopt
-	nopt, _ = EncodeOption(buf[optionsOffset+ntot:], OptDNSServers, dnsAddr[:]...)
+	nopt, _ = EncodeOption(buf[OptionsOffset+ntot:], OptDNSServers, dnsAddr[:]...)
 	ntot += nopt
-	nopt, _ = EncodeOption(buf[optionsOffset+ntot:], OptEnd, dnsAddr[:]...)
+	nopt, _ = EncodeOption(buf[OptionsOffset+ntot:], OptEnd, dnsAddr[:]...)
 	ntot += nopt
 
-	err = cl.Demux(buf[:optionsOffset+ntot], 0)
+	err = cl.Demux(buf[:OptionsOffset+ntot], 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// frame := buf[:optionsOffset]
-	// frame = AppendOption(frame, OptMessageType, byte(MsgOffer))
-	// frame = AppendOption(frame, OptServerIdentification, serverIP[:]...)
-	// frame = AppendOption(frame, OptIPAddressLeaseTime, serverIP[:]...)
+
+	n, err = cl.Encapsulate(buf[:], 0)
+	if err != nil {
+		t.Fatal(err)
+	} else if n <= 0 {
+		t.Fatal("no data written from client in response to offer")
+	}
+	n, err = cl.Encapsulate(buf[:], 0)
+	if err != nil {
+		t.Error("encapsulate double tap after request:", err)
+	} else if n > 0 {
+		t.Error("encapsulate double tap got data!", n)
+	}
 }
