@@ -19,6 +19,7 @@ type Client struct {
 	hostname    []byte
 	dns         [][4]byte
 
+	svIPtos    ipv4.ToS
 	tRenew     uint32
 	tRebind    uint32
 	tIPLease   uint32
@@ -42,6 +43,7 @@ type RequestConfig struct {
 	ClientHardwareAddr [6]byte
 	// Optional hostname to request.
 	Hostname string
+	ClientID string
 }
 
 func (c *Client) BeginRequest(xid uint32, cfg RequestConfig) error {
@@ -72,26 +74,16 @@ func (c *Client) setIP(b []byte, frameOffset int) {
 	ifrm, _ := ipv4.NewFrame(b)
 	ifrm.SetID((uint16(c.currentXID) ^ uint16(c.currentXID>>16)) + uint16(c.state))
 	if c.state > StateInit {
-		// TODO(soypat): Document why disabling ToS used by DHCP server may cause Request to fail.
-		// Apparently server sets ToS=192. Uncommenting this line causes DHCP to fail on my setup.
-		// If left fixed at 192, DHCP does not work.
-		// If left fixed at 0, DHCP does not work.
-		// Apparently ToS is a function of which state of DHCP one is in. Not sure why code below works.
-		// Note: Not exactly needed for all servers.
-		const ecnmask = 0b1100_0000
-		ifrm.SetToS(ecnmask)
+		// Match server ToS since some routers drop DHCP requests if no ToS set apparently?
+		ifrm.SetToS(c.svIPtos)
 	}
 	src := ifrm.SourceAddr()
 	for i := range src {
 		src[i] = 0
 	}
 	dst := ifrm.DestinationAddr()[:]
-	if c.svip == ([4]byte{}) {
-		for i := range dst {
-			dst[i] = 255
-		}
-	} else {
-		copy(dst, c.svip[:])
+	for i := range dst {
+		dst[i] = 255
 	}
 }
 
@@ -102,30 +94,37 @@ func (c *Client) Encapsulate(carrierFrame []byte, frameOffset int) (int, error) 
 		return 0, nil // No offer received yet.
 	} else if c.state == StateBound {
 		return 0, nil // Done!
+	} else if c.state == StateRequesting {
+		return 0, nil // Currently awaiting ACK.
 	}
 	dst := carrierFrame[frameOffset:]
 	frm, err := NewFrame(dst)
 	if err != nil {
 		return 0, err
 	}
+	opts := frm.OptionsPayload()
+	if len(opts) < 255 {
+		return 0, errors.New("too short packet for options")
+	}
 
-	// var options []Option
-	// var nextState ClientState
-	optBuf := c.auxbuf[:0]
 	var nextState ClientState
+	var numOpts int
 	switch c.state {
 	case StateInit:
 		// Send out discover.
-		optBuf = AppendOption(optBuf, OptMessageType, byte(MsgDiscover))
-		optBuf = AppendOption(optBuf, OptParameterRequestList, defaultParamReqList...)
-		optBuf = AppendOption(optBuf, OptClientIdentifier, c.clientMAC[:]...)
+		n, _ := EncodeOption(opts[numOpts:], OptMessageType, byte(MsgDiscover))
+		numOpts += n
+		n, _ = EncodeOption(opts[numOpts:], OptParameterRequestList, defaultParamReqList...)
+		numOpts += n
 		maxlen := len(dst)
 		if maxlen > math.MaxUint16 {
 			maxlen = math.MaxUint16
 		}
-		optBuf = AppendOption(optBuf, OptMaximumMessageSize, byte(maxlen>>8), byte(maxlen))
+		n, _ = EncodeOption16(opts[numOpts:], OptMaximumMessageSize, uint16(maxlen))
+		numOpts += n
 		if c.reqIP != [4]byte{} {
-			optBuf = AppendOption(optBuf, OptRequestedIPaddress, c.reqIP[:]...)
+			n, _ = EncodeOption(opts[numOpts:], OptRequestedIPaddress, c.reqIP[:]...)
+			numOpts += n
 		}
 		nextState = StateSelecting
 
@@ -134,30 +133,37 @@ func (c *Client) Encapsulate(carrierFrame []byte, frameOffset int) (int, error) 
 			return 0, nil // Offer not yet received.
 		}
 		// Send out request, we know we've received an offer by now.
-		optBuf = AppendOption(optBuf, OptMessageType, byte(MsgRequest))
-		optBuf = AppendOption(optBuf, OptRequestedIPaddress, c.offer[:]...)
-		optBuf = AppendOption(optBuf, OptServerIdentification, c.svip[:]...)
+		n, _ := EncodeOption(opts[numOpts:], OptMessageType, byte(MsgRequest))
+		numOpts += n
+		n, _ = EncodeOption(opts[numOpts:], OptRequestedIPaddress, c.offer[:]...)
+		numOpts += n
+		n, _ = EncodeOption(opts[numOpts:], OptServerIdentification, c.svip[:]...)
+		numOpts += n
 		nextState = StateRequesting
 
 	default:
-		return 0, errors.New("unhandled state")
+		return 0, errors.New("unhandled state" + c.state.String())
 	}
+	n, _ := EncodeOption(opts[numOpts:], OptClientIdentifier, c.clientMAC[:]...)
+	numOpts += n
 	if len(c.reqHostname) > 0 {
-		optBuf = AppendOptionString(optBuf, OptHostName, c.reqHostname)
+		n, err := EncodeOptionString(opts[numOpts:], OptHostName, c.reqHostname)
+		numOpts += n
+		if err != nil {
+			return 0, err
+		}
 	}
-	optBuf = append(optBuf, 0xff) // End mark.
-	options := frm.OptionsPayload()
-	if len(optBuf) > len(options) {
-		return 0, errors.New("DHCPv4 short buffer for options")
-	}
+
+	opts[numOpts] = byte(OptEnd)
+	numOpts++
 	c.setHeader(frm)
-	n := copy(options, optBuf)
 	c.setIP(carrierFrame, frameOffset)
 	c.state = nextState
-	return optionsOffset + n, nil
+	return OptionsOffset + numOpts, nil
 }
 
 func (c *Client) Demux(carrierData []byte, frameOffset int) error {
+	fmt.Println("DEMUX DHCP")
 	if c.isClosed() {
 		return net.ErrClosed
 	}
@@ -200,13 +206,17 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 	default:
 		return fmt.Errorf("dcpv4 unexpected state in recv %s", c.state.String())
 	}
+	if frameOffset > 28 && c.svIPtos == 0 {
+		ifrm, _ := ipv4.NewFrame(carrierData)
+		c.svIPtos = ifrm.ToS()
+	}
 	return nil
 }
 
 func (c *Client) getMessageType(frm Frame) MessageType {
 	c.auxbuf[0] = 255
 	ptrMsgType := &c.auxbuf[0]
-	frm.ForEachOption(func(opt OptNum, data []byte) error {
+	frm.ForEachOption(func(_ int, opt OptNum, data []byte) error {
 		if len(data) == 1 {
 			*ptrMsgType = data[0]
 			return io.EOF
@@ -217,7 +227,7 @@ func (c *Client) getMessageType(frm Frame) MessageType {
 }
 
 func (c *Client) setOptions(frm Frame) error {
-	return frm.ForEachOption(func(opt OptNum, data []byte) error {
+	err := frm.ForEachOption(func(_ int, opt OptNum, data []byte) error {
 		switch opt {
 		case OptRenewTimeValue:
 			c.tRenew = maybeU32(data)
@@ -225,7 +235,6 @@ func (c *Client) setOptions(frm Frame) error {
 			c.tIPLease = maybeU32(data)
 		case OptRebindingTimeValue:
 			c.tRebind = maybeU32(data)
-
 		case OptServerIdentification:
 			c.svip = maybe4byte(data)
 		case OptRouter:
@@ -249,6 +258,7 @@ func (c *Client) setOptions(frm Frame) error {
 		}
 		return nil
 	})
+	return err
 }
 
 func (c *Client) isClosed() bool { return c.state == 0 || c.currentXID == 0 }
@@ -260,16 +270,21 @@ func (c *Client) setHeader(frm Frame) {
 	frm.SetHardware(1, 6, 0)
 	frm.SetSecs(1)
 	if c.state.HasIP() {
-		copy(frm.CIAddr()[:], c.offer[:])
+		*frm.CIAddr() = c.offer
 	}
 	if c.state == StateInit {
 		siaddr := frm.SIAddr()[:]
 		for i := range siaddr {
 			siaddr[i] = 255
 		}
+	} else {
+		if c.siip == [4]byte{} {
+			*frm.SIAddr() = c.svip
+		} else {
+			*frm.SIAddr() = c.siip
+		}
 	}
-
-	copy(frm.YIAddr()[:], c.offer[:])
+	*frm.YIAddr() = c.offer
 	copy(frm.CHAddrAs6()[:], c.clientMAC[:])
 	frm.SetMagicCookie(MagicCookie)
 }
