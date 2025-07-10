@@ -386,10 +386,15 @@ func MustNewName(s string) Name {
 	return name
 }
 
+var emptyDomain = []byte{0}
+
 // NewName parses a domain name and returns a new Name.
 func NewName(domain string) (Name, error) {
+	if domain == "" {
+		return Name{}, errEmptyDomainName
+	}
 	if len(domain) == 1 && domain[0] == '.' {
-		return Name{data: []byte{0}}, nil
+		return Name{data: emptyDomain}, nil
 	}
 	var name Name
 	for len(domain) > 0 {

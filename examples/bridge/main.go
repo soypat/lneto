@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -100,26 +101,49 @@ func run() (err error) {
 	}
 	buf := make([]byte, mtu)
 	lastAction := time.Now()
-	dnsOngoing := false
+	const (
+		stateDHCP = iota
+		stateInitARP
+		stateDNS
+		stateDone
+	)
+	state := stateDHCP
 	for {
-		dhcpIsDone := stack.dhcp.State() == dhcpv4.StateBound
-		if dhcpIsDone {
-			if !dnsOngoing {
+		switch state {
+		case stateDHCP:
+			dhcpIsDone := stack.dhcp.State() == dhcpv4.StateBound
+			if dhcpIsDone {
+				state = stateInitARP
+				err = stack.ip.SetAddr(netip.AddrFrom4(stack.dhcp.AssignedAddr()))
+				if err != nil {
+					return err
+				}
+				err = stack.StartResolveHardwareAddress6(netip.AddrFrom4(stack.dhcp.RouterAddr()))
+				if err != nil {
+					return err
+				}
+			}
+
+		case stateInitARP:
+			router := stack.dhcp.RouterAddr()
+			hw, err := stack.ResultResolveHardwareAddress6(netip.AddrFrom4(router))
+			if err == nil {
+				state = stateDNS
+				stack.link.SetGateway6(hw)
 				err = stack.StartLookupIP(flagHostToResolve)
 				if err != nil {
 					return err
 				}
-				dnsOngoing = true
-			} else {
-				addrs, err := stack.ResultLookupIP()
-				if err == nil {
-					// END PROGRAM.
-					fmt.Println(flagHostToResolve, "resolved to", addrs)
-					return nil
-				}
+			}
+
+		case stateDNS:
+			addrs, err := stack.ResultLookupIP()
+			if err == nil {
+				fmt.Println(flagHostToResolve, "resolved to", addrs)
+				return nil
 			}
 		}
-		_ = dhcpIsDone
+
 		clear(buf)
 		nwrite, err := stack.Encapsulate(buf[:], 0)
 		if err != nil {
@@ -148,6 +172,7 @@ func run() (err error) {
 			time.Sleep(5 * time.Millisecond)
 		} else {
 			lastAction = time.Now()
+			runtime.Gosched()
 		}
 	}
 	return nil
@@ -169,7 +194,11 @@ type Stack struct {
 
 func (s *Stack) Demux(b []byte, _ int) (err error) {
 	s.aux, err = s.shark.CaptureEthernet(s.aux[:0], b, 0)
-	if s.aux[len(s.aux)-1].Protocol != "DHCPv4" {
+	baseFrame := s.aux[len(s.aux)-1]
+	isOK := baseFrame.Protocol == "DHCPv4" ||
+		(baseFrame.Protocol == lneto.IPProtoUDP && getField(baseFrame, b, pcap.FieldClassDst) == 53) ||
+		baseFrame.Protocol == ethernet.TypeARP
+	if !isOK {
 		return nil
 	}
 	if err != nil {
@@ -241,11 +270,15 @@ func (s *Stack) Reset(mac [6]byte, addr netip.Addr, mtu uint16) error {
 }
 
 func (s *Stack) StartLookupIP(host string) error {
+	dnsSrvs := s.dhcp.DNSServerFirst()
+	if !dnsSrvs.IsValid() {
+		return errors.New("no valid DNS server")
+	}
 	name, err := dns.NewName(host)
 	if err != nil {
 		return err
 	}
-	err = s.dns.StartResolve(dns.ResolveConfig{
+	err = s.dns.StartResolve(uint16(softRand), dns.ResolveConfig{
 		Questions: []dns.Question{
 			{
 				Name:  name,
@@ -259,12 +292,12 @@ func (s *Stack) StartLookupIP(host string) error {
 		return err
 	}
 	var u internet.StackUDPPort
-	u.SetStackNode(&s.dns, nil, dns.ServerPort)
+	dns4 := dnsSrvs.As4()
+	u.SetStackNode(&s.dns, dns4[:], dns.ServerPort)
 	err = s.udps.Register(&u)
 	if err != nil {
 		return err
 	}
-	return err
 	return nil
 }
 
@@ -309,8 +342,39 @@ func (s *Stack) BeginDHCPRequest(request [4]byte) error {
 	return err
 }
 
+func (s *Stack) StartResolveHardwareAddress6(ip netip.Addr) error {
+	if !ip.Is4() {
+		return errors.New("unsupported or invalid IP address")
+	}
+	addr := ip.As4()
+	return s.arp.StartQuery(addr[:])
+}
+
+func (s *Stack) ResultResolveHardwareAddress6(ip netip.Addr) (hw [6]byte, err error) {
+	if !ip.Is4() {
+		return hw, errors.New("unsupported or invalid IP address")
+	}
+	addr := ip.As4()
+	hwslice, err := s.arp.QueryResult(addr[:])
+	if err != nil {
+		return hw, err
+	} else if len(hwslice) != 6 {
+		panic("unreachable slice hw leng")
+	}
+	return [6]byte(hwslice), nil
+}
+
 func clear(buf []byte) {
 	for i := range buf {
 		buf[i] = 0
 	}
+}
+
+func getField(frame pcap.Frame, pkt []byte, class pcap.FieldClass) uint64 {
+	idx, err := frame.FieldByClass(class)
+	if err != nil {
+		return 0
+	}
+	v, _ := frame.FieldAsUint(idx, pkt)
+	return v
 }

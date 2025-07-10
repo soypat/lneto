@@ -319,11 +319,11 @@ func (as *ARPStack) Protocol() uint32 { return uint32(ethernet.TypeARP) }
 func (as *ARPStack) Recv(EtherFrame []byte, arpOff int) error {
 	afrm, _ := arp.NewFrame(EtherFrame[arpOff:])
 	slog.Info("recv", slog.String("in", afrm.String()))
-	return as.handler.Recv(EtherFrame[arpOff:])
+	return as.handler.Demux(EtherFrame, arpOff)
 }
 
 func (as *ARPStack) Handle(EtherFrame []byte, arpOff int) (int, error) {
-	n, err := as.handler.Send(EtherFrame[arpOff:])
+	n, err := as.handler.Encapsulate(EtherFrame, arpOff)
 	if err != nil || n == 0 {
 		return 0, err
 	}

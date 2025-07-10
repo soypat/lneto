@@ -31,6 +31,7 @@ var (
 	errNonCanonicalName   = errors.New("name is not in canonical format (it must end with a .)")
 	errStringTooLong      = errors.New("character string exceeds maximum length (255)")
 	errCompressedSRV      = errors.New("compressed name in SRV resource data")
+	errEmptyDomainName    = errors.New("empty domain name")
 )
 
 // Frame encapsulates the raw data of a DNS packet

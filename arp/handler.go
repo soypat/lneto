@@ -9,13 +9,13 @@ import (
 )
 
 type Handler struct {
-	connID       uint64
-	ourHWAddr    []byte
-	ourProtoAddr []byte
-	htype        uint16
-	protoType    ethernet.Type
-	pending      [][sizeHeaderv6]byte
-	queries      []queryResult
+	connID          uint64
+	ourHWAddr       []byte
+	ourProtoAddr    []byte
+	htype           uint16
+	protoType       ethernet.Type
+	pendingResponse [][sizeHeaderv6]byte
+	queries         []queryResult
 }
 
 type HandlerConfig struct {
@@ -27,29 +27,35 @@ type HandlerConfig struct {
 	ProtocolType ethernet.Type
 }
 
-func (c *Handler) Reset(cfg HandlerConfig) error {
+func (h *Handler) LocalPort() uint16 { return 0 }
+
+func (h *Handler) Protocol() uint64 { return uint64(ethernet.TypeARP) }
+
+func (h *Handler) ConnectionID() *uint64 { return &h.connID }
+
+func (h *Handler) Reset(cfg HandlerConfig) error {
 	if len(cfg.HardwareAddr) == 0 || len(cfg.HardwareAddr) > 255 ||
 		len(cfg.ProtocolAddr) == 0 || len(cfg.ProtocolAddr) > 255 {
 		return errors.New("invalid Handler address config")
 	} else if cfg.MaxQueries <= 0 || cfg.MaxPending <= 0 {
 		return errors.New("invalid Handler query or pending config")
 	}
-	*c = Handler{
-		connID:       c.connID + 1,
-		ourHWAddr:    c.ourHWAddr[:0],
-		ourProtoAddr: c.ourProtoAddr[:0],
-		htype:        cfg.HardwareType,
-		protoType:    cfg.ProtocolType,
-		pending:      c.pending[:0],
-		queries:      c.queries[:0],
+	*h = Handler{
+		connID:          h.connID + 1,
+		ourHWAddr:       h.ourHWAddr[:0],
+		ourProtoAddr:    h.ourProtoAddr[:0],
+		htype:           cfg.HardwareType,
+		protoType:       cfg.ProtocolType,
+		pendingResponse: h.pendingResponse[:0],
+		queries:         h.queries[:0],
 	}
-	c.ourHWAddr = append(c.ourHWAddr, cfg.HardwareAddr...)
-	c.ourProtoAddr = append(c.ourProtoAddr, cfg.ProtocolAddr...)
-	if cap(c.pending) < cfg.MaxPending {
-		c.pending = make([][52]byte, cfg.MaxPending)[:0]
+	h.ourHWAddr = append(h.ourHWAddr, cfg.HardwareAddr...)
+	h.ourProtoAddr = append(h.ourProtoAddr, cfg.ProtocolAddr...)
+	if cap(h.pendingResponse) < cfg.MaxPending {
+		h.pendingResponse = make([][52]byte, cfg.MaxPending)[:0]
 	}
-	if cap(c.queries) < cfg.MaxQueries {
-		c.queries = make([]queryResult, cfg.MaxQueries)[:0]
+	if cap(h.queries) < cfg.MaxQueries {
+		h.queries = make([]queryResult, cfg.MaxQueries)[:0]
 	}
 	return nil
 }
@@ -61,88 +67,91 @@ type queryResult struct {
 }
 
 // AbortPending drops pending queries and incoming requests.
-func (c *Handler) AbortPending() {
-	c.pending = c.pending[:0]
-	c.queries = c.queries[:0]
+func (h *Handler) AbortPending() {
+	h.pendingResponse = h.pendingResponse[:0]
+	h.queries = h.queries[:0]
 }
 
-func (c *Handler) expectSize() int {
-	return sizeHeader + 2*len(c.ourHWAddr) + 2*len(c.ourProtoAddr)
+func (h *Handler) expectSize() int {
+	return sizeHeader + 2*len(h.ourHWAddr) + 2*len(h.ourProtoAddr)
 }
 
-func (c *Handler) ConnectionID() *uint64 {
-	return &c.connID
-}
-
-func (c *Handler) QueryResult(protoAddr []byte) (hwAddr []byte, err error) {
-	for i := range c.queries {
-		if bytes.Equal(protoAddr, c.queries[i].protoaddr) {
-			if !c.queries[i].querysent {
+func (h *Handler) QueryResult(protoAddr []byte) (hwAddr []byte, err error) {
+	for i := range h.queries {
+		if bytes.Equal(protoAddr, h.queries[i].protoaddr) {
+			if !h.queries[i].querysent {
 				return nil, errors.New("query not yet sent")
-			} else if len(c.queries[i].hwaddr) == 0 {
+			} else if len(h.queries[i].hwaddr) == 0 {
 				return nil, errors.New("no response yet")
 			}
-			return c.queries[i].hwaddr, nil
+			return h.queries[i].hwaddr, nil
 		}
 	}
 	return nil, errors.New("query not exist or dropped")
 }
 
-func (c *Handler) StartQuery(proto []byte) error {
-	if len(proto) != len(c.ourProtoAddr) {
+func (h *Handler) StartQuery(proto []byte) error {
+	if len(proto) != len(h.ourProtoAddr) {
 		return errors.New("bad protocol address length")
-	} else if len(c.queries) == cap(c.queries) {
+	} else if len(h.queries) == cap(h.queries) {
 		return errors.New("too many ongoing queries")
 	}
-	c.queries = c.queries[:len(c.queries)+1]
-	q := &c.queries[len(c.queries)-1]
+	h.queries = h.queries[:len(h.queries)+1]
+	q := &h.queries[len(h.queries)-1]
 	q.hwaddr = q.hwaddr[:0]
 	q.querysent = false
 	q.protoaddr = append(q.protoaddr[:0], proto...)
 	return nil
 }
 
-func (c *Handler) Send(b []byte) (int, error) {
-	n := c.expectSize()
+func (h *Handler) Encapsulate(eth []byte, frameOffset int) (int, error) {
+	b := eth[frameOffset:]
+	n := h.expectSize()
 	if len(b) < n {
 		return 0, errShortARP
 	}
-	if len(c.pending) > 0 {
+	if len(h.pendingResponse) > 0 {
 		// pop frame.
-		afrm, _ := NewFrame(c.pending[len(c.pending)-1][:])
-		c.pending = c.pending[:len(c.pending)-1]
+		afrm, _ := NewFrame(h.pendingResponse[len(h.pendingResponse)-1][:])
+		h.pendingResponse = h.pendingResponse[:len(h.pendingResponse)-1]
 		afrm.SetOperation(OpReply)
 		afrm.SwapTargetSender()
 		hwsender, _ := afrm.Sender()
-		copy(hwsender, c.ourHWAddr)
+		copy(hwsender, h.ourHWAddr)
 		n := copy(b, afrm.Clip().RawData())
+		tgt, _ := afrm.Target()
+		trySetEthernetDst(eth[:frameOffset], tgt)
 		return n, nil
 	}
-	for i := range c.queries {
-		if !c.queries[i].querysent {
-			c.queries[i].querysent = true
+	for i := range h.queries {
+		if !h.queries[i].querysent {
+			h.queries[i].querysent = true
 			afrm, _ := NewFrame(b)
-			afrm.SetHardware(c.htype, uint8(len(c.ourHWAddr)))
-			afrm.SetProtocol(c.protoType, uint8(len(c.ourProtoAddr)))
+			afrm.SetHardware(h.htype, uint8(len(h.ourHWAddr)))
+			afrm.SetProtocol(h.protoType, uint8(len(h.ourProtoAddr)))
 			afrm.SetOperation(OpRequest)
 			hwSender, protoSender := afrm.Sender()
-			copy(hwSender, c.ourHWAddr)
-			copy(protoSender, c.ourProtoAddr)
+			copy(hwSender, h.ourHWAddr)
+			copy(protoSender, h.ourProtoAddr)
 			hwTarget, protoTarget := afrm.Target()
-			copy(protoTarget, c.queries[i].protoaddr)
+			copy(protoTarget, h.queries[i].protoaddr)
 			for j := range hwTarget {
 				hwTarget[j] = 0
 			}
+			broadcast := ethernet.BroadcastAddr()
+			trySetEthernetDst(eth[:frameOffset], broadcast[:])
 			return n, nil
 		}
 	}
 	return 0, nil
 }
 
-func (c *Handler) Recv(b []byte) error {
-	if len(c.pending) == cap(c.pending) {
+func (h *Handler) Demux(ethFrame []byte, frameOffset int) error {
+	if len(h.pendingResponse) == cap(h.pendingResponse) {
 		return errARPBufferFull
 	}
+
+	b := ethFrame[frameOffset:]
 	afrm, err := NewFrame(b)
 	if err != nil {
 		return err
@@ -153,27 +162,27 @@ func (c *Handler) Recv(b []byte) error {
 		return vld.ErrPop()
 	}
 	htype, hlen := afrm.Hardware()
-	if htype != c.htype || int(hlen) != len(c.ourHWAddr) {
+	if htype != h.htype || int(hlen) != len(h.ourHWAddr) {
 		return errors.New("bad ARP hardware")
 	}
 	protoType, protoLen := afrm.Protocol()
-	if protoType != c.protoType || int(protoLen) != len(c.ourProtoAddr) {
+	if protoType != h.protoType || int(protoLen) != len(h.ourProtoAddr) {
 		return errors.New("bad ARP proto")
 	}
 	switch afrm.Operation() {
 	case OpRequest:
 		_, protoaddr := afrm.Target()
-		if !bytes.Equal(protoaddr, c.ourProtoAddr) {
+		if !bytes.Equal(protoaddr, h.ourProtoAddr) {
 			return nil // Not for us.
 		}
-		c.pending = c.pending[:len(c.pending)+1]       // Extend pending buffer.
-		copy(c.pending[len(c.pending)-1][:], afrm.buf) // Set pending buffer.
+		h.pendingResponse = h.pendingResponse[:len(h.pendingResponse)+1] // Extend pending buffer.
+		copy(h.pendingResponse[len(h.pendingResponse)-1][:], afrm.buf)   // Set pending buffer.
 
 	case OpReply:
 		hwaddr, protoaddr := afrm.Sender()
-		for i := range c.queries {
-			if len(c.queries[i].hwaddr) == 0 && bytes.Equal(c.queries[i].protoaddr, protoaddr) {
-				c.queries[i].hwaddr = append(c.queries[i].hwaddr[:0], hwaddr...)
+		for i := range h.queries {
+			if len(h.queries[i].hwaddr) == 0 && bytes.Equal(h.queries[i].protoaddr, protoaddr) {
+				h.queries[i].hwaddr = append(h.queries[i].hwaddr[:0], hwaddr...)
 				return nil
 			}
 		}
@@ -182,4 +191,10 @@ func (c *Handler) Recv(b []byte) error {
 		return errARPUnsupported
 	}
 	return nil
+}
+
+func trySetEthernetDst(ethFrame []byte, dst []byte) {
+	if len(ethFrame) > 14 {
+		copy(ethFrame[:6], dst)
+	}
 }

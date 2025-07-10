@@ -2,11 +2,11 @@ package dns
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"net"
 
 	"github.com/soypat/lneto"
-	"github.com/soypat/lneto/internal"
 )
 
 type Client struct {
@@ -29,12 +29,12 @@ func (sudp *Client) LocalPort() uint16 { return ClientPort }
 
 func (sudp *Client) ConnectionID() *uint64 { return &sudp.connID }
 
-func (c *Client) StartResolve(cfg ResolveConfig) error {
+func (c *Client) StartResolve(txid uint16, cfg ResolveConfig) error {
 	nd := len(cfg.Questions)
 	if nd > math.MaxUint16 {
 		return errors.New("overflow uint16 in DNS questions")
 	}
-	c.reset(internal.Prand16(c.txid^uint16(c.connID)), dnsSendQuery, cfg.EnableRecursion)
+	c.reset(txid, dnsSendQuery, cfg.EnableRecursion)
 	c.msg.LimitResourceDecoding(uint16(nd), uint16(nd), 0, 0)
 	c.msg.AddQuestions(cfg.Questions)
 	return nil
@@ -46,17 +46,19 @@ func (c *Client) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
 	} else if c.state != dnsSendQuery {
 		return 0, nil
 	}
+
 	msg := &c.msg
 	frame := carrierData[frameOffset:]
 	msglen := msg.Len()
 	if msglen > uint16(len(frame)) {
 		return 0, errCalcLen
 	}
-	data, err := msg.AppendTo(frame, c.txid, NewClientHeaderFlags(OpCodeQuery, c.enableRecursion))
+
+	data, err := msg.AppendTo(frame[:0], c.txid, NewClientHeaderFlags(OpCodeQuery, c.enableRecursion))
 	if err != nil {
 		return 0, err
 	} else if len(data) > int(msglen) {
-		return 0, errors.New("unexpected write")
+		return 0, fmt.Errorf("unexpected write %d v %d", len(data), msglen)
 	}
 	c.state = dnsAwaitResponse
 	return len(data), nil

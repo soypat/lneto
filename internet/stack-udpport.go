@@ -5,6 +5,7 @@ import (
 	"net"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/udp"
 )
 
@@ -71,6 +72,12 @@ func (sudp *StackUDPPort) Encapsulate(carrierData []byte, frameOffset int) (int,
 	}
 	ufrm.SetSourcePort(sudp.h.port)
 	ufrm.SetDestinationPort(sudp.rmport)
+	if len(sudp.raddr) > 0 && frameOffset >= 20 {
+		err = internal.SetIPAddrs(carrierData, 0, nil, sudp.raddr)
+		if err != nil {
+			return 0, err
+		}
+	}
 	n, err := sudp.h.encapsulate(carrierData, frameOffset+8)
 	if n == 0 {
 		if err != nil {

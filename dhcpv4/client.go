@@ -8,6 +8,7 @@ import (
 	"math"
 	"math/bits"
 	"net"
+	"net/netip"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ipv4"
@@ -17,7 +18,7 @@ type Client struct {
 	connID      uint64
 	reqHostname string
 	hostname    []byte
-	dns         [][4]byte
+	dns         []netip.Addr
 
 	svIPtos    ipv4.ToS
 	tRenew     uint32
@@ -253,7 +254,7 @@ func (c *Client) setOptions(frm Frame) error {
 				return nil // No DNS parsing if already got in previous exchange.
 			}
 			for i := 0; i < len(data); i += 4 {
-				c.dns = append(c.dns, [4]byte(data[i:i+4]))
+				c.dns = append(c.dns, netip.AddrFrom4([4]byte(data[i:i+4])))
 			}
 		}
 		return nil
@@ -301,16 +302,22 @@ func (c *Client) reset(xid uint32) {
 
 func (d *Client) State() ClientState { return d.state }
 
-func (d *Client) BroadcastAddr() [4]byte                   { return d.broadcast }
-func (d *Client) AssignedAddr() [4]byte                    { return d.offer }
-func (d *Client) ServerAddr() [4]byte                      { return d.svip }
-func (d *Client) RouterAddr() [4]byte                      { return d.router }
-func (d *Client) GatewayAddr() [4]byte                     { return d.gateway }
-func (d *Client) RebindingSeconds() uint32                 { return d.tRebind }
-func (d *Client) RenewalSeconds() uint32                   { return d.tRenew }
-func (d *Client) IPLeaseSeconds() uint32                   { return d.tIPLease }
-func (d *Client) AppendDNSServers(dst [][4]byte) [][4]byte { return append(dst, d.dns...) }
-
+func (d *Client) BroadcastAddr() [4]byte                         { return d.broadcast }
+func (d *Client) AssignedAddr() [4]byte                          { return d.offer }
+func (d *Client) ServerAddr() [4]byte                            { return d.svip }
+func (d *Client) RouterAddr() [4]byte                            { return d.router }
+func (d *Client) GatewayAddr() [4]byte                           { return d.gateway }
+func (d *Client) RebindingSeconds() uint32                       { return d.tRebind }
+func (d *Client) RenewalSeconds() uint32                         { return d.tRenew }
+func (d *Client) IPLeaseSeconds() uint32                         { return d.tIPLease }
+func (d *Client) AppendDNSServers(dst []netip.Addr) []netip.Addr { return append(dst, d.dns...) }
+func (d *Client) NumDNSServers() int                             { return len(d.dns) }
+func (d *Client) DNSServerFirst() netip.Addr {
+	if len(d.dns) < 1 {
+		return netip.Addr{}
+	}
+	return d.dns[0]
+}
 func (d *Client) CIDRBits() uint8 {
 	if d.subnet == [4]byte{} {
 		return 0
