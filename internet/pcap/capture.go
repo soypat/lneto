@@ -15,6 +15,7 @@ import (
 	"github.com/soypat/lneto/http/httpraw"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/ipv6"
+	"github.com/soypat/lneto/ntp"
 	"github.com/soypat/lneto/tcp"
 	"github.com/soypat/lneto/udp"
 )
@@ -324,10 +325,14 @@ func (pc *PacketBreakdown) CaptureUDP(dst []Frame, pkt []byte, bitOffset int) ([
 	dst = append(dst, finfo)
 	end := bitOffset + 8*octet
 	payload := ufrm.Payload()
+	dstport := ufrm.DestinationPort()
+	srcport := ufrm.SourcePort()
 	if dhcpv4.PayloadIsDHCPv4(payload) {
 		dst, err = pc.CaptureDHCPv4(dst, pkt, end)
-	} else if ufrm.DestinationPort() == 53 || ufrm.SourcePort() == 53 {
+	} else if dstport == dns.ServerPort || srcport == dns.ServerPort {
 		dst, err = pc.CaptureDNS(dst, pkt, end)
+	} else if dstport == ntp.ServerPort || srcport == ntp.ServerPort {
+		dst, err = pc.CaptureNTP(dst, pkt, end)
 	}
 	if err != nil {
 		dst = append(dst, remainingFrameInfo(unknownPayloadProto, FieldClassPayload, end, octet*len(pkt)))
@@ -357,6 +362,24 @@ func (pc *PacketBreakdown) CaptureDNS(dst []Frame, pkt []byte, bitOffset int) ([
 		FrameBitOffset: 0,
 		BitLength:      int(off) * octet,
 	})
+	dst = append(dst, finfo)
+	return dst, nil
+}
+
+func (pc *PacketBreakdown) CaptureNTP(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
+	if bitOffset%8 != 0 {
+		return nil, errors.New("NTP must be parsed at byte boundary")
+	}
+	ntpData := pkt[bitOffset/8:]
+	_, err := ntp.NewFrame(ntpData)
+	if err != nil {
+		return dst, err
+	}
+	finfo := Frame{
+		Protocol:        "NTP",
+		PacketBitOffset: bitOffset,
+	}
+	finfo.Fields = append(finfo.Fields, baseNTPFields[:]...)
 	dst = append(dst, finfo)
 	return dst, nil
 }
@@ -951,6 +974,86 @@ var baseDHCPv4Fields = [...]FrameField{
 		Class:          FieldClassAddress,
 		FrameBitOffset: (28 + 16) * octet,
 		BitLength:      (dhcpv4.OptionsOffset - (28 + 16)) * octet,
+	},
+}
+
+var baseNTPFields = [...]FrameField{
+	{
+		Name:           "Mode",
+		Class:          FieldClassType,
+		FrameBitOffset: 0,
+		BitLength:      3,
+	},
+	{
+		Class:          FieldClassVersion,
+		FrameBitOffset: 3,
+		BitLength:      2,
+	},
+	{
+		Name:           "Leap Indicator",
+		Class:          fieldClassUndefined,
+		FrameBitOffset: 5,
+		BitLength:      3,
+	},
+	{
+		Name:           "Stratum",
+		Class:          fieldClassUndefined,
+		FrameBitOffset: 1 * octet,
+		BitLength:      1 * octet,
+	},
+	{
+		Name:           "Poll",
+		Class:          fieldClassUndefined,
+		FrameBitOffset: 2 * octet,
+		BitLength:      1 * octet,
+	},
+	{
+		Name:           "System Precision",
+		Class:          fieldClassUndefined,
+		FrameBitOffset: 3 * octet,
+		BitLength:      1 * octet,
+	},
+	{
+		Name:           "Root Delay",
+		Class:          fieldClassUndefined,
+		FrameBitOffset: 4 * octet,
+		BitLength:      4 * octet,
+	},
+	{
+		Name:           "Root Dispersion",
+		Class:          fieldClassUndefined,
+		FrameBitOffset: 8 * octet,
+		BitLength:      4 * octet,
+	},
+	{
+		Name:           "Reference ID",
+		Class:          FieldClassText,
+		FrameBitOffset: 12 * octet,
+		BitLength:      4 * octet,
+	},
+	{
+		Name:           "Reference Time",
+		Class:          FieldClassText,
+		FrameBitOffset: 16 * octet,
+		BitLength:      8 * octet,
+	},
+	{
+		Name:           "Origin Time",
+		Class:          FieldClassText,
+		FrameBitOffset: 24 * octet,
+		BitLength:      8 * octet,
+	},
+	{
+		Name:           "Receive Time",
+		Class:          FieldClassText,
+		FrameBitOffset: 32 * octet,
+		BitLength:      8 * octet,
+	},
+	{
+		Name:           "Transit Time",
+		Class:          FieldClassText,
+		FrameBitOffset: 40 * octet,
+		BitLength:      8 * octet,
 	},
 }
 

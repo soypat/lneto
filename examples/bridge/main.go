@@ -11,7 +11,6 @@ import (
 	"net/netip"
 	"os"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +23,7 @@ import (
 	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/internet"
 	"github.com/soypat/lneto/internet/pcap"
+	"github.com/soypat/lneto/ntp"
 )
 
 var softRand = time.Now().Unix()
@@ -43,11 +43,13 @@ func run() (err error) {
 		flagUseHTTP       = false
 		flagHostToResolve = ""
 		flagRequestedIP   = ""
+		flagDoNTP         = false
 	)
 	flag.StringVar(&flagInterface, "i", flagInterface, "Interface to use. Either tap* or the name of an existing interface to bridge to.")
 	flag.BoolVar(&flagUseHTTP, "http", flagUseHTTP, "Use HTTP tap interface.")
 	flag.StringVar(&flagHostToResolve, "host", flagHostToResolve, "Hostname to resolve via DNS.")
 	flag.StringVar(&flagRequestedIP, "addr", flagRequestedIP, "IP address to request via DHCP.")
+	flag.BoolVar(&flagDoNTP, "ntp", flagDoNTP, "Do NTP round and print result time")
 	flag.Parse()
 	fmt.Println("softrand", softRand)
 	_, err = dns.NewName(flagHostToResolve)
@@ -80,34 +82,41 @@ func run() (err error) {
 		return err
 	}
 	brHW := nicHW
-	brHW[5] += byte(softRand)%128 + 1 // We'll be using a similar HW address but with NIC specific identifier modified.
+	brHW[4]++
 	mtu, err := iface.MTU()
 	if err != nil {
 		return err
 	}
+
 	nicAddr, err := iface.IPMask()
 	if err != nil {
 		return err
 	}
 	fmt.Println("NIC hardware address:", net.HardwareAddr(nicHW[:]).String(), "bridgeHW:", net.HardwareAddr(brHW[:]).String(), "mtu:", mtu, "addr:", nicAddr.String())
 	var stack Stack
+
 	err = stack.Reset(brHW, netip.AddrFrom4([4]byte{}), uint16(mtu))
 	if err != nil {
 		return err
 	}
-	err = stack.BeginDHCPRequest([4]byte{192, 168, 1, 199})
-	if err != nil {
-		return err
-	}
+
 	buf := make([]byte, mtu)
 	lastAction := time.Now()
 	const (
 		stateDHCP = iota
 		stateInitARP
+		stateDNSNTP
+		stateNTP
 		stateDNS
 		stateDone
 	)
+
+	err = stack.BeginDHCPRequest([4]byte{192, 168, 1, 96})
+	if err != nil {
+		return err
+	}
 	state := stateDHCP
+	prevState := state
 	for {
 		switch state {
 		case stateDHCP:
@@ -128,14 +137,46 @@ func run() (err error) {
 			router := stack.dhcp.RouterAddr()
 			hw, err := stack.ResultResolveHardwareAddress6(netip.AddrFrom4(router))
 			if err == nil {
-				state = stateDNS
 				stack.link.SetGateway6(hw)
+				stack.link.SetHardwareAddr6([6]byte{0xd8, 0x5e, 0xd3, 0x43, 0x03, 0xeb})
+				stack.ip.SetAddr(netip.AddrFrom4([4]byte{192, 168, 1, 53}))
+				if flagDoNTP {
+					state = stateDNSNTP
+					err = stack.StartLookupIP("pool.ntp.org")
+				} else {
+					state = stateDNS
+					err = stack.StartLookupIP(flagHostToResolve)
+				}
+				if err != nil {
+					return err
+				}
+			}
+		case stateDNSNTP:
+			addrs, done, err := stack.ResultLookupIP()
+			if err == nil {
+				state = stateNTP
+				fmt.Println("START NTP")
+				err = stack.StartNTP(addrs[0])
+			} else if !done {
+				err = nil
+			}
+			if err != nil {
+				return err
+			}
+		case stateNTP:
+			offset, done := stack.ResultNTP()
+			if done {
+				relative := "behind"
+				if offset < 0 {
+					relative = "ahead"
+				}
+				fmt.Println("NTP completed. You are", offset.Abs(), relative, "of the NTP server")
+				state = stateDNS
 				err = stack.StartLookupIP(flagHostToResolve)
 				if err != nil {
 					return err
 				}
 			}
-
 		case stateDNS:
 			addrs, done, err := stack.ResultLookupIP()
 			if err == nil {
@@ -145,6 +186,10 @@ func run() (err error) {
 				return err
 			}
 		}
+		if prevState != state {
+			fmt.Println("STATE CHANGE", prevState, state)
+		}
+		prevState = state
 
 		clear(buf)
 		nwrite, err := stack.Encapsulate(buf[:], 0)
@@ -189,6 +234,8 @@ type Stack struct {
 	dns     dns.Client
 	ednsopt dns.Resource
 	lookup  dns.Message
+	ntp     ntp.Client
+	sysprec int8 // NTP system precision.
 
 	// Packet capture and top level filtering.
 	shark pcap.PacketBreakdown
@@ -198,8 +245,9 @@ type Stack struct {
 func (s *Stack) Demux(b []byte, _ int) (err error) {
 	s.aux, err = s.shark.CaptureEthernet(s.aux[:0], b, 0)
 	topFrame := s.aux[len(s.aux)-1]
-	isOK := topFrame.Protocol == "DHCPv4" || // Allow DHCP responses.
+	isOK := topFrame.Protocol == "DHCPv4" || // Allow DHCP, DNS and NTP responses.
 		topFrame.Protocol == "DNS" ||
+		topFrame.Protocol == "NTP" ||
 		topFrame.Protocol == ethernet.TypeARP // Allow ARP responses.
 	if !isOK {
 		return nil
@@ -269,6 +317,8 @@ func (s *Stack) Reset(mac [6]byte, addr netip.Addr, mtu uint16) error {
 		return err
 	}
 	s.ip.SetLogger(slog.Default())
+	var timebuf [32]time.Time
+	s.sysprec = ntp.CalculateSystemPrecision(time.Now, timebuf[:])
 	return nil
 }
 
@@ -281,8 +331,6 @@ func (s *Stack) StartLookupIP(host string) error {
 	if err != nil {
 		return err
 	}
-	s.link.SetHardwareAddr6([6]byte{0xd8, 0x5e, 0xd3, 0x43, 0x03, 0xeb})
-	s.ip.SetAddr(netip.AddrFrom4([4]byte{192, 168, 1, 53}))
 	s.ednsopt.SetEDNS0(uint16(s.link.MTU())-100, 0, 0, nil)
 	err = s.dns.StartResolve(uint16(softRand>>1)+1024, uint16(softRand), dns.ResolveConfig{
 		Questions: []dns.Question{
@@ -330,6 +378,10 @@ func (s *Stack) ResultLookupIP() ([]netip.Addr, bool, error) {
 	return addrs, done, nil
 }
 
+func (s *Stack) ResultNTP() (time.Duration, bool) {
+	return s.ntp.Offset(), s.ntp.IsDone()
+}
+
 func (s *Stack) BeginDHCPRequest(request [4]byte) error {
 	var buf [4]byte
 	rand.Read(buf[:])
@@ -337,7 +389,7 @@ func (s *Stack) BeginDHCPRequest(request [4]byte) error {
 	err := s.dhcp.BeginRequest(xid, dhcpv4.RequestConfig{
 		RequestedAddr:      request,
 		ClientHardwareAddr: s.link.HardwareAddr6(),
-		Hostname:           "lneto" + strconv.FormatInt(softRand%100, 16),
+		Hostname:           "lneto",
 	})
 	if err != nil {
 		return err
@@ -348,6 +400,15 @@ func (s *Stack) BeginDHCPRequest(request [4]byte) error {
 	if err != nil {
 		return err
 	}
+	return err
+}
+
+func (s *Stack) StartNTP(addr netip.Addr) error {
+	s.ntp.Reset(time.Now, s.sysprec)
+	var u internet.StackUDPPort
+	addr4 := addr.As4()
+	u.SetStackNode(&s.ntp, addr4[:], ntp.ServerPort)
+	err := s.udps.Register(&u)
 	return err
 }
 

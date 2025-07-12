@@ -43,13 +43,13 @@ type Frame struct {
 func (frm Frame) Flags() (mode Mode, version uint8, lp LeapIndicator) {
 	b := frm.buf[0]
 	mode = Mode(b & 0b111)
-	version = (b << 3) & 0b11
-	lp = LeapIndicator(b >> 5)
+	version = (b >> 3) & 0b111
+	lp = LeapIndicator(b >> 6)
 	return mode, version, lp
 }
 
 func (frm Frame) SetFlags(mode Mode, version uint8, lp LeapIndicator) {
-	b := uint8(mode)&0b111 | (Version4&0b11)<<3 | uint8(lp&0b111)<<5
+	b := uint8(mode)&0b111 | (version&0b111)<<3 | uint8(lp&0b11)<<6
 	frm.buf[0] = b
 }
 
@@ -269,31 +269,19 @@ var (
 	sysPrec            int8
 )
 
-// SystemPrecision calculates the Precision field value for the NTP header once
-// and reuses it for all future calls.
-func SystemPrecision() int8 {
-	ntpOnceSystemClock.Do(recalculateSystemPrecision)
-	return sysPrec
-}
-
-func recalculateSystemPrecision() {
-	sysPrec = CalculateSystemPrecision(nil)
-}
-
 // CalculateSystemPrecision calculates the NTP system precision for a time source.
 // If the time source is nil the default static call to [time.Now] is used.
-func CalculateSystemPrecision(now func() time.Time) int8 {
-	const maxIter = 16
-	var times [maxIter]time.Time
+func CalculateSystemPrecision(now func() time.Time, iters []time.Time) int8 {
+	maxIter := len(iters)
 	if now == nil {
 		for i := 0; i < maxIter; i++ {
-			times[i] = time.Now()
+			iters[i] = time.Now()
 		}
 	} else {
 		for i := 0; i < maxIter; i++ {
-			times[i] = now()
+			iters[i] = now()
 		}
 	}
-	avg := times[maxIter-1].Sub(times[0]) / maxIter
+	avg := iters[maxIter-1].Sub(iters[0]) / time.Duration(maxIter)
 	return int8(math.Log2(avg.Seconds()))
 }

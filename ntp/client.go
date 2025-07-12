@@ -2,7 +2,6 @@ package ntp
 
 import (
 	"errors"
-	"io"
 	"time"
 )
 
@@ -23,33 +22,37 @@ type Client struct {
 	connID uint64
 	start  time.Time
 	_now   func() time.Time
-	t      [4]Timestamp
+	// t stores the time offsets needed to compute the time at client
+	// taking into consideration the round-trip delay.
+	//  - t[0] (orig): Client timestamp of request packet transmission.
+	//  - t[1] (rec): Server timestamp of request packet reception.
+	//  - t[2] (xmt): Server timestamp of response packet transmission.
+	//  - t[3]: Client timestamp of response packet reception.
+	t [4]Timestamp
 	// org      Timestamp
-	// rec      Timestamp
-	xmt           Timestamp
 	state         state
 	serverStratum Stratum
-	_sysprec      int8
+	sysprec       int8
 }
 
-func (c *Client) Reset(now func() time.Time) {
-	if c._sysprec == 0 {
-		c._sysprec = sysprecRecalcNeeded
-	}
+func (c *Client) Reset(now func() time.Time, sysprec int8) {
 	*c = Client{
-		connID:   c.connID + 1,
-		_now:     now,
-		_sysprec: c._sysprec,
+		connID:  c.connID + 1,
+		_now:    now,
+		sysprec: sysprec,
+		state:   stateSend1,
 	}
 }
 
+func (c *Client) Protocol() uint64  { return 0 }
+func (c *Client) LocalPort() uint16 { return ClientPort }
 func (c *Client) ConnectionID() *uint64 {
 	return &c.connID
 }
 
 func (c *Client) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
-	if c.isDone() {
-		return 0, io.EOF
+	if c.IsDone() {
+		return 0, nil
 	}
 	payload := carrierData[frameOffset:]
 	frm, err := NewFrame(payload)
@@ -60,10 +63,10 @@ func (c *Client) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
 	switch c.state {
 	case stateSend1:
 		c.start = c.now()
-		c.xmt = TimestampFromUint64(0)
+		c.t[0] = TimestampFromUint64(0)
 		c.state = stateAwait1
 	case stateSend2:
-		c.xmt = c.unsyncTimestamp(c.now())
+		// c.xmt = c.unsyncTimestamp(c.now())
 		c.state = stateDone
 	default:
 		return 0, nil // Nothing to handle.
@@ -72,46 +75,47 @@ func (c *Client) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
 	for i := range payload[:SizeHeader] {
 		payload[i] = 0
 	}
-	sysprec := c.sysprec()
+
 	frm.ClearHeader()
 	frm.SetStratum(StratumUnsync)
 	frm.SetPoll(6)
-	frm.SetPrecision(sysprec)
-	frm.SetOriginTime(c.xmt)
+	frm.SetPrecision(c.sysprec)
+	frm.SetOriginTime(c.t[0])
 	frm.SetFlags(ModeClient, Version4, LeapNoWarning)
 	return SizeHeader, nil
 }
 
 func (c *Client) Demux(carrierData []byte, frameOffset int) error {
-	if c.isDone() {
-		return io.EOF
+	if c.IsDone() {
+		return nil
 	}
 	payload := carrierData[frameOffset:]
 	frm, err := NewFrame(payload)
 	if err != nil {
 		return err
 	}
-	t := &c.t
+
 	switch c.state {
 	case stateAwait1:
-		tstx := frm.TransmitTime()
-		tsorig := frm.OriginTime()
-		if tstx == tsorig || tsorig == c.xmt {
+		xmt := frm.TransmitTime()
+		orig := frm.OriginTime()
+		if xmt == orig || orig != c.t[0] {
 			return errors.New("bogus NTP packet")
 		}
-		t[0] = tsorig
-		t[1] = frm.ReceiveTime()
-		t[2] = tstx
-		t[3] = c.unsyncTimestamp(c.now())
+
+		txelapsed := c.now().Sub(c.start)
+		c.t[1] = frm.ReceiveTime()
+		c.t[2] = xmt
+		c.t[3] = c.t[0].Add(txelapsed)
 		c.serverStratum = frm.Stratum()
-		c.state = stateDone
+		c.state = stateDone // TODO: add second exchange part.
 	case stateAwait2:
-		c.state = stateAwait2
+		c.state = stateDone
 	}
 	return nil
 }
 
-func (c *Client) isDone() bool {
+func (c *Client) IsDone() bool {
 	return c.state == stateDone
 }
 
@@ -122,30 +126,48 @@ func (c *Client) now() time.Time {
 	return c._now()
 }
 
-func (c *Client) unsyncTimestamp(now time.Time) Timestamp {
-	return TimestampFromUint64(0).Add(now.Sub(c.start))
-}
-
-func (c *Client) sysprec() int8 {
-	if c._sysprec == sysprecRecalcNeeded {
-		c._sysprec = CalculateSystemPrecision(c._now)
-	}
-	return c._sysprec
-}
-
 // Now returns the current time as corrected by NTP protocol.
 func (c *Client) Now() time.Time {
-	return c.now().Add(c.Offset())
+	now, off := c.offsetAndNow()
+	return now.Add(off)
 }
 
 // ServerStratum returns the stratum of the server client synchronized with.
 func (c *Client) ServerStratum() Stratum { return c.serverStratum }
 
-// Offset returns the
+// Offset is a helper method to determine the difference between the Client's clock and the server's clock.
+// Use [Client.Now] to calculate the server's time.
 func (c *Client) Offset() time.Duration {
-	if c.isDone() {
-		t := &c.t
-		return t[1].Sub(t[0])/2 + t[2].Sub(t[3])/2
+	if c.IsDone() {
+		_, off := c.offsetAndNow()
+		return off
 	}
 	return 0
+}
+
+func (c *Client) offsetAndNow() (clientNow time.Time, offset time.Duration) {
+	now := c.now()
+	serverToBase := c.OffsetUnsynced()
+	clientToBase := now.Sub(BaseTime())
+	serverToClient := serverToBase - clientToBase
+	return now, serverToClient
+}
+
+// OffsetUnsynced returns the absolute time offset difference between client and server clock
+// as calculated by the clock synchonization algorithm. It is unsynchonized- the result of OffsetUnsynced will not change with time.
+func (c *Client) OffsetUnsynced() time.Duration {
+	if c.IsDone() {
+		t := &c.t
+		return (t[1].Sub(t[0]) + t[2].Sub(t[3])) / 2
+	}
+	return 0
+}
+
+func (c *Client) RoundTripDelay() time.Duration {
+	if c.IsDone() {
+		d0 := c.t[3].Sub(c.t[0])
+		d1 := c.t[2].Sub(c.t[1])
+		return d0 - d1
+	}
+	return -1
 }
