@@ -179,13 +179,14 @@ func run() (err error) {
 }
 
 type Stack struct {
-	link   internet.StackEthernet
-	ip     internet.StackIP
-	arp    internet.NodeARP
-	udps   internet.StackPorts
-	dhcp   dhcpv4.Client
-	dns    dns.Client
-	lookup dns.Message
+	link    internet.StackEthernet
+	ip      internet.StackIP
+	arp     internet.NodeARP
+	udps    internet.StackPorts
+	dhcp    dhcpv4.Client
+	dns     dns.Client
+	ednsopt dns.Resource
+	lookup  dns.Message
 
 	// Packet capture and top level filtering.
 	shark pcap.PacketBreakdown
@@ -194,10 +195,10 @@ type Stack struct {
 
 func (s *Stack) Demux(b []byte, _ int) (err error) {
 	s.aux, err = s.shark.CaptureEthernet(s.aux[:0], b, 0)
-	baseFrame := s.aux[len(s.aux)-1]
-	isOK := baseFrame.Protocol == "DHCPv4" ||
-		(baseFrame.Protocol == lneto.IPProtoUDP && getField(baseFrame, b, pcap.FieldClassDst) == 53) ||
-		baseFrame.Protocol == ethernet.TypeARP
+	topFrame := s.aux[len(s.aux)-1]
+	isOK := topFrame.Protocol == "DHCPv4" || // Allow DHCP responses.
+		(topFrame.Protocol == lneto.IPProtoUDP && getField(topFrame, b, pcap.FieldClassSrc) == 53) || // Allow DNS responses.
+		topFrame.Protocol == ethernet.TypeARP // Allow ARP responses.
 	if !isOK {
 		return nil
 	}
@@ -278,13 +279,19 @@ func (s *Stack) StartLookupIP(host string) error {
 	if err != nil {
 		return err
 	}
-	err = s.dns.StartResolve(uint16(softRand), dns.ResolveConfig{
+	s.link.SetHardwareAddr6([6]byte{0xd8, 0x5e, 0xd3, 0x43, 0x03, 0xeb})
+	s.ip.SetAddr(netip.AddrFrom4([4]byte{192, 168, 1, 53}))
+	s.ednsopt.SetEDNS0(uint16(s.link.MTU())-100, 0, 0, nil)
+	err = s.dns.StartResolve(uint16(softRand>>1)+1024, uint16(softRand), dns.ResolveConfig{
 		Questions: []dns.Question{
 			{
 				Name:  name,
 				Type:  dns.TypeA,
 				Class: dns.ClassINET,
 			},
+		},
+		Additional: []dns.Resource{
+			s.ednsopt,
 		},
 		EnableRecursion: true,
 	})

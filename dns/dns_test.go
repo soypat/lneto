@@ -97,7 +97,7 @@ func TestMessageAppendEncode(t *testing.T) {
 				},
 				Answers: []Resource{
 					{
-						Header: ResourceHeader{
+						header: ResourceHeader{
 							Name:   MustNewName("."),
 							Type:   TypeA,
 							Class:  ClassINET,
@@ -147,7 +147,7 @@ func TestMessageAppendEncodeIncompleteOK(t *testing.T) {
 				},
 				Answers: []Resource{
 					{
-						Header: ResourceHeader{
+						header: ResourceHeader{
 							Name:   MustNewName("."),
 							Type:   TypeA,
 							Class:  ClassINET,
@@ -157,7 +157,7 @@ func TestMessageAppendEncodeIncompleteOK(t *testing.T) {
 						data: []byte{1, 2, 3},
 					},
 					{
-						Header: ResourceHeader{
+						header: ResourceHeader{
 							Name:   MustNewName("."),
 							Type:   TypeA,
 							Class:  ClassINET,

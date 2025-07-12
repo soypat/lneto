@@ -37,7 +37,7 @@ type Question struct {
 }
 
 type Resource struct {
-	Header ResourceHeader
+	header ResourceHeader
 	data   []byte
 }
 
@@ -53,6 +53,35 @@ type ResourceHeader struct {
 
 type Name struct {
 	data []byte
+}
+
+type ZFlags uint16
+
+func NewResource(name Name, typ Type, class Class, ttl uint32, data []byte) Resource {
+	return Resource{
+		header: ResourceHeader{
+			Name:   name,
+			Type:   typ,
+			Class:  class,
+			TTL:    ttl,
+			Length: uint16(len(data)),
+		},
+		data: data,
+	}
+}
+
+func (r *Resource) SetEDNS0(UDPlength uint16, rcode RCode, zflags ZFlags, data []byte) {
+	if len(data) > math.MaxUint16-2 || len(data)+8+2*SizeHeader > int(UDPlength) {
+		panic("too large data")
+	}
+	r.header = ResourceHeader{
+		Name:   Name{data: rootDomain},
+		Type:   TypeOPT,
+		Class:  Class(UDPlength),
+		TTL:    uint32(rcode)<<24 | 0<<16 | uint32(zflags),
+		Length: uint16(len(data)),
+	}
+	r.data = append(r.data[:0], data...)
 }
 
 // Decode decodes the DNS message in b into m. It returns the number of bytes
@@ -98,7 +127,8 @@ func (m *Message) Decode(msg []byte) (_ uint16, incompleteButOK bool, err error)
 		}
 	}
 	// Skip undecoded questions.
-	for i := 0; i < int(hdr.QDCount())-nq; i++ {
+	qd := hdr.QDCount()
+	for i := 0; i < int(qd)-nq; i++ {
 		off, err = skipQuestion(msg, off)
 		if err != nil {
 			return off, false, err
@@ -245,9 +275,16 @@ func (m *Message) AddQuestions(questions []Question) {
 	m.Questions = slices.Grow(m.Questions, len(questions))
 	m.Questions = m.Questions[:qoff+len(questions)]
 	for i := range questions {
-		m.Questions[qoff+i].Name.CopyFrom(questions[i].Name)
-		m.Questions[qoff+i].Type = questions[i].Type
-		m.Questions[qoff+i].Class = questions[i].Class
+		m.Questions[qoff+i].CopyFrom(questions[i])
+	}
+}
+
+func (m *Message) AddAdditionals(rsc []Resource) {
+	aoff := len(m.Additionals)
+	m.Additionals = slices.Grow(m.Additionals, len(rsc))
+	m.Additionals = m.Additionals[:aoff+len(rsc)]
+	for i := range rsc {
+		m.Additionals[aoff+i].CopyFrom(rsc[i])
 	}
 }
 
@@ -272,16 +309,12 @@ func (h *ResourceHeader) String() string {
 }
 
 func (r *Resource) Reset() {
-	r.Header.Reset()
+	r.header.Reset()
 	r.data = r.data[:0]
 }
 
-func (r *Resource) Len() uint16 {
-	return r.Header.Name.Len() + 10 + uint16(len(r.data))
-}
-
 func (r *Resource) RawData() []byte {
-	length := r.Header.Length
+	length := r.header.Length
 	if int(length) > len(r.data) {
 		length = uint16(len(r.data))
 	}
@@ -330,25 +363,28 @@ func (q *Question) String() string {
 }
 
 func (r *Resource) Decode(b []byte, off uint16) (uint16, error) {
-	off, err := r.Header.Decode(b, off)
+	off, err := r.header.Decode(b, off)
 	if err != nil {
 		return off, err
 	}
-	if r.Header.Length > uint16(len(b[off:])) {
+	if r.header.Length > uint16(len(b[off:])) {
 		return off, errResourceLen
 	}
-	r.data = append(r.data[:0], b[off:off+r.Header.Length]...)
-	return off + r.Header.Length, nil
+	r.data = append(r.data[:0], b[off:off+r.header.Length]...)
+	return off + r.header.Length, nil
 }
 
 func (r *Resource) appendTo(buf []byte) (_ []byte, err error) {
-	r.Header.Length = uint16(len(r.data))
-	buf, err = r.Header.appendTo(buf)
+	buf, err = r.header.appendTo(buf)
 	if err != nil {
 		return buf, err
 	}
 	buf = append(buf, r.data...)
 	return buf, nil
+}
+
+func (r *Resource) Len() uint16 {
+	return r.header.Name.Len() + 10 + uint16(len(r.data))
 }
 
 func (rhdr *ResourceHeader) Decode(msg []byte, off uint16) (uint16, error) {
@@ -386,7 +422,7 @@ func MustNewName(s string) Name {
 	return name
 }
 
-var emptyDomain = []byte{0}
+var rootDomain = []byte{0}
 
 // NewName parses a domain name and returns a new Name.
 func NewName(domain string) (Name, error) {
@@ -394,7 +430,7 @@ func NewName(domain string) (Name, error) {
 		return Name{}, errEmptyDomainName
 	}
 	if len(domain) == 1 && domain[0] == '.' {
-		return Name{data: emptyDomain}, nil
+		return Name{data: append([]byte{}, rootDomain...)}, nil
 	}
 	var name Name
 	for len(domain) > 0 {
@@ -462,7 +498,7 @@ func (n *Name) Decode(b []byte, off uint16) (uint16, error) {
 	return off, nil
 }
 
-// Reset resets the Name labels to be empty and reuses buffer.
+// Reset resets the Name labels to be empty andatad reuses buffer.
 func (n *Name) Reset() { n.data = n.data[:0] }
 
 // CanAddLabel reports whether the label can be added to the name.
@@ -605,7 +641,7 @@ func (dst *Question) CopyFrom(q Question) {
 }
 
 func (dst *Resource) CopyFrom(r Resource) {
-	dst.Header.CopyFrom(r.Header)
+	dst.header.CopyFrom(r.header)
 	dst.data = append(dst.data[:0], r.data...)
 }
 

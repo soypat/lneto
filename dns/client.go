@@ -12,6 +12,7 @@ import (
 type Client struct {
 	connID          uint64
 	txid            uint16
+	lport           uint16
 	msg             Message
 	respFlags       HeaderFlags
 	state           clientState
@@ -20,23 +21,25 @@ type Client struct {
 
 type ResolveConfig struct {
 	Questions       []Question
+	Additional      []Resource
 	EnableRecursion bool
 }
 
 func (sudp *Client) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
 
-func (sudp *Client) LocalPort() uint16 { return ClientPort }
+func (sudp *Client) LocalPort() uint16 { return sudp.lport }
 
 func (sudp *Client) ConnectionID() *uint64 { return &sudp.connID }
 
-func (c *Client) StartResolve(txid uint16, cfg ResolveConfig) error {
+func (c *Client) StartResolve(localPort, txid uint16, cfg ResolveConfig) error {
 	nd := len(cfg.Questions)
 	if nd > math.MaxUint16 {
 		return errors.New("overflow uint16 in DNS questions")
 	}
-	c.reset(txid, dnsSendQuery, cfg.EnableRecursion)
+	c.reset(localPort, txid, dnsSendQuery, cfg.EnableRecursion)
 	c.msg.LimitResourceDecoding(uint16(nd), uint16(nd), 0, 0)
 	c.msg.AddQuestions(cfg.Questions)
+	c.msg.AddAdditionals(cfg.Additional)
 	return nil
 }
 
@@ -61,6 +64,13 @@ func (c *Client) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
 		return 0, fmt.Errorf("unexpected write %d v %d", len(data), msglen)
 	}
 	c.state = dnsAwaitResponse
+	// Unset don't frag since DNS requests go through LOTS of nodes.
+	if frameOffset >= 28 {
+		version := carrierData[0] >> 4
+		if version == 4 {
+			carrierData[6], carrierData[7] = 0, 0 // unset IP Flags.
+		}
+	}
 	return len(data), nil
 }
 
@@ -113,12 +123,13 @@ func (c *Client) Answers() []Resource {
 }
 
 func (c *Client) Abort() {
-	c.reset(0, 0, false)
+	c.reset(0, 0, 0, false)
 }
 
-func (c *Client) reset(txid uint16, state clientState, enableRecursion bool) {
+func (c *Client) reset(lport, txid uint16, state clientState, enableRecursion bool) {
 	*c = Client{
 		connID:          c.connID + 1,
+		lport:           lport,
 		txid:            txid,
 		msg:             c.msg,
 		state:           state,

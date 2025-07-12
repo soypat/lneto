@@ -148,6 +148,7 @@ func (sb *StackIP) Encapsulate(carrierData []byte, frameOffset int) (int, error)
 	id := internal.Prand16(seed)
 	ifrm.SetID(id)
 	ifrm.SetFlags(dontFrag)
+	ifrm.SetTTL(64)
 	*ifrm.SourceAddr() = sb.ip
 	sb.ipID = id
 	for i := range sb.handlers {
@@ -166,7 +167,6 @@ func (sb *StackIP) Encapsulate(carrierData []byte, frameOffset int) (int, error)
 		}
 		totalLen := n + headerlen
 		ifrm.SetTotalLength(uint16(totalLen))
-		ifrm.SetTTL(64)
 		ifrm.SetProtocol(proto)
 		ifrm.SetCRC(ifrm.CalculateHeaderCRC())
 		// Calculate CRC for our newly generated packet.
