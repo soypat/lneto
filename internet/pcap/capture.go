@@ -10,6 +10,7 @@ import (
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/dhcpv4"
+	"github.com/soypat/lneto/dns"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/http/httpraw"
 	"github.com/soypat/lneto/ipv4"
@@ -21,8 +22,9 @@ import (
 const unknownPayloadProto = "payload?"
 
 type PacketBreakdown struct {
-	hdr httpraw.Header
-	vld lneto.Validator
+	hdr  httpraw.Header
+	dmsg dns.Message
+	vld  lneto.Validator
 }
 
 func (pc *PacketBreakdown) CaptureEthernet(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
@@ -323,10 +325,39 @@ func (pc *PacketBreakdown) CaptureUDP(dst []Frame, pkt []byte, bitOffset int) ([
 	end := bitOffset + 8*octet
 	payload := ufrm.Payload()
 	if dhcpv4.PayloadIsDHCPv4(payload) {
-		return pc.CaptureDHCPv4(dst, pkt, end)
-	} else {
+		dst, err = pc.CaptureDHCPv4(dst, pkt, end)
+	} else if ufrm.DestinationPort() == 53 || ufrm.SourcePort() == 53 {
+		dst, err = pc.CaptureDNS(dst, pkt, end)
+	}
+	if err != nil {
 		dst = append(dst, remainingFrameInfo(unknownPayloadProto, FieldClassPayload, end, octet*len(pkt)))
 	}
+	return dst, nil
+}
+
+func (pc *PacketBreakdown) CaptureDNS(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
+	if bitOffset%8 != 0 {
+		return nil, errors.New("DNS must be parsed at byte boundary")
+	}
+	dnsData := pkt[bitOffset/8:]
+	pc.dmsg.LimitResourceDecoding(20, 20, 20, 20)
+	off, incomplete, err := pc.dmsg.Decode(dnsData)
+	if err != nil && !incomplete {
+		return dst, err
+	}
+	finfo := Frame{
+		Protocol:        "DNS",
+		PacketBitOffset: bitOffset,
+	}
+	if incomplete {
+		finfo.Errors = append(finfo.Errors, errors.New("pcap: could not parse all DNS resources; add higher limit"))
+	}
+	finfo.Fields = append(finfo.Fields, FrameField{
+		Name:           "Data",
+		FrameBitOffset: 0,
+		BitLength:      int(off) * octet,
+	})
+	dst = append(dst, finfo)
 	return dst, nil
 }
 

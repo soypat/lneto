@@ -626,10 +626,10 @@ func (dst *Message) CopyFrom(m Message) {
 	for i := range dst.Answers {
 		dst.Answers[i].CopyFrom(m.Answers[i])
 	}
-	for i := range dst.Answers {
+	for i := range dst.Authorities {
 		dst.Authorities[i].CopyFrom(m.Authorities[i])
 	}
-	for i := range dst.Answers {
+	for i := range dst.Additionals {
 		dst.Additionals[i].CopyFrom(m.Additionals[i])
 	}
 }

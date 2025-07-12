@@ -137,10 +137,12 @@ func run() (err error) {
 			}
 
 		case stateDNS:
-			addrs, err := stack.ResultLookupIP()
+			addrs, done, err := stack.ResultLookupIP()
 			if err == nil {
 				fmt.Println(flagHostToResolve, "resolved to", addrs)
 				return nil
+			} else if done {
+				return err
 			}
 		}
 
@@ -197,7 +199,7 @@ func (s *Stack) Demux(b []byte, _ int) (err error) {
 	s.aux, err = s.shark.CaptureEthernet(s.aux[:0], b, 0)
 	topFrame := s.aux[len(s.aux)-1]
 	isOK := topFrame.Protocol == "DHCPv4" || // Allow DHCP responses.
-		(topFrame.Protocol == lneto.IPProtoUDP && getField(topFrame, b, pcap.FieldClassSrc) == 53) || // Allow DNS responses.
+		topFrame.Protocol == "DNS" ||
 		topFrame.Protocol == ethernet.TypeARP // Allow ARP responses.
 	if !isOK {
 		return nil
@@ -308,12 +310,12 @@ func (s *Stack) StartLookupIP(host string) error {
 	return nil
 }
 
-func (s *Stack) ResultLookupIP() ([]netip.Addr, error) {
+func (s *Stack) ResultLookupIP() ([]netip.Addr, bool, error) {
 	done, err := s.dns.MessageCopyTo(&s.lookup)
 	if err != nil {
-		return nil, err
+		return nil, done, err
 	} else if !done {
-		return nil, errors.New("DNS not done")
+		return nil, done, errors.New("DNS not done")
 	}
 	var addrs []netip.Addr
 	ans := s.lookup.Answers
@@ -325,7 +327,7 @@ func (s *Stack) ResultLookupIP() ([]netip.Addr, error) {
 			addrs = append(addrs, netip.AddrFrom16([16]byte(data)))
 		}
 	}
-	return addrs, nil
+	return addrs, done, nil
 }
 
 func (s *Stack) BeginDHCPRequest(request [4]byte) error {

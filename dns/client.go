@@ -65,12 +65,12 @@ func (c *Client) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
 	}
 	c.state = dnsAwaitResponse
 	// Unset don't frag since DNS requests go through LOTS of nodes.
-	if frameOffset >= 28 {
-		version := carrierData[0] >> 4
-		if version == 4 {
-			carrierData[6], carrierData[7] = 0, 0 // unset IP Flags.
-		}
-	}
+	// if frameOffset >= 28 {
+	// 	version := carrierData[0] >> 4
+	// 	if version == 4 {
+	// 		carrierData[6], carrierData[7] = 0, 0 // unset IP Flags.
+	// 	}
+	// }
 	return len(data), nil
 }
 
