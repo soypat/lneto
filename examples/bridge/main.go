@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/dhcpv4"
 	"github.com/soypat/lneto/dns"
@@ -82,7 +81,6 @@ func run() (err error) {
 		return err
 	}
 	brHW := nicHW
-	brHW[4]++
 	mtu, err := iface.MTU()
 	if err != nil {
 		return err
@@ -138,8 +136,6 @@ func run() (err error) {
 			hw, err := stack.ResultResolveHardwareAddress6(netip.AddrFrom4(router))
 			if err == nil {
 				stack.link.SetGateway6(hw)
-				stack.link.SetHardwareAddr6([6]byte{0xd8, 0x5e, 0xd3, 0x43, 0x03, 0xeb})
-				stack.ip.SetAddr(netip.AddrFrom4([4]byte{192, 168, 1, 53}))
 				if flagDoNTP {
 					state = stateDNSNTP
 					err = stack.StartLookupIP("pool.ntp.org")
@@ -274,11 +270,12 @@ func (s *Stack) Encapsulate(b []byte, _ int) (int, error) {
 }
 
 func (s *Stack) Reset(mac [6]byte, addr netip.Addr, mtu uint16) error {
-	err := s.link.Reset6(mac, ethernet.BroadcastAddr(), int(mtu))
+	const maxNodes = 8
+	err := s.link.Reset6(mac, ethernet.BroadcastAddr(), int(mtu), maxNodes)
 	if err != nil {
 		return err
 	}
-	err = s.ip.Reset(addr)
+	err = s.ip.Reset(addr, maxNodes)
 	if err != nil {
 		return err
 	}
@@ -298,7 +295,7 @@ func (s *Stack) Reset(mac [6]byte, addr netip.Addr, mtu uint16) error {
 	if err != nil {
 		return err
 	}
-	err = s.udps.Reset(uint64(lneto.IPProtoUDP), 2)
+	err = s.udps.ResetUDP(maxNodes)
 	if err != nil {
 		return err
 	}
@@ -355,6 +352,7 @@ func (s *Stack) StartLookupIP(host string) error {
 	if err != nil {
 		return err
 	}
+	fmt.Println("START LOOKUP", host, dns4[:])
 	return nil
 }
 
@@ -404,7 +402,7 @@ func (s *Stack) BeginDHCPRequest(request [4]byte) error {
 }
 
 func (s *Stack) StartNTP(addr netip.Addr) error {
-	s.ntp.Reset(time.Now, s.sysprec)
+	s.ntp.Reset(s.sysprec, time.Now)
 	var u internet.StackUDPPort
 	addr4 := addr.As4()
 	u.SetStackNode(&s.ntp, addr4[:], ntp.ServerPort)

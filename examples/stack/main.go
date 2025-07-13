@@ -185,15 +185,16 @@ type Stack struct {
 }
 
 func (stack *Stack) Reset(ourMAC, gwMAC [6]byte, ip netip.Addr, mtu int) (err error) {
-	err = stack.ethernet.Reset6(ourMAC, gwMAC, mtu)
+	const maxNodes = 8
+	err = stack.ethernet.Reset6(ourMAC, gwMAC, mtu, maxNodes)
 	if err != nil {
 		return err
 	}
-	err = stack.ip.Reset(ip)
+	err = stack.ip.Reset(ip, maxNodes)
 	if err != nil {
 		return err
 	}
-	stack.tcpports.Reset(uint64(lneto.IPProtoTCP), 2)
+	stack.tcpports.ResetTCP(maxNodes)
 	ipaddr := ip.As4()
 	err = stack.arp.Reset(arp.HandlerConfig{
 		HardwareAddr: ourMAC[:],

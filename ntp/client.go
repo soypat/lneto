@@ -35,7 +35,7 @@ type Client struct {
 	sysprec       int8
 }
 
-func (c *Client) Reset(now func() time.Time, sysprec int8) {
+func (c *Client) Reset(sysprec int8, now func() time.Time) {
 	*c = Client{
 		connID:  c.connID + 1,
 		_now:    now,

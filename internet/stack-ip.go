@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/netip"
+	"slices"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
@@ -25,15 +26,16 @@ type StackIP struct {
 	logger
 }
 
-func (sb *StackIP) Reset(addr netip.Addr) error {
+func (sb *StackIP) Reset(addr netip.Addr, maxNodes int) error {
 	err := sb.SetAddr(addr)
 	if err != nil {
 		return err
 	}
+	sb.handlers = slices.Grow(sb.handlers[:0], maxNodes)
 	*sb = StackIP{
 		connID:    sb.connID + 1,
 		validator: sb.validator,
-		handlers:  sb.handlers[:0],
+		handlers:  sb.handlers,
 		logger:    sb.logger,
 		ip:        sb.ip,
 	}
@@ -157,7 +159,7 @@ func (sb *StackIP) Encapsulate(carrierData []byte, frameOffset int) (int, error)
 		n, err := h.encapsulate(frame[:], headerlen)
 		if err != nil {
 			if handleNodeError(&sb.handlers, i, err) {
-				println("NODE REMOVED", proto.String(), h.port)
+				println("IP NODE REMOVED", proto.String(), h.port)
 				h.destroy()
 			}
 			sb.error("StackIP:encapsulate", slog.String("proto", proto.String()), slog.String("err", err.Error()))

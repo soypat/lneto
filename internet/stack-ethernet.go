@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"net"
+	"slices"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
@@ -32,13 +33,14 @@ func (ls *StackEthernet) HardwareAddr6() [6]byte {
 	return ls.mac
 }
 
-func (ls *StackEthernet) Reset6(mac, gateway [6]byte, mtu int) error {
+func (ls *StackEthernet) Reset6(mac, gateway [6]byte, mtu, maxNodes int) error {
 	if mtu > math.MaxUint16 || mtu < 256 {
 		return errors.New("invalid MTU")
 	}
+	ls.handlers = slices.Grow(ls.handlers[:0], maxNodes)
 	*ls = StackEthernet{
 		connID:   ls.connID + 1,
-		handlers: ls.handlers[:0],
+		handlers: ls.handlers,
 		logger:   ls.logger,
 		mac:      mac,
 		gwmac:    gateway,

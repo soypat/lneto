@@ -4,7 +4,6 @@ import (
 	"errors"
 	"math"
 	"net"
-	"slices"
 )
 
 // StackNode is an abstraction of a packet exchanging protocol controller. This is the building block for all protocols,
@@ -46,8 +45,20 @@ var (
 	errZeroPort        = errors.New("port must be greater than zero")
 	errInvalidProto    = errors.New("invalid protocol")
 	errProtoRegistered = errors.New("protocol already registered")
+	errNodesFull       = errors.New("no more room for new nodes")
 	_                  = net.ErrClosed
 )
+
+func registerNode(nodesPtr *[]node, h node) error {
+	if cap(*nodesPtr)-len(*nodesPtr) <= 0 {
+		*nodesPtr = nodesCompact(*nodesPtr)
+	}
+	if cap(*nodesPtr)-len(*nodesPtr) <= 0 {
+		return errNodesFull
+	}
+	*nodesPtr = append(*nodesPtr, h)
+	return nil
+}
 
 func handleNodeError(nodesPtr *[]node, nodeIdx int, err error) (discarded bool) {
 	if err != nil {
@@ -56,7 +67,8 @@ func handleNodeError(nodesPtr *[]node, nodeIdx int, err error) (discarded bool) 
 		}
 		nodes := *nodesPtr
 		if checkNodeErr(&nodes[nodeIdx], err) {
-			*nodesPtr = slices.Delete(nodes, nodeIdx, nodeIdx+1)
+			// *nodesPtr = slices.Delete(nodes, nodeIdx, nodeIdx+1)
+			(*nodesPtr)[nodeIdx] = node{} // 'Delete' node without modifying slice length.
 			discarded = true
 		}
 	}
@@ -69,10 +81,6 @@ func checkNode(node *node) (discard bool) {
 
 func checkNodeErr(node *node, err error) (discard bool) {
 	return checkNode(node) || (err != nil && err == net.ErrClosed)
-}
-
-func addNode(nodes *[]node, h StackNode, port uint16, protocol uint64) {
-	*nodes = append(*nodes, nodeFromStackNode(h, port, protocol))
 }
 
 func nodeFromStackNode(s StackNode, port uint16, protocol uint64) node {
