@@ -181,7 +181,7 @@ type Stack struct {
 	ethernet internet.StackEthernet
 	ip       internet.StackIP
 	tcpports internet.StackPorts
-	arp      internet.NodeARP
+	arp      arp.Handler
 }
 
 func (stack *Stack) Reset(ourMAC, gwMAC [6]byte, ip netip.Addr, mtu int) (err error) {

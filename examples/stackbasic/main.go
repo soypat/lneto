@@ -195,7 +195,7 @@ func NewEthernetTCPStack(ourMAC, gwMAC [6]byte, ip netip.AddrPort, mtu uint16, s
 	if err != nil {
 		return nil, nil, err
 	}
-	err = ipStack.RegisterTCPConn(&conn)
+	err = ipStack.Register(&conn)
 	if err != nil {
 		return nil, nil, err
 	}

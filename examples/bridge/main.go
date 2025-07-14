@@ -224,7 +224,7 @@ func run() (err error) {
 type Stack struct {
 	link    internet.StackEthernet
 	ip      internet.StackIP
-	arp     internet.NodeARP
+	arp     arp.Handler
 	udps    internet.StackPorts
 	dhcp    dhcpv4.Client
 	dns     dns.Client
@@ -427,7 +427,7 @@ func (s *Stack) ResultResolveHardwareAddress6(ip netip.Addr) (hw [6]byte, err er
 	if err != nil {
 		return hw, err
 	} else if len(hwslice) != 6 {
-		panic("unreachable slice hw leng")
+		panic("unreachable slice hw length")
 	}
 	return [6]byte(hwslice), nil
 }

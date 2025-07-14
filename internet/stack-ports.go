@@ -50,6 +50,9 @@ func (ps *StackPorts) Encapsulate(b []byte, offset int) (n int, err error) {
 	}
 	var i int
 	for i = 0; i < len(ps.handlers); i++ {
+		if ps.handlers[i].IsInvalid() {
+			continue
+		}
 		n, err = ps.handlers[i].encapsulate(b, offset)
 		if err != nil || n > 0 {
 			if ps.handleResult(i, n, err) {

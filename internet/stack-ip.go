@@ -200,25 +200,19 @@ func (sb *StackIP) Register(h StackNode) error {
 	if proto > 255 {
 		return errInvalidProto
 	}
-	sb.handlers = append(sb.handlers, node{
+	connID := h.ConnectionID()
+	var currConnID uint64
+	if connID != nil {
+		currConnID = *connID
+	}
+	return registerNode(&sb.handlers, node{
 		demux:       h.Demux,
 		encapsulate: h.Encapsulate,
 		proto:       uint16(proto),
+		port:        h.LocalPort(),
+		currConnID:  currConnID,
+		connID:      connID,
 	})
-	return nil
-}
-
-func (sb *StackIP) RegisterTCPConn(conn *tcp.Conn) error {
-	if conn.LocalPort() == 0 {
-		return errZeroPort
-	}
-	sb.handlers = append(sb.handlers, node{
-		demux:       conn.Demux,
-		encapsulate: conn.Encapsulate,
-		proto:       uint16(lneto.IPProtoTCP),
-		port:        conn.LocalPort(),
-	})
-	return nil
 }
 
 type logger struct {

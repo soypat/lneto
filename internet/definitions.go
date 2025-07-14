@@ -75,12 +75,12 @@ func handleNodeError(nodesPtr *[]node, nodeIdx int, err error) (discarded bool) 
 	return discarded
 }
 
-func checkNode(node *node) (discard bool) {
-	return node.demux == nil || node.connID != nil && node.currConnID != *node.connID
+func (node *node) IsInvalid() bool {
+	return node.demux == nil || node.encapsulate == nil || (node.connID != nil && node.currConnID != *node.connID)
 }
 
 func checkNodeErr(node *node, err error) (discard bool) {
-	return checkNode(node) || (err != nil && err == net.ErrClosed)
+	return node.IsInvalid() || (err != nil && err == net.ErrClosed)
 }
 
 func nodeFromStackNode(s StackNode, port uint16, protocol uint64) node {
@@ -116,7 +116,7 @@ func getEncapsulateNode(nodes *[]node, carrierData []byte, frameOffset int) (nod
 	destroyed := false
 	for i := range *nodes {
 		node := &(*nodes)[i]
-		if checkNode(node) {
+		if node.IsInvalid() {
 			destroyed = true
 			node.destroy()
 			continue
@@ -153,7 +153,7 @@ func getNodeByProto(nodes []node, protocol uint16) int {
 func nodesCompact(nodes []node) []node {
 	nilOff := 0
 	for i := 0; i < len(nodes); i++ {
-		if !checkNode(&nodes[i]) {
+		if !nodes[i].IsInvalid() {
 			nodes[nilOff] = nodes[i]
 			nilOff++
 		}

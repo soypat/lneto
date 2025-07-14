@@ -69,12 +69,11 @@ func (ls *StackEthernet) Register(h StackNode) error {
 			return errProtoRegistered
 		}
 	}
-	ls.handlers = append(ls.handlers, node{
+	return registerNode(&ls.handlers, node{
 		demux:       h.Demux,
 		encapsulate: h.Encapsulate,
 		proto:       eproto,
 	})
-	return nil
 }
 
 func (ls *StackEthernet) Demux(carrierData []byte, frameOffset int) (err error) {

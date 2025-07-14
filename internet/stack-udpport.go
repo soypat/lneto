@@ -29,7 +29,7 @@ func (sudp *StackUDPPort) LocalPort() uint16 { return sudp.h.port }
 func (sudp *StackUDPPort) ConnectionID() *uint64 { return sudp.h.connID }
 
 func (sudp *StackUDPPort) Demux(carrierData []byte, frameOffset int) error {
-	if checkNode(&sudp.h) {
+	if sudp.h.IsInvalid() {
 		sudp.h.destroy()
 		return net.ErrClosed
 	}
@@ -62,7 +62,7 @@ func (sudp *StackUDPPort) Demux(carrierData []byte, frameOffset int) error {
 }
 
 func (sudp *StackUDPPort) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
-	if checkNode(&sudp.h) {
+	if sudp.h.IsInvalid() {
 		sudp.h.destroy()
 		return 0, net.ErrClosed
 	}

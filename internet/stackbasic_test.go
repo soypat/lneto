@@ -86,12 +86,13 @@ func setupClientServerEstablished(t *testing.T, rng *rand.Rand, client, server *
 }
 
 func setupClientServer(t *testing.T, rng *rand.Rand, client, server *StackIP, connClient, connServer *tcp.Conn) {
+	const maxNodes = 1
 	bufsize := 2048
 	// Ensure buffer sizes are OK with reused buffers.
 	svip := netip.AddrPortFrom(netip.AddrFrom4([4]byte{192, 168, 1, 0}), 80)
 	clip := netip.AddrPortFrom(netip.AddrFrom4([4]byte{192, 168, 1, 1}), 1337)
-	server.SetAddr(svip.Addr())
-	client.SetAddr(clip.Addr())
+	server.Reset(svip.Addr(), maxNodes)
+	client.Reset(clip.Addr(), maxNodes)
 
 	err := connServer.Configure(&tcp.ConnConfig{
 		RxBuf:             make([]byte, bufsize),
@@ -121,11 +122,11 @@ func setupClientServer(t *testing.T, rng *rand.Rand, client, server *StackIP, co
 		t.Fatal(err)
 	}
 
-	err = server.RegisterTCPConn(connServer)
+	err = server.Register(connServer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = client.RegisterTCPConn(connClient)
+	err = client.Register(connClient)
 	if err != nil {
 		t.Fatal(err)
 	}
