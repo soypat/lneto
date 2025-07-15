@@ -36,6 +36,8 @@ func (ls *StackEthernet) HardwareAddr6() [6]byte {
 func (ls *StackEthernet) Reset6(mac, gateway [6]byte, mtu, maxNodes int) error {
 	if mtu > math.MaxUint16 || mtu < 256 {
 		return errors.New("invalid MTU")
+	} else if maxNodes <= 0 {
+		return errZeroMaxNodes
 	}
 	ls.handlers = slices.Grow(ls.handlers[:0], maxNodes)
 	*ls = StackEthernet{
