@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"net/http"
 	"slices"
 )
 
 const (
+	methodGet        = "GET"
 	strHTTP11        = "HTTP/1.1"
 	strCRLF          = "\r\n"
 	headerCookie     = "Cookie"
@@ -328,7 +328,7 @@ func (h *Header) AppendRequest(dst []byte) ([]byte, error) {
 	}
 	method := h.Method()
 	if len(method) == 0 {
-		dst = append(dst, http.MethodGet...)
+		dst = append(dst, methodGet...)
 	} else {
 		dst = append(dst, method...)
 	}

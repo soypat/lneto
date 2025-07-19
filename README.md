@@ -9,6 +9,34 @@ Userspace networking primitives.
 
 `lneto` is pronounced "L-net-oh", a.k.a. "El Neto"; a.k.a. "Don Networkio"; a.k.a "Neto, connector of worlds".
 
+## Features
+`lneto` provides the following features:
+- Heapless packet processing
+    - [`httpraw`](https://github.com/soypat/lneto/tree/main/http/httpraw) is likely the most performant HTTP/1.1 processing package in the Go ecosystem. Based on [`fasthttp`](https://github.com/valyala/fasthttp) but simpler and more thoughtful memory use.
+- Lean memory footprint
+    - HTTP header struct is 80 bytes with no runtime usage nor heap usage other than buffer
+    - Entire Ethernet+IPv4+UDP+DHCP+DNS+NTP stack in ~1kB.
+- Empty go.mod file. No dependencies except for basic standard library packages such as `bytes`, `errors`, `io`.
+    - `net` only imported for `net.ErrClosed`.
+    - Can produce **very** small binaries. Ideal for embedded systems.
+- Extremely simple networking stack construction. Can be used to teach basics of networking
+    - Only one networking interface fulfilled by all implementations. See [abstractions](#abstractions).
+
+## Why?(!)
+`lneto` was created to have networking on systems with a networking interface (wifi or ethernet cable) but no operating-system provided networking facilties. 
+
+#### Use Case: Raspberry Pi Pico W
+[Raspberry Pi Pico W](https://www.raspberrypi.com/documentation/microcontrollers/pico-series.html), a microcontroller with a wifi chip. One can program these microcontrollers using [TinyGo](https://tinygo.org/). To have access to the wifi interface one must use a driver for the on-board wifi chip called the CYW43439. The driver is available at [`soypat/cyw43439`](https://github.com/soypat/cyw43439) with examples in the [`examples`](https://github.com/soypat/cyw43439/tree/main/examples) directory. At the time of writing this the predecessor library [seqs](https://github.com/soypat/seqs) is still the go-to library to program the Pico W with [plans to replace it soon](https://github.com/soypat/cyw43439/pull/63).
+
+**Why run Go on a Raspberry Pi Pico instead of on a fully OS features Raspberry Pi 3/4/5?** I answer this question in my [talk at Gophercon](https://youtu.be/CQJJ6KS-PF4?si=RgEOYzpUZu-bX_QT&t=1313).
+
+#### Use Case: net package replacement
+If you can use the `net` package, use it. Need something faster and less-heap allocating, use [`fasthttp`](https://github.com/valyala/fasthttp). Need something that does not heap allocate at all and that is marginally faster, OK, **maybe** `lneto` is for you. If you do use `lneto` do consider it is in early development!
+
+#### Use Case: gopacket package replacement
+`gopacket` is fully featured, mature and can do BPF hooks. If you need extensive packet decoding facilities, consider using gopacket instead of `lneto`. If you need something simpler, easier to use and even more low level, lneto may be for you. `lneto`'s packet decoding is VERY flexible and provides features for bit-by-bit interpreting. That said, lneto is in early development and you may need to implement some packet processing features yourself!
+
+
 ## Packages
 - `lneto`: Low-level Networking Operations, or "El Neto", the networking package. Zero copy network frame marshalling and unmarshalling.
     - [`lneto/validation.go`](./validation.go): Packet validation utilities
