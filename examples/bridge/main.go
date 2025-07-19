@@ -121,18 +121,29 @@ func run() (err error) {
 			dhcpIsDone := stack.dhcp.State() == dhcpv4.StateBound
 			if dhcpIsDone {
 				state = stateInitARP
-				err = stack.ip.SetAddr(netip.AddrFrom4(stack.dhcp.AssignedAddr()))
+				assigned4, ok := stack.dhcp.AssignedAddr()
+				if !ok {
+					return errors.New("DHCP client address not assigned")
+				}
+				err = stack.ip.SetAddr(netip.AddrFrom4(assigned4))
 				if err != nil {
 					return err
 				}
-				err = stack.StartResolveHardwareAddress6(netip.AddrFrom4(stack.dhcp.RouterAddr()))
+				routeraddr, ok := stack.dhcp.RouterAddr()
+				if !ok {
+					return errors.New("DHCP router address not assigned")
+				}
+				err = stack.StartResolveHardwareAddress6(netip.AddrFrom4(routeraddr))
 				if err != nil {
 					return err
 				}
 			}
 
 		case stateInitARP:
-			router := stack.dhcp.RouterAddr()
+			router, ok := stack.dhcp.RouterAddr()
+			if !ok {
+				return errors.New("DHCP router address not assigned")
+			}
 			hw, err := stack.ResultResolveHardwareAddress6(netip.AddrFrom4(router))
 			if err == nil {
 				stack.link.SetGateway6(hw)
