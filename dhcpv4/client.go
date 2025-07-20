@@ -69,6 +69,11 @@ type RequestConfig struct {
 	ClientID string
 }
 
+// Reset clears all DHCP state and disconnects from Stack (increments ConnectionID).
+func (c *Client) Reset() {
+	c.reset(0)
+}
+
 func (c *Client) BeginRequest(xid uint32, cfg RequestConfig) error {
 	if len(cfg.Hostname) > 36 {
 		return errors.New("requested hostname too long")
