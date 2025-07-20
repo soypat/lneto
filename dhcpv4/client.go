@@ -186,7 +186,6 @@ func (c *Client) Encapsulate(carrierFrame []byte, frameOffset int) (int, error) 
 }
 
 func (c *Client) Demux(carrierData []byte, frameOffset int) error {
-	fmt.Println("DEMUX DHCP")
 	if c.isClosed() {
 		return net.ErrClosed
 	}
