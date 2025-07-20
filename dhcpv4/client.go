@@ -342,7 +342,7 @@ func (d *Client) DNSServerFirst() netip.Addr {
 	return d.dns[0]
 }
 
-func (d *Client) CIDRBits() uint8 {
+func (d *Client) SubnetCIDRBits() uint8 {
 	if !d.subnet.valid {
 		return 0
 	}
@@ -366,11 +366,4 @@ func maybeU32(b []byte) uint32 {
 		return 0
 	}
 	return binary.BigEndian.Uint32(b)
-}
-
-func maybe4byte(b []byte) [4]byte {
-	if len(b) != 4 {
-		return [4]byte{}
-	}
-	return [4]byte(b)
 }
