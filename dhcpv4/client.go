@@ -82,6 +82,8 @@ func (c *Client) BeginRequest(xid uint32, cfg RequestConfig) error {
 		return errors.New("dhcp client must be closed/Init before new request")
 	} else if xid == 0 {
 		return errors.New("zero xid")
+	} else if len(cfg.ClientID) > 32 {
+		return errors.New("client ID too long")
 	}
 	c.reset(xid)
 	c.state = StateInit
