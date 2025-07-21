@@ -17,6 +17,7 @@ import (
 type Client struct {
 	connID      uint64
 	reqHostname string
+	clientID    []byte
 	hostname    []byte
 	dns         []netip.Addr
 
@@ -26,6 +27,7 @@ type Client struct {
 	tIPLease   uint32
 	currentXID uint32
 	state      ClientState
+	clientMAC  [6]byte
 	offer      addr4
 	svip       addr4 // OptServerIdentification.
 	siip       addr4 // SIAddr.
@@ -34,7 +36,6 @@ type Client struct {
 	subnet     addr4
 	broadcast  addr4
 	gateway    addr4
-	clientMAC  [6]byte
 
 	auxbuf [64]byte
 }
@@ -78,7 +79,7 @@ func (c *Client) BeginRequest(xid uint32, cfg RequestConfig) error {
 	if len(cfg.Hostname) > 36 {
 		return errors.New("requested hostname too long")
 	} else if c.state != StateInit && c.state != 0 {
-		return errors.New("dhcp client must be closed/done before new request")
+		return errors.New("dhcp client must be closed/Init before new request")
 	} else if xid == 0 {
 		return errors.New("zero xid")
 	}
@@ -88,6 +89,11 @@ func (c *Client) BeginRequest(xid uint32, cfg RequestConfig) error {
 	c.reqHostname = cfg.Hostname
 	c.reqIP = addr4{addr: cfg.RequestedAddr, valid: true}
 	c.clientMAC = cfg.ClientHardwareAddr
+	if cfg.ClientID != "" {
+		c.clientID = append(c.clientID[:0], cfg.ClientID...)
+	} else {
+		c.clientID = append(c.clientID[:0], c.clientMAC[:]...)
+	}
 	return nil
 }
 
@@ -172,7 +178,7 @@ func (c *Client) Encapsulate(carrierFrame []byte, frameOffset int) (int, error) 
 	default:
 		return 0, errors.New("unhandled state" + c.state.String())
 	}
-	n, _ := EncodeOption(opts[numOpts:], OptClientIdentifier, c.clientMAC[:]...)
+	n, _ := EncodeOption(opts[numOpts:], OptClientIdentifier, c.clientID...)
 	numOpts += n
 	if len(c.reqHostname) > 0 {
 		n, err := EncodeOptionString(opts[numOpts:], OptHostName, c.reqHostname)
@@ -323,6 +329,7 @@ func (c *Client) reset(xid uint32) {
 		currentXID:  xid,
 		reqIP:       c.reqIP,
 		clientMAC:   c.clientMAC,
+		clientID:    c.clientID,
 	}
 }
 

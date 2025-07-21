@@ -15,7 +15,9 @@ import (
 )
 
 var (
-	errDeadlineExceeded = os.ErrDeadlineExceeded
+	errDeadlineExceeded    = os.ErrDeadlineExceeded
+	errNoRemoteAddr        = errors.New("tcp: no remote address established")
+	errMismatchedIPVersion = errors.New("mismatched IP version")
 )
 
 // Conn builds on the [Handler] abstraction and adds IP header knowledge, time management, and familiar user facing API
@@ -27,14 +29,12 @@ type Conn struct {
 	h          Handler
 	remoteAddr []byte
 
-	rdead  time.Time
-	wdead  time.Time
-	lastTx time.Time
-	lastRx time.Time
-
-	ipID     uint16
+	rdead    time.Time
+	wdead    time.Time
 	abortErr error
 	logger
+
+	ipID uint16
 }
 
 type ConnConfig struct {
@@ -69,7 +69,7 @@ func (conn *Conn) BufferedInput() int { return conn.h.BufferedInput() }
 
 // OpenActive opens a connection to a remote peer with a known IP address and port combination.
 // iss is the initial send sequence number which is ideally a random number which is far away from the last sequence number used on a connection to the same host.
-func (conn *Conn) OpenActive(remote netip.AddrPort, localPort uint16, iss Value) error {
+func (conn *Conn) OpenActive(localPort uint16, remote netip.AddrPort, iss Value) error {
 	err := conn.h.OpenActive(localPort, remote.Port(), iss)
 	if err != nil {
 		return err
@@ -214,13 +214,13 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 
 func (conn *Conn) Encapsulate(buf []byte, off int) (n int, err error) {
 	if len(conn.remoteAddr) == 0 {
-		return 0, errors.New("unset IP address")
+		return 0, errNoRemoteAddr
 	}
 	raddr, _, _, _, err := internal.GetIPAddr(buf[:off])
 	if err != nil {
 		return 0, err
 	} else if len(raddr) != len(conn.remoteAddr) {
-		return 0, errors.New("mismatched IP version")
+		return 0, errMismatchedIPVersion
 	}
 	n, err = conn.h.Send(buf[off:])
 	if err != nil {

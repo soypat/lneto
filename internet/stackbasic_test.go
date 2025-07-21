@@ -117,7 +117,7 @@ func setupClientServer(t *testing.T, rng *rand.Rand, client, server *StackIP, co
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = connClient.OpenActive(svip, clip.Port(), 100)
+	err = connClient.OpenActive(clip.Port(), svip, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
