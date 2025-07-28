@@ -11,6 +11,7 @@ import (
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/ipv4"
+	"github.com/soypat/lneto/ipv4/icmpv4"
 	"github.com/soypat/lneto/tcp"
 	"github.com/soypat/lneto/udp"
 )
@@ -18,11 +19,12 @@ import (
 var _ StackNode = (*StackIP)(nil)
 
 type StackIP struct {
-	connID    uint64
-	ipID      uint16
-	ip        [4]byte
-	validator lneto.Validator
-	handlers  []node
+	connID      uint64
+	ipID        uint16
+	ip          [4]byte
+	validator   lneto.Validator
+	handlers    []node
+	pendingICMP [][]byte
 	logger
 }
 
@@ -36,11 +38,12 @@ func (sb *StackIP) Reset(addr netip.Addr, maxNodes int) error {
 	}
 	sb.handlers = slices.Grow(sb.handlers[:0], maxNodes)
 	*sb = StackIP{
-		connID:    sb.connID + 1,
-		validator: sb.validator,
-		handlers:  sb.handlers,
-		logger:    sb.logger,
-		ip:        sb.ip,
+		connID:      sb.connID + 1,
+		validator:   sb.validator,
+		handlers:    sb.handlers,
+		logger:      sb.logger,
+		ip:          sb.ip,
+		pendingICMP: make([][]byte, maxNodes*4),
 	}
 	return nil
 }
@@ -99,6 +102,9 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 	off := ifrm.HeaderLength()
 	totalLen := ifrm.TotalLength()
 	proto := ifrm.Protocol()
+	if proto == lneto.IPProtoICMP {
+		return sb.recvicmp(ifrm.RawData(), ifrm.HeaderLength())
+	}
 	nodeIdx := getNodeByProto(sb.handlers, uint16(proto))
 	if nodeIdx < 0 {
 		// Drop packet.
@@ -216,6 +222,19 @@ func (sb *StackIP) Register(h StackNode) error {
 		currConnID:  currConnID,
 		connID:      connID,
 	})
+}
+
+func (sb *StackIP) recvicmp(carrierData []byte, offset int) error {
+	var crc lneto.CRC791
+	cfrm, err := icmpv4.NewFrame(carrierData[offset:])
+	if err != nil {
+		return err
+	}
+	cfrm.CRCWrite(&crc)
+	if crc.Sum16() != cfrm.CRC() {
+		return errors.New("ICMP CRC mismatch")
+	}
+	return nil
 }
 
 type logger struct {
