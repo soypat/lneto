@@ -21,6 +21,7 @@ vendor/
 **__debug_bin*
 # `__debug_bin` Debug binary generated in VSCode when using the built-in debugger.
 *bin
+/xnet
 /bridge
 # IDE
 .vscode/

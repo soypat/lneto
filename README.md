@@ -48,6 +48,8 @@ If you can use the `net` package, use it. Need something faster and less-heap al
 - [`lneto/dns`](./dns): DNS protocol implementation and low level logic.
 - [`lneto/ntp`](./ntp): NTP implementation and low level logic. Includes NTP time primitives manipulation and conversion to Go native types.
 - [`lneto/internal`](./internal): Lightweight and flexible ring buffer implementation and debugging primitives.
+- [`lneto/x`](./x): Experimental packages.
+    - [`lneto/x/xnet`](./x/xnet/): `net` package like abstractions of stack implementations for ease of reuse. Still in testing phase and likely subject to breaking API change.
 
 ### Abstractions
 The following interface is implemented by networking stack nodes and the stack themselves.
