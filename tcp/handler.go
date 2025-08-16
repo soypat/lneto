@@ -92,6 +92,7 @@ func (h *Handler) OpenActive(localPort, remotePort uint16, iss Value) error {
 		return errors.New("zero port on open call")
 	}
 	h.reset(localPort, remotePort, iss)
+	h.scb.SetRecvWindow(Size(h.bufRx.Size()))
 	return nil
 }
 
@@ -234,7 +235,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 	var segment Segment
 	if h.AwaitingSynSend() {
 		// Handling init syn segment.
-		segment = ClientSynSegment(h.scb.ISS(), h.scb.RecvWindow())
+		segment = ClientSynSegment(h.bufTx.iss, Size(h.bufRx.Size()))
 		h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, uint16(len(b)))
 		offset++
 	} else {
@@ -266,7 +267,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 	}
 	tfrm.SetSourcePort(h.localPort)
 	tfrm.SetDestinationPort(h.remotePort)
-	tfrm.SetSegment(segment, offset) // No TCP options.
+	tfrm.SetSegment(segment, offset)
 	tfrm.SetUrgentPtr(0)
 	return int(offset)*4 + int(segment.DATALEN), nil
 }

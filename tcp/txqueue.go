@@ -32,6 +32,7 @@ type ringTx struct {
 	// seq     Value
 	// always empty ring.
 	emptyRing ringidx
+	iss       Value
 }
 
 // ringidx represents packet data inside RingTx
@@ -49,7 +50,7 @@ type ringidx struct {
 
 // Reset resets the RingTx's internal state to use buf as the main ring buffer and creates or reuses
 // the packet ring buffer.
-func (rtx *ringTx) Reset(buf []byte, maxqueuedPackets int, seq Value) error {
+func (rtx *ringTx) Reset(buf []byte, maxqueuedPackets int, iss Value) error {
 	buf = buf[:len(buf):len(buf)] // safely omit capacity section.
 	if maxqueuedPackets <= 0 {
 		return errors.New("queued packets <=0")
@@ -66,6 +67,7 @@ func (rtx *ringTx) Reset(buf []byte, maxqueuedPackets int, seq Value) error {
 	for i := range rtx.packets {
 		rtx.packets[i].markRcvd()
 	}
+	rtx.iss = iss
 	return nil
 }
 

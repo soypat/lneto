@@ -203,8 +203,9 @@ func run() (err error) {
 		if err != nil {
 			return err
 		}
+		const tcpDebugTimeout = 60 * time.Minute
 		target := netip.AddrPortFrom(addrs[0], 80)
-		conn, err := rstack.DoDialTCP(uint16(softRand&0xefff)+1024, target, internetTimeout, internetRetries)
+		conn, err := rstack.DoDialTCP(uint16(softRand&0xefff)+1024, target, tcpDebugTimeout, internetRetries)
 		if err != nil {
 			return fmt.Errorf("TCP failed: %w", err)
 		}

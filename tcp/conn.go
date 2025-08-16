@@ -17,6 +17,7 @@ import (
 var (
 	errDeadlineExceeded    = os.ErrDeadlineExceeded
 	errNoRemoteAddr        = errors.New("tcp: no remote address established")
+	errInvalidIP           = errors.New("tcp: invalid IP")
 	errMismatchedIPVersion = errors.New("mismatched IP version")
 )
 
@@ -70,6 +71,9 @@ func (conn *Conn) BufferedInput() int { return conn.h.BufferedInput() }
 // OpenActive opens a connection to a remote peer with a known IP address and port combination.
 // iss is the initial send sequence number which is ideally a random number which is far away from the last sequence number used on a connection to the same host.
 func (conn *Conn) OpenActive(localPort uint16, remote netip.AddrPort, iss Value) error {
+	if !remote.IsValid() {
+		return errInvalidIP
+	}
 	err := conn.h.OpenActive(localPort, remote.Port(), iss)
 	if err != nil {
 		return err
