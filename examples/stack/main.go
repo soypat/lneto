@@ -249,7 +249,7 @@ func (stack *Stack) OpenTCPListener(port uint16) (*internet.NodeTCPListener, err
 func (stack *Stack) OpenPassiveTCP(port uint16, iss tcp.Value) (*tcp.Conn, error) {
 	mtu := stack.ethernet.MTU()
 	conn := new(tcp.Conn)
-	err := conn.Configure(&tcp.ConnConfig{
+	err := conn.Configure(tcp.ConnConfig{
 		RxBuf:             make([]byte, mtu),
 		TxBuf:             make([]byte, mtu),
 		TxPacketQueueSize: 3,
@@ -296,7 +296,7 @@ func (naiveTCPPool) GetTCP() (*tcp.Conn, tcp.Value) {
 	rand.Read(buf[:])
 	randVal := binary.LittleEndian.Uint32(buf[:])
 	var conn tcp.Conn
-	err := conn.Configure(&tcp.ConnConfig{
+	err := conn.Configure(tcp.ConnConfig{
 		RxBuf:             make([]byte, 1024),
 		TxBuf:             make([]byte, 1024),
 		TxPacketQueueSize: 3,

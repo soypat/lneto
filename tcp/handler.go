@@ -53,15 +53,16 @@ func (h *Handler) ConnectionID() *uint64 {
 func (h *Handler) State() State { return h.scb.State() }
 
 // SetBuffers sets the internal buffers used to receive and transmit bytes asynchronously via [Handler.Write] and [Handler.Read] calls.
+// If the argument buffer is nil then the respective currently set buffer will be reused.
 func (h *Handler) SetBuffers(txbuf, rxbuf []byte, packets int) error {
+	if h.bufRx.Buf == nil && (len(rxbuf) < minBufferSize || len(txbuf) < minBufferSize) {
+		return errors.New("tcp: short buffer")
+	}
 	if !h.scb.State().IsClosed() {
 		return errors.New("tcp.Handler must be closed before setting buffers")
 	}
 	if rxbuf != nil {
 		h.bufRx.Buf = rxbuf
-	}
-	if len(h.bufRx.Buf) < minBufferSize {
-		return errors.New("short rx buffer")
 	}
 	h.scb.SetRecvWindow(Size(h.bufRx.Size()))
 	h.bufRx.Reset()
@@ -270,9 +271,14 @@ func (h *Handler) Send(b []byte) (int, error) {
 	return int(offset)*4 + int(segment.DATALEN), nil
 }
 
-// Free returns the amount of space free in the transmit buffer. A call to [Handler.Write] with a larger buffer will fail.
-func (h *Handler) Free() int {
+// FreeTx returns the amount of space free in the transmit buffer. A call to [Handler.Write] with a larger buffer will fail.
+func (h *Handler) FreeTx() int {
 	return h.bufTx.Free()
+}
+
+// SizeRx returns the size of the TCP receive ring buffer.
+func (h *Handler) SizeRx() int {
+	return h.bufRx.Size()
 }
 
 // Write implements [io.Writer] by copying b to a internal buffer to be sent over the network on the next

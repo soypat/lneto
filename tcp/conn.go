@@ -44,7 +44,7 @@ type ConnConfig struct {
 	Logger            *slog.Logger
 }
 
-func (conn *Conn) Configure(config *ConnConfig) (err error) {
+func (conn *Conn) Configure(config ConnConfig) (err error) {
 	err = conn.h.SetBuffers(config.TxBuf, config.RxBuf, config.TxPacketQueueSize)
 	if err != nil {
 		return err
@@ -109,7 +109,15 @@ func (conn *Conn) Abort() {
 		h:          conn.h,
 		remoteAddr: conn.remoteAddr[:0],
 		logger:     conn.logger,
+		ipID:       conn.ipID,
 	}
+}
+
+// InternalHandler returns the internal [Handler] instance. The Handler contains lower level implementation logic for a TCP connection.
+// Typical users should not be using this method unless implementing a stack which manages several TCP connections and thus need
+// access to low level internals for careful memory management.
+func (conn *Conn) InternalHandler() *Handler {
+	return &conn.h
 }
 
 // Write writes argument data to the TCPConns's output buffer which is queued to be sent.

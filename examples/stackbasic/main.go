@@ -182,7 +182,7 @@ func NewEthernetTCPStack(ourMAC, gwMAC [6]byte, ip netip.AddrPort, mtu uint16, s
 		lport:  0,
 	})
 	var conn tcp.Conn
-	err = conn.Configure(&tcp.ConnConfig{
+	err = conn.Configure(tcp.ConnConfig{
 		RxBuf:             make([]byte, mtu),
 		TxBuf:             make([]byte, mtu),
 		TxPacketQueueSize: 3,

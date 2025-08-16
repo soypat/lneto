@@ -94,7 +94,7 @@ func setupClientServer(t *testing.T, rng *rand.Rand, client, server *StackIP, co
 	server.Reset(svip.Addr(), maxNodes)
 	client.Reset(clip.Addr(), maxNodes)
 
-	err := connServer.Configure(&tcp.ConnConfig{
+	err := connServer.Configure(tcp.ConnConfig{
 		RxBuf:             make([]byte, bufsize),
 		TxBuf:             make([]byte, bufsize),
 		TxPacketQueueSize: 3,
@@ -103,7 +103,7 @@ func setupClientServer(t *testing.T, rng *rand.Rand, client, server *StackIP, co
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = connClient.Configure(&tcp.ConnConfig{
+	err = connClient.Configure(tcp.ConnConfig{
 		RxBuf:             make([]byte, bufsize),
 		TxBuf:             make([]byte, bufsize),
 		TxPacketQueueSize: 3,

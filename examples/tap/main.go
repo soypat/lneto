@@ -32,6 +32,7 @@ func run() error {
 		flagInterface = "tap0"
 	)
 	flag.StringVar(&flagInterface, "i", flagInterface, "Interface to select. tap* creates a tap interface. Any other name will create a bridge to the name of the interface i.e: 'enp7s0', 'wlp8s0', 'lo'")
+	flag.Parse()
 	var (
 		flagNet             = "192.168.10.1/24"
 		flagiface           = "tap0"

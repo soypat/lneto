@@ -2,6 +2,7 @@ package xnet
 
 import (
 	"errors"
+	"io"
 	"net/netip"
 	"sync"
 	"time"
@@ -14,6 +15,10 @@ import (
 	"github.com/soypat/lneto/internet"
 	"github.com/soypat/lneto/ntp"
 	"github.com/soypat/lneto/tcp"
+)
+
+const (
+	minTCPBuffer = 256
 )
 
 type StackAsync struct {
@@ -52,6 +57,8 @@ type StackConfig struct {
 	NTPServer       netip.Addr
 	Hostname        string
 	MaxTCPConns     int
+	TCPBufferSizeTx int // Size of transmit buffer for TCP connections.
+	TCPBufferSizeRx int // Size of receive buffer for TCP connections.
 	RandSeed        int64
 	HardwareAddress [6]byte
 	MTU             uint16
@@ -112,8 +119,34 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 
 	// Enable TCP if connections present.
 	if cfg.MaxTCPConns > 0 {
+		if cfg.TCPBufferSizeRx < minTCPBuffer || cfg.TCPBufferSizeTx < minTCPBuffer {
+			return io.ErrShortBuffer
+		}
 		if cap(s.tcpconns) < cfg.MaxTCPConns {
 			s.tcpconns = make([]tcp.Conn, cfg.MaxTCPConns)
+		}
+		s.tcpconns = s.tcpconns[:cfg.MaxTCPConns]
+		for i := range s.tcpconns {
+			c := &s.tcpconns[i]
+			c.Abort() // Abort forcibly closes connection to allow buffer setting and reduce risk of race conditions.
+			h := c.InternalHandler()
+			sizetx := h.FreeTx()
+			sizerx := h.SizeRx()
+			// If size is sufficient then buffers will remain nil and memory will be reused.
+			var rxbuf, txbuf []byte
+			if sizetx < cfg.TCPBufferSizeTx || sizerx < cfg.TCPBufferSizeRx {
+				buf := make([]byte, cfg.TCPBufferSizeTx+cfg.TCPBufferSizeRx)
+				rxbuf = buf[:cfg.TCPBufferSizeRx]
+				txbuf = buf[cfg.TCPBufferSizeRx : cfg.TCPBufferSizeRx+cfg.TCPBufferSizeTx]
+			}
+			err = c.Configure(tcp.ConnConfig{
+				RxBuf:             rxbuf,
+				TxBuf:             txbuf,
+				TxPacketQueueSize: 4,
+			})
+			if err != nil {
+				return err
+			}
 		}
 		err = s.tcps.ResetTCP(cfg.MaxTCPConns)
 		if err != nil {
@@ -213,7 +246,7 @@ func (s *StackAsync) DialTCP(localPort uint16, addrp netip.AddrPort) (conn *tcp.
 	}
 	for i := range s.tcpconns {
 		maybeFreeConn := &s.tcpconns[i]
-		state := conn.State()
+		state := maybeFreeConn.State()
 		if state.IsClosed() {
 			conn = maybeFreeConn
 			break // Can be used!

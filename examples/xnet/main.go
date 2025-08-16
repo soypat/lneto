@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/soypat/lneto/dns"
+	"github.com/soypat/lneto/http/httpraw"
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internal/ltesto"
+	"github.com/soypat/lneto/internet/pcap"
 	"github.com/soypat/lneto/x/xnet"
 )
 
@@ -35,9 +37,11 @@ func run() (err error) {
 		flagHostToResolve = ""
 		flagRequestedIP   = ""
 		flagDoNTP         = false
+		flagHTTPGet       = false
 	)
+	flag.BoolVar(&flagHTTPGet, "httpget", flagHTTPGet, "Do an HTTP GET request ")
 	flag.StringVar(&flagInterface, "i", flagInterface, "Interface to use. Either tap* or the name of an existing interface to bridge to.")
-	flag.BoolVar(&flagUseHTTP, "http", flagUseHTTP, "Use HTTP tap interface.")
+	flag.BoolVar(&flagUseHTTP, "ihttp", flagUseHTTP, "Use HTTP tap interface.")
 	flag.StringVar(&flagHostToResolve, "host", flagHostToResolve, "Hostname to resolve via DNS.")
 	flag.StringVar(&flagRequestedIP, "addr", flagRequestedIP, "IP address to request via DHCP.")
 	flag.BoolVar(&flagDoNTP, "ntp", flagDoNTP, "Do NTP round and print result time")
@@ -89,6 +93,9 @@ func run() (err error) {
 		RandSeed:        softRand,
 		HardwareAddress: brHW,
 		MTU:             uint16(mtu),
+		MaxTCPConns:     1,
+		TCPBufferSizeTx: 2048,
+		TCPBufferSizeRx: 2048,
 	})
 	if err != nil {
 		return err
@@ -97,12 +104,17 @@ func run() (err error) {
 	go func() {
 		lastAction := time.Now()
 		buf := make([]byte, mtu)
+		var cap pcap.PacketBreakdown
 		for {
 			clear(buf)
 			nwrite, err := stack.Encapsulate(buf[:], 0)
 			if err != nil {
 				fmt.Println("ERR:ENCAPSULATE", err)
 			} else if nwrite > 0 {
+				frames, err := cap.CaptureEthernet(nil, buf[:nwrite], 0)
+				if len(frames) > 0 {
+					fmt.Println("OUT", frames)
+				}
 				n, err := iface.Write(buf[:nwrite])
 				if err != nil {
 					log.Fatal("groutine encapsulate:", err)
@@ -179,6 +191,43 @@ func run() (err error) {
 		return fmt.Errorf("DNS of host %q failed: %w", flagHostToResolve, err)
 	}
 	fmt.Printf("DNS resolution of %q complete and resolved to %v\n", flagHostToResolve, addrs)
+	if flagHTTPGet {
+		var hdr httpraw.Header
+		hdr.SetMethod("GET")
+		hdr.SetRequestURI("/")
+		hdr.SetProtocol("HTTP/1.1")
+		hdr.Set("Host", flagHostToResolve)
+		hdr.Set("User-Agent", "lneto")
+		hdr.Set("Accept-Language", "en-US,en;q=0.5")
+		req, err := hdr.AppendRequest(nil)
+		if err != nil {
+			return err
+		}
+		target := netip.AddrPortFrom(addrs[0], 80)
+		conn, err := rstack.DoDialTCP(uint16(softRand&0xefff)+1024, target, internetTimeout, internetRetries)
+		if err != nil {
+			return fmt.Errorf("TCP failed: %w", err)
+		}
+		conn.SetDeadline(time.Now().Add(internetTimeout))
+		_, err = conn.Write(req)
+		if err != nil {
+			return err
+		}
+		rxbuf := make([]byte, 2048)
+		var page []byte
+		for {
+			var n int
+			n, err = conn.Read(rxbuf)
+			page = append(page, rxbuf[:n]...)
+			if err != nil {
+				break
+			}
+		}
+		if len(page) == 0 {
+			return err
+		}
+		os.Stdout.Write(page)
+	}
 	return nil
 }
 

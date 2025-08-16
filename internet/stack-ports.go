@@ -93,15 +93,24 @@ func (ps *StackPorts) Demux(b []byte, offset int) (err error) {
 func (ps *StackPorts) Register(h StackNode) error {
 	port := h.LocalPort()
 	proto := h.Protocol()
+
 	if port <= 0 {
 		return errZeroPort
 	} else if proto != uint64(ps.protocol) {
 		return errInvalidProto
 	}
+	var cid uint64
+	cidPtr := h.ConnectionID()
+	if cidPtr != nil {
+		cid = *cidPtr
+	}
 	return registerNode(&ps.handlers, node{
 		demux:       h.Demux,
 		encapsulate: h.Encapsulate,
 		port:        port,
+		currConnID:  cid,
+		connID:      cidPtr,
+		proto:       uint16(proto),
 	})
 }
 

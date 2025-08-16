@@ -122,21 +122,20 @@ func (s StackBlocking) DoDialTCP(localPort uint16, addrp netip.AddrPort, timeout
 	deadline := time.Now().Add(timeout)
 	for i := 0; i < maxIter; i++ {
 		state := conn.State()
-		switch state {
-		case tcp.StateEstablished:
-			break
-		case tcp.StateSynSent, tcp.StateSynRcvd:
+		if state == tcp.StateEstablished {
+			return conn, nil
+		} else if state == tcp.StateSynSent || state == tcp.StateSynRcvd || conn.InternalHandler().AwaitingSynSend() {
 			if err = s.checkDeadline(deadline); err != nil {
 				return nil, err
 			}
 			time.Sleep(sleep)
-		default:
+		} else {
 			// Unexpected state, abort and terminate connection.
 			conn.Abort()
 			return nil, errTCPFailedToConnect
 		}
 	}
-	return conn, nil
+	return conn, errDeadlineExceed
 }
 
 func (s StackBlocking) checkDeadline(deadline time.Time) error {
