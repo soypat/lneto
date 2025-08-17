@@ -47,8 +47,10 @@ type StackAsync struct {
 
 	sysprec int8 // NTP system precision.
 
-	prng     uint32
-	lastrecv uint16
+	prng uint32
+
+	totalsent uint64
+	totalrecv uint64
 }
 
 type StackConfig struct {
@@ -71,14 +73,21 @@ func (s *StackAsync) Hostname() string {
 func (s *StackAsync) Demux(carrierData []byte, etherOff int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.lastrecv = uint16(len(carrierData))
+	s.totalrecv += uint64(len(carrierData) - etherOff)
 	return s.link.Demux(carrierData, etherOff)
 }
 
 func (s *StackAsync) Encapsulate(carrierData []byte, etherOff int) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.link.Encapsulate(carrierData, etherOff)
+
+	n, err := s.link.Encapsulate(carrierData, etherOff)
+	s.totalsent += uint64(n)
+	return n, err
+}
+
+func (s *StackAsync) MTU() int {
+	return s.link.MTU()
 }
 
 func (s *StackAsync) Reset(cfg StackConfig) error {
@@ -423,6 +432,16 @@ func (s *StackAsync) ResultDHCP() (*DHCPResults, error) {
 		return nil, err
 	}
 	return &s.dhcpResults, nil
+}
+
+type Statistics struct {
+	TotalSent     uint64
+	TotalReceived uint64
+}
+
+func (s *StackAsync) ReadStatistics(stats *Statistics) {
+	stats.TotalReceived = s.totalrecv
+	stats.TotalSent = s.totalsent
 }
 
 // AssimilateDHCPResults sets the stack's following parameters:
