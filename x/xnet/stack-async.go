@@ -480,7 +480,7 @@ func (s *StackAsync) populateDHCPResults() error {
 	router := netip.AddrFrom4(router4)
 	s.dhcpResults = DHCPResults{
 		Router:        router,
-		Subnet:        netip.PrefixFrom(router, int(s.dhcp.SubnetCIDRBits())),
+		Subnet:        s.dhcp.SubnetPrefix(),
 		AssignedAddr:  netip.AddrFrom4(assigned4),
 		ServerAddr:    addr4(s.dhcp.ServerAddr()),
 		BroadcastAddr: addr4(s.dhcp.BroadcastAddr()),

@@ -20,6 +20,7 @@ type Client struct {
 	clientID    []byte
 	hostname    []byte
 	dns         []netip.Addr
+	ntps        []netip.Addr
 
 	svIPtos    ipv4.ToS
 	tRenew     uint32
@@ -290,6 +291,13 @@ func (c *Client) setOptions(frm Frame) error {
 			for i := 0; i < len(data); i += 4 {
 				c.dns = append(c.dns, netip.AddrFrom4([4]byte(data[i:i+4])))
 			}
+		case OptNTPServersAddresses:
+			if len(c.ntps) > 0 || len(data)%4 != 0 {
+				return nil
+			}
+			for i := 0; i < len(data); i += 4 {
+				c.ntps = append(c.ntps, netip.AddrFrom4([4]byte(data[i:i+4])))
+			}
 		}
 		return nil
 	})
@@ -353,6 +361,14 @@ func (d *Client) DNSServerFirst() netip.Addr {
 		return netip.Addr{}
 	}
 	return d.dns[0]
+}
+
+func (d *Client) SubnetPrefix() netip.Prefix {
+	if !d.offer.valid {
+		return netip.Prefix{}
+	}
+	m, _ := netip.AddrFrom4(d.offer.addr).Prefix(int(d.SubnetCIDRBits()))
+	return m
 }
 
 func (d *Client) SubnetCIDRBits() uint8 {

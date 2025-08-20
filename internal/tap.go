@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"math/bits"
-	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -205,7 +204,7 @@ type Bridge struct {
 }
 
 func NewBridge(name string) (*Bridge, error) {
-	iface, err := net.InterfaceByName(name)
+	iface, err := interfaceByName(name)
 	if err != nil {
 		return nil, err
 	}
