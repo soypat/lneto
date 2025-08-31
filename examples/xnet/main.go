@@ -1,9 +1,11 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/dns"
 	"github.com/soypat/lneto/http/httpraw"
 	"github.com/soypat/lneto/internal"
@@ -105,13 +108,14 @@ func run() (err error) {
 		lastAction := time.Now()
 		buf := make([]byte, mtu)
 		var cap pcap.PacketBreakdown
+		var frames []pcap.Frame
 		for {
 			clear(buf)
 			nwrite, err := stack.Encapsulate(buf[:], 0)
 			if err != nil {
 				fmt.Println("ERR:ENCAPSULATE", err)
 			} else if nwrite > 0 {
-				frames, err := cap.CaptureEthernet(nil, buf[:nwrite], 0)
+				frames, err = cap.CaptureEthernet(frames[:0], buf[:nwrite], 0)
 				if len(frames) > 0 {
 					fmt.Println("OUT", frames)
 				}
@@ -130,7 +134,10 @@ func run() (err error) {
 			} else if nread > 0 {
 				err = stack.Demux(buf[:nread], 0)
 				if err != nil {
-					log.Println("groutine demux:", err)
+					if !errors.Is(err, lneto.ErrPacketDrop) {
+						frames, err = cap.CaptureEthernet(frames[:0], buf[:nread], 0)
+						log.Println("groutine demux:", err, frames)
+					}
 				}
 			}
 
@@ -157,6 +164,7 @@ func run() (err error) {
 	if err != nil {
 		return fmt.Errorf("assimilating DHCP results: %w", err)
 	}
+	slog.Info("dhcp-complete", slog.String("assignedIP", results.AssignedAddr.String()), slog.String("routerIP", results.Router.String()), slog.Any("DNS", results.DNSServers), slog.Any("subnet", results.Subnet.String()))
 	const (
 		arpTimeout = 2 * time.Second
 		arpRetries = 2

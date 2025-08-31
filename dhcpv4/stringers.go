@@ -8,6 +8,7 @@ func _() {
 	// An "invalid array index" compiler error signifies that the constant values have changed.
 	// Re-run the stringer command to generate them again.
 	var x [1]struct{}
+	_ = x[OptEnd-255]
 	_ = x[OptWordAligned-0]
 	_ = x[OptSubnetMask-1]
 	_ = x[OptTimeOffset-2]
@@ -72,15 +73,24 @@ func _() {
 	_ = x[OptClientIdentifier1-61]
 }
 
-const _OptNum_name = "word-alignedsubnet maskTime offset in seconds from UTCN/4 router addressesN/4 time server addressesN/4 IEN-116 server addressesN/4 DNS server addressesN/4 logging server addressesN/4 quote server addressesN/4 printer server addressesN/4 impress server addressesN/4 RLP server addressesHostname stringSize of boot file in 512 byte chunksClient to dump and name of file to dump toThe DNS domain name of the clientSwap server addressesPath name for root diskPatch name for more BOOTP infoEnable or disable IP forwardingEnable or disable source routingRouting policy filtersMaximum datagram reassembly sizeDefault IP time-to-livePath MTU aging timeoutPath MTU plateau tableInterface MTU sizeAll subnets are localBroadcast addressPerform mask discoveryProvide mask to othersPerform router discoveryRouter solicitation addressStatic routing tableTrailer encapsulationARP cache timeoutEthernet encapsulationDefault TCP time to liveTCP keepalive intervalTCP keepalive garbageNIS domain nameNIS server addressesNTP servers addressesVendor specific informationNetBIOS name serverNetBIOS datagram distributionNetBIOS node typeNetBIOS scopeX window font serverX window display managerRequested IP addressIP address lease timeOverload “sname” or “file”DHCP message type.DHCP server identificationParameter request listDHCP error messageDHCP maximum message sizeDHCP renewal (T1) timeDHCP rebinding (T2) timeClient identifierClient identifier(1)"
+const (
+	_OptNum_name_0 = "word-alignedsubnet maskTime offset in seconds from UTCN/4 router addressesN/4 time server addressesN/4 IEN-116 server addressesN/4 DNS server addressesN/4 logging server addressesN/4 quote server addressesN/4 printer server addressesN/4 impress server addressesN/4 RLP server addressesHostname stringSize of boot file in 512 byte chunksClient to dump and name of file to dump toThe DNS domain name of the clientSwap server addressesPath name for root diskPatch name for more BOOTP infoEnable or disable IP forwardingEnable or disable source routingRouting policy filtersMaximum datagram reassembly sizeDefault IP time-to-livePath MTU aging timeoutPath MTU plateau tableInterface MTU sizeAll subnets are localBroadcast addressPerform mask discoveryProvide mask to othersPerform router discoveryRouter solicitation addressStatic routing tableTrailer encapsulationARP cache timeoutEthernet encapsulationDefault TCP time to liveTCP keepalive intervalTCP keepalive garbageNIS domain nameNIS server addressesNTP servers addressesVendor specific informationNetBIOS name serverNetBIOS datagram distributionNetBIOS node typeNetBIOS scopeX window font serverX window display managerRequested IP addressIP address lease timeOverload “sname” or “file”DHCP message type.DHCP server identificationParameter request listDHCP error messageDHCP maximum message sizeDHCP renewal (T1) timeDHCP rebinding (T2) timeClient identifierClient identifier(1)"
+	_OptNum_name_1 = "end options"
+)
 
-var _OptNum_index = [...]uint16{0, 12, 23, 54, 74, 99, 127, 151, 179, 205, 233, 261, 285, 300, 336, 378, 411, 432, 455, 485, 516, 548, 570, 602, 625, 647, 669, 687, 708, 725, 747, 769, 793, 820, 840, 861, 878, 900, 924, 946, 967, 982, 1002, 1023, 1050, 1069, 1098, 1115, 1128, 1148, 1172, 1192, 1213, 1247, 1265, 1291, 1313, 1331, 1356, 1378, 1402, 1419, 1439}
+var (
+	_OptNum_index_0 = [...]uint16{0, 12, 23, 54, 74, 99, 127, 151, 179, 205, 233, 261, 285, 300, 336, 378, 411, 432, 455, 485, 516, 548, 570, 602, 625, 647, 669, 687, 708, 725, 747, 769, 793, 820, 840, 861, 878, 900, 924, 946, 967, 982, 1002, 1023, 1050, 1069, 1098, 1115, 1128, 1148, 1172, 1192, 1213, 1247, 1265, 1291, 1313, 1331, 1356, 1378, 1402, 1419, 1439}
+)
 
 func (i OptNum) String() string {
-	if i >= OptNum(len(_OptNum_index)-1) {
+	switch {
+	case i <= 61:
+		return _OptNum_name_0[_OptNum_index_0[i]:_OptNum_index_0[i+1]]
+	case i == 255:
+		return _OptNum_name_1
+	default:
 		return "OptNum(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _OptNum_name[_OptNum_index[i]:_OptNum_index[i+1]]
 }
 func _() {
 	// An "invalid array index" compiler error signifies that the constant values have changed.

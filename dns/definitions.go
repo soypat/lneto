@@ -185,6 +185,7 @@ const (
 	TypeSRV   Type = 33 // SRV
 	TypeOPT   Type = 41 // OPT
 
+	TypeHTTPS Type = 65 // HTTPS SSE
 	// Question.Type
 	TypeWKS   Type = 11  // WKS
 	TypeHINFO Type = 13  // HINFO

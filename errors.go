@@ -4,7 +4,7 @@ package lneto
 // 	Message string
 // }
 
-// var genericErrPacketDrop = &ErrorPacketDrop{Message: "lneto: packet dropped"}
+// var genericErrPacketDrop = &ErrorPacketDrop{Message: ErrPacketDrop.Error()}
 
 // // ErrGenericPacketDrop returns the generic packet drop error. It performs no allocations.
 // func ErrGenericPacketDrop() error {
@@ -14,3 +14,15 @@ package lneto
 // func (err *ErrorPacketDrop) Error() string {
 // 	return err.Message
 // }
+
+type errGeneric uint8
+
+// Generic errors common to internet functioning.
+const (
+	_             errGeneric = iota // non-initialized err
+	ErrPacketDrop                   // packet dropped
+)
+
+func (err errGeneric) Error() string {
+	return err.String()
+}

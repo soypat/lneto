@@ -1,6 +1,6 @@
 package lneto
 
-//go:generate stringer -type=IPProto -linecomment -output stringers.go .
+//go:generate stringer -type=IPProto,errGeneric -linecomment -output stringers.go .
 
 // IPProto represents the IP protocol number.
 type IPProto uint8

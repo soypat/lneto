@@ -21,11 +21,12 @@ func _() {
 	_ = x[FieldClassOptions-10]
 	_ = x[FieldClassPayload-11]
 	_ = x[FieldClassText-12]
+	_ = x[FieldClassAddress-13]
 }
 
-const _FieldClass_name = "undefinedsourcedestinationprotocolversiontypefield sizeflagsidentificationchecksumoptionspayloadtext"
+const _FieldClass_name = "undefinedsourcedestinationprotocolversiontypefield sizeflagsidentificationchecksumoptionspayloadtextaddress"
 
-var _FieldClass_index = [...]uint8{0, 9, 15, 26, 34, 41, 45, 55, 60, 74, 82, 89, 96, 100}
+var _FieldClass_index = [...]uint8{0, 9, 15, 26, 34, 41, 45, 55, 60, 74, 82, 89, 96, 100, 107}
 
 func (i FieldClass) String() string {
 	if i >= FieldClass(len(_FieldClass_index)-1) {

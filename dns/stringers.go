@@ -18,6 +18,7 @@ func _() {
 	_ = x[TypeAAAA-28]
 	_ = x[TypeSRV-33]
 	_ = x[TypeOPT-41]
+	_ = x[TypeHTTPS-65]
 	_ = x[TypeWKS-11]
 	_ = x[TypeHINFO-13]
 	_ = x[TypeMINFO-14]
@@ -32,8 +33,9 @@ const (
 	_Type_name_3 = "AAAA"
 	_Type_name_4 = "SRV"
 	_Type_name_5 = "OPT"
-	_Type_name_6 = "AXFR"
-	_Type_name_7 = "ALL"
+	_Type_name_6 = "HTTPS SSE"
+	_Type_name_7 = "AXFR"
+	_Type_name_8 = "ALL"
 )
 
 var (
@@ -59,10 +61,12 @@ func (i Type) String() string {
 		return _Type_name_4
 	case i == 41:
 		return _Type_name_5
-	case i == 252:
+	case i == 65:
 		return _Type_name_6
-	case i == 255:
+	case i == 252:
 		return _Type_name_7
+	case i == 255:
+		return _Type_name_8
 	default:
 		return "Type(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
