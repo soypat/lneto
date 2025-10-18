@@ -4,7 +4,13 @@ import (
 	"net/netip"
 	"testing"
 
+	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/internet/pcap"
 	"github.com/soypat/lneto/tcp"
+)
+
+const (
+	synack = tcp.FlagSYN | tcp.FlagACK
 )
 
 func TestABC(t *testing.T) {
@@ -37,23 +43,8 @@ func TestABC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// IMG_1084.MOV
 
 	const svPort = 80
-	var clconn tcp.Conn
-	err = clconn.Configure(tcp.ConnConfig{
-		RxBuf:             make([]byte, MTU),
-		TxBuf:             make([]byte, MTU),
-		TxPacketQueueSize: 4,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = client.DialTCP(&clconn, 1337, netip.AddrPortFrom(sv.Addr(), svPort))
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	var svconn tcp.Conn
 	err = svconn.Configure(tcp.ConnConfig{
 		RxBuf:             make([]byte, MTU),
@@ -63,5 +54,92 @@ func TestABC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// clconn.OpenListen()
+	err = sv.ListenTCP(&svconn, svPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var clconn tcp.Conn
+	err = clconn.Configure(tcp.ConnConfig{
+		RxBuf:             make([]byte, MTU),
+		TxBuf:             make([]byte, MTU),
+		TxPacketQueueSize: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.SetGateway6(sv.HardwareAddress())
+	sv.SetGateway6(client.HardwareAddress())
+
+	err = client.DialTCP(&clconn, 1337, netip.AddrPortFrom(sv.Addr(), svPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var expected = []struct {
+		fromClient bool
+		flags      tcp.Flags
+	}{
+		{
+			fromClient: true,
+			flags:      tcp.FlagSYN,
+		},
+		{
+			fromClient: false,
+			flags:      synack,
+		},
+		{
+			fromClient: true,
+			flags:      tcp.FlagACK,
+		},
+	}
+	var cap pcap.PacketBreakdown
+	var frms []pcap.Frame
+	var buf [MTU]byte
+	for _, action := range expected {
+		var n int
+		switch action.fromClient {
+		case true:
+			n, err = client.Encapsulate(buf[:], 0)
+		case false:
+			n, err = sv.Encapsulate(buf[:], 0)
+		}
+		if err != nil {
+			t.Fatal(err)
+		} else if n == 0 {
+			t.Error("zero bits sent")
+		}
+		frms, err = cap.CaptureEthernet(frms[:0], buf[:n], 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tfrm := getProtoFrame(frms, lneto.IPProtoTCP)
+		if tfrm == nil {
+			t.Fatal("where's the TCP?")
+		}
+		fidx, _ := tfrm.FieldByClass(pcap.FieldClassFlags)
+		flags, _ := tfrm.FieldAsUint(fidx, buf[:n])
+		tflags := tcp.Flags(flags)
+		if tflags != action.flags {
+			t.Errorf("expected flags %s, got %s", action.flags.String(), tflags.String())
+		}
+		switch action.fromClient {
+		case true:
+			err = sv.Demux(buf[:], 0)
+		case false:
+			err = client.Demux(buf[:], 0)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func getProtoFrame(frms []pcap.Frame, proto any) *pcap.Frame {
+	for i := range frms {
+		if frms[i].Protocol == proto {
+			return &frms[i]
+		}
+	}
+	return nil
 }

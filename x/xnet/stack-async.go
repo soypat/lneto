@@ -210,24 +210,40 @@ func (s *StackAsync) SetHardwareAddress(hw [6]byte) error {
 	return s.resetARP()
 }
 
+func (s *StackAsync) HardwareAddress() (hw [6]byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.link.HardwareAddr6()
+}
+
 func (s *StackAsync) SetGateway6(gwhw [6]byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.link.SetGateway6(gwhw)
 }
 
-func (s *StackAsync) start() {
-
+func (s *StackAsync) Gateway6() [6]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.link.Gateway6()
 }
 
 func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrPort) (err error) {
-	if !conn.State().IsClosed() {
-		return errors.New("conn not closed")
-	}
-	conn.Abort() // Conn is closed, safe to abort.
 	err = conn.OpenActive(localPort, addrp, tcp.Value(s.Prand32()))
 	if err != nil {
+		return err
+	}
+	err = s.tcps.Register(conn)
+	if err != nil {
 		conn.Abort()
+		return err
+	}
+	return nil
+}
+
+func (s *StackAsync) ListenTCP(conn *tcp.Conn, localPort uint16) (err error) {
+	err = conn.OpenListen(localPort, tcp.Value(s.Prand32()))
+	if err != nil {
 		return err
 	}
 	err = s.tcps.Register(conn)

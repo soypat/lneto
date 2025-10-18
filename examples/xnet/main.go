@@ -19,6 +19,7 @@ import (
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/internet/pcap"
+	"github.com/soypat/lneto/tcp"
 	"github.com/soypat/lneto/x/xnet"
 )
 
@@ -97,8 +98,6 @@ func run() (err error) {
 		HardwareAddress: brHW,
 		MTU:             uint16(mtu),
 		MaxTCPConns:     1,
-		TCPBufferSizeTx: 2048,
-		TCPBufferSizeRx: 2048,
 	})
 	if err != nil {
 		return err
@@ -199,6 +198,12 @@ func run() (err error) {
 		return fmt.Errorf("DNS of host %q failed: %w", flagHostToResolve, err)
 	}
 	fmt.Printf("DNS resolution of %q complete and resolved to %v\n", flagHostToResolve, addrs)
+	var conn tcp.Conn
+	conn.Configure(tcp.ConnConfig{
+		RxBuf:             make([]byte, mtu),
+		TxBuf:             make([]byte, mtu),
+		TxPacketQueueSize: 3,
+	})
 	if flagHTTPGet {
 		var hdr httpraw.Header
 		hdr.SetMethod("GET")
@@ -213,7 +218,7 @@ func run() (err error) {
 		}
 		const tcpDebugTimeout = 60 * time.Minute
 		target := netip.AddrPortFrom(addrs[0], 80)
-		conn, err := rstack.DoDialTCP(uint16(softRand&0xefff)+1024, target, tcpDebugTimeout, internetRetries)
+		err = rstack.DoDialTCP(&conn, uint16(softRand&0xefff)+1024, target, tcpDebugTimeout, internetRetries)
 		if err != nil {
 			return fmt.Errorf("TCP failed: %w", err)
 		}

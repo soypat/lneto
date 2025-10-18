@@ -25,6 +25,10 @@ func (ls *StackEthernet) SetGateway6(gw [6]byte) {
 	ls.gwmac = gw
 }
 
+func (ls *StackEthernet) Gateway6() (gw [6]byte) {
+	return ls.gwmac
+}
+
 func (ls *StackEthernet) SetHardwareAddr6(mac [6]byte) {
 	ls.mac = mac
 }
