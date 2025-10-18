@@ -113,29 +113,30 @@ func (s StackBlocking) DoLookupIP(host string, timeout time.Duration) (addrs []n
 
 var errTCPFailedToConnect = errors.New("tcp failed to connect")
 
-func (s StackBlocking) DoDialTCP(localPort uint16, addrp netip.AddrPort, timeout time.Duration) (conn *tcp.Conn, err error) {
-	conn, err = s.async.DialTCP(localPort, addrp)
+func (s StackBlocking) DoDialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrPort, timeout time.Duration) (err error) {
+	err = s.async.DialTCP(conn, localPort, addrp)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	sleep := timeout/maxIter + 1
 	deadline := time.Now().Add(timeout)
 	for i := 0; i < maxIter; i++ {
 		state := conn.State()
 		if state == tcp.StateEstablished {
-			return conn, nil
+			return nil
 		} else if state == tcp.StateSynSent || state == tcp.StateSynRcvd || conn.InternalHandler().AwaitingSynSend() {
 			if err = s.checkDeadline(deadline); err != nil {
-				return nil, err
+				conn.Abort()
+				return err
 			}
 			time.Sleep(sleep)
 		} else {
 			// Unexpected state, abort and terminate connection.
 			conn.Abort()
-			return nil, errTCPFailedToConnect
+			return errTCPFailedToConnect
 		}
 	}
-	return conn, errDeadlineExceed
+	return errDeadlineExceed
 }
 
 func (s StackBlocking) checkDeadline(deadline time.Time) error {

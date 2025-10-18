@@ -2,7 +2,6 @@ package xnet
 
 import (
 	"errors"
-	"io"
 	"net/netip"
 	"sync"
 	"time"
@@ -30,7 +29,6 @@ type StackAsync struct {
 	arp      arp.Handler
 	udps     internet.StackPorts
 	tcps     internet.StackPorts
-	tcpconns []tcp.Conn
 
 	dhcpUDP     internet.StackUDPPort
 	dhcp        dhcpv4.Client
@@ -59,8 +57,6 @@ type StackConfig struct {
 	NTPServer       netip.Addr
 	Hostname        string
 	MaxTCPConns     int
-	TCPBufferSizeTx int // Size of transmit buffer for TCP connections.
-	TCPBufferSizeRx int // Size of receive buffer for TCP connections.
 	RandSeed        int64
 	HardwareAddress [6]byte
 	MTU             uint16
@@ -127,44 +123,14 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	}
 
 	// Enable TCP if connections present.
-	if cfg.MaxTCPConns > 0 {
-		if cfg.TCPBufferSizeRx < minTCPBuffer || cfg.TCPBufferSizeTx < minTCPBuffer {
-			return io.ErrShortBuffer
-		}
-		if cap(s.tcpconns) < cfg.MaxTCPConns {
-			s.tcpconns = make([]tcp.Conn, cfg.MaxTCPConns)
-		}
-		s.tcpconns = s.tcpconns[:cfg.MaxTCPConns]
-		for i := range s.tcpconns {
-			c := &s.tcpconns[i]
-			c.Abort() // Abort forcibly closes connection to allow buffer setting and reduce risk of race conditions.
-			h := c.InternalHandler()
-			sizetx := h.FreeTx()
-			sizerx := h.SizeRx()
-			// If size is sufficient then buffers will remain nil and memory will be reused.
-			var rxbuf, txbuf []byte
-			if sizetx < cfg.TCPBufferSizeTx || sizerx < cfg.TCPBufferSizeRx {
-				buf := make([]byte, cfg.TCPBufferSizeTx+cfg.TCPBufferSizeRx)
-				rxbuf = buf[:cfg.TCPBufferSizeRx]
-				txbuf = buf[cfg.TCPBufferSizeRx : cfg.TCPBufferSizeRx+cfg.TCPBufferSizeTx]
-			}
-			err = c.Configure(tcp.ConnConfig{
-				RxBuf:             rxbuf,
-				TxBuf:             txbuf,
-				TxPacketQueueSize: 4,
-			})
-			if err != nil {
-				return err
-			}
-		}
-		err = s.tcps.ResetTCP(cfg.MaxTCPConns)
-		if err != nil {
-			return err
-		}
-		err = s.ip.Register(&s.tcps)
-		if err != nil {
-			return err
-		}
+
+	err = s.tcps.ResetTCP(cfg.MaxTCPConns)
+	if err != nil {
+		return err
+	}
+	err = s.ip.Register(&s.tcps)
+	if err != nil {
+		return err
 	}
 
 	// Now setup stacks.
@@ -231,6 +197,12 @@ func (s *StackAsync) SetIPAddr(addr netip.Addr) error {
 	return s.resetARP()
 }
 
+func (s *StackAsync) Addr() netip.Addr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ip.Addr()
+}
+
 func (s *StackAsync) SetHardwareAddress(hw [6]byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -244,38 +216,26 @@ func (s *StackAsync) SetGateway6(gwhw [6]byte) {
 	s.link.SetGateway6(gwhw)
 }
 
-var (
-	errNoTCP           = errors.New("no TCP initialized")
-	errNoTCPConnsAvail = errors.New("all allocated TCP connections busy")
-)
+func (s *StackAsync) start() {
 
-func (s *StackAsync) DialTCP(localPort uint16, addrp netip.AddrPort) (conn *tcp.Conn, err error) {
-	if len(s.tcpconns) == 0 {
-		return nil, errNoTCP
-	}
-	for i := range s.tcpconns {
-		maybeFreeConn := &s.tcpconns[i]
-		state := maybeFreeConn.State()
-		if state.IsClosed() {
-			conn = maybeFreeConn
-			break // Can be used!
-		}
-	}
-	if conn == nil {
-		return nil, errNoTCPConnsAvail
+}
+
+func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrPort) (err error) {
+	if !conn.State().IsClosed() {
+		return errors.New("conn not closed")
 	}
 	conn.Abort() // Conn is closed, safe to abort.
 	err = conn.OpenActive(localPort, addrp, tcp.Value(s.Prand32()))
 	if err != nil {
 		conn.Abort()
-		return nil, err
+		return err
 	}
 	err = s.tcps.Register(conn)
 	if err != nil {
 		conn.Abort()
-		return nil, err
+		return err
 	}
-	return conn, nil
+	return nil
 }
 
 var errNoDNSServer = errors.New("no DNS server- did DHCP complete? You can set a predetermined DNS server in Stack configuration")
