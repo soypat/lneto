@@ -1,6 +1,7 @@
 package xnet
 
 import (
+	"bytes"
 	"net/netip"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 
 const (
 	synack = tcp.FlagSYN | tcp.FlagACK
+	pshack = tcp.FlagPSH | tcp.FlagACK
 )
 
 func TestABC(t *testing.T) {
@@ -76,62 +78,117 @@ func TestABC(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var expected = []struct {
-		fromClient bool
-		flags      tcp.Flags
-	}{
+	tst := tester{
+		t: t, buf: make([]byte, MTU),
+	}
+	const flagNoData = tcp.Flags(0)
+	noMoreData := []tcpExpectExchange{{SourceIdx: 0, WantFlags: flagNoData}, {SourceIdx: 1, WantFlags: flagNoData}}
+	expected := []tcpExpectExchange{
 		{
-			fromClient: true,
-			flags:      tcp.FlagSYN,
+			SourceIdx: 0,
+			WantFlags: tcp.FlagSYN,
 		},
 		{
-			fromClient: false,
-			flags:      synack,
+			SourceIdx: 1,
+			WantFlags: synack,
 		},
 		{
-			fromClient: true,
-			flags:      tcp.FlagACK,
+			SourceIdx: 0,
+			WantFlags: tcp.FlagACK,
 		},
 	}
-	var cap pcap.PacketBreakdown
-	var frms []pcap.Frame
-	var buf [MTU]byte
-	for _, action := range expected {
-		var n int
-		switch action.fromClient {
-		case true:
-			n, err = client.Encapsulate(buf[:], 0)
-		case false:
-			n, err = sv.Encapsulate(buf[:], 0)
+	expected = append(expected, noMoreData...) // Ensure no data exchanged after expected.
+	for _, wants := range expected {
+		tst.TCPExchange(wants, &client, &sv)
+	}
+	sendData := []byte("hello")
+	_, err = clconn.Write(sendData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected = []tcpExpectExchange{
+		{
+			SourceIdx: 0,
+			WantFlags: pshack,
+			WantData:  sendData,
+		},
+		{
+			SourceIdx: 1,
+			WantFlags: tcp.FlagACK,
+		},
+	}
+	expected = append(expected, noMoreData...) // Ensure no data exchanged after expected.
+	for _, wants := range expected {
+		tst.TCPExchange(wants, &client, &sv)
+	}
+}
+
+type tester struct {
+	t      *testing.T
+	cap    pcap.PacketBreakdown
+	frmbuf []pcap.Frame
+	buf    []byte
+}
+
+type tcpExpectExchange struct {
+	SourceIdx int
+	WantFlags tcp.Flags
+	WantData  []byte
+}
+
+func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAsync) {
+	t := tst.t
+	buf := tst.buf
+	nodata := expect.WantFlags == 0
+	var n int
+	var err error
+	switch expect.SourceIdx {
+	case 0:
+		n, err = stack1.Encapsulate(buf[:], 0)
+	case 1:
+		n, err = stack2.Encapsulate(buf[:], 0)
+	default:
+		panic("OOB")
+	}
+	if err != nil {
+		t.Fatal(err)
+	} else if n == 0 {
+		if nodata {
+			return // No data sent and no data expected.
 		}
-		if err != nil {
-			t.Fatal(err)
-		} else if n == 0 {
-			t.Error("zero bits sent")
-		}
-		frms, err = cap.CaptureEthernet(frms[:0], buf[:n], 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		tfrm := getProtoFrame(frms, lneto.IPProtoTCP)
-		if tfrm == nil {
-			t.Fatal("where's the TCP?")
-		}
-		fidx, _ := tfrm.FieldByClass(pcap.FieldClassFlags)
-		flags, _ := tfrm.FieldAsUint(fidx, buf[:n])
-		tflags := tcp.Flags(flags)
-		if tflags != action.flags {
-			t.Errorf("expected flags %s, got %s", action.flags.String(), tflags.String())
-		}
-		switch action.fromClient {
-		case true:
-			err = sv.Demux(buf[:], 0)
-		case false:
-			err = client.Demux(buf[:], 0)
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
+		t.Error("zero bits sent")
+	}
+	tst.frmbuf, err = tst.cap.CaptureEthernet(tst.frmbuf[:0], buf[:n], 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tfrm := getProtoFrame(tst.frmbuf, lneto.IPProtoTCP)
+	if tfrm == nil {
+		t.Fatal("where's the TCP?")
+	}
+	fidx, _ := tfrm.FieldByClass(pcap.FieldClassFlags)
+	flags, _ := tfrm.FieldAsUint(fidx, buf[:n])
+	tflags := tcp.Flags(flags)
+	var payload []byte
+	fidx, _ = tfrm.FieldByClass(pcap.FieldClassPayload)
+	if fidx > 0 {
+		fieldPayload := tfrm.Fields[fidx]
+		payload = buf[fieldPayload.FrameBitOffset*8:]
+	}
+	if !bytes.Equal(payload, expect.WantData) {
+		t.Errorf("mismatched data sent, \nwant=%q\ngot=%q\n", expect.WantData, payload)
+	}
+	if tflags != expect.WantFlags {
+		t.Errorf("expected flags %s, got %s", expect.WantFlags.String(), tflags.String())
+	}
+	switch expect.SourceIdx {
+	case 0:
+		err = stack2.Demux(buf[:], 0)
+	case 1:
+		err = stack1.Demux(buf[:], 0)
+	}
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
