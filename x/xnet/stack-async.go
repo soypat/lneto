@@ -123,14 +123,15 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	}
 
 	// Enable TCP if connections present.
-
-	err = s.tcps.ResetTCP(cfg.MaxTCPConns)
-	if err != nil {
-		return err
-	}
-	err = s.ip.Register(&s.tcps)
-	if err != nil {
-		return err
+	if cfg.MaxTCPConns > 0 {
+		err = s.tcps.ResetTCP(cfg.MaxTCPConns)
+		if err != nil {
+			return err
+		}
+		err = s.ip.Register(&s.tcps)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Now setup stacks.

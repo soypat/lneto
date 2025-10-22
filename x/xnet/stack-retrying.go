@@ -85,13 +85,19 @@ func (s StackRetrying) DoResolveHardwareAddress6(addr netip.Addr, timeout time.D
 
 func (s StackRetrying) DoDialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrPort, timeout time.Duration, retries int) (err error) {
 	expectEnd := time.Now().Add(timeout * time.Duration(retries))
+	var firstErr error
 	for i := 0; i < retries; i++ {
 		err = s.block.DoDialTCP(conn, localPort, addrp, timeout)
 		if err == nil {
 			return nil
+		} else if firstErr == nil {
+			firstErr = err
 		}
 	}
 	if time.Now().Before(expectEnd) {
+		if err != firstErr {
+			return errors.Join(firstErr, err)
+		}
 		return err
 	}
 	return errRetriesExceeded

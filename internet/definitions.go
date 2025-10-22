@@ -42,7 +42,7 @@ type node struct {
 }
 
 var (
-	errZeroMaxNodes    = errors.New("zero max ports")
+	errZeroMaxNodesArg = errors.New("zero max nodes arg")
 	errZeroPort        = errors.New("port must be greater than zero")
 	errInvalidProto    = errors.New("invalid protocol")
 	errProtoRegistered = errors.New("protocol already registered")

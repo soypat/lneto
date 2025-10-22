@@ -28,7 +28,7 @@ func (ps *StackPorts) Reset(protocol uint64, dstPortOffset uint16, maxNodes int)
 	if protocol > math.MaxUint16 {
 		return errInvalidProto
 	} else if maxNodes <= 0 {
-		return errZeroMaxNodes
+		return errZeroMaxNodesArg
 	}
 	ps.handlers = slices.Grow(ps.handlers[:0], maxNodes)
 	*ps = StackPorts{

@@ -30,7 +30,7 @@ type StackIP struct {
 
 func (sb *StackIP) Reset(addr netip.Addr, maxNodes int) error {
 	if maxNodes <= 0 {
-		return errZeroMaxNodes
+		return errZeroMaxNodesArg
 	}
 	err := sb.SetAddr(addr)
 	if err != nil {
