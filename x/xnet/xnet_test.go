@@ -2,10 +2,12 @@ package xnet
 
 import (
 	"bytes"
+	"errors"
 	"net/netip"
 	"testing"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internet/pcap"
 	"github.com/soypat/lneto/tcp"
 )
@@ -140,16 +142,16 @@ func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAs
 	t := tst.t
 	buf := tst.buf
 	nodata := expect.WantFlags == 0
-	var n int
-	var err error
+	var src, dst *StackAsync
 	switch expect.SourceIdx {
 	case 0:
-		n, err = stack1.Encapsulate(buf[:], 0)
+		src, dst = stack1, stack2
 	case 1:
-		n, err = stack2.Encapsulate(buf[:], 0)
+		src, dst = stack2, stack1
 	default:
 		panic("OOB")
 	}
+	n, err := src.Encapsulate(buf[:], 0)
 	if err != nil {
 		t.Fatal(err)
 	} else if n == 0 {
@@ -158,38 +160,105 @@ func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAs
 		}
 		t.Error("zero bits sent")
 	}
+
+	tst.buf = tst.buf[:n]
+	defer func() {
+		tst.buf = tst.buf[:cap(tst.buf)]
+	}()
 	tst.frmbuf, err = tst.cap.CaptureEthernet(tst.frmbuf[:0], buf[:n], 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tfrm := getProtoFrame(tst.frmbuf, lneto.IPProtoTCP)
-	if tfrm == nil {
-		t.Fatal("where's the TCP?")
+	srcEth := src.HardwareAddress()
+	dstEth := dst.HardwareAddress()
+	if !bytes.Equal(srcEth[:], tst.getData(pcap.ProtoEthernet, pcap.FieldClassSrc)) {
+		t.Errorf("mismatched ethernet src addr %x", tst.getData(pcap.ProtoEthernet, pcap.FieldClassSrc))
 	}
-	fidx, _ := tfrm.FieldByClass(pcap.FieldClassFlags)
-	flags, _ := tfrm.FieldAsUint(fidx, buf[:n])
-	tflags := tcp.Flags(flags)
-	var payload []byte
-	fidx, _ = tfrm.FieldByClass(pcap.FieldClassPayload)
-	if fidx > 0 {
-		fieldPayload := tfrm.Fields[fidx]
-		payload = buf[fieldPayload.FrameBitOffset*8:]
+	if !bytes.Equal(dstEth[:], tst.getData(pcap.ProtoEthernet, pcap.FieldClassDst)) {
+		t.Errorf("mismatched ethernet dst addr %x", tst.getData(pcap.ProtoEthernet, pcap.FieldClassDst))
 	}
+	if tst.getInt(ethernet.TypeIPv4, pcap.FieldClassVersion) != 4 {
+		t.Errorf("did not get IP version=4, got=%d", tst.getInt(ethernet.TypeIPv4, pcap.FieldClassVersion))
+	}
+	srcAddr := src.Addr()
+	dstAddr := dst.Addr()
+	if !bytes.Equal(srcAddr.AsSlice(), tst.getData(ethernet.TypeIPv4, pcap.FieldClassSrc)) {
+		t.Errorf("mismatched ip src addr %d", tst.getData(ethernet.TypeIPv4, pcap.FieldClassSrc))
+	}
+	if !bytes.Equal(dstAddr.AsSlice(), tst.getData(ethernet.TypeIPv4, pcap.FieldClassDst)) {
+		t.Errorf("mismatched ip dst addr %d", tst.getData(ethernet.TypeIPv4, pcap.FieldClassDst))
+	}
+	tflags := tcp.Flags(tst.getInt(lneto.IPProtoTCP, pcap.FieldClassFlags))
+	payload := tst.getPayload(lneto.IPProtoTCP)
 	if !bytes.Equal(payload, expect.WantData) {
 		t.Errorf("mismatched data sent, \nwant=%q\ngot=%q\n", expect.WantData, payload)
 	}
 	if tflags != expect.WantFlags {
 		t.Errorf("expected flags %s, got %s", expect.WantFlags.String(), tflags.String())
 	}
-	switch expect.SourceIdx {
-	case 0:
-		err = stack2.Demux(buf[:], 0)
-	case 1:
-		err = stack1.Demux(buf[:], 0)
-	}
+	err = dst.Demux(buf[:], 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	for i := range buf[:n] {
+		buf[i] = 0 // Set data sent to zero.
+	}
+}
+
+func (tst *tester) getPayload(proto any) []byte {
+	tst.t.Helper()
+	i := 0
+	for i = 0; i < len(tst.frmbuf); i++ {
+		if tst.frmbuf[i].Protocol == proto {
+			if i < len(tst.frmbuf)-1 {
+				frm := &tst.frmbuf[i+1]
+				bitOff := frm.PacketBitOffset
+				if bitOff%8 != 0 {
+					tst.t.Fatalf("proto %s bitoffset not multiple of 8: %d", proto, bitOff)
+				}
+				return tst.buf[bitOff/8:]
+			}
+		}
+	}
+	return tst.getData(proto, pcap.FieldClassPayload)
+}
+
+func (tst *tester) getData(proto any, field pcap.FieldClass) []byte {
+	tst.t.Helper()
+	frm := getProtoFrame(tst.frmbuf, proto)
+	if frm == nil {
+		tst.t.Fatalf("no frame for proto %s found in %s", proto, tst.frmbuf)
+	}
+	fidx, err := frm.FieldByClass(field)
+	if err != nil {
+		if errors.Is(err, pcap.ErrFieldByClassNotFound) {
+			return nil
+		}
+		tst.t.Fatal(err)
+	}
+	bitoff := frm.PacketBitOffset + frm.Fields[fidx].FrameBitOffset
+	bitlen := frm.Fields[fidx].BitLength
+	if bitoff%8 != 0 || bitlen%8 != 0 {
+		tst.t.Fatal("frame bitlength not multiple of 8")
+	}
+	return tst.buf[bitoff/8 : bitoff/8+bitlen/8]
+}
+
+func (tst *tester) getInt(proto any, field pcap.FieldClass) uint64 {
+	tst.t.Helper()
+	frm := getProtoFrame(tst.frmbuf, proto)
+	if frm == nil {
+		tst.t.Fatalf("no frame for proto %s found in %s", proto, tst.frmbuf)
+	}
+	fidx, err := frm.FieldByClass(field)
+	if err != nil {
+		tst.t.Fatal(err)
+	}
+	v, err := frm.FieldAsUint(fidx, tst.buf)
+	if err != nil {
+		tst.t.Fatal(err)
+	}
+	return v
 }
 
 func getProtoFrame(frms []pcap.Frame, proto any) *pcap.Frame {

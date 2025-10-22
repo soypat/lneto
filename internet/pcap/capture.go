@@ -22,6 +22,16 @@ import (
 
 const unknownPayloadProto = "payload?"
 
+var (
+	ErrFieldByClassNotFound = errors.New("pcap: field by class not found")
+)
+
+type proto string
+
+const (
+	ProtoEthernet proto = "Ethernet"
+)
+
 type PacketBreakdown struct {
 	hdr  httpraw.Header
 	dmsg dns.Message
@@ -42,7 +52,7 @@ func (pc *PacketBreakdown) CaptureEthernet(dst []Frame, pkt []byte, bitOffset in
 	}
 
 	finfo := Frame{
-		Protocol:        "Ethernet",
+		Protocol:        ProtoEthernet,
 		PacketBitOffset: bitOffset,
 	}
 	finfo.Fields = append(finfo.Fields, baseEthernetFields[:]...)
@@ -208,7 +218,8 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 	end := bitOffset + octet*ifrm4.HeaderLength()
 	var protoErrs []error
 	var crc lneto.CRC791
-	if proto == lneto.IPProtoTCP {
+	switch proto {
+	case lneto.IPProtoTCP:
 		ifrm4.CRCWriteTCPPseudo(&crc)
 		tfrm, err := tcp.NewFrame(ifrm4.Payload())
 		if err == nil {
@@ -224,7 +235,7 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 				protoErrs = append(protoErrs, &crcError16{protocol: "ipv4+tcp", want: wantSum, got: gotSum})
 			}
 		}
-	} else if proto == lneto.IPProtoUDP {
+	case lneto.IPProtoUDP:
 		ifrm4.CRCWriteUDPPseudo(&crc)
 		ufrm, err := udp.NewFrame(ifrm4.Payload())
 		if err == nil {
@@ -504,7 +515,7 @@ func (frm Frame) FieldByClass(c FieldClass) (int, error) {
 		}
 	}
 	if selected < 0 {
-		return -1, errors.New("field by class not found")
+		return -1, ErrFieldByClassNotFound
 	}
 	if multiple && frm.Fields[selected].Name != "" {
 		return -1, errors.New("multiple classes found and none have empty name")
