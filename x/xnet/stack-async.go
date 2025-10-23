@@ -152,6 +152,8 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	if s.clientID == "" {
 		s.clientID = "lneto-" + s.hostname
 	}
+	s.totalrecv = 0
+	s.totalsent = 0
 	return nil
 }
 
@@ -412,7 +414,9 @@ func (s *StackAsync) ResultDHCP() (*DHCPResults, error) {
 }
 
 type Statistics struct {
-	TotalSent     uint64
+	// Total amount of bytes sent over encapsulate.
+	TotalSent uint64
+	// Total amount of bytes received over demux.
 	TotalReceived uint64
 }
 
