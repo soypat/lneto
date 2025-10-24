@@ -6,7 +6,6 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internet/pcap"
 	"github.com/soypat/lneto/tcp"
@@ -15,6 +14,7 @@ import (
 const (
 	synack = tcp.FlagSYN | tcp.FlagACK
 	pshack = tcp.FlagPSH | tcp.FlagACK
+	finack = tcp.FlagFIN | tcp.FlagACK
 )
 
 func TestABC(t *testing.T) {
@@ -83,53 +83,19 @@ func TestABC(t *testing.T) {
 	tst := tester{
 		t: t, buf: make([]byte, MTU),
 	}
-	const flagNoData = tcp.Flags(0)
-	noMoreData := []tcpExpectExchange{{SourceIdx: 0, WantFlags: flagNoData}, {SourceIdx: 1, WantFlags: flagNoData}}
-	expected := []tcpExpectExchange{
-		{
-			SourceIdx: 0,
-			WantFlags: tcp.FlagSYN,
-		},
-		{
-			SourceIdx: 1,
-			WantFlags: synack,
-		},
-		{
-			SourceIdx: 0,
-			WantFlags: tcp.FlagACK,
-		},
-	}
-	expected = append(expected, noMoreData...) // Ensure no data exchanged after expected.
-	for _, wants := range expected {
-		tst.TCPExchange(wants, &client, &sv)
-	}
 	sendData := []byte("hello")
-	_, err = clconn.Write(sendData)
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected = []tcpExpectExchange{
-		{
-			SourceIdx: 0,
-			WantFlags: pshack,
-			WantData:  sendData,
-		},
-		{
-			SourceIdx: 1,
-			WantFlags: tcp.FlagACK,
-		},
-	}
-	expected = append(expected, noMoreData...) // Ensure no data exchanged after expected.
-	for _, wants := range expected {
-		tst.TCPExchange(wants, &client, &sv)
-	}
+	tst.TestTCPHandshake(&client, &sv)
+	tst.TestTCPEstablishedSingleData(&client, &sv, &clconn, &svconn, sendData)
+	tst.TestTCPClose(&client, &sv, &clconn, &svconn)
 }
 
 type tester struct {
-	t      *testing.T
-	cap    pcap.PacketBreakdown
-	frmbuf []pcap.Frame
-	buf    []byte
+	t       *testing.T
+	cap     pcap.PacketBreakdown
+	frmbuf  []pcap.Frame
+	buf     []byte
+	exch    []tcpExpectExchange
+	lastSeg tcp.Segment
 }
 
 type tcpExpectExchange struct {
@@ -138,11 +104,154 @@ type tcpExpectExchange struct {
 	WantData  []byte
 }
 
-func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAsync) {
+func noExchange(source int) tcpExpectExchange {
+	return tcpExpectExchange{SourceIdx: source}
+}
+
+func (tst *tester) TestTCPHandshake(stack1, stack2 *StackAsync) {
+	tst.t.Helper()
+	tst.exch = append(tst.exch[:0], []tcpExpectExchange{
+		{
+			SourceIdx: 0,
+			WantFlags: tcp.FlagSYN,
+		},
+		noExchange(0),
+		{
+			SourceIdx: 1,
+			WantFlags: synack,
+		},
+		noExchange(1),
+		{
+			SourceIdx: 0,
+			WantFlags: tcp.FlagACK,
+		},
+		noExchange(0),
+		noExchange(1),
+	}...)
+	for _, wants := range tst.exch {
+		tst.TCPExchange(wants, stack1, stack2)
+	}
+}
+
+func (tst *tester) TestTCPEstablishedSingleData(stack1, stack2 *StackAsync, conn1, conn2 *tcp.Conn, sendData []byte) {
+	tst.t.Helper()
+	_, err := conn1.Write(sendData)
+	if err != nil {
+		tst.t.Fatal(err)
+	}
+	nprev := conn2.BufferedInput()
+	tst.exch = append(tst.exch[:0], []tcpExpectExchange{
+		{
+			SourceIdx: 0,
+			WantFlags: pshack,
+			WantData:  sendData,
+		},
+		noExchange(0),
+		{
+			SourceIdx: 1,
+			WantFlags: tcp.FlagACK,
+		},
+		noExchange(0),
+		noExchange(1),
+	}...)
+	for _, wants := range tst.exch {
+		tst.TCPExchange(wants, stack1, stack2)
+	}
+	n, err := conn2.Read(tst.buf)
+	if err != nil {
+		tst.t.Errorf("reading back data %q on conn2: %s", sendData, err)
+	} else if n == len(tst.buf) {
+		tst.t.Fatalf("buffer topped out in read!")
+	}
+	nread := n - nprev
+	if nread != len(sendData) {
+		tst.t.Errorf("expected to read %d bytes, got %d", len(sendData), nread)
+	} else {
+		got := tst.buf[n-nread : n]
+		if !bytes.Equal(got, sendData) {
+			tst.t.Errorf("expected to read back %q from conn, got %q", sendData, got)
+		}
+	}
+	setzero(tst.buf[:n])
+}
+
+func (tst *tester) TestTCPClose(stack1, stack2 *StackAsync, conn1, conn2 *tcp.Conn) {
 	t := tst.t
-	buf := tst.buf
-	nodata := expect.WantFlags == 0
+	t.Helper()
+	cid1 := conn1.ConnectionID()
+	cid2 := conn2.ConnectionID()
+	cid1v := *cid1
+	cid2v := *cid2
+	err := conn1.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tst.exch = append(tst.exch[:0], []tcpExpectExchange{
+		{
+			SourceIdx: 0,
+			WantFlags: finack, // Closer sends FINACK
+		},
+		noExchange(0),
+		{
+			SourceIdx: 1,
+			WantFlags: tcp.FlagACK,
+		},
+		{
+			SourceIdx: 1,
+			WantFlags: finack,
+		},
+		noExchange(1),
+		{
+			SourceIdx: 0,
+			WantFlags: tcp.FlagACK,
+		},
+		noExchange(0),
+		noExchange(1),
+	}...)
+	t.Log(conn1.State().String(), conn2.State().String())
+	for i, exch := range tst.exch {
+		failed := t.Failed()
+		tst.TCPExchange(exch, stack1, stack2)
+		if !failed && t.Failed() {
+			t.Error(i, exch.SourceIdx, "close failure")
+		}
+		if exch.WantFlags == 0 {
+			continue
+		}
+
+		t.Log(i, tcp.StringExchange(tst.lastSeg, conn1.State(), conn2.State(), exch.SourceIdx != 0))
+	}
+
+	state1 := conn1.State()
+	state2 := conn2.State()
+	if !state1.IsClosed() {
+		t.Errorf("expected closed state1, got %s", state1.String())
+	}
+	if !state2.IsClosed() {
+		t.Errorf("expected closed state2, got %s", state2.String())
+	}
+	if cid1v == *cid1 {
+		t.Error("no cid1 change")
+	}
+	if cid2v == *cid2 {
+		t.Error("no cid2 change")
+	}
+}
+
+func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAsync) {
+	tst.lastSeg = tcp.Segment{}
 	var src, dst *StackAsync
+	defer func(failed bool) {
+		if !failed && tst.t.Failed() {
+			tst.t.Helper()
+			tst.t.Logf("failed on idx=%d src=%s -->  dst=%s", expect.SourceIdx, src.Hostname(), dst.Hostname())
+		}
+	}(tst.t.Failed())
+	t := tst.t
+	t.Helper()
+	buf := tst.buf[:cap(tst.buf)]
+	nodata := expect.WantFlags == 0
+
 	switch expect.SourceIdx {
 	case 0:
 		src, dst = stack1, stack2
@@ -159,12 +268,12 @@ func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAs
 			return // No data sent and no data expected.
 		}
 		t.Error("zero bits sent")
+	} else if nodata && n > 0 {
+		t.Error("expected no data sent and got data")
+		return
 	}
 
 	tst.buf = tst.buf[:n]
-	defer func() {
-		tst.buf = tst.buf[:cap(tst.buf)]
-	}()
 	tst.frmbuf, err = tst.cap.CaptureEthernet(tst.frmbuf[:0], buf[:n], 0)
 	if err != nil {
 		t.Fatal(err)
@@ -188,21 +297,31 @@ func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAs
 	if !bytes.Equal(dstAddr.AsSlice(), tst.getData(ethernet.TypeIPv4, pcap.FieldClassDst)) {
 		t.Errorf("mismatched ip dst addr %d", tst.getData(ethernet.TypeIPv4, pcap.FieldClassDst))
 	}
-	tflags := tcp.Flags(tst.getInt(lneto.IPProtoTCP, pcap.FieldClassFlags))
-	payload := tst.getPayload(lneto.IPProtoTCP)
+	tfrm := tst.getTCPFrame()
+
+	payload := tfrm.Payload()
+	seg := tfrm.Segment(len(payload))
+	tst.lastSeg = seg
 	if !bytes.Equal(payload, expect.WantData) {
 		t.Errorf("mismatched data sent, \nwant=%q\ngot=%q\n", expect.WantData, payload)
 	}
-	if tflags != expect.WantFlags {
-		t.Errorf("expected flags %s, got %s", expect.WantFlags.String(), tflags.String())
+	if seg.Flags != expect.WantFlags {
+		t.Errorf("expected flags %s, got %s", expect.WantFlags.String(), seg.Flags.String())
 	}
-	err = dst.Demux(buf[:], 0)
+	err = dst.Demux(buf[:n], 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := range buf[:n] {
-		buf[i] = 0 // Set data sent to zero.
+	setzero(buf[:n])
+}
+
+func (tst *tester) getTCPFrame() tcp.Frame {
+	data := tst.getPayload(ethernet.TypeIPv4)
+	frame, err := tcp.NewFrame(data)
+	if err != nil {
+		panic(err)
 	}
+	return frame
 }
 
 func (tst *tester) getPayload(proto any) []byte {
@@ -268,4 +387,11 @@ func getProtoFrame(frms []pcap.Frame, proto any) *pcap.Frame {
 		}
 	}
 	return nil
+}
+
+func setzero[T ~[]E, E any](s T) {
+	var zero E
+	for i := range s {
+		s[i] = zero
+	}
 }

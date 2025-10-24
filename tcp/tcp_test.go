@@ -792,6 +792,10 @@ func TestIssue19(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertState(tcp.StateFinWait1)
+	pending, ok = tcb.PendingSegment(0)
+	if ok {
+		t.Fatal("expected no pending segment after finack")
+	}
 
 	// Receive FINACK response from client.
 	err = tcb.Recv(tcp.Segment{SEQ: issB, ACK: issA + httpLen, Flags: FINACK, WND: windowB})

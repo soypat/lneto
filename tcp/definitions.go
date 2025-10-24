@@ -111,7 +111,8 @@ func StringExchange(seg Segment, A, B State, invertDir bool) string {
 //
 //	SynSent --> <SEQ=300><ACK=91>[SYN,ACK]  --> SynRcvd
 func appendStringExchange(buf []byte, seg Segment, A, B State, invertDir bool) []byte {
-	const emptySpaces = "             "
+	const emptySpaces = "                    "
+	const spacelen = len(emptySpaces)
 	const fill = len(emptySpaces) - 1
 	appendVal := func(buf []byte, name string, i Value) []byte {
 		buf = append(buf, '<')

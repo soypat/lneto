@@ -177,6 +177,12 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		}
 		return err
 	}
+	if h.scb.State() == StateClosed {
+		// TCB aborted, likely because it received an ACK in LastAck state.
+		// Clean up connection now.
+		h.reset(0, 0, 0)
+		return net.ErrClosed
+	}
 	if prevState != h.scb.State() {
 		h.info("tcp.Handler:rx-statechange", slog.Uint64("port", uint64(h.localPort)), slog.String("old", prevState.String()), slog.String("new", h.scb.State().String()), slog.String("rxflags", segIncoming.Flags.String()))
 	}
@@ -269,7 +275,12 @@ func (h *Handler) Send(b []byte) (int, error) {
 	tfrm.SetDestinationPort(h.remotePort)
 	tfrm.SetSegment(segment, offset)
 	tfrm.SetUrgentPtr(0)
-	return int(offset)*4 + int(segment.DATALEN), nil
+	datalen := int(offset)*4 + int(segment.DATALEN)
+	closedSuccess := prevState == StateTimeWait && segment.Flags.HasAny(FlagACK)
+	if closedSuccess {
+		h.reset(0, 0, 0)
+	}
+	return datalen, nil
 }
 
 // FreeTx returns the amount of space free in the transmit buffer. A call to [Handler.Write] with a larger buffer will fail.

@@ -135,11 +135,11 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	}
 
 	// Now setup stacks.
-	err = s.link.Register(&s.arp) // ARP.
+	err = s.link.Register(&s.ip) // IPv4 | IPv6
 	if err != nil {
 		return err
 	}
-	err = s.link.Register(&s.ip) // IPv4 | IPv6
+	err = s.link.Register(&s.arp) // ARP.
 	if err != nil {
 		return err
 	}
