@@ -17,7 +17,7 @@ const (
 	finack = tcp.FlagFIN | tcp.FlagACK
 )
 
-func TestABC(t *testing.T) {
+func TestStackAsyncTCP(t *testing.T) {
 	const seed = 1234
 	const MTU = 1500
 	var mac = [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x01}
@@ -47,6 +47,8 @@ func TestABC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	client.SetGateway6(sv.HardwareAddress())
+	sv.SetGateway6(client.HardwareAddress())
 
 	const svPort = 80
 	var svconn tcp.Conn
@@ -58,11 +60,6 @@ func TestABC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = sv.ListenTCP(&svconn, svPort)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	var clconn tcp.Conn
 	err = clconn.Configure(tcp.ConnConfig{
 		RxBuf:             make([]byte, MTU),
@@ -72,9 +69,12 @@ func TestABC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client.SetGateway6(sv.HardwareAddress())
-	sv.SetGateway6(client.HardwareAddress())
 
+	// Attach server and client connections to stacks.
+	err = sv.ListenTCP(&svconn, svPort)
+	if err != nil {
+		t.Fatal(err)
+	}
 	err = client.DialTCP(&clconn, 1337, netip.AddrPortFrom(sv.Addr(), svPort))
 	if err != nil {
 		t.Fatal(err)
@@ -84,6 +84,22 @@ func TestABC(t *testing.T) {
 		t: t, buf: make([]byte, MTU),
 	}
 	sendData := []byte("hello")
+	tst.TestTCPHandshake(&client, &sv)
+	tst.TestTCPEstablishedSingleData(&client, &sv, &clconn, &svconn, sendData)
+	tst.TestTCPClose(&client, &sv, &clconn, &svconn)
+
+	// Switch handles around, now server will be client and they will be registered to
+	// a different stack.
+	svconn, clconn = clconn, svconn
+	err = sv.ListenTCP(&svconn, svPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.DialTCP(&clconn, 1234, netip.AddrPortFrom(sv.Addr(), svPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendData = []byte("olleh")
 	tst.TestTCPHandshake(&client, &sv)
 	tst.TestTCPEstablishedSingleData(&client, &sv, &clconn, &svconn, sendData)
 	tst.TestTCPClose(&client, &sv, &clconn, &svconn)

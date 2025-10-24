@@ -148,7 +148,7 @@ type recvSpace struct {
 // To open an active connection use [ControlBlock.Send] with a segment generated with [ClientSynSegment].
 func (tcb *ControlBlock) Open(iss Value, wnd Size) (err error) {
 	switch {
-	case tcb._state != StateClosed && tcb._state != StateListen:
+	case tcb._state != StateClosed && tcb._state != StateTimeWait:
 		err = errNeedClosedTCBToOpen
 	case wnd > math.MaxUint16:
 		err = errWindowTooLarge
