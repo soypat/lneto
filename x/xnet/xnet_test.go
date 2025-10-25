@@ -17,92 +17,80 @@ const (
 	finack = tcp.FlagFIN | tcp.FlagACK
 )
 
-func TestStackAsyncTCP(t *testing.T) {
+func TestStackAsyncTCP_singlepacket(t *testing.T) {
+	var err error
+	_ = err
 	const seed = 1234
 	const MTU = 1500
-	var mac = [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x01}
-	var client StackAsync
-	err := client.Reset(StackConfig{
-		StaticAddress:   netip.MustParseAddr("10.0.0.1"),
-		MaxTCPConns:     1,
-		MTU:             MTU,
-		HardwareAddress: mac,
-		Hostname:        "client",
-		RandSeed:        seed,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var macsv = [6]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x01}
-	var sv StackAsync
-	err = sv.Reset(StackConfig{
-		StaticAddress:   netip.MustParseAddr("10.0.0.2"),
-		MaxTCPConns:     1,
-		MTU:             MTU,
-		HardwareAddress: macsv,
-		Hostname:        "server",
-		RandSeed:        seed,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	client.SetGateway6(sv.HardwareAddress())
-	sv.SetGateway6(client.HardwareAddress())
-
 	const svPort = 80
-	var svconn tcp.Conn
-	err = svconn.Configure(tcp.ConnConfig{
-		RxBuf:             make([]byte, MTU),
-		TxBuf:             make([]byte, MTU),
-		TxPacketQueueSize: 4,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var clconn tcp.Conn
-	err = clconn.Configure(tcp.ConnConfig{
-		RxBuf:             make([]byte, MTU),
-		TxBuf:             make([]byte, MTU),
-		TxPacketQueueSize: 4,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Attach server and client connections to stacks.
-	err = sv.ListenTCP(&svconn, svPort)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = client.DialTCP(&clconn, 1337, netip.AddrPortFrom(sv.Addr(), svPort))
-	if err != nil {
-		t.Fatal(err)
-	}
+	client, sv, clconn, svconn := newTCPStacks(t, seed, MTU)
 
 	tst := tester{
 		t: t, buf: make([]byte, MTU),
 	}
+
+	tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1337)
 	sendData := []byte("hello")
-	tst.TestTCPHandshake(&client, &sv)
-	tst.TestTCPEstablishedSingleData(&client, &sv, &clconn, &svconn, sendData)
-	tst.TestTCPClose(&client, &sv, &clconn, &svconn)
+	tst.TestTCPEstablishedSingleData(client, sv, clconn, svconn, sendData)
+	tst.TestTCPClose(client, sv, clconn, svconn)
 
 	// Switch handles around, now server will be client and they will be registered to
 	// a different stack.
 	svconn, clconn = clconn, svconn
-	err = sv.ListenTCP(&svconn, svPort)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = client.DialTCP(&clconn, 1234, netip.AddrPortFrom(sv.Addr(), svPort))
-	if err != nil {
-		t.Fatal(err)
-	}
+	tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1234)
 	sendData = []byte("olleh")
-	tst.TestTCPHandshake(&client, &sv)
-	tst.TestTCPEstablishedSingleData(&client, &sv, &clconn, &svconn, sendData)
-	tst.TestTCPClose(&client, &sv, &clconn, &svconn)
+	tst.TestTCPEstablishedSingleData(client, sv, clconn, svconn, sendData)
+	tst.TestTCPClose(client, sv, clconn, svconn)
+}
+
+func newTCPStacks(t *testing.T, randSeed int64, mtu int) (s1, s2 *StackAsync, c1, c2 *tcp.Conn) {
+	s1, s2 = new(StackAsync), new(StackAsync)
+	c1, c2 = new(tcp.Conn), new(tcp.Conn)
+	byte1 := byte(randSeed) / 4
+	err := s1.Reset(StackConfig{
+		Hostname:        "Stack1",
+		RandSeed:        randSeed,
+		StaticAddress:   netip.AddrFrom4([4]byte{10, 0, 0, byte1}),
+		MaxTCPConns:     1,
+		HardwareAddress: [6]byte{0xbe, 0xef, 0, 0, 0, byte1},
+		MTU:             uint16(mtu),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byte2 := byte1 + 1
+	err = s2.Reset(StackConfig{
+		Hostname:        "Stack2",
+		RandSeed:        ^randSeed,
+		StaticAddress:   netip.AddrFrom4([4]byte{10, 0, 0, byte2}),
+		MaxTCPConns:     1,
+		HardwareAddress: [6]byte{0xbe, 0xef, 0, 0, 0, byte2},
+		MTU:             uint16(mtu),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s1.SetGateway6(s2.HardwareAddress())
+	s2.SetGateway6(s1.HardwareAddress())
+	buf := make([]byte, mtu*4)
+	err = c1.Configure(tcp.ConnConfig{
+		RxBuf:             buf[:mtu],
+		TxBuf:             buf[mtu : mtu*2],
+		TxPacketQueueSize: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c2.Configure(tcp.ConnConfig{
+		RxBuf:             buf[2*mtu : 3*mtu],
+		TxBuf:             buf[3*mtu : 4*mtu],
+		TxPacketQueueSize: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s1, s2, c1, c2
 }
 
 type tester struct {
@@ -122,6 +110,20 @@ type tcpExpectExchange struct {
 
 func noExchange(source int) tcpExpectExchange {
 	return tcpExpectExchange{SourceIdx: source}
+}
+
+func (tst *tester) TestTCPSetupAndEstablish(svStack, clStack *StackAsync, svconn, clconn *tcp.Conn, svPort, clPort uint16) {
+	t := tst.t
+	// Attach server and client connections to stacks.
+	err := svStack.ListenTCP(svconn, svPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = clStack.DialTCP(clconn, clPort, netip.AddrPortFrom(svStack.Addr(), svPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tst.TestTCPHandshake(clStack, svStack)
 }
 
 func (tst *tester) TestTCPHandshake(stack1, stack2 *StackAsync) {
