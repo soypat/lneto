@@ -86,11 +86,13 @@ func (h *Handler) OpenActive(localPort, remotePort uint16, iss Value) error {
 	if h.bufRx.Size() < minBufferSize || h.bufTx.Size() < minBufferSize {
 		return errBufferTooSmall
 	}
-	if h.scb.State() != StateClosed {
+	if h.scb.State() != StateClosed && h.scb.State() != StateTimeWait {
 		return errNeedClosedTCBToOpen
 	} else if remotePort == 0 {
 		return errors.New("zero port on open call")
 	}
+	// reset/Abort prepares a SCB for active connection by resetting state to closed.
+	h.scb.reset()
 	h.reset(localPort, remotePort, iss)
 	h.scb.SetRecvWindow(Size(h.bufRx.Size()))
 	return nil
@@ -312,12 +314,19 @@ func (h *Handler) Read(b []byte) (int, error) {
 	return h.bufRx.Read(b)
 }
 
-// BufferedInput returns amount of bytes buffered in receive buffer.
+// BufferedInput returns amount of bytes buffered in receive(input) buffer and ready to read
+// with a [Handler.Read] call.
 func (h *Handler) BufferedInput() int {
 	if h.State().IsClosed() {
 		return 0
 	}
 	return h.bufRx.Buffered()
+}
+
+// AvailableOutput returns amount of bytes available to write to output
+// before [Handler.Write] returns an error.
+func (h *Handler) AvailableOutput() int {
+	return h.bufTx.Free()
 }
 
 // AwaitingSynResponse returns true if the Handler is an active client opened with [Handler.OpenActive] and has already sent out the first SYN packet to the remote client.

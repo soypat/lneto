@@ -509,6 +509,8 @@ func (tcb *ControlBlock) rstJump() Value {
 
 // Abort sets ControlBlock state to Closed and resets all sequence numbers and pending flag.
 // No more data can be sent nor received after the connection is aborted until opened again.
+// An abort call prepares the connection for opening an active connection via a
+// SYN packet during Send call in state=StateClosed.
 func (tcb *ControlBlock) Abort() {
 	tcb.reset()
 	tcb.debug("tcb:abort")

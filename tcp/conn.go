@@ -65,8 +65,13 @@ func (conn *Conn) RemoteAddr() []byte { return conn.remoteAddr }
 // State returns the TCP state of the socket.
 func (conn *Conn) State() State { return conn.h.State() }
 
-// BufferedInput returns the number of bytes in the socket's receive/input buffer.
+// BufferedInput returns the number of bytes in the socket's receive(input) buffer
+// and available to read via a [Conn.Read] call.
 func (conn *Conn) BufferedInput() int { return conn.h.BufferedInput() }
+
+// AvailableOutput returns amount of bytes available to write to output
+// before [Conn.Write] returns an error due to insufficient space to store outgoing data.
+func (conn *Conn) AvailableOutput() int { return conn.h.AvailableOutput() }
 
 // OpenActive opens a connection to a remote peer with a known IP address and port combination.
 // iss is the initial send sequence number which is ideally a random number which is far away from the last sequence number used on a connection to the same host.

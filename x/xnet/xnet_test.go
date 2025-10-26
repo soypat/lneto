@@ -3,6 +3,7 @@ package xnet
 import (
 	"bytes"
 	"errors"
+	"math/rand"
 	"net/netip"
 	"testing"
 
@@ -17,9 +18,34 @@ const (
 	finack = tcp.FlagFIN | tcp.FlagACK
 )
 
+func TestStackAsyncTCP_multipacket(t *testing.T) {
+	const seed = 1234
+	const MTU = 1500
+	const svPort = 8080
+	const maxPkt = 30
+	client, sv, clconn, svconn := newTCPStacks(t, seed, MTU)
+	tst := tester{
+		t: t, buf: make([]byte, MTU),
+	}
+	rng := rand.New(rand.NewSource(seed))
+	client2, sv2, clconn2, svconn2 := newTCPStacks(t, seed, MTU)
+	_, _, _, _ = client2, sv2, clconn2, svconn2
+	tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1337)
+	tst.TestTCPClose(client, sv, clconn, svconn)
+	var buf [MTU]byte
+	for i := 0; i < 30; i++ {
+		payloadSize := rng.Intn(maxPkt) + 1
+		tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1337)
+		a, _ := rng.Read(buf[:payloadSize])
+		tst.TestTCPEstablishedSingleData(sv, client, svconn, clconn, buf[:a])
+		tst.TestTCPClose(client, sv, clconn, svconn)
+		if t.Failed() {
+			t.FailNow()
+		}
+	}
+}
+
 func TestStackAsyncTCP_singlepacket(t *testing.T) {
-	var err error
-	_ = err
 	const seed = 1234
 	const MTU = 1500
 	const svPort = 80
@@ -112,14 +138,14 @@ func noExchange(source int) tcpExpectExchange {
 	return tcpExpectExchange{SourceIdx: source}
 }
 
-func (tst *tester) TestTCPSetupAndEstablish(svStack, clStack *StackAsync, svconn, clconn *tcp.Conn, svPort, clPort uint16) {
+func (tst *tester) TestTCPSetupAndEstablish(svStack, clStack *StackAsync, svConn, clConn *tcp.Conn, svPort, clPort uint16) {
 	t := tst.t
 	// Attach server and client connections to stacks.
-	err := svStack.ListenTCP(svconn, svPort)
+	err := svStack.ListenTCP(svConn, svPort)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = clStack.DialTCP(clconn, clPort, netip.AddrPortFrom(svStack.Addr(), svPort))
+	err = clStack.DialTCP(clConn, clPort, netip.AddrPortFrom(svStack.Addr(), svPort))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,13 +177,20 @@ func (tst *tester) TestTCPHandshake(stack1, stack2 *StackAsync) {
 	}
 }
 
-func (tst *tester) TestTCPEstablishedSingleData(stack1, stack2 *StackAsync, conn1, conn2 *tcp.Conn, sendData []byte) {
-	tst.t.Helper()
-	_, err := conn1.Write(sendData)
-	if err != nil {
-		tst.t.Fatal(err)
+func (tst *tester) TestTCPEstablishedSingleData(srcStack, dstStack *StackAsync, srcConn, dstConn *tcp.Conn, sendData []byte) {
+	t := tst.t
+	t.Helper()
+	avail := srcConn.AvailableOutput()
+	if avail < len(sendData) {
+		t.Fatal("insufficient space for write call", avail, len(sendData))
+	} else if len(sendData) <= 0 {
+		panic("empty data!")
 	}
-	nprev := conn2.BufferedInput()
+	_, err := srcConn.Write(sendData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nprev := dstConn.BufferedInput()
 	tst.exch = append(tst.exch[:0], []tcpExpectExchange{
 		{
 			SourceIdx: 0,
@@ -173,21 +206,21 @@ func (tst *tester) TestTCPEstablishedSingleData(stack1, stack2 *StackAsync, conn
 		noExchange(1),
 	}...)
 	for _, wants := range tst.exch {
-		tst.TCPExchange(wants, stack1, stack2)
+		tst.TCPExchange(wants, srcStack, dstStack)
 	}
-	n, err := conn2.Read(tst.buf)
+	n, err := dstConn.Read(tst.buf)
 	if err != nil {
-		tst.t.Errorf("reading back data %q on conn2: %s", sendData, err)
+		t.Errorf("reading back data %q on conn2: %s", sendData, err)
 	} else if n == len(tst.buf) {
-		tst.t.Fatalf("buffer topped out in read!")
+		t.Fatalf("buffer topped out in read!")
 	}
 	nread := n - nprev
 	if nread != len(sendData) {
-		tst.t.Errorf("expected to read %d bytes, got %d", len(sendData), nread)
+		t.Errorf("expected to read %d bytes, got %d", len(sendData), nread)
 	} else {
 		got := tst.buf[n-nread : n]
 		if !bytes.Equal(got, sendData) {
-			tst.t.Errorf("expected to read back %q from conn, got %q", sendData, got)
+			t.Errorf("expected to read back %q from conn, got %q", sendData, got)
 		}
 	}
 	setzero(tst.buf[:n])
