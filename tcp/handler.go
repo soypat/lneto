@@ -290,6 +290,11 @@ func (h *Handler) FreeTx() int {
 	return h.bufTx.Free()
 }
 
+// FreeRx returns the amount of space free in the receive buffer.
+func (h *Handler) FreeRx() int {
+	return h.bufRx.Free()
+}
+
 // SizeRx returns the size of the TCP receive ring buffer.
 func (h *Handler) SizeRx() int {
 	return h.bufRx.Size()

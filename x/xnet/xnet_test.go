@@ -22,7 +22,8 @@ func TestStackAsyncTCP_multipacket(t *testing.T) {
 	const seed = 1234
 	const MTU = 1500
 	const svPort = 8080
-	const maxPkt = 30
+	const maxPktLen = 30
+	const maxNPkt = 32
 	client, sv, clconn, svconn := newTCPStacks(t, seed, MTU)
 	tst := tester{
 		t: t, buf: make([]byte, MTU),
@@ -34,10 +35,13 @@ func TestStackAsyncTCP_multipacket(t *testing.T) {
 	tst.TestTCPClose(client, sv, clconn, svconn)
 	var buf [MTU]byte
 	for i := 0; i < 30; i++ {
-		payloadSize := rng.Intn(maxPkt) + 1
+		payloadSize := rng.Intn(maxPktLen) + 1
 		tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1337)
-		a, _ := rng.Read(buf[:payloadSize])
-		tst.TestTCPEstablishedSingleData(sv, client, svconn, clconn, buf[:a])
+		npkt := rng.Intn(maxNPkt-1) + 2
+		for ipkt := 0; ipkt < npkt; ipkt++ {
+			a, _ := rng.Read(buf[:payloadSize])
+			tst.TestTCPEstablishedSingleData(sv, client, svconn, clconn, buf[:a])
+		}
 		tst.TestTCPClose(client, sv, clconn, svconn)
 		if t.Failed() {
 			t.FailNow()
@@ -180,11 +184,14 @@ func (tst *tester) TestTCPHandshake(stack1, stack2 *StackAsync) {
 func (tst *tester) TestTCPEstablishedSingleData(srcStack, dstStack *StackAsync, srcConn, dstConn *tcp.Conn, sendData []byte) {
 	t := tst.t
 	t.Helper()
-	avail := srcConn.AvailableOutput()
-	if avail < len(sendData) {
-		t.Fatal("insufficient space for write call", avail, len(sendData))
+	availTx := srcConn.AvailableOutput()
+	availRx := dstConn.AvailableInput()
+	if availTx < len(sendData) {
+		t.Fatal("insufficient space for write call", availTx, len(sendData))
 	} else if len(sendData) <= 0 {
 		panic("empty data!")
+	} else if availRx < len(sendData) {
+		t.Fatal("insufficient space for dst read call", availRx, len(sendData))
 	}
 	_, err := srcConn.Write(sendData)
 	if err != nil {

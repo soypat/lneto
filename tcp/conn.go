@@ -69,6 +69,8 @@ func (conn *Conn) State() State { return conn.h.State() }
 // and available to read via a [Conn.Read] call.
 func (conn *Conn) BufferedInput() int { return conn.h.BufferedInput() }
 
+func (conn *Conn) AvailableInput() int { return conn.h.FreeRx() }
+
 // AvailableOutput returns amount of bytes available to write to output
 // before [Conn.Write] returns an error due to insufficient space to store outgoing data.
 func (conn *Conn) AvailableOutput() int { return conn.h.AvailableOutput() }
