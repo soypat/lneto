@@ -158,7 +158,6 @@ func (rtx *ringTx) RecvACK(ack Value) error {
 	pkt0 := rtx.pkt(first)
 	if ack.LessThanEq(pkt0.seq) {
 		return fmt.Errorf("incoming ack %d older than first packet seq %d", ack, pkt0.seq)
-		// return errors.New("old packet")
 	}
 	// lastAckedPkt stores last fully acked packet.
 	var lastAckedPkt *ringidx
@@ -195,7 +194,7 @@ func (rtx *ringTx) RecvACK(ack Value) error {
 			acked := int(ack - pkt.seq)
 			pring := rtx.ring(pkt.off, pkt.end)
 			buffered := pring.Buffered()
-			if acked > buffered || acked < minBufferSize {
+			if acked > buffered {
 				panic("unreachable")
 			}
 			off := rtx.addOff(pkt.off, acked)

@@ -8,6 +8,76 @@ import (
 	"testing"
 )
 
+func TestTxQueue_multipacket(t *testing.T) {
+	const mtu = 256
+	const iss = 1
+	const maxPkts = 3
+	const maxWrites = 20
+	const maxWriteSize = mtu / maxWrites
+	var rtx ringTx
+	internalbuff := make([]byte, mtu)
+	rng := rand.New(rand.NewSource(1))
+	var wbuf, rbuf [mtu]byte
+	for itest := 0; itest < 32; itest++ {
+		err := rtx.Reset(internalbuff, maxPkts, iss)
+		if err != nil {
+			t.Fatal(err)
+		}
+		numWrites := rng.Intn(maxWrites) + 1
+		total := 0
+		woff := 0
+		for iw := 0; iw < numWrites; iw++ {
+			wlen := rng.Intn(maxWriteSize) + 1
+			towrite := wbuf[woff : woff+wlen]
+			rng.Read(towrite)
+			n, err := rtx.Write(towrite)
+			testQueueSanity(t, &rtx)
+			woff += n
+			if err != nil {
+				t.Fatal(err)
+			} else if n != wlen {
+				t.Fatal("expected wlen==n", wlen, n)
+			}
+			total += wlen
+		}
+		npkt := rng.Intn(maxPkts) + 1
+		roff := 0
+		seq := Value(iss)
+		for ipkt := 0; ipkt < npkt; ipkt++ {
+			maxToPacket := min(total-roff, maxWriteSize)
+			pktlen := rng.Intn(maxToPacket) + 1
+			pkt := rbuf[roff : roff+pktlen]
+			expectPkt := wbuf[roff : roff+pktlen]
+			ngot, err := rtx.MakePacket(pkt, seq)
+			testQueueSanity(t, &rtx)
+			roff += ngot
+			seq += Value(ngot)
+			if err != nil {
+				t.Fatal(err)
+			} else if pktlen != ngot && roff != total {
+				t.Fatal(err)
+			} else if !bytes.Equal(expectPkt, pkt) {
+				t.Fatal("mismatched data written", expectPkt, pkt)
+			}
+			if roff == total {
+				break // made packet from all data.
+			}
+		}
+		acked := 0
+		for acked < roff {
+			maxToack := min(roff-acked, maxWriteSize)
+			toack := rng.Intn(maxToack) + 1
+			t.Log("\n", rtx.string())
+			err = rtx.RecvACK(iss + Value(acked+toack))
+			testQueueSanity(t, &rtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			acked += toack
+		}
+	}
+}
+
 func TestTxQueue(t *testing.T) {
 	const bufsize = 1024
 	var msgBuf, ringBuf, readBuf, aux [bufsize]byte

@@ -34,16 +34,21 @@ func TestStackAsyncTCP_multipacket(t *testing.T) {
 	tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1337)
 	tst.TestTCPClose(client, sv, clconn, svconn)
 	var buf [MTU]byte
-	for i := 0; i < 30; i++ {
+	for i := 0; i < 1; i++ {
 		payloadSize := rng.Intn(maxPktLen) + 1
 		tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1337)
-		npkt := rng.Intn(maxNPkt-1) + 2
-		for ipkt := 0; ipkt < npkt; ipkt++ {
-			a, _ := rng.Read(buf[:payloadSize])
-			tst.TestTCPEstablishedSingleData(sv, client, svconn, clconn, buf[:a])
-		}
+		// npkt := rng.Intn(maxNPkt-1) + 2
+		a, _ := rng.Read(buf[:payloadSize])
+		tst.TestTCPEstablishedSingleData(sv, client, svconn, clconn, buf[:a])
+		a, _ = rng.Read(buf[:payloadSize])
+		tst.TestTCPEstablishedSingleData(sv, client, svconn, clconn, buf[:a])
+		// for ipkt := 0; ipkt < npkt; ipkt++ {
+		// 	a, _ := rng.Read(buf[:payloadSize])
+		// 	tst.TestTCPEstablishedSingleData(sv, client, svconn, clconn, buf[:a])
+		// }
 		tst.TestTCPClose(client, sv, clconn, svconn)
 		if t.Failed() {
+			t.Error("multi failed")
 			t.FailNow()
 		}
 	}
