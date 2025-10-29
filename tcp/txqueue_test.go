@@ -16,9 +16,11 @@ func TestTxQueue_multipacket(t *testing.T) {
 	const maxWriteSize = mtu / maxWrites
 	var rtx ringTx
 	internalbuff := make([]byte, mtu)
-	rng := rand.New(rand.NewSource(1))
+	rng := rand.New(rand.NewSource(3))
 	var wbuf, rbuf [mtu]byte
 	for itest := 0; itest < 32; itest++ {
+		// rng.Seed(int64(itest))
+		println(itest)
 		err := rtx.Reset(internalbuff, maxPkts, iss)
 		if err != nil {
 			t.Fatal(err)
@@ -67,7 +69,7 @@ func TestTxQueue_multipacket(t *testing.T) {
 		for acked < roff {
 			maxToack := min(roff-acked, maxWriteSize)
 			toack := rng.Intn(maxToack) + 1
-			t.Log("\n", rtx.string())
+			// t.Log("\n", rtx.string())
 			err = rtx.RecvACK(iss + Value(acked+toack))
 			testQueueSanity(t, &rtx)
 			if err != nil {
@@ -347,7 +349,7 @@ func (rx *ringTx) string() string {
 			wrapZone = &zones[i]
 		}
 	}
-	var currentZone *zone
+	var currentZone *zone = wrapZone
 	var lastPrintedZone *zone
 	var l1, l2 bytes.Buffer
 	changes := 0

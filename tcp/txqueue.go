@@ -161,12 +161,13 @@ func (rtx *ringTx) RecvACK(ack Value) error {
 	}
 	// lastAckedPkt stores last fully acked packet.
 	var lastAckedPkt *ringidx
+	var partialPkt *ringidx
 	for i := 0; i < len(rtx.packets); i++ {
 		pkt := &rtx.packets[i]
 		if !pkt.sent() || ack.LessThanEq(pkt.seq) {
 			continue
 		}
-		endseq := Add(pkt.seq, pkt.size)
+		endseq := pkt.endSeq()
 		isFullyAcked := endseq.LessThanEq(ack)
 		isPartialAcked := ack.InRange(pkt.seq, endseq)
 		isLast := lastAckedPkt == nil || lastAckedPkt.seq.LessThanEq(pkt.seq)
@@ -186,10 +187,10 @@ func (rtx *ringTx) RecvACK(ack Value) error {
 			pkt.markRcvd()
 		} else if !isPartialAcked {
 			panic("unreachable")
-		}
-		if isPartialAcked {
-			if lastAckedPkt != nil && lastAckedPkt.seq.LessThan(pkt.seq) {
-				panic("unreachable")
+		} else {
+			// Is partial acked.
+			if partialPkt != nil {
+				panic("unreachable") // can't have two partially acked packets.
 			}
 			acked := int(ack - pkt.seq)
 			pring := rtx.ring(pkt.off, pkt.end)
@@ -202,7 +203,11 @@ func (rtx *ringTx) RecvACK(ack Value) error {
 			pkt.seq = ack
 			pkt.size = pkt.size - Size(acked)
 			rtx.sentoff = off
+			partialPkt = pkt
 		}
+	}
+	if partialPkt != nil {
+		return nil
 	}
 	if lastAckedPkt != nil {
 		rtx.sentoff = lastAckedPkt.end
@@ -317,7 +322,7 @@ func (rtx *ringTx) endSeq() (Value, bool) {
 		return 0, false
 	}
 	last := rtx.pkt(pkt)
-	return Add(last.seq, last.size), true
+	return last.endSeq(), true
 }
 func (rtx *ringTx) lastSeq() (Value, bool) {
 	pkt := rtx.lastPkt()
@@ -351,4 +356,8 @@ func (pkt *ringidx) markRcvd() {
 	*pkt = ringidx{}
 	// pkt.end = 0
 	// pkt.off = 0
+}
+
+func (pkt *ringidx) endSeq() Value {
+	return Add(pkt.seq, pkt.size)
 }
