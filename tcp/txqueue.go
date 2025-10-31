@@ -243,21 +243,9 @@ func (rtx *ringTx) ring(off, end int) internal.Ring {
 
 // addEnd adds two integers together and wraps the value around the ring's buffer size.
 // Result of addEnd will never be 0 unless arguments are (0,0).
-func (rtx *ringTx) addEnd(a, b int) int {
-	result := a + b
-	if result > len(rtx.rawbuf) {
-		result -= len(rtx.rawbuf)
-	}
-	return result
-}
+func (rtx *ringTx) addEnd(a, b int) int { return addEnd(a, b, len(rtx.rawbuf)) }
 
-func (rtx *ringTx) addOff(a, b int) int {
-	result := a + b
-	if result >= len(rtx.rawbuf) {
-		result -= len(rtx.rawbuf)
-	}
-	return result
-}
+func (rtx *ringTx) addOff(a, b int) int { return addOff(a, b, len(rtx.rawbuf)) }
 
 func (rtx *ringTx) pkt(i int) *ringidx {
 	if i == -1 {
@@ -358,6 +346,117 @@ func (pkt *ringidx) markRcvd() {
 	// pkt.off = 0
 }
 
+func (pkt *ringidx) isRecvd() bool {
+	return pkt.size == 0
+}
+
 func (pkt *ringidx) endSeq() Value {
 	return Add(pkt.seq, pkt.size)
+}
+
+// sentlist stores information about sent TCP packets
+type sentlist struct {
+	// pkts is an ordered list of packets. First packet is 'oldest' packet, last packet is the most recently sent.
+	iss  Value
+	pkts []ringidx
+}
+
+func (sl sentlist) latestPkt() *ringidx {
+	if len(sl.pkts) == 0 {
+		return nil
+	}
+	return &sl.pkts[len(sl.pkts)-1]
+}
+
+func (sl sentlist) oldestPkt() *ringidx {
+	if len(sl.pkts) == 0 {
+		return nil
+	}
+	return &sl.pkts[0]
+}
+
+func (sl *sentlist) endSeq() Value {
+	seq := sl.iss
+	lastPkt := sl.latestPkt()
+	if lastPkt != nil {
+		seq = lastPkt.endSeq()
+	}
+	return seq
+}
+
+func (sl *sentlist) addPkt(datalen int, bufsize int) {
+	free := cap(sl.pkts) - len(sl.pkts)
+	if free == 0 {
+		panic("pkt buffer full")
+	}
+	lastPkt := sl.latestPkt()
+	lastEnd := 0
+	if lastPkt != nil {
+		lastEnd = lastPkt.end
+	}
+	pkt := ringidx{
+		off:  lastEnd,
+		end:  addEnd(lastEnd, datalen, bufsize),
+		seq:  sl.endSeq(),
+		size: Size(datalen),
+	}
+	sl.pkts = append(sl.pkts, pkt)
+}
+
+func (sl *sentlist) recvAck(ack Value, bufsize int) {
+	// Mark fully acked.
+	for i := 0; i < len(sl.pkts); i++ {
+		pkt := &sl.pkts[i]
+		endseq := pkt.endSeq()
+		isFullyAcked := endseq.LessThanEq(ack)
+		if isFullyAcked {
+			pkt.markRcvd()
+		} else {
+			break
+		}
+	}
+	sl.removeRecvd()
+	maybePartial := sl.oldestPkt()
+	if maybePartial == nil {
+		return // No more packets, all acked.
+	}
+	totalAcked := int32(ack - maybePartial.seq)
+	isPartial := totalAcked > 0
+	if !isPartial {
+		return // Not a partial packet ack.
+	}
+	maybePartial.off = addOff(maybePartial.off, int(totalAcked), bufsize)
+	maybePartial.size -= Size(totalAcked)
+	maybePartial.seq += Value(totalAcked)
+}
+
+func (sl *sentlist) removeRecvd() {
+	off := 0
+	for i := 0; i < len(sl.pkts); i++ {
+		if sl.pkts[i].isRecvd() {
+			continue
+		} else {
+			sl.pkts[off] = sl.pkts[i]
+			off++
+		}
+	}
+	sl.pkts = sl.pkts[:off]
+}
+
+// addEnd adds two integers together and wraps the value around the ring's buffer size.
+// Result of addEnd will never be 0 unless arguments are (0,0).
+func addEnd(a, b int, size int) int {
+	result := a + b
+	if result > size {
+		result -= size
+	}
+	return result
+}
+
+func addOff(a, b int, size int) int {
+	result := a + b
+	if result >= size {
+		result -= size
+	}
+	return result
 }
