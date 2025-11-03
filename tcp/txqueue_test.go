@@ -8,6 +8,44 @@ import (
 	"testing"
 )
 
+func TestSentlist(t *testing.T) {
+	sl := sentlist{
+		pkts: make([]ringidx, 0, 3),
+	}
+	// Test full ack.
+	const bufsize = 16
+	const pkt = 10
+	sl.AddPacket(pkt, bufsize)
+	if sl.Oldest() == nil || sl.Newest() != sl.Oldest() {
+		t.Error("expected same oldest/newest non-nil packet")
+	}
+	ack := Value(pkt)
+	sl.RecvAck(ack, bufsize)
+	oldest := sl.Oldest()
+	if oldest != nil {
+		t.Fatal("expected packet to be fully read")
+	}
+
+	// Test partial ack.
+	sl.AddPacket(pkt, bufsize)
+	for i := Value(0); i < pkt-1; i++ {
+		ack++
+		sl.RecvAck(ack, bufsize)
+		oldest = sl.Oldest()
+		if oldest == nil {
+			t.Fatal("partially acked packet removed")
+		} else if oldest.seq != ack {
+			t.Errorf("want pkt.seq=%d got %d", ack, oldest.seq)
+		}
+	}
+	ack++
+	sl.RecvAck(ack, bufsize)
+	oldest = sl.Oldest()
+	if oldest != nil {
+		t.Fatal("expected packet to be fully read")
+	}
+}
+
 func TestTxQueue_multipacket(t *testing.T) {
 	const mtu = 256
 	const iss = 1

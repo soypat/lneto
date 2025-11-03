@@ -361,35 +361,35 @@ type sentlist struct {
 	pkts []ringidx
 }
 
-func (sl sentlist) latestPkt() *ringidx {
+func (sl sentlist) Newest() *ringidx {
 	if len(sl.pkts) == 0 {
 		return nil
 	}
 	return &sl.pkts[len(sl.pkts)-1]
 }
 
-func (sl sentlist) oldestPkt() *ringidx {
+func (sl sentlist) Oldest() *ringidx {
 	if len(sl.pkts) == 0 {
 		return nil
 	}
 	return &sl.pkts[0]
 }
 
-func (sl *sentlist) endSeq() Value {
+func (sl *sentlist) EndSeq() Value {
 	seq := sl.iss
-	lastPkt := sl.latestPkt()
+	lastPkt := sl.Newest()
 	if lastPkt != nil {
 		seq = lastPkt.endSeq()
 	}
 	return seq
 }
 
-func (sl *sentlist) addPkt(datalen int, bufsize int) {
+func (sl *sentlist) AddPacket(datalen int, bufsize int) {
 	free := cap(sl.pkts) - len(sl.pkts)
 	if free == 0 {
 		panic("pkt buffer full")
 	}
-	lastPkt := sl.latestPkt()
+	lastPkt := sl.Newest()
 	lastEnd := 0
 	if lastPkt != nil {
 		lastEnd = lastPkt.end
@@ -397,26 +397,27 @@ func (sl *sentlist) addPkt(datalen int, bufsize int) {
 	pkt := ringidx{
 		off:  lastEnd,
 		end:  addEnd(lastEnd, datalen, bufsize),
-		seq:  sl.endSeq(),
+		seq:  sl.EndSeq(),
 		size: Size(datalen),
 	}
 	sl.pkts = append(sl.pkts, pkt)
 }
 
-func (sl *sentlist) recvAck(ack Value, bufsize int) {
+func (sl *sentlist) RecvAck(ack Value, bufsize int) {
 	// Mark fully acked.
 	for i := 0; i < len(sl.pkts); i++ {
 		pkt := &sl.pkts[i]
 		endseq := pkt.endSeq()
 		isFullyAcked := endseq.LessThanEq(ack)
 		if isFullyAcked {
+			sl.iss = endseq
 			pkt.markRcvd()
 		} else {
 			break
 		}
 	}
 	sl.removeRecvd()
-	maybePartial := sl.oldestPkt()
+	maybePartial := sl.Oldest()
 	if maybePartial == nil {
 		return // No more packets, all acked.
 	}
