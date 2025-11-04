@@ -323,7 +323,7 @@ func testQueueSanity(t *testing.T, rtx *ringTx) {
 	sz := rtx.Size()
 	gotSz := free + sent + unsent
 	if gotSz != sz {
-		t.Error("\n" + rtx.string())
+		t.Error("\n" + string(rtx.appendString(nil)))
 		t.Fatalf("want size=%d, got size=%d (free+sent+unsent=%d+%d+%d)", sz, gotSz, free, sent, unsent)
 	}
 	rsent, _ := rtx.sentRing()
