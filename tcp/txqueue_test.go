@@ -8,14 +8,42 @@ import (
 	"testing"
 )
 
-func TestSentlist(t *testing.T) {
-	sl := sentlist{
-		pkts: make([]ringidx, 0, 3),
+func TestSentlist_multi(t *testing.T) {
+	const bufsize = 10
+	var sl sentlist
+	sl.Reset(3, 0)
+
+	// Test multi packet x2.
+	p1 := sl.AddPacket(5, 0, bufsize)
+	p2 := sl.AddPacket(5, p1.end, bufsize)
+	sl.RecvAck(Value(p2.size+p1.size), bufsize)
+	if sl.Oldest() != nil {
+		t.Fatal("expected full ack")
 	}
+	// multi packet x3.
+	sl.Reset(3, 0)
+	p1 = sl.AddPacket(3, 0, bufsize)
+	p2 = sl.AddPacket(3, p1.end, bufsize)
+	p3 := sl.AddPacket(4, p2.end, bufsize)
+	sl.RecvAck(2, bufsize)
+	oldest := sl.Oldest()
+	if oldest != p1 {
+		t.Error("oldest should be partial acked")
+	} else if oldest.size != 1 {
+		t.Error("bad size")
+	} else if oldest.off != 2 {
+		t.Error("bad offset")
+	}
+	_ = p3
+}
+
+func TestSentlist(t *testing.T) {
+	var sl sentlist
+	sl.Reset(3, 0)
 	// Test full ack.
 	const bufsize = 16
 	const pkt = 10
-	sl.AddPacket(pkt, bufsize)
+	sl.AddPacket(pkt, 0, bufsize)
 	if sl.Oldest() == nil || sl.Newest() != sl.Oldest() {
 		t.Error("expected same oldest/newest non-nil packet")
 	}
@@ -27,7 +55,7 @@ func TestSentlist(t *testing.T) {
 	}
 
 	// Test partial ack.
-	sl.AddPacket(pkt, bufsize)
+	sl.AddPacket(pkt, 0, bufsize)
 	for i := Value(0); i < pkt-1; i++ {
 		ack++
 		sl.RecvAck(ack, bufsize)
@@ -274,6 +302,10 @@ func testQueueSanity(t *testing.T, rtx *ringTx) {
 	alreadyFailed := t.Failed()
 	if !alreadyFailed {
 		defer func() {
+			a := recover()
+			if a != nil {
+				t.Log("panic", a)
+			}
 			if t.Failed() {
 				t.Helper()
 				t.Log("sanity failed with:\n" + rtx.string())
@@ -291,7 +323,7 @@ func testQueueSanity(t *testing.T, rtx *ringTx) {
 	sz := rtx.Size()
 	gotSz := free + sent + unsent
 	if gotSz != sz {
-		t.Fatal("\n" + rtx.string())
+		t.Error("\n" + rtx.string())
 		t.Fatalf("want size=%d, got size=%d (free+sent+unsent=%d+%d+%d)", sz, gotSz, free, sent, unsent)
 	}
 	rsent, _ := rtx.sentRing()
@@ -329,21 +361,21 @@ func testQueueSanity(t *testing.T, rtx *ringTx) {
 	}
 
 	// Check sanenness of last/first packets.
-	last := rtx.lastPkt()
-	first := rtx.firstPkt()
-	if first < 0 && last >= 0 || last < 0 && first >= 0 {
+	last := rtx.slist.Newest()
+	first := rtx.slist.Oldest()
+	if first == nil && last != nil || last == nil && first != nil {
 		t.Fatalf("found first/last(%d,%d) but did not find last/first", first, last)
 	}
 	// Check sent data or return if no sent data available.
 	if sent == 0 {
 		return
 	}
-	lastPkt := rtx.pkt(last)
+
 	endseq, ok := rtx.endSeq()
-	firstPkt := rtx.pkt(first)
-	lastEndSeq := Add(lastPkt.seq, lastPkt.size)
-	if lastPkt.seq.LessThan(firstPkt.seq) {
-		t.Fatalf("first packet not previous to last packet seq, wanted %d<%d", firstPkt.seq, lastPkt.seq)
+
+	lastEndSeq := Add(last.seq, last.size)
+	if last.seq.LessThan(first.seq) {
+		t.Fatalf("first packet not previous to last packet seq, wanted %d<%d", first.seq, last.seq)
 	} else if !ok {
 		t.Fatal("unexpected end sequence not found")
 	} else if lastEndSeq != endseq {
@@ -433,7 +465,12 @@ func operateOnRing(t *testing.T, rtx *ringTx, write, readPacket, aux []byte, new
 	// Prepare aux with data expected from read after write.
 	runsent, _ := rtx.unsentRing()
 	unsent := runsent.Buffered()
-	startSeq, startSeqOK := rtx.firstSeq()
+	oldest := rtx.slist.Oldest()
+	var startSeq Value
+	startSeqOk := oldest != nil
+	if startSeqOk {
+		startSeq = oldest.seq
+	}
 	wantWritten := min(free, len(write))
 	wantBufRead := aux[:min(unsent+wantWritten, len(readPacket))]
 
@@ -483,7 +520,12 @@ func operateOnRing(t *testing.T, rtx *ringTx, write, readPacket, aux []byte, new
 		} else if n != wantRead {
 			t.Errorf("want read %d, got %d", wantRead, n)
 		}
-		lastSeq, lastSeqOK := rtx.lastSeq()
+		last := rtx.slist.Newest()
+		var lastSeq Value
+		lastSeqOK := last != nil
+		if lastSeqOK {
+			lastSeq = last.seq
+		}
 		endSeq, endSeqOK := rtx.endSeq()
 		if !lastSeqOK || lastSeq != newPacketSeq {
 			t.Fatalf("expected last seq to be %d, got %d (or lastSeqOK=%v)", newPacketSeq, lastSeq, lastSeqOK)
@@ -498,9 +540,14 @@ func operateOnRing(t *testing.T, rtx *ringTx, write, readPacket, aux []byte, new
 			t.Errorf("want data written to be %d calculated from BufferedSent diff, got %d", n, gotCalcRead)
 		}
 	}
+	oldest2 := rtx.slist.Oldest()
+	var startSeq2 Value
+	sseqOk := oldest != nil
+	if sseqOk {
+		startSeq2 = oldest2.seq
+	}
 
-	startSeq2, sseqOK := rtx.firstSeq()
-	if sseqOK == startSeqOK && startSeq2 != startSeq {
+	if sseqOk == startSeqOk && startSeq2 != startSeq {
 		t.Fatalf("expected FIRST seq to not change during writes")
 	}
 
@@ -508,7 +555,12 @@ func operateOnRing(t *testing.T, rtx *ringTx, write, readPacket, aux []byte, new
 		testQueueSanity(t, rtx)
 		// preAcked := rtx.BufferedSent()
 		rcvAck := *argRecvAck
-		seq, ok := rtx.firstSeq()
+		oldest := rtx.slist.Oldest()
+		var seq Value
+		ok := oldest != nil
+		if ok {
+			seq = oldest.seq
+		}
 		if !ok {
 			t.Fatal("no first packet found")
 		}
@@ -519,7 +571,12 @@ func operateOnRing(t *testing.T, rtx *ringTx, write, readPacket, aux []byte, new
 			t.Errorf("expected correct acking %d < %d <= %d: %s", startSeq, rcvAck, seq, err)
 		}
 		bufSent := rtx.BufferedSent()
-		gotFirstSeq, ok := rtx.firstSeq()
+		var gotFirstSeq Value
+		oldest = rtx.slist.Oldest()
+		ok = oldest != nil
+		if ok {
+			gotFirstSeq = oldest.seq
+		}
 		if !ok && bufSent != 0 {
 			t.Fatalf("no first packet found after acking")
 		}
