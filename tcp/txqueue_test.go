@@ -13,7 +13,8 @@ import (
 func TestRingTx_op(t *testing.T) {
 	const maxBuf = 32
 	const maxpkt = 3
-	const Nops = 3
+	const Nops = 33
+	const log = false
 	type op uint8
 	const (
 		opWrite op = iota
@@ -21,100 +22,100 @@ func TestRingTx_op(t *testing.T) {
 		opAck
 		opmax
 	)
-
-	rng := rand.New(rand.NewSource(666))
-	randop := func() op { return op(rng.Intn(int(opmax))) }
 	var buf, auxbuf [maxBuf]byte
 	dataWritten := make([]byte, 0, maxBuf*10)
 	dataSent := make([]byte, 0, maxBuf*10)
 	var rtx ringTx
-	for itest := 0; itest < 3; itest++ {
-		bufsize := rng.Intn(maxBuf/2) + maxBuf/2
-		iss := Value(0)
-		npackets := rng.Intn(maxpkt-1) + 1
-		err := rtx.Reset(buf[:bufsize], npackets, iss)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// Prepare state for keeping track of test.
-		currentAcked := iss
-		currentSeq := iss
-		nsent := 0
-		nunsent := 0
-		nacked := 0
-		dataWritten = dataWritten[:0]
-		dataSent = dataSent[:0]
-		for iop := 0; iop < Nops; iop++ {
-			free := bufsize - nsent - nunsent
-			availPkt := rtx.slist.Free()
-			op := randop()
-			var oplen int
-			var opname string
-			var opWriteData []byte
-			switch op {
-			case opWrite:
-				opname, oplen = "write", rng.Intn(free+1)+1
-				opWriteData = auxbuf[:oplen]
-				rng.Read(opWriteData)
-				clear(auxbuf[oplen:])
-			case opSend:
-				opname, oplen = "send", rng.Intn(nunsent+1)+1
-			case opAck:
-				opname, oplen = "ack", rng.Intn(nsent+1)+1
+	rng := rand.New(rand.NewSource(0))
+	for iseed := int64(0); iseed < 10000; iseed++ {
+		rng.Seed(iseed)
+		for itest := 0; itest < 32; itest++ {
+			bufsize := rng.Intn(maxBuf/2) + maxBuf/2
+			iss := Value(0)
+			npackets := rng.Intn(maxpkt-1) + 1
+			err := rtx.Reset(buf[:bufsize], npackets, iss)
+			if err != nil {
+				t.Fatal(err)
 			}
-			if itest < 2 {
-				continue // Debugging.
-			}
-			_ = opname
-			t.Logf("\n%s\nitest=%d iop=%d op=%s len=%d", rtx.mustAppendString(nil), itest, iop, opname, oplen)
-			switch op {
-			case opWrite:
-				// oplen=number of
-				nwgot, err := rtx.Write(opWriteData)
-				wantErr := oplen > free
-				if err != nil && oplen <= free {
-					t.Fatal(itest, iop, err)
-				} else if err == nil {
-					if wantErr {
-						panic("wanted write error")
+			// Prepare state for keeping track of test.
+			currentAcked := iss
+			currentSeq := iss
+			nsent := 0
+			nunsent := 0
+			nacked := 0
+			dataWritten = dataWritten[:0]
+			dataSent = dataSent[:0]
+			for iop := 0; iop < Nops; iop++ {
+				free := bufsize - nsent - nunsent
+				availPkt := rtx.slist.Free()
+				op := op(rng.Intn(int(opmax)))
+				var oplen int
+				var opname string
+				var opWriteData []byte
+				switch op {
+				case opWrite:
+					opname, oplen = "write", rng.Intn(free+1)+1
+					opWriteData = auxbuf[:oplen]
+					rng.Read(opWriteData)
+				case opSend:
+					opname, oplen = "send", rng.Intn(nunsent+1)+1
+				case opAck:
+					opname, oplen = "ack", rng.Intn(nsent+1)+1
+				}
+				if log {
+					t.Logf("\n%s\nseed=%d itest=%d iop=%d op=%s len=%d npkt=%d", rtx.mustAppendString(nil), iseed, itest, iop, opname, oplen, len(rtx.slist.pkts))
+				}
+				switch op {
+				case opWrite:
+					// oplen=number of bytes to write into unsent buffer.
+					nwgot, err := rtx.Write(opWriteData)
+					wantErr := oplen > free
+					if err != nil && oplen <= free {
+						t.Fatal(itest, iop, err)
+					} else if err == nil {
+						if wantErr {
+							panic("wanted write error")
+						}
+						nunsent += nwgot
+						dataWritten = append(dataWritten, opWriteData[:nwgot]...)
+					} else if log {
+						t.Logf("opwrite: %s", err)
 					}
-					nunsent += nwgot
-					dataWritten = append(dataWritten, opWriteData[:nwgot]...)
-				} else {
-					t.Logf("opwrite: %s", err)
-				}
-			case opSend:
-				// oplen=num bytes sent.
-				nsgot, err := rtx.MakePacket(auxbuf[:oplen], currentSeq)
-				megafail := nsgot > nunsent
-				if err != nil && oplen <= nunsent && availPkt > 0 {
-					t.Fatal(itest, iop, err)
-				} else if err == nil {
-					if megafail {
-						panic("megafail")
+					clear(opWriteData)
+				case opSend:
+					// oplen=num bytes to send in this operation.
+					nsgot, err := rtx.MakePacket(auxbuf[:oplen], currentSeq)
+					megafail := nsgot > nunsent
+					if err != nil && oplen <= nunsent && availPkt > 0 {
+						t.Fatal(itest, iop, err)
+					} else if err == nil {
+						if megafail {
+							panic("megafail")
+						}
+						nunsent -= nsgot
+						nsent += nsgot
+						dataSent = append(dataSent, auxbuf[:nsgot]...)
+						currentSeq += Value(nsgot)
+					} else if log {
+						t.Logf("opsend: %s", err)
 					}
-					nunsent -= nsgot
-					nsent += nsgot
-					dataSent = append(dataSent, auxbuf[:nsgot]...)
-					currentSeq += Value(nsgot)
-				} else {
-					t.Logf("opsend: %s", err)
+					clear(auxbuf[:oplen])
+				case opAck:
+					// oplen=acklength.
+					tryAck := currentAcked + Value(oplen)
+					err = rtx.RecvACK(tryAck)
+					if err != nil && oplen <= nsent {
+						t.Fatal(itest, iop, err)
+					} else if err == nil {
+						nsent -= oplen
+						nacked += oplen
+						currentAcked = tryAck
+					} else if log {
+						t.Logf("opack: %s", err)
+					}
+				default:
+					panic("unknown op")
 				}
-			case opAck:
-				// oplen=acklength.
-				tryAck := currentAcked + Value(oplen)
-				err = rtx.RecvACK(tryAck)
-				if err != nil && oplen <= nsent {
-					t.Fatal(itest, iop, err)
-				} else if err == nil {
-					nsent -= oplen
-					nacked += oplen
-					currentAcked = tryAck
-				} else {
-					t.Logf("opack: %s", err)
-				}
-			default:
-				panic("unknown op")
 			}
 		}
 	}

@@ -104,12 +104,16 @@ func (rtx *ringTx) BufferedSent() int {
 
 // Write writes data to the underlying unsent data ring buffer.
 func (rtx *ringTx) Write(b []byte) (n int, err error) {
-	r, lim := rtx.unsentRing()
-	n, err = r.WriteLimited(b, lim)
+	unsent, lim := rtx.unsentRing()
+	if rtx.sentend == 0 {
+		n, err = unsent.Write(b) // catches case where limit matches with end when both buffers empty
+	} else {
+		n, err = unsent.WriteLimited(b, lim)
+	}
 	if err != nil {
 		return 0, err
 	}
-	rtx.unsentend = r.End
+	rtx.unsentend = unsent.End
 	return n, err
 }
 
@@ -126,7 +130,7 @@ func (rtx *ringTx) MakePacket(b []byte, currentSeq Value) (int, error) {
 	}
 	// Reading unsent ring consumes unsent and converts it to "sent".
 	unsent, _ := rtx.unsentRing()
-	oldSentOff := unsent.Off
+	oldUnsentOff := unsent.Off
 	n, err := unsent.Read(b)
 	if err != nil {
 		return 0, err
@@ -134,13 +138,22 @@ func (rtx *ringTx) MakePacket(b []byte, currentSeq Value) (int, error) {
 	// unsentOff increases, sentEnd matches this value.
 	// Start of buffer will be SENT, end of buffer will be UNSENT(or empty).
 	// Packet generated has offset at old unsentOff.
-	newUnsentOff := unsent.Off
-	pkt := rtx.slist.AddPacket(n, oldSentOff, rtx.Size())
-	if pkt.off != oldSentOff || pkt.end != addEnd(pkt.off, n, rtx.Size()) {
+	size := rtx.Size()
+	pkt := rtx.slist.AddPacket(n, oldUnsentOff, size)
+	if pkt.off != oldUnsentOff || pkt.end != addEnd(pkt.off, n, size) {
 		panic("invalid generated packet")
 	}
-	rtx.unsentoff = newUnsentOff
-	rtx.sentend = newUnsentOff
+	if rtx.sentend == 0 {
+		// Sent was previously empty, offset is reset from start of this packet
+		rtx.sentoff = pkt.off
+	}
+	if unsent.End == 0 {
+		// Fully read unsent buffer so offset is reset, need to recalculate.
+		rtx.unsentoff = pkt.end
+	} else {
+		rtx.unsentoff = unsent.Off
+	}
+	rtx.sentend = pkt.end
 	rtx.unsentend = unsent.End
 	return n, nil
 }
@@ -282,7 +295,7 @@ func (sl *sentlist) AddPacket(datalen, off, bufsize int) *ringidx {
 		panic("pkt buffer full")
 	}
 	lastPkt := sl.Newest()
-	if lastPkt != nil && off != lastPkt.end {
+	if lastPkt != nil && ((off != 0 && off != lastPkt.end) || (off == 0 && lastPkt.end != bufsize)) {
 		panic("new sent packet offset must match last sent packet end")
 	}
 	sl.pkts = append(sl.pkts, ringidx{

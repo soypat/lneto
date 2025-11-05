@@ -28,37 +28,6 @@ type Ring struct {
 	End int
 }
 
-// FreeLimited returns the amount of bytes that can be written up to the
-// argument offset limitOffset. See [Ring.WriteLimited].
-// If buffer is empty (End=0) write will begin at Off as a special case.
-// If limitOffset is equal to the write starting place then FreeLimited returns 0.
-func (r *Ring) FreeLimited(limitOffset int) (free int) {
-	if r.isFull() {
-		return 0
-	}
-
-	// Write start position.
-	var writeAt = r.End
-	if writeAt == 0 {
-		// Write start is End except when empty, in which case we writeAt at Off.
-		writeAt = r.Off
-		if limitOffset >= writeAt {
-			return limitOffset - writeAt // Contiguous case.
-		}
-		return r.Size() - writeAt + limitOffset // Wrap case.
-	}
-
-	// normal (non-empty): write at End up to limitOffset, or Off, whichever comes first.
-	if writeAt <= limitOffset && writeAt <= r.Off {
-		return min(r.Off, limitOffset) - writeAt
-	} else if writeAt <= limitOffset {
-		return limitOffset - writeAt
-	} else if writeAt <= r.Off {
-		return r.Off - writeAt
-	}
-	return r.Size() - writeAt + min(limitOffset, r.Off)
-}
-
 // WriteLimited performs a write that does not write over the ring buffer's
 // limitOffset index, which points to a position to r.Buf. Up to [Ring.FreeLimited] bytes can be written.
 func (r *Ring) WriteLimited(b []byte, limitOffset int) (int, error) {
@@ -83,10 +52,10 @@ func (r *Ring) WriteString(s string) (int, error) {
 // Write appends data to the ring buffer that can then be read back in order with [Ring.Read] methods.
 // An error is returned if length of data too large for buffer. Write is guaranteed to start at buffer index [Ring.Off].
 func (r *Ring) Write(b []byte) (int, error) {
-	if r.isFull() {
-		return 0, errRingBufferFull
-	} else if len(b) == 0 {
+	if len(b) == 0 {
 		return 0, errRingNoData
+	} else if r.IsFull() || r.Free() < len(b) {
+		return 0, errRingBufferFull
 	}
 	midFree := r.midFree()
 	if midFree > 0 {
@@ -170,7 +139,7 @@ func (r *Ring) Read(b []byte) (int, error) {
 }
 
 func (r *Ring) read(b []byte) (n int, err error) {
-	if r.Buffered() == 0 {
+	if r.IsEmpty() {
 		return 0, io.EOF
 	}
 	if r.End > r.Off {
@@ -229,8 +198,45 @@ func (r *Ring) midFree() int {
 	return r.Off - r.End
 }
 
-func (r *Ring) isFull() bool {
+// FreeLimited returns the amount of bytes that can be written up to the
+// argument offset limitOffset. See [Ring.WriteLimited].
+// If buffer is empty (End=0) write will begin at Off as a special case.
+// If limitOffset is equal to the write starting place then FreeLimited returns 0.
+func (r *Ring) FreeLimited(limitOffset int) (free int) {
+	if r.IsFull() {
+		return 0
+	}
+
+	// Write start position.
+	var writeAt = r.End
+	if writeAt == 0 {
+		// Write start is End except when empty, in which case we writeAt at Off.
+		writeAt = r.Off
+		if limitOffset >= writeAt {
+			return limitOffset - writeAt // Contiguous case.
+		}
+		return r.Size() - writeAt + limitOffset // Wrap case.
+	}
+
+	// normal (non-empty): write at End up to limitOffset, or Off, whichever comes first.
+	if writeAt <= limitOffset && writeAt <= r.Off {
+		return min(r.Off, limitOffset) - writeAt
+	} else if writeAt <= limitOffset {
+		return limitOffset - writeAt
+	} else if writeAt <= r.Off {
+		return r.Off - writeAt
+	}
+	return r.Size() - writeAt + min(limitOffset, r.Off)
+}
+
+// IsFull checks if ring buffer is full and cannot accept more data.
+func (r *Ring) IsFull() bool {
 	return r.End != 0 && (r.End == r.Off || (r.End == len(r.Buf) && r.Off == 0))
+}
+
+// IsEmpty checks if ring buffer is empty of data to read. Calls to Read on an empty buffer will return [io.EOF].
+func (r *Ring) IsEmpty() bool {
+	return r.End == 0
 }
 
 // onReadEnd does some cleanup of [ring.off] and [ring.end] fields if possible for contiguous read performance benefits.

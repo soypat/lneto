@@ -324,7 +324,8 @@ func TestRingOverwrite(t *testing.T) {
 			setRingData(t, r, off, rawbuf[:buf])
 			// Select write size overwriting data.
 			for osz := bufSize - buf + 1; osz < bufSize+1; osz++ {
-				if osz <= r.Free() {
+				free := r.Free()
+				if osz <= free {
 					panic("invalid test")
 				}
 				ngot, err := r.Write(auxbuf[:osz])
