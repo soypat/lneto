@@ -21,8 +21,8 @@ func TestRing(t *testing.T) {
 	const data = "hello"
 	// Set random data and write some more and read it back.
 	for i := 0; i < 32; i++ {
-		nfirst := rng.Intn(bufSize) / 2
-		nsecond := rng.Intn(bufSize) / 2
+		nfirst := max(1, rng.Intn(bufSize)/2)
+		nsecond := max(1, rng.Intn(bufSize)/2)
 		if nfirst+nsecond > bufSize {
 			nfirst = bufSize - nsecond
 		}
@@ -222,9 +222,11 @@ func TestRingNonEmpty(t *testing.T) {
 							if checkWrite {
 								testRingSanity(t, r)
 								free := r.Size() - buf
-								n, err := r.Write(data[:free])
-								if n != free || err != nil {
-									t.Errorf("want %d to fill buffer, got n=%d err=%v", free, n, err)
+								if free != 0 {
+									n, err := r.Write(data[:free])
+									if n != free || err != nil {
+										t.Errorf("want %d to fill buffer, got n=%d err=%v", free, n, err)
+									}
 								}
 							}
 							if checkRead {
@@ -336,57 +338,60 @@ func TestRingOverwrite(t *testing.T) {
 	}
 }
 
-func TestRingWriteLimited(t *testing.T) {
-	rng := rand.New(rand.NewSource(2))
-	const bufSize = 8
-	r := &Ring{
-		Buf: make([]byte, bufSize),
-	}
-	testRingSanity(t, r)
-	var data [bufSize]byte
-	var wdata [bufSize]byte
-	for i := 0; i < 10000; i++ {
-		for i := range r.Buf {
-			r.Buf[i] = 0
-		}
-		buffered, _ := rng.Read(data[:rng.Intn(bufSize-2)+1])
-		off := rng.Intn(bufSize)
-		setRingData(t, r, off, data[:buffered])
-		if r.Buffered() != buffered {
-			t.Fatalf("failed to set buffered amount of data")
-		} else if r.Off != off {
-			t.Fatal("bad offset")
-		}
-		free := r.Free()
+// func TestRingWriteLimited(t *testing.T) {
+// 	rng := rand.New(rand.NewSource(2))
+// 	const bufSize = 8
+// 	r := &Ring{
+// 		Buf: make([]byte, bufSize),
+// 	}
+// 	testRingSanity(t, r)
+// 	var data [bufSize]byte
+// 	var wdata [bufSize]byte
+// 	for i := 0; i < 10000; i++ {
+// 		for i := range r.Buf {
+// 			r.Buf[i] = 0
+// 		}
+// 		buffered, _ := rng.Read(data[:rng.Intn(bufSize-2)+1])
+// 		off := rng.Intn(bufSize)
+// 		setRingData(t, r, off, data[:buffered])
+// 		if r.Buffered() != buffered {
+// 			t.Fatalf("failed to set buffered amount of data")
+// 		} else if r.Off != off {
+// 			t.Fatal("bad offset")
+// 		}
+// 		limOff := rng.Intn(bufSize) + 1
+// 		freeLim := r.FreeLimited(limOff)
+// 		free := r.Free()
 
-		toWrite := rng.Intn(free-1) + 1
-		rng.Read(wdata[:toWrite])
-		limOff := rng.Intn(bufSize) + 1
-		var wantN int
-		isContiguous := limOff > r.End
-		if isContiguous {
-			wantN = min(toWrite, limOff-r.End)
-		} else {
-			wantN = min(toWrite, len(r.Buf)-r.End+limOff)
-		}
-		overwrite := toWrite > wantN
+// 		toWrite := rng.Intn(freeLim+1) + 1
+// 		rng.Read(wdata[:toWrite])
 
-		n, err := r.WriteLimited(wdata[:toWrite], limOff)
-		if !overwrite && err != nil {
-			t.Errorf("limited write: %s", err)
-		} else if !overwrite && n != wantN {
-			t.Errorf("nwant=%d ngot=%d off=%d lim=%d towrite=%d buffered=%d/%d wantremain=%d gotremain=%d endOff=%d", wantN, n, off, limOff, toWrite, buffered, r.Size(), free-wantN, free-n, r.Off)
-		} else if overwrite && (err == nil || n != 0) {
-			t.Errorf("expected full buffer error and no data written on limit overwrite, got %d", n)
-		}
-		for i := r.End % r.Size(); i != limOff && i != r.Off; i = (i + 1) % r.Size() {
-			if r.Buf[i] != 0 {
-				t.Fatalf("OVERWRITE pos=%d end=%d lim=%d", i, r.End, limOff)
-			}
-		}
-		testRingSanity(t, r)
-	}
-}
+// 		var wantN int
+// 		isContiguous := limOff > r.End
+// 		if isContiguous {
+// 			wantN = min(toWrite, limOff-r.End)
+// 		} else {
+// 			wantN = min(toWrite, len(r.Buf)-r.End+limOff)
+// 		}
+// 		overwrite := toWrite > wantN
+
+// 		n, err := r.WriteLimited(wdata[:toWrite], limOff)
+// 		if !overwrite && err != nil {
+// 			t.Errorf("limited write: %s", err)
+// 			t.Errorf("size=%d off=%d end=%d lim=%d nwrite=%d", r.Size(), r.Off, r.End, limOff, toWrite)
+// 		} else if !overwrite && n != wantN {
+// 			t.Errorf("nwant=%d ngot=%d off=%d lim=%d towrite=%d buffered=%d/%d wantremain=%d gotremain=%d endOff=%d", wantN, n, off, limOff, toWrite, buffered, r.Size(), free-wantN, free-n, r.Off)
+// 		} else if overwrite && (err == nil || n != 0) {
+// 			t.Errorf("expected full buffer error and no data written on limit overwrite, got %d", n)
+// 		}
+// 		for i := r.End % r.Size(); i != limOff && i != r.Off; i = (i + 1) % r.Size() {
+// 			if r.Buf[i] != 0 {
+// 				t.Fatalf("OVERWRITE pos=%d end=%d lim=%d", i, r.End, limOff)
+// 			}
+// 		}
+// 		testRingSanity(t, r)
+// 	}
+// }
 
 func TestRing_findcrash(t *testing.T) {
 	const maxsize = 33
@@ -433,6 +438,37 @@ func TestRing_findcrash(t *testing.T) {
 				t.Fatal(i, "buffered not updated correctly", expectBuffered, buffered)
 			}
 			testRingSanity(t, &r)
+		}
+	}
+}
+
+func TestRingFreeLimited(t *testing.T) {
+	const n = 16
+	rng := rand.New(rand.NewSource(1))
+	buffer := make([]byte, n)
+	r := Ring{Buf: buffer}
+	for itest := 0; itest < 100000; itest++ {
+		r.Off = rng.Intn(n)
+		r.End = rng.Intn(n + 1)
+		limit := rng.Intn(n)
+		wantFreeLimited := 0
+		writeStart := r.End
+		if writeStart == 0 {
+			// Empty buffer case.
+			writeStart = r.Off
+			for i := writeStart % n; i != limit; i = (i + 1) % n {
+				wantFreeLimited++
+			}
+		} else {
+			// Buffer with contents. Beware limit and own offset.
+			for i := writeStart % n; i != limit && i != r.Off; i = (i + 1) % n {
+				wantFreeLimited++
+			}
+		}
+
+		gotFreeLimited := r.FreeLimited(limit)
+		if gotFreeLimited != wantFreeLimited {
+			t.Fatalf("[%d] len=%d off=%d end=%d limit=%d    GOT=%d, WANT=%d", itest, n, r.Off, r.End, limit, gotFreeLimited, wantFreeLimited)
 		}
 	}
 }

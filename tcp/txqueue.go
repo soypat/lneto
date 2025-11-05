@@ -1,11 +1,8 @@
 package tcp
 
 import (
-	"bytes"
 	"errors"
-	"fmt"
 	"slices"
-	"strconv"
 
 	"github.com/soypat/lneto/internal"
 )
@@ -26,7 +23,6 @@ const (
 type ringTx struct {
 	// rawbuf contains the ring buffer of ordered bytes. It should be the size of the window.
 	rawbuf []byte
-	slist  sentlist
 	// unsentOff is the offset of start of unsent data in rawbuf.
 	unsentoff int
 	// unsentend is the offset of end of unsent data in rawbuf. If zero then unsent buffer is empty.
@@ -35,6 +31,7 @@ type ringTx struct {
 	sentoff int
 	// sentend is the offset of end of sent data in rawbuf. If zero then sent buffer is empty.
 	sentend int
+	slist   sentlist
 	// seq     Value
 	// always empty ring.
 	emptyRing ringidx
@@ -112,7 +109,7 @@ func (rtx *ringTx) Write(b []byte) (n int, err error) {
 	if err != nil {
 		return 0, err
 	}
-	rtx.unsentend = rtx.addEnd(rtx.unsentend, n)
+	rtx.unsentend = r.End
 	return n, err
 }
 
@@ -123,36 +120,35 @@ func (rtx *ringTx) MakePacket(b []byte, currentSeq Value) (int, error) {
 	if free == 0 {
 		return 0, errPacketQueueFull
 	}
-	endSeq, ok := rtx.endSeq()
+	endSeq, ok := rtx.sentEndSeq()
 	if ok && currentSeq.LessThan(endSeq) {
 		return 0, errors.New("sequence number less than last sequence number")
 	}
 	// Reading unsent ring consumes unsent and converts it to "sent".
-	r, _ := rtx.unsentRing()
-	oldSentOff := r.Off
-	n, err := r.Read(b)
+	unsent, _ := rtx.unsentRing()
+	oldSentOff := unsent.Off
+	n, err := unsent.Read(b)
 	if err != nil {
-		return n, err
+		return 0, err
 	}
 	// unsentOff increases, sentEnd matches this value.
 	// Start of buffer will be SENT, end of buffer will be UNSENT(or empty).
 	// Packet generated has offset at old unsentOff.
-	newUnsentOff := rtx.addEnd(rtx.unsentoff, n)
+	newUnsentOff := unsent.Off
 	pkt := rtx.slist.AddPacket(n, oldSentOff, rtx.Size())
 	if pkt.off != oldSentOff || pkt.end != addEnd(pkt.off, n, rtx.Size()) {
 		panic("invalid generated packet")
 	}
 	rtx.unsentoff = newUnsentOff
 	rtx.sentend = newUnsentOff
-	if newUnsentOff == rtx.unsentend {
-		rtx.unsentend = 0 // Mark unsent as being empty.
-	}
+	rtx.unsentend = unsent.End
 	return n, nil
 }
 
 // RecvSegment processes an incoming segment and updates the sent packet queue
 func (rtx *ringTx) RecvACK(ack Value) error {
-	err := rtx.slist.RecvAck(ack, rtx.Size())
+	size := rtx.Size()
+	err := rtx.slist.RecvAck(ack, size)
 	if err != nil {
 		return err
 	}
@@ -203,7 +199,7 @@ func (rtx *ringTx) consolidateBufs() {
 	}
 }
 
-func (rtx *ringTx) endSeq() (Value, bool) {
+func (rtx *ringTx) sentEndSeq() (Value, bool) {
 	newest := rtx.slist.Newest()
 	if newest == nil {
 		return 0, false
@@ -302,7 +298,9 @@ func (sl *sentlist) RecvAck(ack Value, bufsize int) error {
 	newest := sl.Newest()
 	if newest == nil {
 		return errors.New("no packet to ack")
-	} else if newest.endSeq().LessThan(ack) {
+	}
+	endseq := newest.endSeq()
+	if endseq.LessThan(ack) {
 		return errors.New("ack of unsent packet")
 	}
 	// Mark fully acked.
@@ -365,136 +363,4 @@ func addOff(a, b int, size int) int {
 		result -= size
 	}
 	return result
-}
-
-// prints out buffer zones with indices:
-//
-// 0              32             42            47
-// |---free(32)---|---usnt(10)---|---free(5)---|
-func (rtx *ringTx) appendString(b []byte) []byte {
-	size := rtx.Size()
-	type zone struct {
-		name       string
-		start, end int
-	}
-	zcontains := func(off int, z *zone) bool {
-		if z.end == 0 {
-			return false // Empty
-		} else if z.end < z.start {
-			// zone wraps.
-		}
-		return off >= z.start && off < z.end
-	}
-
-	zs := zone{name: "sent", start: rtx.sentoff, end: rtx.sentend}
-	zu := zone{name: "usnt", start: rtx.unsentoff, end: rtx.unsentend}
-	bufStart := zs.start
-	if bufStart == 0 {
-		bufStart = zu.start
-	}
-	bufEnd := zu.end
-	if bufEnd == 0 {
-		bufEnd = zs.end
-	}
-	zf := zone{name: "free", start: bufEnd, end: bufStart}
-	getZone := func(off int) *zone {
-		if zcontains(0, &zs) {
-			return &zs
-		} else if zcontains(0, &zu) {
-			return &zu
-		} else {
-			return &zf
-		}
-	}
-
-	zones := []*zone{getZone(0)}
-	for i := 1; i < size; i++ {
-		z := getZone(i)
-		if z != zones[len(zones)-1] {
-			zones = append(zones, z)
-		}
-	}
-
-	var wrapZone *zone
-	for i := range zones {
-		wraps := zones[i].end != 0 && zones[i].end < zones[i].start
-		if wraps {
-			if wrapZone != nil {
-				panic("illegal to have more than one wrap zone")
-			}
-			wrapZone = zones[i]
-		}
-	}
-	// ---- your simple approach starts here ----
-	var currentZone *zone
-	if wrapZone != nil {
-		currentZone = wrapZone
-	} else {
-		currentZone = zones[0]
-	}
-
-	var lastPrintedZone *zone
-	var l1, l2 bytes.Buffer
-	changes := 0
-	zoneLen := func(z *zone, sz int) int {
-		if z.end == 0 {
-			return 0
-		}
-		if z.end < z.start {
-			return (sz - z.start) + z.end
-		}
-		return z.end - z.start
-	}
-	for ib := 0; ib < size; ib++ {
-		// see if current zone still contains this index
-		currentContainsIdx := currentZone != nil && zcontains(ib, currentZone)
-		if !currentContainsIdx {
-			// find which zone contains this index
-			for _, z := range zones {
-				if zcontains(ib, z) {
-					currentZone = z
-					currentContainsIdx = true
-					break
-				}
-			}
-		}
-		// if still same zone, keep going
-		if currentZone == lastPrintedZone {
-			continue
-		}
-
-		// zone changed
-		changes++
-		if changes > 4 {
-			panic("found too many zone changes")
-		}
-		lastPrintedZone = currentZone
-
-		// build the bottom line segment
-		seg := "|---" + currentZone.name + "(" + strconv.Itoa(zoneLen(currentZone, size)) + ")---"
-		l2.WriteString(seg)
-
-		// write the start index aligned to seg width
-		n, _ := fmt.Fprintf(&l1, "%d", currentZone.start)
-		for i := 0; i < len(seg)-n; i++ {
-			l1.WriteByte(' ')
-		}
-	}
-
-	// close last zone: print its end index and closing bar
-	l2.WriteByte('|')
-
-	// if the last zone "ends" at 0 because of wrap, use sz
-	endIdx := lastPrintedZone.end
-	if endIdx == 0 {
-		endIdx = size
-	}
-	fmt.Fprintf(&l1, "%d\n", endIdx)
-
-	// write second line under the first
-	l2.WriteTo(&l1)
-	l1.WriteByte('\n')
-
-	b = append(b, l1.Bytes()...)
-	return b
 }

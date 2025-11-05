@@ -20,10 +20,9 @@ const (
 
 func TestStackAsyncTCP_multipacket(t *testing.T) {
 	const seed = 1234
-	const MTU = 1500
+	const MTU = 512
 	const svPort = 8080
 	const maxPktLen = 30
-	const maxNPkt = 32
 	client, sv, clconn, svconn := newTCPStacks(t, seed, MTU)
 	tst := tester{
 		t: t, buf: make([]byte, MTU),

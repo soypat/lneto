@@ -2,11 +2,123 @@ package tcp
 
 import (
 	"bytes"
-	"fmt"
 	"math/rand"
 	"slices"
 	"testing"
+	"unsafe"
+
+	"github.com/soypat/lneto/internal"
 )
+
+func TestRingTx_op(t *testing.T) {
+	const maxBuf = 32
+	const maxpkt = 3
+	const Nops = 3
+	type op uint8
+	const (
+		opWrite op = iota
+		opSend
+		opAck
+		opmax
+	)
+
+	rng := rand.New(rand.NewSource(666))
+	randop := func() op { return op(rng.Intn(int(opmax))) }
+	var buf, auxbuf [maxBuf]byte
+	dataWritten := make([]byte, 0, maxBuf*10)
+	dataSent := make([]byte, 0, maxBuf*10)
+	var rtx ringTx
+	for itest := 0; itest < 3; itest++ {
+		bufsize := rng.Intn(maxBuf/2) + maxBuf/2
+		iss := Value(0)
+		npackets := rng.Intn(maxpkt-1) + 1
+		err := rtx.Reset(buf[:bufsize], npackets, iss)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Prepare state for keeping track of test.
+		currentAcked := iss
+		currentSeq := iss
+		nsent := 0
+		nunsent := 0
+		nacked := 0
+		dataWritten = dataWritten[:0]
+		dataSent = dataSent[:0]
+		for iop := 0; iop < Nops; iop++ {
+			free := bufsize - nsent - nunsent
+			availPkt := rtx.slist.Free()
+			op := randop()
+			var oplen int
+			var opname string
+			var opWriteData []byte
+			switch op {
+			case opWrite:
+				opname, oplen = "write", rng.Intn(free+1)+1
+				opWriteData = auxbuf[:oplen]
+				rng.Read(opWriteData)
+				clear(auxbuf[oplen:])
+			case opSend:
+				opname, oplen = "send", rng.Intn(nunsent+1)+1
+			case opAck:
+				opname, oplen = "ack", rng.Intn(nsent+1)+1
+			}
+			if itest < 2 {
+				continue // Debugging.
+			}
+			_ = opname
+			t.Logf("\n%s\nitest=%d iop=%d op=%s len=%d", rtx.mustAppendString(nil), itest, iop, opname, oplen)
+			switch op {
+			case opWrite:
+				// oplen=number of
+				nwgot, err := rtx.Write(opWriteData)
+				wantErr := oplen > free
+				if err != nil && oplen <= free {
+					t.Fatal(itest, iop, err)
+				} else if err == nil {
+					if wantErr {
+						panic("wanted write error")
+					}
+					nunsent += nwgot
+					dataWritten = append(dataWritten, opWriteData[:nwgot]...)
+				} else {
+					t.Logf("opwrite: %s", err)
+				}
+			case opSend:
+				// oplen=num bytes sent.
+				nsgot, err := rtx.MakePacket(auxbuf[:oplen], currentSeq)
+				megafail := nsgot > nunsent
+				if err != nil && oplen <= nunsent && availPkt > 0 {
+					t.Fatal(itest, iop, err)
+				} else if err == nil {
+					if megafail {
+						panic("megafail")
+					}
+					nunsent -= nsgot
+					nsent += nsgot
+					dataSent = append(dataSent, auxbuf[:nsgot]...)
+					currentSeq += Value(nsgot)
+				} else {
+					t.Logf("opsend: %s", err)
+				}
+			case opAck:
+				// oplen=acklength.
+				tryAck := currentAcked + Value(oplen)
+				err = rtx.RecvACK(tryAck)
+				if err != nil && oplen <= nsent {
+					t.Fatal(itest, iop, err)
+				} else if err == nil {
+					nsent -= oplen
+					nacked += oplen
+					currentAcked = tryAck
+				} else {
+					t.Logf("opack: %s", err)
+				}
+			default:
+				panic("unknown op")
+			}
+		}
+	}
+}
 
 func TestSentlist_multi(t *testing.T) {
 	const bufsize = 10
@@ -37,7 +149,7 @@ func TestSentlist_multi(t *testing.T) {
 	_ = p3
 }
 
-func TestSentlist(t *testing.T) {
+func TestSentlist_simple(t *testing.T) {
 	var sl sentlist
 	sl.Reset(3, 0)
 	// Test full ack.
@@ -75,17 +187,18 @@ func TestSentlist(t *testing.T) {
 }
 
 func TestTxQueue_multipacket(t *testing.T) {
-	const mtu = 256
+	const mtu = 32
 	const iss = 1
 	const maxPkts = 3
-	const maxWrites = 20
+	const maxWrites = 6
 	const maxWriteSize = mtu / maxWrites
 	var rtx ringTx
 	internalbuff := make([]byte, mtu)
 	rng := rand.New(rand.NewSource(3))
 	var wbuf, rbuf [mtu]byte
 	for itest := 0; itest < 32; itest++ {
-		// rng.Seed(int64(itest))
+		t.Log(itest)
+		rng.Seed(int64(itest))
 		println(itest)
 		err := rtx.Reset(internalbuff, maxPkts, iss)
 		if err != nil {
@@ -133,6 +246,7 @@ func TestTxQueue_multipacket(t *testing.T) {
 		}
 		acked := 0
 		for acked < roff {
+			t.Log(acked)
 			maxToack := min(roff-acked, maxWriteSize)
 			toack := rng.Intn(maxToack) + 1
 			// t.Log("\n", rtx.string())
@@ -323,7 +437,7 @@ func testQueueSanity(t *testing.T, rtx *ringTx) {
 	sz := rtx.Size()
 	gotSz := free + sent + unsent
 	if gotSz != sz {
-		t.Error("\n" + string(rtx.appendString(nil)))
+		t.Error("\n" + rtx.string())
 		t.Fatalf("want size=%d, got size=%d (free+sent+unsent=%d+%d+%d)", sz, gotSz, free, sent, unsent)
 	}
 	rsent, _ := rtx.sentRing()
@@ -371,7 +485,7 @@ func testQueueSanity(t *testing.T, rtx *ringTx) {
 		return
 	}
 
-	endseq, ok := rtx.endSeq()
+	endseq, ok := rtx.sentEndSeq()
 
 	lastEndSeq := Add(last.seq, last.size)
 	if last.seq.LessThan(first.seq) {
@@ -384,73 +498,8 @@ func testQueueSanity(t *testing.T, rtx *ringTx) {
 }
 
 func (rx *ringTx) string() string {
-	sz := rx.Size()
-	unsent, _ := rx.unsentRing()
-	sent, _ := rx.sentRing()
-	all := rx.sentAndUnsentBuffer()
-	if all.End == 0 || // Empty buffer, set offset so that free zone occupies whole buffer.
-		all.Off == 0 { // Buffer offset starts at zero which would set Free.End to 0 making it empty, patch that.
-		all.Off = sz
-	}
-	type zone struct {
-		name       string
-		start, end int
-	}
-	zcontains := func(off int, z *zone) bool {
-		if z.end == 0 {
-			return false // Empty
-		} else if z.end < z.start {
-			return off < z.end || off >= z.start
-		}
-		return off >= z.start && off < z.end
-	}
-	var zones = []zone{
-		{name: "free", start: all.End, end: all.Off},
-		{name: "usnt", start: unsent.Off, end: unsent.End},
-		{name: "sent", start: sent.Off, end: sent.End},
-	}
-	var wrapZone *zone
-	for i := range zones {
-		wraps := zones[i].end != 0 && zones[i].end < zones[i].start
-		if wraps {
-			if wrapZone != nil {
-				panic("illegal to have more than one wrap zone")
-			}
-			wrapZone = &zones[i]
-		}
-	}
-	var currentZone *zone = wrapZone
-	var lastPrintedZone *zone
-	var l1, l2 bytes.Buffer
-	changes := 0
-	for ib := 0; ib < sz; ib++ {
-		currentContainsIdx := currentZone != nil && zcontains(ib, currentZone)
-		for iz := 0; !currentContainsIdx && iz < len(zones); iz++ {
-			z := &zones[iz]
-			if zcontains(ib, z) {
-				currentZone = z
-			}
-		}
-		if currentZone == lastPrintedZone {
-			continue
-		}
-		changes++
-		if changes > 4 {
-			panic("found too many zone changes")
-		}
-		lastPrintedZone = currentZone
-		// Change of zone.
-		top := "|-----" + currentZone.name + "-----"
-		l2.WriteString(top)
-		n, _ := fmt.Fprintf(&l1, "%d", currentZone.start)
-		for i := 0; i < len(top)-n; i++ {
-			l1.WriteByte(' ')
-		}
-	}
-	l2.WriteByte('|')
-	fmt.Fprintf(&l1, "%d\n", currentZone.end)
-	l2.WriteTo(&l1)
-	return l1.String()
+	s := rx.appendString(nil)
+	return unsafe.String(&s[0], len(s))
 }
 
 func removeEmptyMsgs(msgs [][]byte) [][]byte {
@@ -526,7 +575,7 @@ func operateOnRing(t *testing.T, rtx *ringTx, write, readPacket, aux []byte, new
 		if lastSeqOK {
 			lastSeq = last.seq
 		}
-		endSeq, endSeqOK := rtx.endSeq()
+		endSeq, endSeqOK := rtx.sentEndSeq()
 		if !lastSeqOK || lastSeq != newPacketSeq {
 			t.Fatalf("expected last seq to be %d, got %d (or lastSeqOK=%v)", newPacketSeq, lastSeq, lastSeqOK)
 		} else if !endSeqOK || endSeq != Add(newPacketSeq, Size(n)) {
@@ -589,4 +638,39 @@ func operateOnRing(t *testing.T, rtx *ringTx, write, readPacket, aux []byte, new
 		// }
 	}
 	testQueueSanity(t, rtx)
+}
+
+// prints out buffer zones with indices:
+//
+// 0              32             42            47
+// |---free(32)---|---usnt(10)---|---free(5)---|
+func (rtx *ringTx) appendString(b []byte) []byte {
+	var zprinter internal.ZonePrinter
+	result, err := zprinter.AppendPrintZones(b, rtx.Size(), rtx.zones()...)
+	if err != nil {
+		result = append(result, err.Error()...)
+	}
+	return result
+}
+
+func (rtx *ringTx) mustAppendString(b []byte) []byte {
+	var zprinter internal.ZonePrinter
+	result, err := zprinter.AppendPrintZones(b, rtx.Size(), rtx.zones()...)
+	if err != nil {
+		panic(err)
+	}
+	return result
+}
+
+func (rtx *ringTx) zones() []internal.BufferZone {
+	return []internal.BufferZone{
+		{
+			Name:  "sent",
+			Start: rtx.sentoff, End: rtx.sentend,
+		},
+		{
+			Name:  "usnt",
+			Start: rtx.unsentoff, End: rtx.unsentend,
+		},
+	}
 }
