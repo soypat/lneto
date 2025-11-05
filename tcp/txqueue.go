@@ -179,11 +179,14 @@ func (rtx *ringTx) RecvACK(ack Value) error {
 }
 
 func (rtx *ringTx) sentAndUnsentBuffer() internal.Ring {
+	off := rtx.sentoff
 	end := rtx.unsentend
 	if end == 0 {
 		end = rtx.sentend
+	} else if rtx.sentend == 0 {
+		off = rtx.unsentoff
 	}
-	return internal.Ring{Buf: rtx.rawbuf, Off: rtx.sentoff, End: end}
+	return internal.Ring{Buf: rtx.rawbuf, Off: off, End: end}
 }
 
 func (rtx *ringTx) unsentRing() (internal.Ring, int) {

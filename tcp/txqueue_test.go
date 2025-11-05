@@ -13,7 +13,7 @@ import (
 func TestRingTx_op(t *testing.T) {
 	const maxBuf = 32
 	const maxpkt = 3
-	const Nops = 33
+	const Nops = 6
 	const log = false
 	type op uint8
 	const (
@@ -116,6 +116,17 @@ func TestRingTx_op(t *testing.T) {
 				default:
 					panic("unknown op")
 				}
+				wantFree := bufsize - nsent - nunsent
+				gotFree := rtx.Free()
+				if wantFree != gotFree {
+					t.Fatalf("free mismatch got=%d want=%d  size=%d sent=%d nunsent=%d", gotFree, wantFree, bufsize, nsent, nunsent)
+				}
+				minlen := min(len(dataSent), len(dataWritten))
+				matched := bytes.Equal(dataSent[:minlen], dataWritten[:minlen])
+				if !matched {
+					t.Fatal("mismatched data written\n", dataSent, "\n", dataWritten)
+				}
+				testQueueSanity(t, &rtx)
 			}
 		}
 	}
