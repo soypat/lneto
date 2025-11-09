@@ -115,6 +115,9 @@ func run() (err error) {
 				fmt.Println("ERR:ENCAPSULATE", err)
 			} else if nwrite > 0 {
 				frames, err = cap.CaptureEthernet(frames[:0], buf[:nwrite], 0)
+				if err != nil {
+					log.Println("ERR capture", err)
+				}
 				if len(frames) > 0 {
 					fmt.Println("OUT", frames)
 				}

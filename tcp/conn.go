@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/soypat/lneto"
@@ -27,6 +28,7 @@ var (
 // Note that the complete emulation of [net.TCPConn] at this level of abstraction is yet a non-goal,
 // even though the functionality provided is similar.
 type Conn struct {
+	mu         sync.Mutex
 	h          Handler
 	remoteAddr []byte
 
@@ -46,6 +48,8 @@ type ConnConfig struct {
 }
 
 func (conn *Conn) Configure(config ConnConfig) (err error) {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
 	err = conn.h.SetBuffers(config.TxBuf, config.RxBuf, config.TxPacketQueueSize)
 	if err != nil {
 		return err
@@ -55,29 +59,59 @@ func (conn *Conn) Configure(config ConnConfig) (err error) {
 }
 
 // LocalPort returns the local port on which the socket is listening or connected to.
-func (conn *Conn) LocalPort() uint16 { return conn.h.LocalPort() }
+func (conn *Conn) LocalPort() uint16 {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.h.LocalPort()
+}
 
 // RemotePort returns the port of the incoming remote connection. Is non-zero if connection is established.
-func (conn *Conn) RemotePort() uint16 { return conn.h.RemotePort() }
+func (conn *Conn) RemotePort() uint16 {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.h.RemotePort()
+}
 
-func (conn *Conn) RemoteAddr() []byte { return conn.remoteAddr }
+func (conn *Conn) RemoteAddr() []byte {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.remoteAddr
+}
 
 // State returns the TCP state of the socket.
-func (conn *Conn) State() State { return conn.h.State() }
+func (conn *Conn) State() State {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.h.State()
+}
 
 // BufferedInput returns the number of bytes in the socket's receive(input) buffer
 // and available to read via a [Conn.Read] call.
-func (conn *Conn) BufferedInput() int { return conn.h.BufferedInput() }
+func (conn *Conn) BufferedInput() int {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.h.BufferedInput()
+}
 
-func (conn *Conn) AvailableInput() int { return conn.h.FreeRx() }
+func (conn *Conn) AvailableInput() int {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.h.FreeRx()
+}
 
 // AvailableOutput returns amount of bytes available to write to output
 // before [Conn.Write] returns an error due to insufficient space to store outgoing data.
-func (conn *Conn) AvailableOutput() int { return conn.h.AvailableOutput() }
+func (conn *Conn) AvailableOutput() int {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.h.AvailableOutput()
+}
 
 // OpenActive opens a connection to a remote peer with a known IP address and port combination.
 // iss is the initial send sequence number which is ideally a random number which is far away from the last sequence number used on a connection to the same host.
 func (conn *Conn) OpenActive(localPort uint16, remote netip.AddrPort, iss Value) error {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
 	if !remote.IsValid() {
 		return errInvalidIP
 	}
@@ -100,6 +134,8 @@ func (conn *Conn) OpenActive(localPort uint16, remote netip.AddrPort, iss Value)
 // OpenListen opens a passive connection which listens for the first SYN packet to be received on a local port.
 // iss is the initial send sequence number which is usually a randomly chosen number.
 func (conn *Conn) OpenListen(localPort uint16, iss Value) error {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
 	err := conn.h.OpenListen(localPort, iss)
 	if err != nil {
 		return err
@@ -109,14 +145,19 @@ func (conn *Conn) OpenListen(localPort uint16, iss Value) error {
 }
 
 func (conn *Conn) Close() error {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
 	conn.trace("TCPConn.Close")
 	return conn.h.Close()
 }
 
 // Abort terminates all state of the connection forcibly.
 func (conn *Conn) Abort() {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
 	conn.h.Abort()
 	*conn = Conn{
+		mu:         conn.mu,
 		h:          conn.h,
 		remoteAddr: conn.remoteAddr[:0],
 		logger:     conn.logger,
@@ -140,7 +181,7 @@ func (conn *Conn) Write(b []byte) (int, error) {
 	plen := len(b)
 	conn.trace("TCPConn.Write:start")
 	connid := conn.h.ConnectionID()
-	if conn.deadlineExceeded(conn.wdead) {
+	if conn.deadlineExceeded(&conn.wdead) {
 		return 0, errDeadlineExceeded
 	} else if plen == 0 {
 		return 0, nil
@@ -153,7 +194,9 @@ func (conn *Conn) Write(b []byte) (int, error) {
 		} else if connid != conn.h.ConnectionID() {
 			return n, net.ErrClosed
 		}
+		conn.mu.Lock()
 		ngot, _ := conn.h.Write(b)
+		conn.mu.Unlock()
 		n += ngot
 		b = b[ngot:]
 		if n == plen {
@@ -165,7 +208,7 @@ func (conn *Conn) Write(b []byte) (int, error) {
 			backoff.Miss()
 		}
 		conn.trace("TCPConn.Write:insuf-buf", slog.Int("missing", plen-n))
-		if conn.deadlineExceeded(conn.wdead) {
+		if conn.deadlineExceeded(&conn.wdead) {
 			return n, errDeadlineExceeded
 		}
 	}
@@ -188,12 +231,14 @@ func (conn *Conn) Read(b []byte) (int, error) {
 		} else if connid != conn.h.ConnectionID() {
 			return 0, net.ErrClosed
 		}
-		if conn.deadlineExceeded(conn.rdead) {
+		if conn.deadlineExceeded(&conn.rdead) {
 			return 0, errDeadlineExceeded
 		}
 		backoff.Miss()
 	}
+	conn.mu.Lock()
 	n, err := conn.h.Read(b)
+	conn.mu.Unlock()
 	return n, err
 }
 
@@ -209,6 +254,8 @@ func (conn *Conn) checkPipeOpen() error {
 }
 
 func (conn *Conn) Demux(buf []byte, off int) (err error) {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
 	conn.trace("tcpconn.Recv:start")
 	if off >= len(buf) {
 		return errors.New("bad offset in TCPConn.Recv")
@@ -232,6 +279,8 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 }
 
 func (conn *Conn) Encapsulate(buf []byte, off int) (n int, err error) {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
 	if len(conn.remoteAddr) == 0 {
 		return 0, errNoRemoteAddr
 	}
@@ -262,8 +311,12 @@ func (conn *Conn) isRaddrSet() bool {
 }
 
 func (conn *Conn) reset(h Handler) {
+	if conn.mu.TryLock() {
+		panic("reset must be called from within locked conn")
+	}
 	*conn = Conn{
 		h:          h,
+		mu:         conn.mu,
 		remoteAddr: conn.remoteAddr[:0],
 		logger:     conn.logger,
 	}
@@ -273,6 +326,8 @@ func (conn *Conn) reset(h Handler) {
 // with the connection. It is equivalent to calling both
 // SetReadDeadline and SetWriteDeadline. Implements [net.Conn].
 func (conn *Conn) SetDeadline(t time.Time) error {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
 	err := conn.SetReadDeadline(t)
 	if err != nil {
 		return err
@@ -283,6 +338,8 @@ func (conn *Conn) SetDeadline(t time.Time) error {
 // SetReadDeadline sets the deadline for future Read calls
 // and any currently-blocked Read call. A zero value for t means Read will not time out.
 func (conn *Conn) SetReadDeadline(t time.Time) error {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
 	conn.trace("TCPConn.SetReadDeadline:start")
 	err := conn.checkPipeOpen()
 	if err == nil {
@@ -305,8 +362,10 @@ func (conn *Conn) SetWriteDeadline(t time.Time) error {
 	return err
 }
 
-func (conn *Conn) deadlineExceeded(deadline time.Time) bool {
-	return !deadline.IsZero() && time.Since(deadline) > 0
+func (conn *Conn) deadlineExceeded(deadline *time.Time) bool {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return !deadline.IsZero() && time.Since(*deadline) > 0
 }
 
 func (conn *Conn) ConnectionID() *uint64 {

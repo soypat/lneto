@@ -135,11 +135,11 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	}
 
 	// Now setup stacks.
-	err = s.link.Register(&s.ip) // IPv4 | IPv6
+	err = s.link.Register(&s.arp) // ARP.
 	if err != nil {
 		return err
 	}
-	err = s.link.Register(&s.arp) // ARP.
+	err = s.link.Register(&s.ip) // IPv4 | IPv6
 	if err != nil {
 		return err
 	}
@@ -232,6 +232,8 @@ func (s *StackAsync) Gateway6() [6]byte {
 }
 
 func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrPort) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	err = conn.OpenActive(localPort, addrp, tcp.Value(s.Prand32()))
 	if err != nil {
 		return err
@@ -245,6 +247,8 @@ func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrP
 }
 
 func (s *StackAsync) ListenTCP(conn *tcp.Conn, localPort uint16) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	err = conn.OpenListen(localPort, tcp.Value(s.Prand32()))
 	if err != nil {
 		return err
@@ -433,6 +437,11 @@ func (stack *StackAsync) AssimilateDHCPResults(results *DHCPResults) error {
 	defer stack.mu.Unlock()
 	if results.AssignedAddr.IsValid() {
 		err := stack.ip.SetAddr(results.AssignedAddr)
+		if err != nil {
+			return err
+		}
+		// Reset ARP handler with new IP address so it can respond to ARP requests.
+		err = stack.resetARP()
 		if err != nil {
 			return err
 		}
