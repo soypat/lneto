@@ -41,6 +41,7 @@ func run() (err error) {
 		flagHostToResolve = ""
 		flagRequestedIP   = ""
 		flagDoNTP         = false
+		flagLocalMAC      = false
 		flagHTTPGet       = false
 	)
 	flag.BoolVar(&flagHTTPGet, "httpget", flagHTTPGet, "Do an HTTP GET request ")
@@ -49,6 +50,7 @@ func run() (err error) {
 	flag.StringVar(&flagHostToResolve, "host", flagHostToResolve, "Hostname to resolve via DNS.")
 	flag.StringVar(&flagRequestedIP, "addr", flagRequestedIP, "IP address to request via DHCP.")
 	flag.BoolVar(&flagDoNTP, "ntp", flagDoNTP, "Do NTP round and print result time")
+	flag.BoolVar(&flagLocalMAC, "localmac", flagLocalMAC, "use a locally administered MAC (for interfaces in promiscuous mode)")
 	flag.Parse()
 	fmt.Println("softrand", softRand)
 	_, err = dns.NewName(flagHostToResolve)
@@ -81,6 +83,12 @@ func run() (err error) {
 		return err
 	}
 	brHW := nicHW
+	if flagLocalMAC {
+		if brHW[0]&0x2 != 0 {
+			return errors.New("interface already has a locally administered address")
+		}
+		brHW[0] |= 0x2
+	}
 	mtu, err := iface.MTU()
 	if err != nil {
 		return err
