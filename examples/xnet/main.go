@@ -43,8 +43,10 @@ func run() (err error) {
 		flagDoNTP         = false
 		flagLocalMAC      = false
 		flagHTTPGet       = false
+		flagHTTPPort      = 80
 	)
-	flag.BoolVar(&flagHTTPGet, "httpget", flagHTTPGet, "Do an HTTP GET request ")
+	flag.BoolVar(&flagHTTPGet, "httpget", flagHTTPGet, "Do an HTTP GET request")
+	flag.IntVar(&flagHTTPPort, "httpport", flagHTTPPort, "HTTP port to connect to")
 	flag.StringVar(&flagInterface, "i", flagInterface, "Interface to use. Either tap* or the name of an existing interface to bridge to.")
 	flag.BoolVar(&flagUseHTTP, "ihttp", flagUseHTTP, "Use HTTP tap interface.")
 	flag.StringVar(&flagHostToResolve, "host", flagHostToResolve, "Hostname to resolve via DNS.")
@@ -228,7 +230,7 @@ func run() (err error) {
 			return err
 		}
 		const tcpDebugTimeout = 60 * time.Minute
-		target := netip.AddrPortFrom(addrs[0], 80)
+		target := netip.AddrPortFrom(addrs[0], uint16(flagHTTPPort))
 		err = rstack.DoDialTCP(&conn, uint16(softRand&0xefff)+1024, target, tcpDebugTimeout, internetRetries)
 		if err != nil {
 			return fmt.Errorf("TCP failed: %w", err)
