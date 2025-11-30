@@ -246,7 +246,7 @@ func (conn *Conn) checkPipeOpen() error {
 	if conn.abortErr != nil {
 		return conn.abortErr
 	}
-	state := conn.State()
+	state := conn.h.State()
 	if state.IsClosed() {
 		return net.ErrClosed
 	}
@@ -328,11 +328,11 @@ func (conn *Conn) reset(h Handler) {
 func (conn *Conn) SetDeadline(t time.Time) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	err := conn.SetReadDeadline(t)
+	err := conn.setReadDeadline(t)
 	if err != nil {
 		return err
 	}
-	return conn.SetWriteDeadline(t)
+	return conn.setWriteDeadline(t)
 }
 
 // SetReadDeadline sets the deadline for future Read calls
@@ -340,7 +340,11 @@ func (conn *Conn) SetDeadline(t time.Time) error {
 func (conn *Conn) SetReadDeadline(t time.Time) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	conn.trace("TCPConn.SetReadDeadline:start")
+	return conn.setReadDeadline(t)
+}
+
+func (conn *Conn) setReadDeadline(t time.Time) error {
+	conn.trace("TCPConn.setReadDeadline:start")
 	err := conn.checkPipeOpen()
 	if err == nil {
 		conn.rdead = t
@@ -354,6 +358,12 @@ func (conn *Conn) SetReadDeadline(t time.Time) error {
 // some of the data was successfully written.
 // A zero value for t means Write will not time out.
 func (conn *Conn) SetWriteDeadline(t time.Time) error {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.setWriteDeadline(t)
+}
+
+func (conn *Conn) setWriteDeadline(t time.Time) error {
 	conn.trace("TCPConn.SetWriteDeadline:start")
 	err := conn.checkPipeOpen()
 	if err == nil {
