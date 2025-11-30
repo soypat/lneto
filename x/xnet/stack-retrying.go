@@ -15,7 +15,7 @@ func (s *StackAsync) StackRetrying() StackRetrying {
 }
 
 var (
-	errRetriesExceeded = errors.New("cywnet: retries exceeded")
+	errRetriesExceeded = errors.New("lneto: retries exceeded")
 )
 
 type StackRetrying struct {

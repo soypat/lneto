@@ -16,7 +16,7 @@ const (
 )
 
 var (
-	errDeadlineExceed = errors.New("cywnet: deadline exceeded")
+	errDeadlineExceed = errors.New("lneto: deadline exceeded")
 )
 
 func (s *StackAsync) StackBlocking() StackBlocking {

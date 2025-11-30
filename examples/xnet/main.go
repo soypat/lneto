@@ -122,14 +122,14 @@ func run() (err error) {
 			clear(buf)
 			nwrite, err := stack.Encapsulate(buf[:], 0)
 			if err != nil {
-				fmt.Println("ERR:ENCAPSULATE", err)
+				log.Println("ERR:ENCAPSULATE", err)
 			} else if nwrite > 0 {
 				frames, err = cap.CaptureEthernet(frames[:0], buf[:nwrite], 0)
 				if err != nil {
 					log.Println("ERR capture", err)
 				}
 				if len(frames) > 0 {
-					fmt.Println("OUT", frames)
+					log.Println("OUT", frames)
 				}
 				n, err := iface.Write(buf[:nwrite])
 				if err != nil {
@@ -229,7 +229,7 @@ func run() (err error) {
 		if err != nil {
 			return err
 		}
-		const tcpDebugTimeout = 60 * time.Minute
+		const tcpDebugTimeout = time.Minute
 		target := netip.AddrPortFrom(addrs[0], uint16(flagHTTPPort))
 		err = rstack.DoDialTCP(&conn, uint16(softRand&0xefff)+1024, target, tcpDebugTimeout, internetRetries)
 		if err != nil {
