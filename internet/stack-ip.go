@@ -5,7 +5,6 @@ import (
 	"io"
 	"log/slog"
 	"net/netip"
-	"slices"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
@@ -23,7 +22,7 @@ type StackIP struct {
 	ipID        uint16
 	ip          [4]byte
 	validator   lneto.Validator
-	handlers    []node
+	handlers    handlers
 	pendingICMP [][]byte
 	logger
 }
@@ -36,7 +35,7 @@ func (sb *StackIP) Reset(addr netip.Addr, maxNodes int) error {
 	if err != nil {
 		return err
 	}
-	sb.handlers = slices.Grow(sb.handlers[:0], maxNodes)
+	sb.handlers.Reset(maxNodes)
 	*sb = StackIP{
 		connID:      sb.connID + 1,
 		validator:   sb.validator,
@@ -105,8 +104,9 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 	if proto == lneto.IPProtoICMP {
 		return sb.recvicmp(ifrm.RawData(), ifrm.HeaderLength())
 	}
-	nodeIdx := getNodeByProto(sb.handlers, uint16(proto))
-	if nodeIdx < 0 {
+
+	node := sb.handlers.GetByProto(uint16(proto))
+	if node == nil {
 		// Drop packet.
 		sb.info("iprecv:drop", slog.String("dstaddr", netip.AddrFrom4(*ifrm.DestinationAddr()).String()), slog.String("proto", ifrm.Protocol().String()))
 		return nil
@@ -136,15 +136,26 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 		}
 	}
 	sb.info("ipDemux", slog.String("ipproto", proto.String()), slog.Int("plen", int(totalLen)))
-	err = sb.handlers[nodeIdx].demux(frame[:totalLen], off)
-	if handleNodeError(&sb.handlers, nodeIdx, err) {
+	err = node.demux(frame[:totalLen], off)
+	if handleNodeError(node, err) {
 		sb.info("ipclose", slog.String("proto", proto.String()))
 		err = nil
 	}
 	return err
 }
 
-func (sb *StackIP) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
+func (sb *StackIP) CheckEncapsulate(ed *internal.EncData) bool {
+	for range sb.handlers.Len() {
+		node := sb.handlers.GetNext()
+		if node.checkEncapsulate(ed) {
+			// TODO: check if ed.RemoteAddr can be translated to a hardware address
+			return true
+		}
+	}
+	return false
+}
+
+func (sb *StackIP) DoEncapsulate(carrierData []byte, frameOffset int) (int, error) {
 	frame := carrierData[frameOffset:]
 	if len(frame) < 256 {
 		return 0, io.ErrShortBuffer
@@ -162,19 +173,20 @@ func (sb *StackIP) Encapsulate(carrierData []byte, frameOffset int) (int, error)
 	ifrm.SetTTL(64)
 	*ifrm.SourceAddr() = sb.ip
 	sb.ipID = id
-	for i := range sb.handlers {
-		h := &sb.handlers[i]
+	if h := sb.handlers.GetCurrent(); h != nil {
 		proto := lneto.IPProto(h.proto)
-		n, err := h.encapsulate(frame[:], headerlen)
+		n, err := h.doEncapsulate(frame[:], headerlen)
 		if err != nil {
-			if handleNodeError(&sb.handlers, i, err) {
+			if handleNodeError(h, err) {
 				println("IP NODE REMOVED", proto.String(), h.port)
 				h.destroy()
 			}
 			sb.error("StackIP:encapsulate", slog.String("proto", proto.String()), slog.String("err", err.Error()))
-			continue
-		} else if n == 0 {
-			continue
+			return 0, nil
+		}
+		if n == 0 {
+			// this shouldn't normally happen
+			return 0, nil
 		}
 		totalLen := n + headerlen
 		ifrm.SetTotalLength(uint16(totalLen))
@@ -214,13 +226,14 @@ func (sb *StackIP) Register(h StackNode) error {
 	if connID != nil {
 		currConnID = *connID
 	}
-	return registerNode(&sb.handlers, node{
-		demux:       h.Demux,
-		encapsulate: h.Encapsulate,
-		proto:       uint16(proto),
-		port:        h.LocalPort(),
-		currConnID:  currConnID,
-		connID:      connID,
+	return sb.handlers.Register(node{
+		demux:            h.Demux,
+		doEncapsulate:    h.DoEncapsulate,
+		checkEncapsulate: h.CheckEncapsulate,
+		proto:            uint16(proto),
+		port:             h.LocalPort(),
+		currConnID:       currConnID,
+		connID:           connID,
 	})
 }
 

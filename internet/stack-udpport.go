@@ -61,8 +61,18 @@ func (sudp *StackUDPPort) Demux(carrierData []byte, frameOffset int) error {
 	return err
 }
 
-func (sudp *StackUDPPort) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
+func (sudp *StackUDPPort) CheckEncapsulate(ed *internal.EncData) bool {
 	if sudp.h.IsInvalid() {
+		sudp.h.destroy()
+		return false
+	}
+	ed.RemoteAddr = sudp.raddr
+	return true
+}
+
+func (sudp *StackUDPPort) DoEncapsulate(carrierData []byte, frameOffset int) (int, error) {
+	if sudp.h.IsInvalid() {
+		// this shouldn't happen if CheckEncapsulate is called beforehand
 		sudp.h.destroy()
 		return 0, net.ErrClosed
 	}
@@ -78,10 +88,10 @@ func (sudp *StackUDPPort) Encapsulate(carrierData []byte, frameOffset int) (int,
 			return 0, err
 		}
 	}
-	n, err := sudp.h.encapsulate(carrierData, frameOffset+8)
+	n, err := sudp.h.doEncapsulate(carrierData, frameOffset+8)
 	if n == 0 {
 		if err != nil {
-			slog.Error("stackudp:encapsulate", slog.String("err", err.Error()))
+			slog.Error("stackudp:doEncapsulate", slog.String("err", err.Error()))
 		}
 		return 0, err
 	}

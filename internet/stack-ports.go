@@ -4,14 +4,14 @@ import (
 	"encoding/binary"
 	"io"
 	"math"
-	"slices"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/internal"
 )
 
 type StackPorts struct {
 	connID     uint64
-	handlers   []node
+	handlers   handlers
 	dstPortOff uint16
 	protocol   uint16
 }
@@ -30,7 +30,7 @@ func (ps *StackPorts) Reset(protocol uint64, dstPortOffset uint16, maxNodes int)
 	} else if maxNodes <= 0 {
 		return errZeroMaxNodesArg
 	}
-	ps.handlers = slices.Grow(ps.handlers[:0], maxNodes)
+	ps.handlers.Reset(maxNodes)
 	*ps = StackPorts{
 		connID:     ps.connID + 1,
 		handlers:   ps.handlers,
@@ -46,22 +46,25 @@ func (ps *StackPorts) Protocol() uint64 { return uint64(ps.protocol) }
 
 func (ps *StackPorts) ConnectionID() *uint64 { return &ps.connID }
 
-func (ps *StackPorts) Encapsulate(b []byte, offset int) (n int, err error) {
+func (ps *StackPorts) CheckEncapsulate(ed *internal.EncData) bool {
+	for range ps.handlers.Len() {
+		if node := ps.handlers.GetNext(); node != nil && !node.IsInvalid() && node.checkEncapsulate(ed) {
+			return true
+		}
+	}
+	return false
+}
+
+func (ps *StackPorts) DoEncapsulate(b []byte, offset int) (n int, err error) {
 	if int(ps.dstPortOff)+offset+2 > len(b) {
 		return 0, io.ErrShortBuffer
 	}
-	var i int
-	for i = 0; i < len(ps.handlers); i++ {
-		if ps.handlers[i].IsInvalid() {
-			continue
-		}
-		n, err = ps.handlers[i].encapsulate(b, offset)
+	if h := ps.handlers.GetCurrent(); h != nil {
+		n, err = h.doEncapsulate(b, offset)
 		if err != nil || n > 0 {
-			if ps.handleResult(i, n, err) {
-				err = nil // Handler discarded. Keep looking for other handlers.
-				continue
+			if ps.handleResult(h, err) {
+				err = nil // Handler discarded.
 			}
-			break
 		}
 	}
 	return n, err
@@ -72,21 +75,20 @@ func (ps *StackPorts) Demux(b []byte, offset int) (err error) {
 		return io.ErrShortBuffer
 	}
 	port := binary.BigEndian.Uint16(b[int(ps.dstPortOff)+offset:])
-	var i int
-	for i = 0; i < len(ps.handlers); i++ {
-		if port != ps.handlers[i].port {
+	for i := range ps.handlers.Len() {
+		h := ps.handlers.Node(i)
+		if port != h.port {
 			continue
 		}
-		err = ps.handlers[i].demux(b, offset)
+		err = h.demux(b, offset)
 		if err != nil {
-			if ps.handleResult(i, 0, err) {
+			if ps.handleResult(h, err) {
 				err = nil // Handler discarded. Keep looking for other maybe available handlers.
 				continue
 			}
 			break
 		}
 	}
-	ps.handleResult(i, 0, err)
 	return err
 }
 
@@ -104,20 +106,21 @@ func (ps *StackPorts) Register(h StackNode) error {
 	if cidPtr != nil {
 		cid = *cidPtr
 	}
-	return registerNode(&ps.handlers, node{
-		demux:       h.Demux,
-		encapsulate: h.Encapsulate,
-		port:        port,
-		currConnID:  cid,
-		connID:      cidPtr,
-		proto:       uint16(proto),
+	return ps.handlers.Register(node{
+		demux:            h.Demux,
+		checkEncapsulate: h.CheckEncapsulate,
+		doEncapsulate:    h.DoEncapsulate,
+		port:             port,
+		currConnID:       cid,
+		connID:           cidPtr,
+		proto:            uint16(proto),
 	})
 }
 
-func (ps *StackPorts) handleResult(handlerIdx, n int, err error) (discarded bool) {
-	if handleNodeError(&ps.handlers, handlerIdx, err) {
+func (ps *StackPorts) handleResult(h *node, err error) (discarded bool) {
+	if handleNodeError(h, err) {
 		discarded = true
-		println("DISCARD", handlerIdx, "witherr", err.Error())
+		println("DISCARD port", h.port, "witherr", err.Error())
 	}
 	return discarded
 }

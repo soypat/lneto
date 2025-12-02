@@ -6,15 +6,15 @@ import (
 	"log/slog"
 	"math"
 	"net"
-	"slices"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/internal"
 )
 
 type StackEthernet struct {
 	connID   uint64
-	handlers []node
+	handlers handlers
 	logger
 	mac   [6]byte
 	gwmac [6]byte
@@ -43,7 +43,7 @@ func (ls *StackEthernet) Reset6(mac, gateway [6]byte, mtu, maxNodes int) error {
 	} else if maxNodes <= 0 {
 		return errZeroMaxNodesArg
 	}
-	ls.handlers = slices.Grow(ls.handlers[:0], maxNodes)
+	ls.handlers.Reset(maxNodes)
 	*ls = StackEthernet{
 		connID:   ls.connID + 1,
 		handlers: ls.handlers,
@@ -69,16 +69,17 @@ func (ls *StackEthernet) Register(h StackNode) error {
 		return errInvalidProto
 	}
 	eproto := uint16(proto)
-	for i := range ls.handlers {
-		hgot := &ls.handlers[i]
+	for i := range ls.handlers.Len() {
+		hgot := ls.handlers.Node(i)
 		if hgot.proto == eproto {
 			return errProtoRegistered
 		}
 	}
-	return registerNode(&ls.handlers, node{
-		demux:       h.Demux,
-		encapsulate: h.Encapsulate,
-		proto:       eproto,
+	return ls.handlers.Register(node{
+		demux:            h.Demux,
+		checkEncapsulate: h.CheckEncapsulate,
+		doEncapsulate:    h.DoEncapsulate,
+		proto:            eproto,
 	})
 }
 
@@ -99,8 +100,8 @@ func (ls *StackEthernet) Demux(carrierData []byte, frameOffset int) (err error) 
 		return vld.ErrPop()
 	}
 
-	for i := range ls.handlers {
-		h := &ls.handlers[i]
+	for i := range ls.handlers.Len() {
+		h := ls.handlers.Node(i)
 		if h.proto == uint16(etype) {
 			return h.demux(efrm.Payload(), 0)
 		}
@@ -110,7 +111,11 @@ DROP:
 	return lneto.ErrPacketDrop
 }
 
-func (ls *StackEthernet) Encapsulate(carrierData []byte, frameOffset int) (n int, err error) {
+func (ls *StackEthernet) CheckEncapsulate(ed *internal.EncData) bool {
+	return ls.handlers.CheckEncapsulate(ed)
+}
+
+func (ls *StackEthernet) DoEncapsulate(carrierData []byte, frameOffset int) (n int, err error) {
 	mtu := ls.mtu
 	dst := carrierData[frameOffset:]
 	if len(dst) < int(mtu) {
@@ -121,14 +126,12 @@ func (ls *StackEthernet) Encapsulate(carrierData []byte, frameOffset int) (n int
 		return 0, err
 	}
 	*efrm.DestinationHardwareAddr() = ls.gwmac
-	for i := range ls.handlers {
-		h := &ls.handlers[i]
-		n, err = h.encapsulate(dst[:mtu], 14)
+	if h := ls.handlers.GetCurrent(); h != nil {
+		n, err = h.doEncapsulate(dst[:mtu], 14)
 		if err != nil {
 			ls.error("handling", slog.String("proto", ethernet.Type(h.proto).String()), slog.String("err", err.Error()))
-			continue
-		}
-		if n > 0 {
+			err = nil
+		} else if n > 0 {
 			// Found packet
 			*efrm.SourceHardwareAddr() = ls.mac
 			efrm.SetEtherType(ethernet.Type(h.proto))

@@ -11,6 +11,7 @@ import (
 	"github.com/soypat/lneto/dhcpv4"
 	"github.com/soypat/lneto/dns"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internet"
 	"github.com/soypat/lneto/ntp"
 	"github.com/soypat/lneto/tcp"
@@ -49,6 +50,8 @@ type StackAsync struct {
 
 	totalsent uint64
 	totalrecv uint64
+
+	encData internal.EncData
 }
 
 type StackConfig struct {
@@ -77,7 +80,12 @@ func (s *StackAsync) Encapsulate(carrierData []byte, etherOff int) (int, error) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	n, err := s.link.Encapsulate(carrierData, etherOff)
+	s.encData.Reset()
+	if !s.link.CheckEncapsulate(&s.encData) {
+		return 0, nil
+	}
+
+	n, err := s.link.DoEncapsulate(carrierData, etherOff)
 	s.totalsent += uint64(n)
 	return n, err
 }

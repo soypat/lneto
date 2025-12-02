@@ -93,16 +93,22 @@ func (listener *NodeTCPListener) TryAccept() (*tcp.Conn, error) {
 	return nil, errors.New("no conns available")
 }
 
-// Encapsulate implements [StackNode].
-func (listener *NodeTCPListener) Encapsulate(carrierData []byte, tcpFrameOffset int) (int, error) {
+// CheckEncapsulate implements [StackNode].
+func (listener *NodeTCPListener) CheckEncapsulate(*internal.EncData) bool {
+	return !listener.isClosed()
+}
+
+// DoEncapsulate implements [StackNode].
+func (listener *NodeTCPListener) DoEncapsulate(carrierData []byte, tcpFrameOffset int) (int, error) {
 	if listener.isClosed() {
+		// this shouldn't happen if CheckEncapsulate is called beforehand
 		return 0, net.ErrClosed
 	}
 	for i, conn := range listener.accepted {
 		if conn == nil {
 			continue
 		}
-		n, err := conn.Encapsulate(carrierData, tcpFrameOffset)
+		n, err := conn.DoEncapsulate(carrierData, tcpFrameOffset)
 		if err != nil {
 			err = listener.maintainConn(listener.accepted, i, err)
 		}

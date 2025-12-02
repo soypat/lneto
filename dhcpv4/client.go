@@ -11,6 +11,7 @@ import (
 	"net/netip"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/ipv4"
 )
 
@@ -124,7 +125,16 @@ func (c *Client) setIP(b []byte, frameOffset int) {
 	}
 }
 
-func (c *Client) Encapsulate(carrierFrame []byte, frameOffset int) (int, error) {
+func (c *Client) canEncapsulate() bool {
+	return !c.isClosed() && (c.state != StateSelecting || c.offer.valid) && c.state != StateBound && c.state != StateRequesting
+}
+
+func (c *Client) CheckEncapsulate(*internal.EncData) bool {
+	return c.canEncapsulate()
+}
+
+func (c *Client) DoEncapsulate(carrierFrame []byte, frameOffset int) (int, error) {
+	// TODO: see if to use c.canEncapsulate()
 	if c.isClosed() {
 		return 0, net.ErrClosed
 	} else if c.state == StateSelecting && !c.offer.valid {

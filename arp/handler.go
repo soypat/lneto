@@ -6,6 +6,7 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/internal"
 )
 
 type Handler struct {
@@ -104,7 +105,12 @@ func (h *Handler) StartQuery(proto []byte) error {
 	return nil
 }
 
-func (h *Handler) Encapsulate(eth []byte, frameOffset int) (int, error) {
+func (h *Handler) CheckEncapsulate(*internal.EncData) bool {
+	// TODO: could be optimized: return len(h.pendingResponse) > 0 || queriesToBeSent > 0
+	return true
+}
+
+func (h *Handler) DoEncapsulate(eth []byte, frameOffset int) (int, error) {
 	b := eth[frameOffset:]
 	n := h.expectSize()
 	if len(b) < n {

@@ -3,6 +3,8 @@ package ntp
 import (
 	"errors"
 	"time"
+
+	"github.com/soypat/lneto/internal"
 )
 
 type state uint8
@@ -50,7 +52,11 @@ func (c *Client) ConnectionID() *uint64 {
 	return &c.connID
 }
 
-func (c *Client) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
+func (c *Client) CheckEncapsulate(*internal.EncData) bool {
+	return !c.IsDone()
+}
+
+func (c *Client) DoEncapsulate(carrierData []byte, frameOffset int) (int, error) {
 	if c.IsDone() {
 		return 0, nil
 	}

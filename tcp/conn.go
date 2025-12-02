@@ -278,7 +278,18 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 	return nil
 }
 
-func (conn *Conn) Encapsulate(buf []byte, off int) (n int, err error) {
+func (conn *Conn) CheckEncapsulate(ed *internal.EncData) bool {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if len(conn.remoteAddr) == 0 {
+		return false
+	}
+
+	ed.RemoteAddr = conn.remoteAddr
+	return true
+}
+
+func (conn *Conn) DoEncapsulate(buf []byte, off int) (n int, err error) {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	if len(conn.remoteAddr) == 0 {

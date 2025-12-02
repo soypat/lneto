@@ -7,6 +7,7 @@ import (
 	"net"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/internal"
 )
 
 type Client struct {
@@ -43,7 +44,11 @@ func (c *Client) StartResolve(localPort, txid uint16, cfg ResolveConfig) error {
 	return nil
 }
 
-func (c *Client) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
+func (c *Client) CheckEncapsulate(*internal.EncData) bool {
+	return c.state == dnsSendQuery
+}
+
+func (c *Client) DoEncapsulate(carrierData []byte, frameOffset int) (int, error) {
 	if c.isClosed() {
 		return 0, net.ErrClosed
 	} else if c.state != dnsSendQuery {
