@@ -11,6 +11,9 @@ type Cache[K, V comparable] struct {
 }
 
 func New[K, V comparable](maxSize int) Cache[K, V] {
+	if maxSize <= 0 {
+		panic("lrucache max size must be > 0")
+	}
 	return Cache[K, V]{
 		nodes: make([]node[K, V], 0, maxSize),
 	}
