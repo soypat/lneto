@@ -9,6 +9,17 @@ import (
 	"github.com/soypat/lneto/internal"
 )
 
+var (
+	errInvalidHandlerAddrConfig = errors.New("invalid Handler address config")
+	errInvalidHandlerConfig     = errors.New("invalid Handler query or pending config")
+	errNoResponseYet            = errors.New("no response yet")
+	errQueryNotSent             = errors.New("query not yet sent")
+	errBadProtoAddrLen          = errors.New("bad protocol address length")
+	errTooManyQueries           = errors.New("too many ongoing queries")
+	errBadARPHardware           = errors.New("bad ARP hardware")
+	errBadARPProto              = errors.New("bad ARP proto")
+)
+
 type Handler struct {
 	connID          uint64
 	ourHWAddr       []byte
@@ -37,9 +48,9 @@ func (h *Handler) ConnectionID() *uint64 { return &h.connID }
 func (h *Handler) Reset(cfg HandlerConfig) error {
 	if len(cfg.HardwareAddr) == 0 || len(cfg.HardwareAddr) > 255 ||
 		len(cfg.ProtocolAddr) == 0 || len(cfg.ProtocolAddr) > 255 {
-		return errors.New("invalid Handler address config")
+		return errInvalidHandlerAddrConfig
 	} else if cfg.MaxQueries <= 0 || cfg.MaxPending <= 0 {
-		return errors.New("invalid Handler query or pending config")
+		return errInvalidHandlerConfig
 	}
 	*h = Handler{
 		connID:          h.connID + 1,
@@ -81,21 +92,21 @@ func (h *Handler) QueryResult(protoAddr []byte) (hwAddr []byte, err error) {
 	for i := range h.queries {
 		if bytes.Equal(protoAddr, h.queries[i].protoaddr) {
 			if !h.queries[i].querysent {
-				return nil, errors.New("query not yet sent")
+				return nil, errQueryNotSent
 			} else if len(h.queries[i].hwaddr) == 0 {
-				return nil, errors.New("no response yet")
+				return nil, errNoResponseYet
 			}
 			return h.queries[i].hwaddr, nil
 		}
 	}
-	return nil, errors.New("query not exist or dropped")
+	return nil, ErrARPQueryNotFound
 }
 
 func (h *Handler) StartQuery(proto []byte) error {
 	if len(proto) != len(h.ourProtoAddr) {
-		return errors.New("bad protocol address length")
+		return errBadProtoAddrLen
 	} else if len(h.queries) == cap(h.queries) {
-		return errors.New("too many ongoing queries")
+		return errTooManyQueries
 	}
 	h.queries = h.queries[:len(h.queries)+1]
 	q := &h.queries[len(h.queries)-1]
@@ -169,11 +180,11 @@ func (h *Handler) Demux(ethFrame []byte, frameOffset int) error {
 	}
 	htype, hlen := afrm.Hardware()
 	if htype != h.htype || int(hlen) != len(h.ourHWAddr) {
-		return errors.New("bad ARP hardware")
+		return errBadARPHardware
 	}
 	protoType, protoLen := afrm.Protocol()
 	if protoType != h.protoType || int(protoLen) != len(h.ourProtoAddr) {
-		return errors.New("bad ARP proto")
+		return errBadARPProto
 	}
 	switch afrm.Operation() {
 	case OpRequest:
@@ -200,7 +211,7 @@ func (h *Handler) Demux(ethFrame []byte, frameOffset int) error {
 }
 
 func trySetEthernetDst(ethFrame []byte, dst []byte) {
-	if len(ethFrame) > 14 {
+	if len(ethFrame) >= 14 {
 		copy(ethFrame[:6], dst)
 	}
 }

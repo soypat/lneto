@@ -2,6 +2,8 @@ package xnet
 
 import (
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/netip"
 	"sync"
 	"time"
@@ -56,6 +58,7 @@ type StackAsync struct {
 
 type StackConfig struct {
 	StaticAddress   netip.Addr
+	SubnetMask      netip.Addr
 	DNSServer       netip.Addr
 	NTPServer       netip.Addr
 	Hostname        string
@@ -100,6 +103,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	mac := cfg.HardwareAddress
 	mtu := cfg.MTU
 	addr := cfg.StaticAddress
+	subnetMask := cfg.SubnetMask
 	s.prng = uint32(cfg.RandSeed)
 	if s.prng == 0 {
 		return errors.New("zero random seed")
@@ -110,13 +114,34 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	} else if addr.Is6() {
 		return errors.New("IPv6 unsupported as of yet")
 	}
+	if !subnetMask.Is4() {
+		// if the subnet is not specified, assume it contains a single address
+		subnetMask = netip.AddrFrom4([4]byte{255, 255, 255, 255})
+	}
+
 	const linkNodes = 2 // ARP and IP nodes
 	err := s.link.Reset6(mac, ethernet.BroadcastAddr(), int(mtu), linkNodes)
 	if err != nil {
 		return err
 	}
-	const ipNodes = 2 // UDP, TCP ports.
-	err = s.ip.Reset(addr, ipNodes)
+	const ipNodes = 2             // UDP, TCP ports.
+	const udpMaintenanceConns = 3 // DHCP, DNS, NTP.
+	err = s.ip.Reset(addr, subnetMask, ipNodes, udpMaintenanceConns+cfg.MaxTCPConns,
+		func(addr [4]byte) error {
+			fmt.Println("query", addr)
+			return s.arp.StartQuery(addr[:])
+		},
+		func(addr [4]byte) ([6]byte, error) {
+			fmt.Println("check result", addr)
+			hwAddr, err := s.arp.QueryResult(addr[:])
+			if err != nil {
+				return [6]byte{}, err
+			}
+			if len(hwAddr) != 6 {
+				return [6]byte{}, errors.New("invalid hardware address length")
+			}
+			return *(*[6]byte)(hwAddr), err
+		})
 	if err != nil {
 		return err
 	}
@@ -124,7 +149,6 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	if err != nil {
 		return err
 	}
-	const udpMaintenanceConns = 3 // DHCP, DNS, NTP.
 	err = s.udps.ResetUDP(udpMaintenanceConns)
 	if err != nil {
 		return err
@@ -155,6 +179,9 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	if err != nil {
 		return err
 	}
+
+	s.ip.SetLogger(slog.Default())
+
 	var timebuf [32]time.Time
 	s.sysprec = ntp.CalculateSystemPrecision(time.Now, timebuf[:])
 	if s.clientID == "" {
@@ -165,7 +192,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	return nil
 }
 
-var errInvalidIPAddr = errors.New("invaldi IP address")
+var errInvalidIPAddr = errors.New("invalid IP address")
 
 func (s *StackAsync) resetARP() error {
 	mac := s.link.HardwareAddr6()
@@ -198,10 +225,10 @@ func (s *StackAsync) Prand32() uint32 {
 	return seed
 }
 
-func (s *StackAsync) SetIPAddr(addr netip.Addr) error {
+func (s *StackAsync) SetIPAddr(addr netip.Addr, subnetMask netip.Addr) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	err := s.ip.SetAddr(addr)
+	err := s.ip.SetAddr(addr, subnetMask)
 	if err != nil {
 		return err
 	}
@@ -412,6 +439,7 @@ type DHCPResults struct {
 	BroadcastAddr netip.Addr
 	Gateway       netip.Addr
 	Subnet        netip.Prefix
+	SubnetMask    netip.Addr
 	TRebind       uint32 // [seconds]
 	TRenewal      uint32
 	TLease        uint32 // IP lease time [seconds].
@@ -444,7 +472,7 @@ func (stack *StackAsync) AssimilateDHCPResults(results *DHCPResults) error {
 	stack.mu.Lock()
 	defer stack.mu.Unlock()
 	if results.AssignedAddr.IsValid() {
-		err := stack.ip.SetAddr(results.AssignedAddr)
+		err := stack.ip.SetAddr(results.AssignedAddr, results.SubnetMask)
 		if err != nil {
 			return err
 		}
@@ -479,6 +507,7 @@ func (s *StackAsync) populateDHCPResults() error {
 	s.dhcpResults = DHCPResults{
 		Router:        router,
 		Subnet:        s.dhcp.SubnetPrefix(),
+		SubnetMask:    addr4(s.dhcp.SubnetMask()),
 		AssignedAddr:  netip.AddrFrom4(assigned4),
 		ServerAddr:    addr4(s.dhcp.ServerAddr()),
 		BroadcastAddr: addr4(s.dhcp.BroadcastAddr()),

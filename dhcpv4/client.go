@@ -35,7 +35,7 @@ type Client struct {
 	siip       addr4 // SIAddr.
 	reqIP      addr4
 	router     addr4
-	subnet     addr4
+	subnetMask addr4
 	broadcast  addr4
 	gateway    addr4
 
@@ -288,7 +288,7 @@ func (c *Client) setOptions(frm Frame) error {
 		case OptBroadcastAddress:
 			c.broadcast.setmaybe(data)
 		case OptSubnetMask:
-			c.subnet.setmaybe(data)
+			c.subnetMask.setmaybe(data)
 
 		case OptHostName:
 			if len(data) < maxHostSize {
@@ -360,7 +360,7 @@ func (d *Client) AssignedAddr() ([4]byte, bool)                  { return d.offe
 func (d *Client) ServerAddr() ([4]byte, bool)                    { return d.svip.unpack() }
 func (d *Client) RouterAddr() ([4]byte, bool)                    { return d.router.unpack() }
 func (d *Client) GatewayAddr() ([4]byte, bool)                   { return d.gateway.unpack() }
-func (d *Client) Subnet() ([4]byte, bool)                        { return d.subnet.unpack() }
+func (d *Client) SubnetMask() ([4]byte, bool)                    { return d.subnetMask.unpack() }
 func (d *Client) RebindingSeconds() uint32                       { return d.tRebind }
 func (d *Client) RenewalSeconds() uint32                         { return d.tRenew }
 func (d *Client) IPLeaseSeconds() uint32                         { return d.tIPLease }
@@ -382,10 +382,10 @@ func (d *Client) SubnetPrefix() netip.Prefix {
 }
 
 func (d *Client) SubnetCIDRBits() uint8 {
-	if !d.subnet.valid {
+	if !d.subnetMask.valid {
 		return 0
 	}
-	v := binary.BigEndian.Uint32(d.subnet.addr[:])
+	v := binary.BigEndian.Uint32(d.subnetMask.addr[:])
 	return 32 - uint8(bits.TrailingZeros32(v))
 }
 

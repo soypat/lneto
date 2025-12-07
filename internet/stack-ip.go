@@ -1,14 +1,17 @@
 package internet
 
 import (
+	"encoding/binary"
 	"errors"
 	"io"
 	"log/slog"
 	"net/netip"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
+	"github.com/soypat/lneto/internal/lrucache"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/ipv4/icmpv4"
 	"github.com/soypat/lneto/tcp"
@@ -17,21 +20,31 @@ import (
 
 var _ StackNode = (*StackIP)(nil)
 
+type (
+	queueARPFunc func([4]byte) error
+	checkARPFunc func([4]byte) ([6]byte, error)
+)
+
 type StackIP struct {
 	connID      uint64
 	ipID        uint16
 	ip          [4]byte
+	subMask32   uint32
 	validator   lneto.Validator
 	handlers    handlers
 	pendingICMP [][]byte
+	arpCache    lrucache.Cache[[4]byte, [6]byte]
+	queueARP    queueARPFunc
+	checkARP    checkARPFunc
 	logger
 }
 
-func (sb *StackIP) Reset(addr netip.Addr, maxNodes int) error {
+func (sb *StackIP) Reset(addr netip.Addr, subnetMask netip.Addr, maxNodes int, arpCacheSize int,
+	queueARP queueARPFunc, checkARP checkARPFunc) error {
 	if maxNodes <= 0 {
 		return errZeroMaxNodesArg
 	}
-	err := sb.SetAddr(addr)
+	err := sb.SetAddr(addr, subnetMask)
 	if err != nil {
 		return err
 	}
@@ -42,18 +55,27 @@ func (sb *StackIP) Reset(addr netip.Addr, maxNodes int) error {
 		handlers:    sb.handlers,
 		logger:      sb.logger,
 		ip:          sb.ip,
+		subMask32:   sb.subMask32,
 		pendingICMP: make([][]byte, maxNodes*4),
+		arpCache:    lrucache.New[[4]byte, [6]byte](arpCacheSize),
+		queueARP:    queueARP,
+		checkARP:    checkARP,
 	}
 	return nil
 }
 
-func (sb *StackIP) SetAddr(addr netip.Addr) error {
+func (sb *StackIP) SetAddr(addr netip.Addr, subnetMask netip.Addr) error {
 	if !addr.IsValid() {
 		return errors.New("invalid IP")
-	} else if !addr.Is4() {
+	}
+	if !subnetMask.IsValid() {
+		return errors.New("invalid subnet mask")
+	}
+	if !addr.Is4() || !subnetMask.Is4() {
 		return errors.New("require IPv4")
 	}
 	sb.ip = addr.As4()
+	sb.subMask32 = asUint32(subnetMask.As4())
 	return nil
 }
 
@@ -144,12 +166,49 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 	return err
 }
 
+func (sb *StackIP) ipv4Addr(addr []byte) ([4]byte, bool) {
+	if len(addr) != 4 {
+		sb.error("StackIP:ipv4Addr invalid address", slog.Any("addr", addr))
+		return [4]byte{}, false
+	}
+	return *(*[4]byte)(addr), true
+}
+
+func asUint32(addr [4]byte) uint32 {
+	return binary.BigEndian.Uint32(addr[:])
+}
+
+func (sb *StackIP) isLocal(addr [4]byte) bool {
+	return (asUint32(sb.ip)^asUint32(addr))&sb.subMask32 == 0
+}
+
 func (sb *StackIP) CheckEncapsulate(ed *internal.EncData) bool {
 	for range sb.handlers.Len() {
 		node := sb.handlers.GetNext()
 		if node.checkEncapsulate(ed) {
-			// TODO: check if ed.RemoteAddr can be translated to a hardware address
-			return true
+			if len(ed.RemoteAddr) == 0 {
+				return true
+			}
+			if addr, ok := sb.ipv4Addr(ed.RemoteAddr); ok {
+				if !sb.isLocal(addr) {
+					return true
+				}
+				if _, ok := sb.arpCache.Get(addr); ok {
+					return true
+				}
+				if hwAddr, err := sb.checkARP(addr); err != nil {
+					if err == arp.ErrARPQueryNotFound {
+						if err = sb.queueARP(addr); err != nil {
+							sb.error("StackIP:queueARP", slog.String("err", err.Error()))
+						}
+					} else {
+						sb.error("StackIP:checkARP", slog.String("err", err.Error()))
+					}
+				} else {
+					sb.arpCache.Push(addr, hwAddr)
+					return true
+				}
+			}
 		}
 	}
 	return false
@@ -211,6 +270,28 @@ func (sb *StackIP) DoEncapsulate(carrierData []byte, frameOffset int) (int, erro
 				return 0, errors.New("invalid UDP length")
 			}
 		}
+
+		_, destAddrSlice, _, _, err := internal.GetIPAddr(frame)
+		if err != nil {
+			sb.error("StackIP:encapsulate", slog.String("err", err.Error()))
+			return 0, err
+		}
+		destAddr, ok := sb.ipv4Addr(destAddrSlice)
+		if !ok {
+			err = errors.New("unsupported IP address")
+			sb.error("StackIP:encapsulate", slog.String("err", err.Error()))
+			return 0, err
+		}
+		if sb.isLocal(destAddr) {
+			destHwAddr, ok := sb.arpCache.Get(destAddr)
+			if !ok {
+				err = errors.New("ARP cache entry unexpectedly not found")
+				sb.error("StackIP:encapsulate", slog.String("err", err.Error()))
+				return 0, err
+			}
+			internal.SetDestHWAddr(carrierData[:frameOffset], destHwAddr)
+		}
+
 		return totalLen, nil
 	}
 	return 0, nil
