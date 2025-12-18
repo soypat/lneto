@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"io"
 	"math"
+	"strconv"
 
 	"github.com/soypat/lneto"
 )
@@ -29,7 +30,7 @@ func (ps *StackPorts) Reset(protocol uint64, dstPortOffset uint16, maxNodes int)
 	} else if maxNodes <= 0 {
 		return errZeroMaxNodesArg
 	}
-	ps.handlers.reset(maxNodes)
+	ps.handlers.reset("StackPorts(proto="+strconv.Itoa(int(protocol))+")", maxNodes)
 	*ps = StackPorts{
 		connID:     ps.connID + 1,
 		handlers:   ps.handlers,
@@ -58,15 +59,7 @@ func (ps *StackPorts) Demux(b []byte, offset int) (err error) {
 		return io.ErrShortBuffer
 	}
 	port := binary.BigEndian.Uint16(b[int(ps.dstPortOff)+offset:])
-	node := ps.handlers.nodeByPort(port)
-	if node == nil {
-		return nil
-	}
-	err = node.demux(b, offset)
-	if ps.handlers.tryHandleError(node, err) {
-		// discarded handler gracefully.
-		err = nil
-	}
+	_, err = ps.handlers.demuxByPort(b, offset, port)
 	return err
 }
 

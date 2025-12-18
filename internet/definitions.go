@@ -2,6 +2,7 @@ package internet
 
 import (
 	"errors"
+	"log/slog"
 	"math"
 	"net"
 	"slices"
@@ -44,11 +45,14 @@ type node struct {
 }
 
 type handlers struct {
+	context string
+	logger
 	nodes []node
 }
 
-func (h *handlers) reset(maxNodes int) {
+func (h *handlers) reset(context string, maxNodes int) {
 	h.nodes = slices.Grow(h.nodes[:0], maxNodes)
+	h.context = context
 }
 
 func (h *handlers) registerByProto(n node) error {
@@ -136,22 +140,50 @@ func (h *handlers) nodeByPortProto(port uint16, protocol uint16) *node {
 	return nil
 }
 
-// encapsulateAny does not add the offset to the amount of bytes written.
-func (h *handlers) encapsulateAny(buf []byte, offset int) (*node, int, error) {
+func (h *handlers) demuxByProto(buf []byte, offset int, proto uint16) (*node, error) {
+	node := h.nodeByProto(proto)
+	if node == nil {
+		return nil, nil
+	}
+	err := node.demux(buf, offset)
+	if h.tryHandleError(node, err) {
+		err = nil
+	}
+	return node, err
+}
+
+func (h *handlers) demuxByPort(buf []byte, offset int, port uint16) (*node, error) {
+	node := h.nodeByPort(port)
+	if node == nil {
+		return nil, nil
+	}
+	err := node.demux(buf, offset)
+	if h.tryHandleError(node, err) {
+		err = nil
+	}
+	return node, err
+}
+
+// encapsulateAny finds a node suitable to write and encapsulates the package.
+// If no data is sent it returns the last error encountered.
+func (h *handlers) encapsulateAny(buf []byte, offset int) (_ *node, n int, err error) {
 	for i := range h.nodes {
 		node := &h.nodes[i]
 		if node.IsInvalid() {
 			continue
 		}
-		n, err := node.encapsulate(buf, offset)
+		n, err = node.encapsulate(buf, offset)
 		if h.tryHandleError(node, err) {
 			err = nil // CLOSE error handled gracefully by deleting node.
 		}
-		if err != nil || n > 0 {
+		if n > 0 {
 			return node, n, err
+		} else if err != nil {
+			// Make sure not to hang on one handler that keeps returning an error.
+			h.error("handlers:encapsulate", slog.String("func", "encapsulateAny"), slog.String("ctx", h.context), slog.String("err", err.Error()))
 		}
 	}
-	return nil, 0, nil
+	return nil, 0, err // Return last written error.
 }
 
 var (
@@ -162,32 +194,6 @@ var (
 	errNodesFull       = errors.New("no more room for new nodes")
 	_                  = net.ErrClosed
 )
-
-func registerNode(nodesPtr *[]node, h node) error {
-	if cap(*nodesPtr)-len(*nodesPtr) <= 0 {
-		*nodesPtr = nodesCompact(*nodesPtr)
-	}
-	if cap(*nodesPtr)-len(*nodesPtr) <= 0 {
-		return errNodesFull
-	}
-	*nodesPtr = append(*nodesPtr, h)
-	return nil
-}
-
-func handleNodeError(nodesPtr *[]node, nodeIdx int, err error) (discarded bool) {
-	if err != nil {
-		if nodeIdx >= len(*nodesPtr) {
-			panic("unreachable")
-		}
-		nodes := *nodesPtr
-		if checkNodeErr(&nodes[nodeIdx], err) {
-			// *nodesPtr = slices.Delete(nodes, nodeIdx, nodeIdx+1)
-			(*nodesPtr)[nodeIdx] = node{} // 'Delete' node without modifying slice length.
-			discarded = true
-		}
-	}
-	return discarded
-}
 
 func (node *node) IsInvalid() bool {
 	return node.demux == nil || node.encapsulate == nil || (node.connID != nil && node.currConnID != *node.connID)
@@ -217,39 +223,7 @@ func nodeFromStackNode(s StackNode, port uint16, protocol uint64, remoteAddr []b
 	}
 }
 
-func getNode(nodes []node, port uint16, protocol uint16) (node *node) {
-	for i := range nodes {
-		node := &nodes[i]
-		if node.port == port && node.proto == protocol {
-			return node
-		}
-	}
-	return nil
-}
-
 // destroy removes all references to underlying StackNode. Allows garbage collection of node if possible.
 func (n *node) destroy() {
 	*n = node{}
-}
-
-func getNodeByProto(nodes []node, protocol uint16) int {
-	for i := range nodes {
-		node := &nodes[i]
-		if node.proto == protocol {
-			return i
-		}
-	}
-
-	return -1
-}
-
-func nodesCompact(nodes []node) []node {
-	nilOff := 0
-	for i := 0; i < len(nodes); i++ {
-		if !nodes[i].IsInvalid() {
-			nodes[nilOff] = nodes[i]
-			nilOff++
-		}
-	}
-	return nodes[:nilOff]
 }
