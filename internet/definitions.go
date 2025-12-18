@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"net"
+	"slices"
 )
 
 // StackNode is an abstraction of a packet exchanging protocol controller. This is the building block for all protocols,
@@ -39,6 +40,118 @@ type node struct {
 	encapsulate func([]byte, int) (int, error)
 	proto       uint16
 	port        uint16
+	remoteAddr  []byte
+}
+
+type handlers struct {
+	nodes []node
+}
+
+func (h *handlers) reset(maxNodes int) {
+	h.nodes = slices.Grow(h.nodes[:0], maxNodes)
+}
+
+func (h *handlers) registerByProto(n node) error {
+	err := h.prepAdd()
+	if err != nil {
+		return err
+	}
+	if h.nodeByProto(n.proto) != nil {
+		return errProtoRegistered
+	}
+	h.nodes = append(h.nodes, n)
+	return nil
+}
+
+func (h *handlers) registerByPortProto(n node) error {
+	err := h.prepAdd()
+	if err != nil {
+		return err
+	}
+	if h.nodeByPortProto(n.port, n.proto) != nil {
+		return errProtoRegistered
+	}
+	h.nodes = append(h.nodes, n)
+	return nil
+}
+
+func (h *handlers) prepAdd() error {
+	if h.full() {
+		h.compact()
+		if h.full() {
+			return errNodesFull
+		}
+	}
+	return nil
+}
+
+func (h *handlers) full() bool { return cap(h.nodes) == len(h.nodes) }
+
+func (h *handlers) compact() {
+	nilOff := 0
+	for i := 0; i < len(h.nodes); i++ {
+		if !h.nodes[i].IsInvalid() {
+			h.nodes[nilOff] = h.nodes[i]
+			nilOff++
+		}
+	}
+	h.nodes = h.nodes[:nilOff]
+}
+
+func (h *handlers) tryHandleError(node *node, err error) (discardedGracefully bool) {
+	if err != nil && (err == net.ErrClosed || node.IsInvalid()) {
+		node.destroy()
+		discardedGracefully = true
+	}
+	return discardedGracefully
+}
+
+func (h *handlers) nodeByProto(proto uint16) *node {
+	for i := range h.nodes {
+		node := &h.nodes[i]
+		if node.proto == proto {
+			return node
+		}
+	}
+	return nil
+}
+
+func (h *handlers) nodeByPort(port uint16) *node {
+	for i := range h.nodes {
+		node := &h.nodes[i]
+		if node.port == port {
+			return node
+		}
+	}
+	return nil
+}
+
+func (h *handlers) nodeByPortProto(port uint16, protocol uint16) *node {
+	for i := range h.nodes {
+		node := &h.nodes[i]
+		if node.port == port && node.proto == protocol {
+			return node
+		}
+	}
+	return nil
+}
+
+// encapsulateAny does not add the offset to the amount of bytes written.
+func (h *handlers) encapsulateAny(buf []byte, offset int) (*node, int, error) {
+	for i := range h.nodes {
+		node := &h.nodes[i]
+		if node.IsInvalid() {
+			continue
+		}
+		n, err := node.encapsulate(buf, offset)
+		if h.tryHandleError(node, err) {
+			err = nil // CLOSE error handled gracefully by deleting node.
+		}
+		if err != nil || n > 0 {
+			return node, n, err
+		}
+	}
+	return nil, 0, nil
 }
 
 var (
@@ -84,7 +197,7 @@ func checkNodeErr(node *node, err error) (discard bool) {
 	return node.IsInvalid() || (err != nil && err == net.ErrClosed)
 }
 
-func nodeFromStackNode(s StackNode, port uint16, protocol uint64) node {
+func nodeFromStackNode(s StackNode, port uint16, protocol uint64, remoteAddr []byte) node {
 	if protocol > math.MaxUint16 {
 		panic(">16bit protocol number unsupported")
 	}
@@ -100,6 +213,7 @@ func nodeFromStackNode(s StackNode, port uint16, protocol uint64) node {
 		encapsulate: s.Encapsulate,
 		proto:       uint16(protocol),
 		port:        port,
+		remoteAddr:  append([]byte{}, remoteAddr...),
 	}
 }
 
@@ -111,28 +225,6 @@ func getNode(nodes []node, port uint16, protocol uint16) (node *node) {
 		}
 	}
 	return nil
-}
-
-func getEncapsulateNode(nodes *[]node, carrierData []byte, frameOffset int) (nodeIdx int, written int, err error) {
-	destroyed := false
-	for i := range *nodes {
-		node := &(*nodes)[i]
-		if node.IsInvalid() {
-			destroyed = true
-			node.destroy()
-			continue
-		}
-		written, err = node.encapsulate(carrierData, frameOffset)
-		if written > 0 {
-			return i, written, err
-		} else if err != nil {
-
-		}
-	}
-	if destroyed {
-		*nodes = nodesCompact(*nodes)
-	}
-	return -1, 0, nil
 }
 
 // destroy removes all references to underlying StackNode. Allows garbage collection of node if possible.

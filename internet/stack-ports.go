@@ -4,14 +4,13 @@ import (
 	"encoding/binary"
 	"io"
 	"math"
-	"slices"
 
 	"github.com/soypat/lneto"
 )
 
 type StackPorts struct {
 	connID     uint64
-	handlers   []node
+	handlers   handlers
 	dstPortOff uint16
 	protocol   uint16
 }
@@ -30,7 +29,7 @@ func (ps *StackPorts) Reset(protocol uint64, dstPortOffset uint16, maxNodes int)
 	} else if maxNodes <= 0 {
 		return errZeroMaxNodesArg
 	}
-	ps.handlers = slices.Grow(ps.handlers[:0], maxNodes)
+	ps.handlers.reset(maxNodes)
 	*ps = StackPorts{
 		connID:     ps.connID + 1,
 		handlers:   ps.handlers,
@@ -50,20 +49,7 @@ func (ps *StackPorts) Encapsulate(b []byte, offset int) (n int, err error) {
 	if int(ps.dstPortOff)+offset+2 > len(b) {
 		return 0, io.ErrShortBuffer
 	}
-	var i int
-	for i = 0; i < len(ps.handlers); i++ {
-		if ps.handlers[i].IsInvalid() {
-			continue
-		}
-		n, err = ps.handlers[i].encapsulate(b, offset)
-		if err != nil || n > 0 {
-			if ps.handleResult(i, n, err) {
-				err = nil // Handler discarded. Keep looking for other handlers.
-				continue
-			}
-			break
-		}
-	}
+	_, n, err = ps.handlers.encapsulateAny(b, offset)
 	return n, err
 }
 
@@ -72,52 +58,25 @@ func (ps *StackPorts) Demux(b []byte, offset int) (err error) {
 		return io.ErrShortBuffer
 	}
 	port := binary.BigEndian.Uint16(b[int(ps.dstPortOff)+offset:])
-	var i int
-	for i = 0; i < len(ps.handlers); i++ {
-		if port != ps.handlers[i].port {
-			continue
-		}
-		err = ps.handlers[i].demux(b, offset)
-		if err != nil {
-			if ps.handleResult(i, 0, err) {
-				err = nil // Handler discarded. Keep looking for other maybe available handlers.
-				continue
-			}
-			break
-		}
+	node := ps.handlers.nodeByPort(port)
+	if node == nil {
+		return nil
 	}
-	ps.handleResult(i, 0, err)
+	err = node.demux(b, offset)
+	if ps.handlers.tryHandleError(node, err) {
+		// discarded handler gracefully.
+		err = nil
+	}
 	return err
 }
 
 func (ps *StackPorts) Register(h StackNode) error {
 	port := h.LocalPort()
 	proto := h.Protocol()
-
 	if port <= 0 {
 		return errZeroPort
 	} else if proto != uint64(ps.protocol) {
 		return errInvalidProto
 	}
-	var cid uint64
-	cidPtr := h.ConnectionID()
-	if cidPtr != nil {
-		cid = *cidPtr
-	}
-	return registerNode(&ps.handlers, node{
-		demux:       h.Demux,
-		encapsulate: h.Encapsulate,
-		port:        port,
-		currConnID:  cid,
-		connID:      cidPtr,
-		proto:       uint16(proto),
-	})
-}
-
-func (ps *StackPorts) handleResult(handlerIdx, n int, err error) (discarded bool) {
-	if handleNodeError(&ps.handlers, handlerIdx, err) {
-		discarded = true
-		println("DISCARD", handlerIdx, "witherr", err.Error())
-	}
-	return discarded
+	return ps.handlers.registerByPortProto(nodeFromStackNode(h, port, proto, nil))
 }

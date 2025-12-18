@@ -17,7 +17,7 @@ type StackUDPPort struct {
 }
 
 func (sudp *StackUDPPort) SetStackNode(node StackNode, raddr []byte, rmport uint16) {
-	sudp.h = nodeFromStackNode(node, node.LocalPort(), node.Protocol())
+	sudp.h = nodeFromStackNode(node, node.LocalPort(), node.Protocol(), raddr)
 	sudp.rmport = rmport
 	sudp.raddr = append(sudp.raddr[:0], raddr...)
 }

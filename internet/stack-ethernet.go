@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"math"
 	"net"
-	"slices"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
@@ -14,7 +13,7 @@ import (
 
 type StackEthernet struct {
 	connID   uint64
-	handlers []node
+	handlers handlers
 	logger
 	mac   [6]byte
 	gwmac [6]byte
@@ -43,7 +42,7 @@ func (ls *StackEthernet) Reset6(mac, gateway [6]byte, mtu, maxNodes int) error {
 	} else if maxNodes <= 0 {
 		return errZeroMaxNodesArg
 	}
-	ls.handlers = slices.Grow(ls.handlers[:0], maxNodes)
+	ls.handlers.reset(maxNodes)
 	*ls = StackEthernet{
 		connID:   ls.connID + 1,
 		handlers: ls.handlers,
@@ -68,18 +67,7 @@ func (ls *StackEthernet) Register(h StackNode) error {
 	if proto > math.MaxUint16 || proto <= 1500 {
 		return errInvalidProto
 	}
-	eproto := uint16(proto)
-	for i := range ls.handlers {
-		hgot := &ls.handlers[i]
-		if hgot.proto == eproto {
-			return errProtoRegistered
-		}
-	}
-	return registerNode(&ls.handlers, node{
-		demux:       h.Demux,
-		encapsulate: h.Encapsulate,
-		proto:       eproto,
-	})
+	return ls.handlers.registerByProto(nodeFromStackNode(h, 0, proto, nil))
 }
 
 func (ls *StackEthernet) Demux(carrierData []byte, frameOffset int) (err error) {
@@ -98,11 +86,14 @@ func (ls *StackEthernet) Demux(carrierData []byte, frameOffset int) (err error) 
 	if vld.HasError() {
 		return vld.ErrPop()
 	}
-
-	for i := range ls.handlers {
-		h := &ls.handlers[i]
-		if h.proto == uint16(etype) {
-			return h.demux(efrm.Payload(), 0)
+	{
+		h := ls.handlers.nodeByProto(uint16(etype))
+		if h != nil {
+			err := h.demux(efrm.Payload(), 0)
+			if ls.handlers.tryHandleError(h, err) {
+				err = nil
+			}
+			return err
 		}
 	}
 DROP:
@@ -121,19 +112,16 @@ func (ls *StackEthernet) Encapsulate(carrierData []byte, frameOffset int) (n int
 		return 0, err
 	}
 	*efrm.DestinationHardwareAddr() = ls.gwmac
-	for i := range ls.handlers {
-		h := &ls.handlers[i]
-		n, err = h.encapsulate(dst[:mtu], 14)
+	var h *node
+	h, n, err = ls.handlers.encapsulateAny(dst[:mtu], 14)
+	if n > 0 {
+		// Found packet
+		*efrm.SourceHardwareAddr() = ls.mac
+		efrm.SetEtherType(ethernet.Type(h.proto))
+		n += 14
 		if err != nil {
-			ls.error("handling", slog.String("proto", ethernet.Type(h.proto).String()), slog.String("err", err.Error()))
-			continue
-		}
-		if n > 0 {
-			// Found packet
-			*efrm.SourceHardwareAddr() = ls.mac
-			efrm.SetEtherType(ethernet.Type(h.proto))
-			return n + 14, nil
+			ls.error("Ethernet:encapuslate", slog.String("err", err.Error()))
 		}
 	}
-	return 0, err
+	return n, err
 }
