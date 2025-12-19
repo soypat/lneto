@@ -174,7 +174,7 @@ func (h *handlers) demuxByPort(buf []byte, offset int, port uint16) (*node, erro
 func (h *handlers) encapsulateAny(buf []byte, offsetIP, offsetThisFrame int) (_ *node, n int, err error) {
 	for i := range h.nodes {
 		node := &h.nodes[i]
-		if node.IsInvalid() {
+		if node.IsInvalid() || (len(node.remoteAddr) > 0 && isAllZeros(node.remoteAddr)) {
 			continue
 		}
 		n, err = node.encapsulate(buf, offsetIP, offsetThisFrame)
@@ -189,6 +189,15 @@ func (h *handlers) encapsulateAny(buf []byte, offsetIP, offsetThisFrame int) (_ 
 		}
 	}
 	return nil, 0, err // Return last written error.
+}
+
+func isAllZeros(b []byte) bool {
+	for i := range b {
+		if b[i] != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 var (
@@ -224,7 +233,7 @@ func nodeFromStackNode(s StackNode, port uint16, protocol uint64, remoteAddr []b
 		encapsulate: s.Encapsulate,
 		proto:       uint16(protocol),
 		port:        port,
-		remoteAddr:  append([]byte{}, remoteAddr...),
+		remoteAddr:  remoteAddr, // SHARED MEMORY- used to signal.
 	}
 }
 

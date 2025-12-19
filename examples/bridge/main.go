@@ -359,7 +359,7 @@ func (s *Stack) StartLookupIP(host string) error {
 	var u internet.StackUDPPort
 	dns4 := dnsSrvs.As4()
 	u.SetStackNode(&s.dns, dns4[:], dns.ServerPort)
-	err = s.udps.Register(&u)
+	err = s.udps.Register(&u, nil)
 	if err != nil {
 		return err
 	}
@@ -405,7 +405,7 @@ func (s *Stack) BeginDHCPRequest(request [4]byte) error {
 	}
 	var u internet.StackUDPPort
 	u.SetStackNode(&s.dhcp, nil, dhcpv4.DefaultServerPort)
-	err = s.udps.Register(&u)
+	err = s.udps.Register(&u, nil)
 	if err != nil {
 		return err
 	}
@@ -417,7 +417,7 @@ func (s *Stack) StartNTP(addr netip.Addr) error {
 	var u internet.StackUDPPort
 	addr4 := addr.As4()
 	u.SetStackNode(&s.ntp, addr4[:], ntp.ServerPort)
-	err := s.udps.Register(&u)
+	err := s.udps.Register(&u, nil)
 	return err
 }
 

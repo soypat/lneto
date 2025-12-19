@@ -234,11 +234,23 @@ func (s *StackAsync) Gateway6() [6]byte {
 func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrPort) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var mac []byte
+	if s.dhcpResults.Subnet.Contains(addrp.Addr()) {
+		mac = make([]byte, 6)
+		ip := addrp.Addr().As4()
+		// StartQuery starts an ARP query for addresses in this network.
+		// On finishing query MAC is set and thus the StackPort will allow encapsulating
+		// data on that connection.
+		err = s.arp.StartQuery(mac, ip[:])
+		if err != nil {
+			return err
+		}
+	}
 	err = conn.OpenActive(localPort, addrp, tcp.Value(s.Prand32()))
 	if err != nil {
 		return err
 	}
-	err = s.tcps.Register(conn)
+	err = s.tcps.Register(conn, mac) // MAC is set later on by ARP response arriving to our network.
 	if err != nil {
 		conn.Abort()
 		return err
@@ -253,7 +265,7 @@ func (s *StackAsync) ListenTCP(conn *tcp.Conn, localPort uint16) (err error) {
 	if err != nil {
 		return err
 	}
-	err = s.tcps.Register(conn)
+	err = s.tcps.Register(conn, nil)
 	if err != nil {
 		conn.Abort()
 		return err
@@ -294,7 +306,7 @@ func (s *StackAsync) StartLookupIP(host string) error {
 	}
 	dns4 := s.dnssv.As4()
 	s.dnsUDP.SetStackNode(&s.dns, dns4[:], dns.ServerPort)
-	err = s.udps.Register(&s.dnsUDP)
+	err = s.udps.Register(&s.dnsUDP, nil)
 	return err
 }
 
@@ -341,7 +353,7 @@ func (s *StackAsync) StartDHCPv4Request(request [4]byte) error {
 	}
 
 	s.dhcpUDP.SetStackNode(&s.dhcp, nil, dhcpv4.DefaultServerPort)
-	err = s.udps.Register(&s.dhcpUDP)
+	err = s.udps.Register(&s.dhcpUDP, nil)
 	if err != nil {
 		return err
 	}
@@ -355,7 +367,7 @@ func (s *StackAsync) StartNTP(addr netip.Addr) error {
 
 	addr4 := addr.As4()
 	s.ntpUDP.SetStackNode(&s.ntp, addr4[:], ntp.ServerPort)
-	err := s.udps.Register(&s.ntpUDP)
+	err := s.udps.Register(&s.ntpUDP, nil)
 	return err
 }
 

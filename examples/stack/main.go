@@ -239,7 +239,7 @@ func (stack *Stack) OpenTCPListener(port uint16) (*internet.NodeTCPListener, err
 	if err != nil {
 		return nil, err
 	}
-	err = stack.tcpports.Register(&listener)
+	err = stack.tcpports.Register(&listener, nil) // Passive TCP requires no MAC setting.
 	if err != nil {
 		return nil, err
 	}
@@ -261,7 +261,7 @@ func (stack *Stack) OpenPassiveTCP(port uint16, iss tcp.Value) (*tcp.Conn, error
 	if err != nil {
 		return nil, err
 	}
-	err = stack.tcpports.Register(conn)
+	err = stack.tcpports.Register(conn, nil) // Passive MAC with no listening.
 	if err != nil {
 		return nil, err
 	}

@@ -2,11 +2,13 @@ package internet
 
 import (
 	"encoding/binary"
+	"errors"
 	"io"
 	"math"
 	"strconv"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/ethernet"
 )
 
 type StackPorts struct {
@@ -50,7 +52,12 @@ func (ps *StackPorts) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame 
 	if int(ps.dstPortOff)+offsetToFrame+2 > len(carrierData) {
 		return 0, io.ErrShortBuffer
 	}
-	_, n, err = ps.handlers.encapsulateAny(carrierData, offsetToIP, offsetToFrame)
+	var node *node
+	node, n, err = ps.handlers.encapsulateAny(carrierData, offsetToIP, offsetToFrame)
+	if n > 0 && len(node.remoteAddr) == 6 && offsetToIP >= 14 {
+		efrm, _ := ethernet.NewFrame(carrierData[offsetToIP-14:])
+		*efrm.DestinationHardwareAddr() = [6]byte(node.remoteAddr)
+	}
 	return n, err
 }
 
@@ -63,13 +70,17 @@ func (ps *StackPorts) Demux(b []byte, offset int) (err error) {
 	return err
 }
 
-func (ps *StackPorts) Register(h StackNode) error {
+// Register registers a port StackNode on StackPorts.
+// If dstMAC is set to non-nil, length six buffer then
+func (ps *StackPorts) Register(h StackNode, dstMAC []byte) error {
 	port := h.LocalPort()
 	proto := h.Protocol()
 	if port <= 0 {
 		return errZeroPort
 	} else if proto != uint64(ps.protocol) {
 		return errInvalidProto
+	} else if dstMAC != nil && len(dstMAC) != 6 {
+		return errors.New("invalid MAC")
 	}
-	return ps.handlers.registerByPortProto(nodeFromStackNode(h, port, proto, nil))
+	return ps.handlers.registerByPortProto(nodeFromStackNode(h, port, proto, dstMAC))
 }
