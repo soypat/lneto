@@ -34,13 +34,13 @@ func TestHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf, discard [64]byte
-	n, err := c1.Encapsulate(buf[:], 0)
+	n, err := c1.Encapsulate(buf[:], -1, 0)
 	if err != nil {
 		t.Fatal("error on should be nop send:", err)
 	} else if n > 0 {
 		t.Fatal("should not send if no query")
 	}
-	n, err = c2.Encapsulate(buf[:], 0)
+	n, err = c2.Encapsulate(buf[:], -1, 0)
 	if err != nil {
 		t.Fatal("error on should be nop send:", err)
 	} else if n > 0 {
@@ -50,11 +50,11 @@ func TestHandler(t *testing.T) {
 	// Perform ARP exchange.
 	expectHWAddr := c2.ourHWAddr
 	queryAddr := c2.ourProtoAddr
-	err = c1.StartQuery(queryAddr)
+	err = c1.StartQuery(nil, queryAddr)
 	if err != nil {
 		t.Fatal(err)
 	}
-	n, err = c1.Encapsulate(buf[:], 0) // Send Request.
+	n, err = c1.Encapsulate(buf[:], -1, 0) // Send Request.
 	if err != nil {
 		t.Fatal(err)
 	} else if n == 0 {
@@ -66,14 +66,14 @@ func TestHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	n, err = c2.Encapsulate(buf[:], 0) //  Send response.
+	n, err = c2.Encapsulate(buf[:], -1, 0) //  Send response.
 	if err != nil {
 		t.Fatal(err)
 	} else if n == 0 {
 		t.Fatal("got no response to request")
 	}
 	validateARP(t, buf[:])
-	n, err = c2.Encapsulate(discard[:], 0) // Double tap check, should send nothing.
+	n, err = c2.Encapsulate(discard[:], -1, 0) // Double tap check, should send nothing.
 	if err != nil {
 		t.Fatal("double tap send error:", err)
 	} else if n > 0 {
@@ -90,13 +90,13 @@ func TestHandler(t *testing.T) {
 	} else if !bytes.Equal(hwaddr, expectHWAddr) {
 		log.Fatalf("expected to get hwaddr %x!=%x", hwaddr, expectHWAddr)
 	}
-	n, err = c1.Encapsulate(buf[:], 0)
+	n, err = c1.Encapsulate(buf[:], -1, 0)
 	if err != nil {
 		t.Fatal(err)
 	} else if n > 0 {
 		t.Fatal("expected no data")
 	}
-	n, err = c2.Encapsulate(buf[:], 0)
+	n, err = c2.Encapsulate(buf[:], -1, 0)
 	if err != nil {
 		t.Fatal(err)
 	} else if n > 0 {

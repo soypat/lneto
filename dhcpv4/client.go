@@ -104,11 +104,11 @@ func (c *Client) Protocol() uint64      { return uint64(lneto.IPProtoUDP) }
 func (c *Client) LocalPort() uint16     { return DefaultClientPort }
 func (c *Client) ConnectionID() *uint64 { return &c.connID }
 
-func (c *Client) setIP(b []byte, frameOffset int) {
-	if frameOffset < 28 {
-		return // Not an IP/UDP frame.
+func (c *Client) setIP(carrierFrame []byte, offsetToIP int) {
+	if offsetToIP < 0 {
+		return // No IP layer present.
 	}
-	ifrm, _ := ipv4.NewFrame(b)
+	ifrm, _ := ipv4.NewFrame(carrierFrame[offsetToIP:])
 	ifrm.SetID((uint16(c.currentXID) ^ uint16(c.currentXID>>16)) + uint16(c.state))
 	if c.state > StateInit {
 		// Match server ToS since some routers drop DHCP requests if no ToS set apparently?
@@ -124,7 +124,7 @@ func (c *Client) setIP(b []byte, frameOffset int) {
 	}
 }
 
-func (c *Client) Encapsulate(carrierFrame []byte, frameOffset int) (int, error) {
+func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
 	if c.isClosed() {
 		return 0, net.ErrClosed
 	} else if c.state == StateSelecting && !c.offer.valid {
@@ -134,7 +134,7 @@ func (c *Client) Encapsulate(carrierFrame []byte, frameOffset int) (int, error) 
 	} else if c.state == StateRequesting {
 		return 0, nil // Currently awaiting ACK.
 	}
-	dst := carrierFrame[frameOffset:]
+	dst := carrierData[offsetToFrame:]
 	frm, err := NewFrame(dst)
 	if err != nil {
 		return 0, err
@@ -194,7 +194,7 @@ func (c *Client) Encapsulate(carrierFrame []byte, frameOffset int) (int, error) 
 	opts[numOpts] = byte(OptEnd)
 	numOpts++
 	c.setHeader(frm)
-	c.setIP(carrierFrame, frameOffset)
+	c.setIP(carrierData, offsetToIP)
 	c.state = nextState
 	return OptionsOffset + numOpts, nil
 }

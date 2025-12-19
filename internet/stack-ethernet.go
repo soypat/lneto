@@ -92,9 +92,9 @@ DROP:
 	return lneto.ErrPacketDrop
 }
 
-func (ls *StackEthernet) Encapsulate(carrierData []byte, frameOffset int) (n int, err error) {
+func (ls *StackEthernet) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (n int, err error) {
 	mtu := ls.mtu
-	dst := carrierData[frameOffset:]
+	dst := carrierData[offsetToFrame:]
 	if len(dst) < int(mtu) {
 		return 0, io.ErrShortBuffer
 	}
@@ -104,7 +104,12 @@ func (ls *StackEthernet) Encapsulate(carrierData []byte, frameOffset int) (n int
 	}
 	*efrm.DestinationHardwareAddr() = ls.gwmac
 	var h *node
-	h, n, err = ls.handlers.encapsulateAny(dst[:mtu], 14)
+	// Children (IP/ARP) start at offset 14 (after ethernet header).
+	// For IP: offsetToIP=14, offsetToFrame=14
+	// For ARP: offsetToIP=-1, offsetToFrame=14 (but ARP ignores offsetToIP)
+	// Clip carrierData to MTU to prevent writes beyond MTU limit.
+	mtuLimit := offsetToFrame + int(mtu)
+	h, n, err = ls.handlers.encapsulateAny(carrierData[:mtuLimit], offsetToFrame+14, offsetToFrame+14)
 	if n == 0 {
 		return n, err
 	}

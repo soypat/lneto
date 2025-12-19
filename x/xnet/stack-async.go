@@ -73,11 +73,11 @@ func (s *StackAsync) Demux(carrierData []byte, etherOff int) error {
 	return s.link.Demux(carrierData, etherOff)
 }
 
-func (s *StackAsync) Encapsulate(carrierData []byte, etherOff int) (int, error) {
+func (s *StackAsync) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	n, err := s.link.Encapsulate(carrierData, etherOff)
+	n, err := s.link.Encapsulate(carrierData, offsetToIP, offsetToFrame)
 	s.totalsent += uint64(n)
 	return n, err
 }
@@ -376,7 +376,7 @@ func (s *StackAsync) StartResolveHardwareAddress6(ip netip.Addr) error {
 		return errors.New("unsupported or invalid IP address")
 	}
 	addr := ip.As4()
-	return s.arp.StartQuery(addr[:])
+	return s.arp.StartQuery(nil, addr[:])
 }
 
 // ResultResolveHardwareAddress6

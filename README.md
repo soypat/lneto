@@ -57,11 +57,11 @@ The following interface is implemented by networking stack nodes and the stack t
 ```go
 type StackNode interface {
     // Encapsulate receives a buffer the receiver must fill with data. 
-    // The receiver's start byte is at carrierData[frameOffset].
-	Encapsulate(carrierData []byte, frameOffset int) (int, error)
+    // The receiver's start byte is at carrierData[offsetToFrame].
+	Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error)
 	// Demux receives a buffer the receiver must decode and pass on to corresponding child StackNode(s).
-    // The receiver's start byte is at carrierData[frameOffset].
-	Demux(carrierData []byte, frameOffset int) error
+    // The receiver's start byte is at carrierData[offsetToFrame].
+	Demux(carrierData []byte, offsetToFrame int) error
     // LocalPort returns the port of the node if applicable or zero. Used for UDP/TCP nodes.
 	LocalPort() uint16
     // Protocol returns the protocol of this node if applicable or zero. Usually either a ethernet.Type (EtherType) or lneto.IPProto (IP Protocol number).

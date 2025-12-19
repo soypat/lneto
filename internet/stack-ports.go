@@ -46,11 +46,11 @@ func (ps *StackPorts) Protocol() uint64 { return uint64(ps.protocol) }
 
 func (ps *StackPorts) ConnectionID() *uint64 { return &ps.connID }
 
-func (ps *StackPorts) Encapsulate(b []byte, offset int) (n int, err error) {
-	if int(ps.dstPortOff)+offset+2 > len(b) {
+func (ps *StackPorts) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (n int, err error) {
+	if int(ps.dstPortOff)+offsetToFrame+2 > len(carrierData) {
 		return 0, io.ErrShortBuffer
 	}
-	_, n, err = ps.handlers.encapsulateAny(b, offset)
+	_, n, err = ps.handlers.encapsulateAny(carrierData, offsetToIP, offsetToFrame)
 	return n, err
 }
 

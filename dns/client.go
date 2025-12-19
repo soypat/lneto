@@ -43,7 +43,7 @@ func (c *Client) StartResolve(localPort, txid uint16, cfg ResolveConfig) error {
 	return nil
 }
 
-func (c *Client) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
+func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
 	if c.isClosed() {
 		return 0, net.ErrClosed
 	} else if c.state != dnsSendQuery {
@@ -51,7 +51,7 @@ func (c *Client) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
 	}
 
 	msg := &c.msg
-	frame := carrierData[frameOffset:]
+	frame := carrierData[offsetToFrame:]
 	msglen := msg.Len()
 	if msglen > uint16(len(frame)) {
 		return 0, errCalcLen

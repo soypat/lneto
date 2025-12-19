@@ -107,7 +107,7 @@ func main() {
 			}
 		}
 
-		nw, err := stack.ethernet.Encapsulate(buf[:], 0)
+		nw, err := stack.ethernet.Encapsulate(buf[:], -1, 0)
 		if err != nil {
 			lg.Error("handle", slog.String("err", err.Error()))
 		} else if nw > 0 {
@@ -230,7 +230,7 @@ func (stack *Stack) Recv(b []byte) error {
 }
 
 func (stack *Stack) Send(b []byte) (int, error) {
-	return stack.ethernet.Encapsulate(b, 0)
+	return stack.ethernet.Encapsulate(b, -1, 0)
 }
 
 func (stack *Stack) OpenTCPListener(port uint16) (*internet.NodeTCPListener, error) {
