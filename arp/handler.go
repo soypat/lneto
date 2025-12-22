@@ -7,6 +7,7 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/internal"
 )
 
 type Handler struct {
@@ -143,7 +144,7 @@ func (h *Handler) StartQuery(dstHWAddr, proto []byte) error {
 		return errors.New("bad protocol address length")
 	} else if dstHWAddr != nil && len(dstHWAddr) != len(h.ourHWAddr) {
 		return errors.New("mismatch hardware size")
-	} else if dstHWAddr != nil && !allZeros(dstHWAddr) {
+	} else if dstHWAddr != nil && !internal.IsZeroed(dstHWAddr...) {
 		return errors.New("write-to buffer must be zeroed out")
 	}
 	h.queries = h.queries[:len(h.queries)+1]
@@ -238,7 +239,7 @@ func (h *Handler) Demux(ethFrame []byte, frameOffset int) error {
 			if mac == nil && bytes.Equal(q.protoaddr, protoaddr) {
 				q.hwaddr = append(q.hwaddr, hwaddr...)
 				if q.dstHw != nil {
-					if !allZeros(q.dstHw) {
+					if !internal.IsZeroed(q.dstHw...) {
 						slog.Error("race-condition:ARP-reused-buffer")
 					}
 					copy(q.dstHw, hwaddr) // External write to user buffer.
@@ -257,13 +258,4 @@ func trySetEthernetDst(ethFrame []byte, dst []byte) {
 	if len(ethFrame) > 14 {
 		copy(ethFrame[:6], dst)
 	}
-}
-
-func allZeros(b []byte) bool {
-	for i := range b {
-		if b[i] != 0 {
-			return false
-		}
-	}
-	return true
 }

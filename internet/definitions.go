@@ -165,6 +165,7 @@ func (h *handlers) demuxByPort(buf []byte, offset int, port uint16) (*node, erro
 	err := node.demux(buf, offset)
 	if h.tryHandleError(node, err) {
 		err = nil
+		node = nil // Node is destroyed in tryHandleError and invalidated.
 	}
 	return node, err
 }
@@ -174,12 +175,13 @@ func (h *handlers) demuxByPort(buf []byte, offset int, port uint16) (*node, erro
 func (h *handlers) encapsulateAny(buf []byte, offsetIP, offsetThisFrame int) (_ *node, n int, err error) {
 	for i := range h.nodes {
 		node := &h.nodes[i]
-		if node.IsInvalid() || (len(node.remoteAddr) > 0 && isAllZeros(node.remoteAddr)) {
+		if node.IsInvalid() {
 			continue
 		}
 		n, err = node.encapsulate(buf, offsetIP, offsetThisFrame)
 		if h.tryHandleError(node, err) {
-			err = nil // CLOSE error handled gracefully by deleting node.
+			err = nil  // CLOSE error handled gracefully by deleting node.
+			node = nil // Node is destroyed in tryHandleError and invalidated.
 		}
 		if n > 0 {
 			return node, n, err
@@ -189,15 +191,6 @@ func (h *handlers) encapsulateAny(buf []byte, offsetIP, offsetThisFrame int) (_ 
 		}
 	}
 	return nil, 0, err // Return last written error.
-}
-
-func isAllZeros(b []byte) bool {
-	for i := range b {
-		if b[i] != 0 {
-			return false
-		}
-	}
-	return true
 }
 
 var (

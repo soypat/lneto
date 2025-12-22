@@ -250,7 +250,7 @@ func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrP
 	if err != nil {
 		return err
 	}
-	err = s.tcps.Register(conn, mac) // MAC is set later on by ARP response arriving to our network.
+	err = s.tcps.Register(conn) // MAC is set later on by ARP response arriving to our network.
 	if err != nil {
 		conn.Abort()
 		return err
@@ -265,7 +265,7 @@ func (s *StackAsync) ListenTCP(conn *tcp.Conn, localPort uint16) (err error) {
 	if err != nil {
 		return err
 	}
-	err = s.tcps.Register(conn, nil)
+	err = s.tcps.Register(conn)
 	if err != nil {
 		conn.Abort()
 		return err
@@ -306,7 +306,7 @@ func (s *StackAsync) StartLookupIP(host string) error {
 	}
 	dns4 := s.dnssv.As4()
 	s.dnsUDP.SetStackNode(&s.dns, dns4[:], dns.ServerPort)
-	err = s.udps.Register(&s.dnsUDP, nil)
+	err = s.udps.Register(&s.dnsUDP)
 	return err
 }
 
@@ -353,7 +353,7 @@ func (s *StackAsync) StartDHCPv4Request(request [4]byte) error {
 	}
 
 	s.dhcpUDP.SetStackNode(&s.dhcp, nil, dhcpv4.DefaultServerPort)
-	err = s.udps.Register(&s.dhcpUDP, nil)
+	err = s.udps.Register(&s.dhcpUDP)
 	if err != nil {
 		return err
 	}
@@ -367,7 +367,7 @@ func (s *StackAsync) StartNTP(addr netip.Addr) error {
 
 	addr4 := addr.As4()
 	s.ntpUDP.SetStackNode(&s.ntp, addr4[:], ntp.ServerPort)
-	err := s.udps.Register(&s.ntpUDP, nil)
+	err := s.udps.Register(&s.ntpUDP)
 	return err
 }
 
