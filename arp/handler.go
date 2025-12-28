@@ -35,6 +35,14 @@ func (h *Handler) Protocol() uint64 { return uint64(ethernet.TypeARP) }
 
 func (h *Handler) ConnectionID() *uint64 { return &h.connID }
 
+func (h *Handler) UpdateProtoAddr(protoAddr []byte) error {
+	if len(protoAddr) != len(h.ourProtoAddr) {
+		return errors.New("mismatch ARP proto size")
+	}
+	copy(h.ourProtoAddr, protoAddr)
+	return nil
+}
+
 func (h *Handler) Reset(cfg HandlerConfig) error {
 	if len(cfg.HardwareAddr) == 0 || len(cfg.HardwareAddr) > 255 ||
 		len(cfg.ProtocolAddr) == 0 || len(cfg.ProtocolAddr) > 255 {

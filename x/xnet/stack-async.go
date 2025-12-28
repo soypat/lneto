@@ -205,7 +205,9 @@ func (s *StackAsync) SetIPAddr(addr netip.Addr) error {
 	if err != nil {
 		return err
 	}
-	return s.resetARP()
+	ip := addr.As4()
+	err = s.arp.UpdateProtoAddr(ip[:])
+	return err
 }
 
 func (s *StackAsync) Addr() netip.Addr {
@@ -456,12 +458,7 @@ func (stack *StackAsync) AssimilateDHCPResults(results *DHCPResults) error {
 	stack.mu.Lock()
 	defer stack.mu.Unlock()
 	if results.AssignedAddr.IsValid() {
-		err := stack.ip.SetAddr(results.AssignedAddr)
-		if err != nil {
-			return err
-		}
-		// Reset ARP handler with new IP address so it can respond to ARP requests.
-		err = stack.resetARP()
+		err := stack.SetIPAddr(results.AssignedAddr)
 		if err != nil {
 			return err
 		}
