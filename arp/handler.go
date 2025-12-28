@@ -43,7 +43,7 @@ func (h *Handler) Reset(cfg HandlerConfig) error {
 		return errors.New("invalid Handler query or pending config")
 	}
 	*h = Handler{
-		connID:          h.connID + 1,
+		connID:          h.connID,
 		ourHWAddr:       h.ourHWAddr[:0],
 		ourProtoAddr:    h.ourProtoAddr[:0],
 		htype:           cfg.HardwareType,
