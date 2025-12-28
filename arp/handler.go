@@ -255,7 +255,7 @@ func (h *Handler) Demux(ethFrame []byte, frameOffset int) error {
 }
 
 func trySetEthernetDst(ethFrame []byte, dst []byte) {
-	if len(ethFrame) > 14 {
+	if len(ethFrame) >= 14 {
 		copy(ethFrame[:6], dst)
 	}
 }
