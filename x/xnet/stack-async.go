@@ -169,7 +169,7 @@ func (s *StackAsync) resetARP() error {
 	if addr.Is6() {
 		proto = ethernet.TypeIPv6
 	}
-	return s.arp.Reset(arp.HandlerConfig{
+	err := s.arp.Reset(arp.HandlerConfig{
 		HardwareAddr: mac[:],
 		ProtocolAddr: addr.AsSlice(),
 		MaxQueries:   3,
@@ -177,6 +177,14 @@ func (s *StackAsync) resetARP() error {
 		HardwareType: 1,
 		ProtocolType: proto,
 	})
+	if err != nil {
+		return err
+	}
+	err = s.link.Register(&s.arp)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // Prand32 generates a pseudo random 32-bit unsigned integer from the internal state and advances the seed.
