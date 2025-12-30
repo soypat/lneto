@@ -33,6 +33,7 @@ type StackAsync struct {
 	dhcpUDP     internet.StackUDPPort
 	dhcp        dhcpv4.Client
 	dhcpResults DHCPResults
+	subnet      netip.Prefix // Local subnet for ARP resolution.
 
 	dnsUDP  internet.StackUDPPort
 	dns     dns.Client
@@ -112,6 +113,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	if err != nil {
 		return err
 	}
+	//
 	err = s.resetARP()
 	if err != nil {
 		return err
@@ -135,10 +137,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	}
 
 	// Now setup stacks.
-	err = s.link.Register(&s.arp) // ARP.
-	if err != nil {
-		return err
-	}
+	// ARP registered in resetARP.
 	err = s.link.Register(&s.ip) // IPv4 | IPv6
 	if err != nil {
 		return err
@@ -201,6 +200,10 @@ func (s *StackAsync) Prand32() uint32 {
 func (s *StackAsync) SetIPAddr(addr netip.Addr) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.setIPAddr(addr)
+}
+
+func (s *StackAsync) setIPAddr(addr netip.Addr) error {
 	err := s.ip.SetAddr(addr)
 	if err != nil {
 		return err
@@ -245,7 +248,7 @@ func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrP
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var mac []byte
-	if s.dhcpResults.Subnet.Contains(addrp.Addr()) {
+	if s.subnet.Contains(addrp.Addr()) {
 		mac = make([]byte, 6)
 		ip := addrp.Addr().As4()
 		// StartQuery starts an ARP query for addresses in this network.
@@ -454,11 +457,15 @@ func (s *StackAsync) ReadStatistics(stats *Statistics) {
 // AssimilateDHCPResults sets the stack's following parameters:
 //   - IPv4 address.
 //   - DNS server.
+//   - Subnet (for ARP resolution of local addresses).
 func (stack *StackAsync) AssimilateDHCPResults(results *DHCPResults) error {
 	stack.mu.Lock()
 	defer stack.mu.Unlock()
+	if results.Subnet.IsValid() {
+		stack.subnet = results.Subnet
+	}
 	if results.AssignedAddr.IsValid() {
-		err := stack.SetIPAddr(results.AssignedAddr)
+		err := stack.setIPAddr(results.AssignedAddr)
 		if err != nil {
 			return err
 		}

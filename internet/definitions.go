@@ -118,7 +118,7 @@ func (h *handlers) tryHandleError(node *node, err error) (discardedGracefully bo
 func (h *handlers) nodeByProto(proto uint16) *node {
 	for i := range h.nodes {
 		node := &h.nodes[i]
-		if node.proto == proto {
+		if node.proto == proto && !node.IsInvalid() {
 			return node
 		}
 	}
@@ -128,7 +128,7 @@ func (h *handlers) nodeByProto(proto uint16) *node {
 func (h *handlers) nodeByPort(port uint16) *node {
 	for i := range h.nodes {
 		node := &h.nodes[i]
-		if node.port == port {
+		if node.port == port && !node.IsInvalid() {
 			return node
 		}
 	}
@@ -138,7 +138,7 @@ func (h *handlers) nodeByPort(port uint16) *node {
 func (h *handlers) nodeByPortProto(port uint16, protocol uint16) *node {
 	for i := range h.nodes {
 		node := &h.nodes[i]
-		if node.port == port && node.proto == protocol {
+		if node.port == port && node.proto == protocol && !node.IsInvalid() {
 			return node
 		}
 	}
