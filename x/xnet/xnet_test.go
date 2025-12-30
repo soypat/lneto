@@ -322,7 +322,7 @@ func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAs
 	default:
 		panic("OOB")
 	}
-	n, err := src.Encapsulate(buf[:], 0)
+	n, err := src.Encapsulate(buf[:], -1, 0)
 	if err != nil {
 		t.Fatal(err)
 	} else if n == 0 {

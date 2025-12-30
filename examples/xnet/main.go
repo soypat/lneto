@@ -110,7 +110,7 @@ func run() (err error) {
 		var frames []pcap.Frame
 		for {
 			clear(buf)
-			nwrite, err := stack.Encapsulate(buf[:], 0)
+			nwrite, err := stack.Encapsulate(buf[:], -1, 0)
 			if err != nil {
 				fmt.Println("ERR:ENCAPSULATE", err)
 			} else if nwrite > 0 {

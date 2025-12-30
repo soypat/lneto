@@ -199,7 +199,7 @@ func run() (err error) {
 		prevState = state
 
 		clear(buf)
-		nwrite, err := stack.Encapsulate(buf[:], 0)
+		nwrite, err := stack.Encapsulate(buf[:], -1, 0)
 		if err != nil {
 			fmt.Println("ERR:ENCAPSULATE", err)
 		} else if nwrite > 0 {
@@ -267,10 +267,10 @@ func (s *Stack) Demux(b []byte, _ int) (err error) {
 	return s.link.Demux(b, 0)
 }
 
-func (s *Stack) Encapsulate(b []byte, _ int) (int, error) {
-	n, err := s.link.Encapsulate(b, 0)
+func (s *Stack) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
+	n, err := s.link.Encapsulate(carrierData, offsetToIP, offsetToFrame)
 	if n > 0 {
-		iframes, errpcap := s.shark.CaptureEthernet(s.aux[:0], b[:n], 0)
+		iframes, errpcap := s.shark.CaptureEthernet(s.aux[:0], carrierData[:n], 0)
 		if errpcap != nil {
 			fmt.Println("OU", iframes, errpcap.Error())
 		} else {
@@ -426,7 +426,7 @@ func (s *Stack) StartResolveHardwareAddress6(ip netip.Addr) error {
 		return errors.New("unsupported or invalid IP address")
 	}
 	addr := ip.As4()
-	return s.arp.StartQuery(addr[:])
+	return s.arp.StartQuery(nil, addr[:])
 }
 
 func (s *Stack) ResultResolveHardwareAddress6(ip netip.Addr) (hw [6]byte, err error) {

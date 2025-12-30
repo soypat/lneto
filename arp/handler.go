@@ -3,9 +3,11 @@ package arp
 import (
 	"bytes"
 	"errors"
+	"log/slog"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/internal"
 )
 
 type Handler struct {
@@ -32,6 +34,14 @@ func (h *Handler) LocalPort() uint16 { return 0 }
 func (h *Handler) Protocol() uint64 { return uint64(ethernet.TypeARP) }
 
 func (h *Handler) ConnectionID() *uint64 { return &h.connID }
+
+func (h *Handler) UpdateProtoAddr(protoAddr []byte) error {
+	if len(protoAddr) != len(h.ourProtoAddr) {
+		return errors.New("mismatch ARP proto size")
+	}
+	copy(h.ourProtoAddr, protoAddr)
+	return nil
+}
 
 func (h *Handler) Reset(cfg HandlerConfig) error {
 	if len(cfg.HardwareAddr) == 0 || len(cfg.HardwareAddr) > 255 ||
@@ -63,8 +73,21 @@ func (h *Handler) Reset(cfg HandlerConfig) error {
 type queryResult struct {
 	protoaddr []byte
 	hwaddr    []byte
+	dstHw     []byte
 	querysent bool
 }
+
+func (qr *queryResult) destroy() {
+	*qr = queryResult{protoaddr: qr.protoaddr[:0], hwaddr: qr.hwaddr[:0]}
+}
+
+func (qr *queryResult) response() []byte {
+	if len(qr.hwaddr) == 0 {
+		return nil
+	}
+	return qr.hwaddr[:]
+}
+func (qr *queryResult) isInvalid() bool { return len(qr.protoaddr) == 0 }
 
 // AbortPending drops pending queries and incoming requests.
 func (h *Handler) AbortPending() {
@@ -81,31 +104,69 @@ func (h *Handler) QueryResult(protoAddr []byte) (hwAddr []byte, err error) {
 		if bytes.Equal(protoAddr, h.queries[i].protoaddr) {
 			if !h.queries[i].querysent {
 				return nil, errors.New("query not yet sent")
-			} else if len(h.queries[i].hwaddr) == 0 {
+			}
+			mac := h.queries[i].response()
+			if mac == nil {
 				return nil, errors.New("no response yet")
 			}
-			return h.queries[i].hwaddr, nil
+			return mac, nil
 		}
 	}
 	return nil, errors.New("query not exist or dropped")
 }
 
-func (h *Handler) StartQuery(proto []byte) error {
+func (h *Handler) DiscardQuery(protoAddr []byte) error {
+	for i := range h.queries {
+		q := &h.queries[i]
+		if bytes.Equal(protoAddr, q.protoaddr) {
+			q.destroy()
+			return nil
+		}
+	}
+	return errors.New("query not found")
+}
+
+func (h *Handler) compactQueries() {
+	validOff := 0
+	for i := 0; i < len(h.queries); i++ {
+		if h.queries[i].isInvalid() {
+			h.queries[validOff] = h.queries[i]
+			validOff++
+		}
+	}
+	h.queries = h.queries[:validOff]
+}
+
+// StartQuery queues a query to perform over ARP for the protocol address `proto`.
+// The user can additionally specify an dstHWAddr to write query result to on completion.
+// If dstHWAddr is nil then query still occurs but no external buffer is written on query completion.
+// dstHWAddr must be zeroed out (invalid MAC).
+func (h *Handler) StartQuery(dstHWAddr, proto []byte) error {
+	if len(h.queries) == cap(h.queries) {
+		h.compactQueries()
+		if len(h.queries) == cap(h.queries) {
+			return errors.New("too many ongoing queries")
+		}
+	}
 	if len(proto) != len(h.ourProtoAddr) {
 		return errors.New("bad protocol address length")
-	} else if len(h.queries) == cap(h.queries) {
-		return errors.New("too many ongoing queries")
+	} else if dstHWAddr != nil && len(dstHWAddr) != len(h.ourHWAddr) {
+		return errors.New("mismatch hardware size")
+	} else if dstHWAddr != nil && !internal.IsZeroed(dstHWAddr...) {
+		return errors.New("write-to buffer must be zeroed out")
 	}
 	h.queries = h.queries[:len(h.queries)+1]
 	q := &h.queries[len(h.queries)-1]
-	q.hwaddr = q.hwaddr[:0]
-	q.querysent = false
-	q.protoaddr = append(q.protoaddr[:0], proto...)
+	*q = queryResult{
+		protoaddr: append(q.protoaddr[:0], proto...),
+		hwaddr:    q.hwaddr[:0],
+		dstHw:     dstHWAddr,
+	}
 	return nil
 }
 
-func (h *Handler) Encapsulate(eth []byte, frameOffset int) (int, error) {
-	b := eth[frameOffset:]
+func (h *Handler) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
+	b := carrierData[offsetToFrame:]
 	n := h.expectSize()
 	if len(b) < n {
 		return 0, errShortARP
@@ -120,7 +181,7 @@ func (h *Handler) Encapsulate(eth []byte, frameOffset int) (int, error) {
 		copy(hwsender, h.ourHWAddr)
 		n := copy(b, afrm.Clip().RawData())
 		tgt, _ := afrm.Target()
-		trySetEthernetDst(eth[:frameOffset], tgt)
+		trySetEthernetDst(carrierData[:offsetToFrame], tgt)
 		return n, nil
 	}
 	for i := range h.queries {
@@ -139,7 +200,7 @@ func (h *Handler) Encapsulate(eth []byte, frameOffset int) (int, error) {
 				hwTarget[j] = 0
 			}
 			broadcast := ethernet.BroadcastAddr()
-			trySetEthernetDst(eth[:frameOffset], broadcast[:])
+			trySetEthernetDst(carrierData[:offsetToFrame], broadcast[:])
 			return n, nil
 		}
 	}
@@ -181,8 +242,16 @@ func (h *Handler) Demux(ethFrame []byte, frameOffset int) error {
 	case OpReply:
 		hwaddr, protoaddr := afrm.Sender()
 		for i := range h.queries {
-			if len(h.queries[i].hwaddr) == 0 && bytes.Equal(h.queries[i].protoaddr, protoaddr) {
-				h.queries[i].hwaddr = append(h.queries[i].hwaddr[:0], hwaddr...)
+			q := &h.queries[i]
+			mac := q.response()
+			if mac == nil && bytes.Equal(q.protoaddr, protoaddr) {
+				q.hwaddr = append(q.hwaddr, hwaddr...)
+				if q.dstHw != nil {
+					if !internal.IsZeroed(q.dstHw...) {
+						slog.Error("race-condition:ARP-reused-buffer")
+					}
+					copy(q.dstHw, hwaddr) // External write to user buffer.
+				}
 				return nil
 			}
 		}

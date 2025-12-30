@@ -232,7 +232,7 @@ func NewEthernetTCPStack(ourMAC, gwMAC [6]byte, ip netip.AddrPort, mtu uint16, s
 type handler struct {
 	raddr  []byte
 	recv   func([]byte, int) error
-	handle func([]byte, int) (int, error)
+	handle func([]byte, int, int) (int, error)
 	proto  ethernet.Type
 	lport  uint16
 }
@@ -295,7 +295,7 @@ func (ls *LinkStack) HandleEth(dst []byte) (n int, err error) {
 	copy(efrm.DestinationHardwareAddr()[:], ls.gwmac[:]) // default set the gateway.
 	for i := range ls.handlers {
 		h := &ls.handlers[i]
-		n, err = h.handle(dst[:mtu], 14)
+		n, err = h.handle(dst[:mtu], 14, 14)
 		if err != nil {
 			ls.error("handling", slog.String("proto", ethernet.Type(h.proto).String()), slog.String("err", err.Error()))
 			continue
@@ -322,8 +322,8 @@ func (as *ARPStack) Recv(EtherFrame []byte, arpOff int) error {
 	return as.handler.Demux(EtherFrame, arpOff)
 }
 
-func (as *ARPStack) Handle(EtherFrame []byte, arpOff int) (int, error) {
-	n, err := as.handler.Encapsulate(EtherFrame, arpOff)
+func (as *ARPStack) Handle(EtherFrame []byte, offsetToIP, arpOff int) (int, error) {
+	n, err := as.handler.Encapsulate(EtherFrame, offsetToIP, arpOff)
 	if err != nil || n == 0 {
 		return 0, err
 	}

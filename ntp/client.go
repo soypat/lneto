@@ -50,11 +50,11 @@ func (c *Client) ConnectionID() *uint64 {
 	return &c.connID
 }
 
-func (c *Client) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
+func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
 	if c.IsDone() {
 		return 0, nil
 	}
-	payload := carrierData[frameOffset:]
+	payload := carrierData[offsetToFrame:]
 	frm, err := NewFrame(payload)
 	if err != nil {
 		return 0, err

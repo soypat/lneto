@@ -94,7 +94,7 @@ func (listener *NodeTCPListener) TryAccept() (*tcp.Conn, error) {
 }
 
 // Encapsulate implements [StackNode].
-func (listener *NodeTCPListener) Encapsulate(carrierData []byte, tcpFrameOffset int) (int, error) {
+func (listener *NodeTCPListener) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
 	if listener.isClosed() {
 		return 0, net.ErrClosed
 	}
@@ -102,7 +102,7 @@ func (listener *NodeTCPListener) Encapsulate(carrierData []byte, tcpFrameOffset 
 		if conn == nil {
 			continue
 		}
-		n, err := conn.Encapsulate(carrierData, tcpFrameOffset)
+		n, err := conn.Encapsulate(carrierData, offsetToIP, offsetToFrame)
 		if err != nil {
 			err = listener.maintainConn(listener.accepted, i, err)
 		}

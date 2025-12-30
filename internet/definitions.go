@@ -11,18 +11,21 @@ import (
 // StackNode is an abstraction of a packet exchanging protocol controller. This is the building block for all protocols,
 // from Ethernet to IP to TCP, practically any protocol can be expressed as a StackNode and function completely.
 type StackNode interface {
-	// Encapsulate writes the stack node's frame into carrierData[frameOffset:]
+	// Encapsulate writes the stack node's frame into carrierData[offsetToFrame:]
 	// along with any other frame or payload the stack node encapsulates.
-	// The returned integer is amount of bytes written such that carrierData[frameOffset:frameOffset+n]
-	// contains written data. Data inside carrierData[:frameOffset] usually contains data necessary for
+	// The returned integer is amount of bytes written such that carrierData[offsetToFrame:offsetToFrame+n]
+	// contains written data. Data inside carrierData[:offsetToFrame] usually contains data necessary for
 	// a StackNode to correctly emit valid frame data: such is the case for TCP packets which require IP
 	// frame data for checksum calculation. Thus StackNodes must provide fields in their own frame
 	// required by sub-stacknodes for correct encapsulation; in the case of IPv4/6 this means including fields
 	// used in pseudo-header checksum like local IP (see [ipv4.CRCWriteUDPPseudo]).
 	//
+	// offsetToIP is the offset to the IP frame, if present, else its value should be -1.
+	// The relation offsetToIP<=offsetToFrame should always hold.
+	//
 	// When [net.ErrClosed] is returned the StackNode should be discarded and any written data passed up normally.
 	// Errors returned by Encapsulate are "extraordinary" and should not be returned unless the StackNode is receiving invalid carrierData/frameOffset.
-	Encapsulate(carrierData []byte, frameOffset int) (int, error)
+	Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error)
 	// Demux reads from the argument buffer where frameOffset is the offset of this StackNode's frame first byte.
 	// The stack node then dispatches(demuxes) the encapsulated frames to its corresponding sub-stack-node(s).
 	Demux(carrierData []byte, frameOffset int) error
@@ -38,10 +41,12 @@ type node struct {
 	currConnID  uint64
 	connID      *uint64
 	demux       func([]byte, int) error
-	encapsulate func([]byte, int) (int, error)
+	encapsulate func([]byte, int, int) (int, error)
 	proto       uint16
 	port        uint16
-	remoteAddr  []byte
+	// remoteAddr will be set on active(outbound) port connections
+	// that require an ARP to set the remoteAddr beforehand.
+	remoteAddr []byte
 }
 
 type handlers struct {
@@ -160,21 +165,23 @@ func (h *handlers) demuxByPort(buf []byte, offset int, port uint16) (*node, erro
 	err := node.demux(buf, offset)
 	if h.tryHandleError(node, err) {
 		err = nil
+		node = nil // Node is destroyed in tryHandleError and invalidated.
 	}
 	return node, err
 }
 
 // encapsulateAny finds a node suitable to write and encapsulates the package.
 // If no data is sent it returns the last error encountered.
-func (h *handlers) encapsulateAny(buf []byte, offset int) (_ *node, n int, err error) {
+func (h *handlers) encapsulateAny(buf []byte, offsetIP, offsetThisFrame int) (_ *node, n int, err error) {
 	for i := range h.nodes {
 		node := &h.nodes[i]
 		if node.IsInvalid() {
 			continue
 		}
-		n, err = node.encapsulate(buf, offset)
+		n, err = node.encapsulate(buf, offsetIP, offsetThisFrame)
 		if h.tryHandleError(node, err) {
-			err = nil // CLOSE error handled gracefully by deleting node.
+			err = nil  // CLOSE error handled gracefully by deleting node.
+			node = nil // Node is destroyed in tryHandleError and invalidated.
 		}
 		if n > 0 {
 			return node, n, err
@@ -219,7 +226,7 @@ func nodeFromStackNode(s StackNode, port uint16, protocol uint64, remoteAddr []b
 		encapsulate: s.Encapsulate,
 		proto:       uint16(protocol),
 		port:        port,
-		remoteAddr:  append([]byte{}, remoteAddr...),
+		remoteAddr:  remoteAddr, // SHARED MEMORY- used to signal.
 	}
 }
 

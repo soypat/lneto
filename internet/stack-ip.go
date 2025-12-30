@@ -140,8 +140,8 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 	return err
 }
 
-func (sb *StackIP) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
-	frame := carrierData[frameOffset:]
+func (sb *StackIP) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
+	frame := carrierData[offsetToFrame:]
 	if len(frame) < 256 {
 		return 0, io.ErrShortBuffer
 	}
@@ -158,7 +158,9 @@ func (sb *StackIP) Encapsulate(carrierData []byte, frameOffset int) (int, error)
 	ifrm.SetTTL(64)
 	*ifrm.SourceAddr() = sb.ip
 	sb.ipID = id
-	node, n, err := sb.handlers.encapsulateAny(frame, headerlen)
+	// Children (TCP/UDP) start at offset headerlen (20 bytes after IP header start).
+	// offsetToIP is 0 relative to this slice (frame), children's frame starts at headerlen.
+	node, n, err := sb.handlers.encapsulateAny(carrierData, offsetToFrame, offsetToFrame+headerlen)
 	if n == 0 {
 		return n, err
 	}

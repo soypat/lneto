@@ -44,7 +44,7 @@ func TestBasicStack2(t *testing.T) {
 
 func expectExchange(t *testing.T, from, to *StackIP, buf []byte) {
 	t.Helper()
-	n, err := from.Encapsulate(buf, 0)
+	n, err := from.Encapsulate(buf, -1, 0)
 	if err != nil {
 		t.Error("expectExchange:encapsulate:", err)
 	} else if n == 0 {

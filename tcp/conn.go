@@ -278,23 +278,27 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 	return nil
 }
 
-func (conn *Conn) Encapsulate(buf []byte, off int) (n int, err error) {
+func (conn *Conn) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (n int, err error) {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	if len(conn.remoteAddr) == 0 {
 		return 0, errNoRemoteAddr
 	}
-	raddr, _, _, _, err := internal.GetIPAddr(buf[:off])
+	if offsetToIP < 0 {
+		return 0, errNoRemoteAddr // No IP layer present.
+	}
+	ipFrame := carrierData[offsetToIP:offsetToFrame]
+	raddr, _, _, _, err := internal.GetIPAddr(ipFrame)
 	if err != nil {
 		return 0, err
 	} else if len(raddr) != len(conn.remoteAddr) {
 		return 0, errMismatchedIPVersion
 	}
-	n, err = conn.h.Send(buf[off:])
+	n, err = conn.h.Send(carrierData[offsetToFrame:])
 	if err != nil {
 		return 0, err
 	}
-	err = internal.SetIPAddrs(buf[:off], conn.ipID, nil, conn.remoteAddr)
+	err = internal.SetIPAddrs(ipFrame, conn.ipID, nil, conn.remoteAddr)
 	if err != nil {
 		return 0, err
 	}

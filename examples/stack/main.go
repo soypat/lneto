@@ -107,7 +107,7 @@ func main() {
 			}
 		}
 
-		nw, err := stack.ethernet.Encapsulate(buf[:], 0)
+		nw, err := stack.ethernet.Encapsulate(buf[:], -1, 0)
 		if err != nil {
 			lg.Error("handle", slog.String("err", err.Error()))
 		} else if nw > 0 {
@@ -230,7 +230,7 @@ func (stack *Stack) Recv(b []byte) error {
 }
 
 func (stack *Stack) Send(b []byte) (int, error) {
-	return stack.ethernet.Encapsulate(b, 0)
+	return stack.ethernet.Encapsulate(b, -1, 0)
 }
 
 func (stack *Stack) OpenTCPListener(port uint16) (*internet.NodeTCPListener, error) {
@@ -239,7 +239,7 @@ func (stack *Stack) OpenTCPListener(port uint16) (*internet.NodeTCPListener, err
 	if err != nil {
 		return nil, err
 	}
-	err = stack.tcpports.Register(&listener)
+	err = stack.tcpports.Register(&listener) // Passive TCP requires no MAC setting.
 	if err != nil {
 		return nil, err
 	}
@@ -261,7 +261,7 @@ func (stack *Stack) OpenPassiveTCP(port uint16, iss tcp.Value) (*tcp.Conn, error
 	if err != nil {
 		return nil, err
 	}
-	err = stack.tcpports.Register(conn)
+	err = stack.tcpports.Register(conn) // Passive MAC with no listening.
 	if err != nil {
 		return nil, err
 	}
