@@ -165,6 +165,7 @@ func (h *handlers) demuxByPort(buf []byte, offset int, port uint16) (*node, erro
 	err := node.demux(buf, offset)
 	if h.tryHandleError(node, err) {
 		err = nil
+		node = nil // Node is destroyed in tryHandleError and invalidated.
 	}
 	return node, err
 }
@@ -179,7 +180,8 @@ func (h *handlers) encapsulateAny(buf []byte, offsetIP, offsetThisFrame int) (_ 
 		}
 		n, err = node.encapsulate(buf, offsetIP, offsetThisFrame)
 		if h.tryHandleError(node, err) {
-			err = nil // CLOSE error handled gracefully by deleting node.
+			err = nil  // CLOSE error handled gracefully by deleting node.
+			node = nil // Node is destroyed in tryHandleError and invalidated.
 		}
 		if n > 0 {
 			return node, n, err
@@ -224,7 +226,7 @@ func nodeFromStackNode(s StackNode, port uint16, protocol uint64, remoteAddr []b
 		encapsulate: s.Encapsulate,
 		proto:       uint16(protocol),
 		port:        port,
-		remoteAddr:  append([]byte{}, remoteAddr...),
+		remoteAddr:  remoteAddr, // SHARED MEMORY- used to signal.
 	}
 }
 

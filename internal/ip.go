@@ -56,3 +56,14 @@ func SetIPAddrs(buf []byte, id uint16, src, dst []byte) (err error) {
 	copy(dstaddr, dst)
 	return nil
 }
+
+// IsZeroed returns true if all arguments are set to their zero value.
+func IsZeroed[T comparable](a ...T) bool {
+	var z T
+	for i := range a {
+		if a[i] != z {
+			return false
+		}
+	}
+	return true
+}
