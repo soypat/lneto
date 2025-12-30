@@ -28,7 +28,7 @@ type StackAsync struct {
 	ip       internet.StackIP
 	arp      arp.Handler
 	udps     internet.StackPorts
-	tcps     internet.StackPorts
+	tcps     internet.StackPortsMACFiltered
 
 	dhcpUDP     internet.StackUDPPort
 	dhcp        dhcpv4.Client
@@ -260,7 +260,7 @@ func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrP
 	if err != nil {
 		return err
 	}
-	err = s.tcps.Register(conn) // MAC is set later on by ARP response arriving to our network.
+	err = s.tcps.Register(conn, mac) // MAC is set later on by ARP response arriving to our network.
 	if err != nil {
 		conn.Abort()
 		return err
@@ -275,7 +275,7 @@ func (s *StackAsync) ListenTCP(conn *tcp.Conn, localPort uint16) (err error) {
 	if err != nil {
 		return err
 	}
-	err = s.tcps.Register(conn)
+	err = s.tcps.Register(conn, nil)
 	if err != nil {
 		conn.Abort()
 		return err

@@ -51,7 +51,7 @@ func (h *Handler) Reset(cfg HandlerConfig) error {
 		return errors.New("invalid Handler query or pending config")
 	}
 	*h = Handler{
-		connID:          h.connID + 1,
+		connID:          h.connID,
 		ourHWAddr:       h.ourHWAddr[:0],
 		ourProtoAddr:    h.ourProtoAddr[:0],
 		htype:           cfg.HardwareType,
@@ -263,7 +263,7 @@ func (h *Handler) Demux(ethFrame []byte, frameOffset int) error {
 }
 
 func trySetEthernetDst(ethFrame []byte, dst []byte) {
-	if len(ethFrame) > 14 {
+	if len(ethFrame) >= 14 {
 		copy(ethFrame[:6], dst)
 	}
 }
