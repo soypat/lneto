@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/dns"
+	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/http/httpraw"
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internal/ltesto"
@@ -129,6 +131,8 @@ func run() (err error) {
 			pfbuf = fmt.Appendf(pfbuf[:0], "%-3s %3d", context, len(pkt))
 			pfbuf = append(pfbuf, ' ', '[')
 			pfbuf, err = pf.FormatFrames(pfbuf, frames, pkt)
+			pfbuf = bytes.ReplaceAll(pfbuf, stack.Addr().AppendTo(nil), []byte("us"))
+			pfbuf = bytes.ReplaceAll(pfbuf, ethernet.AppendAddr(nil, stack.HardwareAddress()), []byte("us"))
 			pfbuf = append(pfbuf, ']', '\n')
 			if err != nil {
 				return err

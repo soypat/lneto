@@ -6,6 +6,8 @@ import (
 	"math"
 	"net"
 	"slices"
+
+	"github.com/soypat/lneto"
 )
 
 // StackNode is an abstraction of a packet exchanging protocol controller. This is the building block for all protocols,
@@ -148,19 +150,20 @@ func (h *handlers) nodeByPortProto(port uint16, protocol uint16) *node {
 func (h *handlers) demuxByProto(buf []byte, offset int, proto uint16) (*node, error) {
 	node := h.nodeByProto(proto)
 	if node == nil {
-		return nil, nil
+		return nil, lneto.ErrPacketDrop
 	}
 	err := node.demux(buf, offset)
 	if h.tryHandleError(node, err) {
 		err = nil
 	}
+
 	return node, err
 }
 
 func (h *handlers) demuxByPort(buf []byte, offset int, port uint16) (*node, error) {
 	node := h.nodeByPort(port)
 	if node == nil {
-		return nil, nil
+		return nil, lneto.ErrPacketDrop
 	}
 	err := node.demux(buf, offset)
 	if h.tryHandleError(node, err) {

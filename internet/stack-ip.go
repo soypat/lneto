@@ -80,19 +80,21 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 	}
 	dst := ifrm.DestinationAddr()
 	if sb.ip != ([4]byte{}) && *dst != sb.ip {
-		return errors.New("not meant for us") // Not meant for us.
+		sb.handlers.debug("ip:not-for-us")
+		return lneto.ErrPacketDrop // Not meant for us.
 	}
 
 	sb.validator.ResetErr()
 	ifrm.ValidateExceptCRC(&sb.validator)
 	if err = sb.validator.ErrPop(); err != nil {
+		sb.handlers.error("ip:Demux.validate")
 		return err
 	}
 	gotCRC := ifrm.CRC()
 	wantCRC := ifrm.CalculateHeaderCRC()
 	if gotCRC != wantCRC {
 		sb.handlers.error("StackIP:Demux:crc-mismatch", slog.Uint64("want", uint64(wantCRC)), slog.Uint64("got", uint64(gotCRC)))
-		return errors.New("IPv4 CRC mismatch")
+		return lneto.ErrBadCRC
 	}
 	off := ifrm.HeaderLength()
 	totalLen := ifrm.TotalLength()
@@ -104,8 +106,8 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 	// nodeIdx := getNodeByProto(sb.handlers, uint16(proto))
 	if node == nil {
 		// Drop packet.
-		sb.handlers.info("iprecv:drop", slog.String("dstaddr", netip.AddrFrom4(*ifrm.DestinationAddr()).String()), slog.String("proto", ifrm.Protocol().String()))
-		return nil
+		sb.handlers.info("ip:demux.drop", slog.String("dstaddr", netip.AddrFrom4(*ifrm.DestinationAddr()).String()), slog.String("proto", ifrm.Protocol().String()))
+		return lneto.ErrPacketDrop
 	}
 	// Incoming CRC Validation of common IP Protocols.
 	var crc lneto.CRC791
@@ -118,7 +120,8 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 		}
 		tfrm.CRCWrite(&crc)
 		if crc.Sum16() != tfrm.CRC() {
-			return errors.New("TCP CRC mismatch")
+			sb.handlers.error("ip:demux.tcpcrc")
+			return lneto.ErrBadCRC
 		}
 	case lneto.IPProtoUDP:
 		ifrm.CRCWriteUDPPseudo(&crc)
@@ -128,7 +131,8 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 		}
 		ufrm.CRCWriteIPv4(&crc)
 		if crc.Sum16() != ufrm.CRC() {
-			return errors.New("UDP CRC mismatch")
+			sb.handlers.error("ip:demux.udpcrc")
+			return lneto.ErrBadCRC
 		}
 	}
 	sb.handlers.info("ipDemux", slog.String("ipproto", proto.String()), slog.Int("plen", int(totalLen)))

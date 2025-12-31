@@ -43,13 +43,13 @@ func (sudp *StackUDPPort) Demux(carrierData []byte, frameOffset int) error {
 	}
 	dst := ufrm.DestinationPort()
 	if dst != sudp.h.port {
-		return nil // Not meant for us.
+		return lneto.ErrPacketDrop // Not meant for us.
 	}
 	// TODO remote ip address handling.
 
 	src := ufrm.SourcePort()
 	if sudp.rmport != 0 && src != sudp.rmport {
-		return nil // Not from our target remote port.
+		return lneto.ErrPacketDrop // Not from our target remote port.
 	}
 	err = sudp.h.demux(carrierData, frameOffset+8)
 	if err != nil {

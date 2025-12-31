@@ -1,9 +1,28 @@
 package ethernet
 
+import (
+	"strconv"
+)
+
 const (
 	sizeHeaderNoVLAN = 14
 )
 
+// AppendAddr appends the text representation of the hardware address to the destination buffer.
+func AppendAddr(dst []byte, hwAddr [6]byte) []byte {
+	for i, b := range hwAddr {
+		if i != 0 {
+			dst = append(dst, ':')
+		}
+		if b < 16 {
+			dst = append(dst, '0')
+		}
+		dst = strconv.AppendUint(dst, uint64(b), 16)
+	}
+	return dst
+}
+
+// BroadcastAddr returns the all 0xff's broadcast hardware/MAC/EUI/OUI address.
 func BroadcastAddr() [6]byte {
 	return [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 }

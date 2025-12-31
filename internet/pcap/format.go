@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -122,15 +123,7 @@ func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, p
 		} else if field.BitLength == 4*8 {
 			dst = netip.AddrFrom4([4]byte(f.buf)).AppendTo(dst)
 		} else if field.BitLength == 6*8 {
-			for i := range f.buf {
-				if i != 0 {
-					dst = append(dst, ':')
-				}
-				if f.buf[i] < 16 {
-					dst = append(dst, '0')
-				}
-				dst = strconv.AppendUint(dst, uint64(f.buf[i]), 16)
-			}
+			dst = ethernet.AppendAddr(dst, [6]byte(f.buf))
 		} else if field.BitLength == 16*8 {
 			dst = netip.AddrFrom16([16]byte(f.buf)).AppendTo(dst)
 		} else {

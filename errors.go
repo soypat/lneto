@@ -21,6 +21,7 @@ type errGeneric uint8
 const (
 	_             errGeneric = iota // non-initialized err
 	ErrPacketDrop                   // packet dropped
+	ErrBadCRC                       // incorrect checksum
 )
 
 func (err errGeneric) Error() string {
