@@ -181,7 +181,7 @@ func run() (err error) {
 		}
 	}()
 
-	rstack := stack.StackRetrying()
+	rstack := stack.StackRetrying(5 * time.Millisecond)
 
 	const (
 		dhcpTimeout = 6 * time.Second
@@ -261,16 +261,18 @@ func run() (err error) {
 		}
 		timeHTTPCreate()
 
-		timeHTTP := timer("send http request")
-		const tcpDebugTimeout = 60 * time.Minute
+		timeTCPDial := timer("TCP dial (handshake)")
+		const tcpDialTimeout = 8 * time.Second // Was 60 * time.Minute causing 3.6s sleep per iteration!
 		target := netip.AddrPortFrom(addrs[0], 80)
-		err = rstack.DoDialTCP(&conn, uint16(softRand&0xefff)+1024, target, tcpDebugTimeout, internetRetries)
+		err = rstack.DoDialTCP(&conn, uint16(softRand&0xefff)+1024, target, tcpDialTimeout, internetRetries)
 		if err != nil {
 			return fmt.Errorf("TCP failed: %w", err)
 		}
+		timeTCPDial()
+		timeHTTPSend := timer("send HTTP request")
 		conn.SetDeadline(time.Now().Add(internetTimeout))
 		_, err = conn.Write(req)
-		timeHTTP()
+		timeHTTPSend()
 		timeHTTPRcv := timer("recv http request")
 		if err != nil {
 			return err
