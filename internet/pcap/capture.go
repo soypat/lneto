@@ -590,10 +590,14 @@ func appendField(dst, pkt []byte, fieldBitStart, bitlen int, rightAligned bool) 
 			dst = append(dst, pkt[octetsStart+1:octetsStart+octets]...)
 			return dst, nil
 		}
-		// Right aligned with trailing bits. i.e: ???
-		for i := 1; i < octets; i++ {
-			b := pkt[octetsStart+i] >> (8 - lastOctetExcessBits)
-			b |= pkt[octetsStart+i-1] & mask
+		// Right aligned with trailing bits. i.e: IPv6 Traffic Class.
+		// Field spans an extra byte, so need octets+1 bytes from packet.
+		if octets+octetsStart+1 > len(pkt) {
+			return dst, errors.New("buffer overflow")
+		}
+		for i := 0; i < octets; i++ {
+			b := (pkt[octetsStart+i] & mask) << (8 - firstBitOffset)
+			b |= pkt[octetsStart+i+1] >> firstBitOffset
 			dst = append(dst, b)
 		}
 		return dst, nil
