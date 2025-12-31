@@ -3,9 +3,14 @@ package pcap
 //go:generate stringer -type=FieldClass -linecomment -output stringers.go .
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
+	"net/netip"
+	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/arp"
@@ -530,17 +535,7 @@ func (frm Frame) FieldAsUint(fieldIdx int, pkt []byte) (uint64, error) {
 		return badUint64, errors.New("invalid field index")
 	}
 	field := frm.Fields[fieldIdx]
-	octets := (field.BitLength + 7) / 8
-	if octets > 8 {
-		return badUint64, errors.New("field too long to be represented by uint64")
-	}
-	var buf [8]byte
-	_, err := frm.AppendField(buf[8-octets:8-octets], fieldIdx, pkt)
-	if err != nil {
-		return badUint64, err
-	}
-	v := binary.BigEndian.Uint64(buf[:])
-	return v, nil
+	return fieldAsUint(pkt, frm.PacketBitOffset+field.FrameBitOffset, field.BitLength, field.RightAligned)
 }
 
 func (frm Frame) AppendField(dst []byte, fieldIdx int, pkt []byte) ([]byte, error) {
@@ -548,9 +543,27 @@ func (frm Frame) AppendField(dst []byte, fieldIdx int, pkt []byte) ([]byte, erro
 		return dst, errors.New("invalid field index")
 	}
 	field := frm.Fields[fieldIdx]
-	fieldBitStart := frm.PacketBitOffset + field.FrameBitOffset
-	fieldBitEnd := fieldBitStart + field.BitLength
-	octets := (field.BitLength + 7) / 8 // total octets needed to represent field.
+	return appendField(dst, pkt, frm.PacketBitOffset+field.FrameBitOffset, field.BitLength, field.RightAligned)
+}
+
+func fieldAsUint(pkt []byte, fieldBitStart, bitlen int, rightAligned bool) (uint64, error) {
+	const badUint64 = math.MaxUint64
+	octets := (bitlen + 7) / 8
+	if octets > 8 {
+		return badUint64, errors.New("field too long to be represented by uint64")
+	}
+	var buf [8]byte
+	_, err := appendField(buf[8-octets:8-octets], pkt, fieldBitStart, bitlen, rightAligned)
+	if err != nil {
+		return badUint64, err
+	}
+	v := binary.BigEndian.Uint64(buf[:])
+	return v, nil
+}
+
+func appendField(dst, pkt []byte, fieldBitStart, bitlen int, rightAligned bool) ([]byte, error) {
+	fieldBitEnd := fieldBitStart + bitlen
+	octets := (bitlen + 7) / 8 // total octets needed to represent field.
 	octetsStart := fieldBitStart / 8
 	if octets+octetsStart > len(pkt) {
 		return dst, errors.New("buffer overflow")
@@ -558,7 +571,7 @@ func (frm Frame) AppendField(dst []byte, fieldIdx int, pkt []byte) ([]byte, erro
 	firstBitOffset := fieldBitStart % 8
 	lastOctetExcessBits := fieldBitEnd % 8
 	if firstBitOffset == 0 {
-		if field.RightAligned {
+		if rightAligned {
 			return dst, errors.New("invalid right aligned set for fully aligned field")
 		}
 		// Optimized path: field starts at byte boundary.
@@ -570,17 +583,21 @@ func (frm Frame) AppendField(dst []byte, fieldIdx int, pkt []byte) ([]byte, erro
 	}
 
 	mask := byte(1<<firstBitOffset) - 1
-	if field.RightAligned {
+	if rightAligned {
 		if lastOctetExcessBits == 0 {
 			// Right aligned with no loose trailing bits. i.e: TCP flags.
 			dst = append(dst, pkt[octetsStart]&mask)
 			dst = append(dst, pkt[octetsStart+1:octetsStart+octets]...)
 			return dst, nil
 		}
-		// Right aligned with trailing bits. i.e: ???
-		for i := 1; i < octets; i++ {
-			b := pkt[octetsStart+i] >> (8 - lastOctetExcessBits)
-			b |= pkt[octetsStart+i-1] & mask
+		// Right aligned with trailing bits. i.e: IPv6 Traffic Class.
+		// Field spans an extra byte, so need octets+1 bytes from packet.
+		if octets+octetsStart+1 > len(pkt) {
+			return dst, errors.New("buffer overflow")
+		}
+		for i := 0; i < octets; i++ {
+			b := (pkt[octetsStart+i] & mask) << (8 - firstBitOffset)
+			b |= pkt[octetsStart+i+1] >> firstBitOffset
 			dst = append(dst, b)
 		}
 		return dst, nil
@@ -597,6 +614,129 @@ func (frm Frame) AppendField(dst []byte, fieldIdx int, pkt []byte) ([]byte, erro
 	lastOctet >>= lastOctetExcessBits
 	dst = append(dst, lastOctet)
 	return dst, nil
+}
+
+type Formatter struct {
+	FieldSep      string
+	FrameSep      string
+	FilterClasses []FieldClass
+	buf           []byte
+}
+
+func (f *Formatter) FormatFrames(dst []byte, frms []Frame, pkt []byte) (_ []byte, err error) {
+	sep := f.FrameSep
+	if sep == "" {
+		sep = " | "
+	}
+	for ifrm := range frms {
+		if ifrm != 0 {
+			dst = append(dst, sep...)
+		}
+		dst, err = f.FormatFrame(dst, frms[ifrm], pkt)
+		if err != nil {
+			return dst, err
+		}
+	}
+	return dst, nil
+}
+
+func (f *Formatter) FormatFrame(dst []byte, frm Frame, pkt []byte) (_ []byte, err error) {
+	sep := f.FieldSep
+	if sep == "" {
+		sep = "; " // default field separator
+	}
+	bitlen := frm.LenBits()
+	if bitlen%8 == 0 {
+		dst = fmt.Appendf(dst, "%s len=%d", frm.Protocol, bitlen/8)
+	} else {
+		dst = fmt.Appendf(dst, "%s bitlen=%d", frm.Protocol, bitlen)
+	}
+
+	for ifield := range frm.Fields {
+		field := frm.Fields[ifield]
+		if f.filterField(field) {
+			continue
+		}
+		dst = append(dst, sep...)
+		if field.Class == FieldClassFlags && frm.Protocol == lneto.IPProtoTCP {
+			dst = append(dst, "flags="...)
+			v, err := fieldAsUint(pkt, frm.PacketBitOffset+field.FrameBitOffset, field.BitLength, field.RightAligned)
+			if err != nil {
+				return dst, err
+			}
+			dst = tcp.Flags(v).AppendFormat(dst)
+			continue
+		}
+		dst, err = f.formatField(dst, frm.PacketBitOffset, field, pkt)
+		if err != nil {
+			return dst, err
+		}
+	}
+	return dst, nil
+}
+
+func (f *Formatter) filterField(field FrameField) bool {
+	return f.FilterClasses != nil && !slices.Contains(f.FilterClasses, field.Class)
+}
+
+func (f *Formatter) FormatField(dst []byte, pktStartOff int, field FrameField, pkt []byte) (_ []byte, err error) {
+	return f.formatField(dst, pktStartOff, field, pkt)
+}
+
+func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, pkt []byte) (_ []byte, err error) {
+	name := field.Name
+	if name == "" {
+		name = field.Class.String()
+	}
+	hasSpaces := strings.IndexByte(name, ' ') >= 0
+	if hasSpaces {
+		dst = append(dst, '(')
+	}
+	dst = append(dst, name...)
+	if hasSpaces {
+		dst = append(dst, ')')
+	}
+	dst = append(dst, '=')
+	f.buf, err = appendField(f.buf[:0], pkt, field.FrameBitOffset+pktStartOff, field.BitLength, field.RightAligned)
+	if err != nil {
+		return dst, err
+	}
+	fieldBitStart := pktStartOff + field.FrameBitOffset
+	switch field.Class {
+	default:
+		fallthrough
+	case FieldClassChecksum, FieldClassID, FieldClassFlags, FieldClassOptions, FieldClassAddress:
+		// Binary data to be printed as hexadecimal.
+		dst = append(dst, "0x"...)
+		dst = hex.AppendEncode(dst, f.buf)
+	case FieldClassDst, FieldClassSrc, FieldClassSize:
+		// IP, MAC addresses and ports.
+		if field.BitLength <= 16 {
+			v, err := fieldAsUint(pkt, fieldBitStart, field.BitLength, field.RightAligned)
+			if err != nil {
+				return dst, err
+			}
+			dst = strconv.AppendUint(dst, v, 10)
+		} else if field.BitLength == 4*8 {
+			dst = netip.AddrFrom4([4]byte(f.buf)).AppendTo(dst)
+		} else if field.BitLength == 6*8 {
+			for i := range f.buf {
+				if i != 0 {
+					dst = append(dst, ':')
+				}
+				if f.buf[i] < 16 {
+					dst = append(dst, '0')
+				}
+				dst = strconv.AppendUint(dst, uint64(f.buf[i]), 16)
+			}
+		} else if field.BitLength == 16*8 {
+			dst = netip.AddrFrom16([16]byte(f.buf)).AppendTo(dst)
+		} else {
+			dst = append(dst, "0x"...)
+			dst = hex.AppendEncode(dst, f.buf)
+		}
+	}
+	return dst, err
 }
 
 func (frm Frame) String() string {
