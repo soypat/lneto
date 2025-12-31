@@ -115,7 +115,7 @@ func run() (err error) {
 		var cap pcap.PacketBreakdown
 		var frames []pcap.Frame
 		pf := pcap.Formatter{
-			FilterClasses: []pcap.FieldClass{pcap.FieldClassFlags, pcap.FieldClassDst, pcap.FieldClassSrc, pcap.FieldClassAddress},
+			FilterClasses: []pcap.FieldClass{pcap.FieldClassFlags, pcap.FieldClassOperation, pcap.FieldClassDst, pcap.FieldClassSrc, pcap.FieldClassAddress},
 		}
 		var pfbuf []byte
 		logFrames := func(context string, pkt []byte) error {
@@ -163,12 +163,11 @@ func run() (err error) {
 				log.Fatal("groutine read:", err)
 			} else if nread > 0 {
 				err = stack.Demux(buf[:nread], 0)
-				if err != nil {
-					if !errors.Is(err, lneto.ErrPacketDrop) {
-						err = logFrames("IN", buf[:nread])
-						if err != nil {
-							log.Println("ERR:INLOG", err)
-						}
+				if !errors.Is(err, lneto.ErrPacketDrop) {
+					// Only skip logging packet in case of dropped packet.
+					err = logFrames("IN", buf[:nread])
+					if err != nil {
+						log.Println("ERR:INLOG", err)
 					}
 				}
 			}

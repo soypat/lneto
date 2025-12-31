@@ -2,7 +2,6 @@ package xnet
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"math/rand"
 	"net/netip"
@@ -602,8 +601,5 @@ func (tst *tester) getFieldByClassLen(proto any, class pcap.FieldClass, octetLen
 
 func (tst *tester) getARPOperation() arp.Operation {
 	tst.t.Helper()
-	// ARP has 3 FieldClassType fields: Hardware type (0), Protocol type (1), Opcode (2)
-	// All are 2 bytes, so we need occurrence=2 to get Opcode.
-	data := tst.getFieldByClassLen(ethernet.TypeARP, pcap.FieldClassType, 2, 2)
-	return arp.Operation(binary.BigEndian.Uint16(data))
+	return arp.Operation(tst.getInt(ethernet.TypeARP, pcap.FieldClassOperation))
 }

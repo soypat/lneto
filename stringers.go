@@ -195,11 +195,12 @@ func _() {
 	// Re-run the stringer command to generate them again.
 	var x [1]struct{}
 	_ = x[ErrPacketDrop-1]
+	_ = x[ErrBadCRC-2]
 }
 
-const _errGeneric_name = "packet dropped"
+const _errGeneric_name = "packet droppedincorrect checksum"
 
-var _errGeneric_index = [...]uint8{0, 14}
+var _errGeneric_index = [...]uint8{0, 14, 32}
 
 func (i errGeneric) String() string {
 	i -= 1

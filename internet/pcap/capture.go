@@ -670,6 +670,7 @@ const (
 	FieldClassAddress                     // address
 	// FieldClassBinaryText represents long stretches of binary data such as BOOTP DHCPv4 field.
 	FieldClassBinaryText // binary-text
+	FieldClassOperation  // op
 )
 
 const octet = 8
@@ -718,8 +719,7 @@ var baseARPFields = [...]FrameField{
 		BitLength:      1 * octet,
 	},
 	{
-		Name:           "Opcode",
-		Class:          FieldClassType,
+		Class:          FieldClassOperation,
 		FrameBitOffset: 6 * octet,
 		BitLength:      2 * octet,
 	},
@@ -924,8 +924,7 @@ var baseUDPFields = [...]FrameField{
 
 var baseDHCPv4Fields = [...]FrameField{
 	{
-		Name:           "Opcode",
-		Class:          FieldClassType,
+		Class:          FieldClassOperation,
 		FrameBitOffset: 0,
 		BitLength:      1 * octet,
 	},

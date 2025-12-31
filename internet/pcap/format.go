@@ -112,7 +112,7 @@ func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, p
 		dst = hex.AppendEncode(dst, f.buf)
 	case FieldClassText:
 		dst = strconv.AppendQuote(dst, string(f.buf))
-	case FieldClassDst, FieldClassSrc, FieldClassSize, FieldClassAddress:
+	case FieldClassDst, FieldClassSrc, FieldClassSize, FieldClassAddress, FieldClassOperation:
 		// IP, MAC addresses and ports.
 		if field.BitLength <= 16 {
 			v, err := fieldAsUint(pkt, fieldBitStart, field.BitLength, field.RightAligned)
