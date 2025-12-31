@@ -28,11 +28,12 @@ type StackAsync struct {
 	ip       internet.StackIP
 	arp      arp.Handler
 	udps     internet.StackPorts
-	tcps     internet.StackPorts
+	tcps     internet.StackPortsMACFiltered
 
 	dhcpUDP     internet.StackUDPPort
 	dhcp        dhcpv4.Client
 	dhcpResults DHCPResults
+	subnet      netip.Prefix // Local subnet for ARP resolution.
 
 	dnsUDP  internet.StackUDPPort
 	dns     dns.Client
@@ -73,11 +74,11 @@ func (s *StackAsync) Demux(carrierData []byte, etherOff int) error {
 	return s.link.Demux(carrierData, etherOff)
 }
 
-func (s *StackAsync) Encapsulate(carrierData []byte, etherOff int) (int, error) {
+func (s *StackAsync) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	n, err := s.link.Encapsulate(carrierData, etherOff)
+	n, err := s.link.Encapsulate(carrierData, offsetToIP, offsetToFrame)
 	s.totalsent += uint64(n)
 	return n, err
 }
@@ -112,6 +113,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	if err != nil {
 		return err
 	}
+	//
 	err = s.resetARP()
 	if err != nil {
 		return err
@@ -135,10 +137,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	}
 
 	// Now setup stacks.
-	err = s.link.Register(&s.arp) // ARP.
-	if err != nil {
-		return err
-	}
+	// ARP registered in resetARP.
 	err = s.link.Register(&s.ip) // IPv4 | IPv6
 	if err != nil {
 		return err
@@ -169,7 +168,7 @@ func (s *StackAsync) resetARP() error {
 	if addr.Is6() {
 		proto = ethernet.TypeIPv6
 	}
-	return s.arp.Reset(arp.HandlerConfig{
+	err := s.arp.Reset(arp.HandlerConfig{
 		HardwareAddr: mac[:],
 		ProtocolAddr: addr.AsSlice(),
 		MaxQueries:   3,
@@ -177,6 +176,14 @@ func (s *StackAsync) resetARP() error {
 		HardwareType: 1,
 		ProtocolType: proto,
 	})
+	if err != nil {
+		return err
+	}
+	err = s.link.Register(&s.arp)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // Prand32 generates a pseudo random 32-bit unsigned integer from the internal state and advances the seed.
@@ -193,11 +200,17 @@ func (s *StackAsync) Prand32() uint32 {
 func (s *StackAsync) SetIPAddr(addr netip.Addr) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.setIPAddr(addr)
+}
+
+func (s *StackAsync) setIPAddr(addr netip.Addr) error {
 	err := s.ip.SetAddr(addr)
 	if err != nil {
 		return err
 	}
-	return s.resetARP()
+	ip := addr.As4()
+	err = s.arp.UpdateProtoAddr(ip[:])
+	return err
 }
 
 func (s *StackAsync) Addr() netip.Addr {
@@ -234,11 +247,23 @@ func (s *StackAsync) Gateway6() [6]byte {
 func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrPort) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var mac []byte
+	if s.subnet.Contains(addrp.Addr()) {
+		mac = make([]byte, 6)
+		ip := addrp.Addr().As4()
+		// StartQuery starts an ARP query for addresses in this network.
+		// On finishing query MAC is set and thus the StackPort will allow encapsulating
+		// data on that connection.
+		err = s.arp.StartQuery(mac, ip[:])
+		if err != nil {
+			return err
+		}
+	}
 	err = conn.OpenActive(localPort, addrp, tcp.Value(s.Prand32()))
 	if err != nil {
 		return err
 	}
-	err = s.tcps.Register(conn)
+	err = s.tcps.Register(conn, mac) // MAC is set later on by ARP response arriving to our network.
 	if err != nil {
 		conn.Abort()
 		return err
@@ -253,7 +278,7 @@ func (s *StackAsync) ListenTCP(conn *tcp.Conn, localPort uint16) (err error) {
 	if err != nil {
 		return err
 	}
-	err = s.tcps.Register(conn)
+	err = s.tcps.Register(conn, nil)
 	if err != nil {
 		conn.Abort()
 		return err
@@ -376,7 +401,7 @@ func (s *StackAsync) StartResolveHardwareAddress6(ip netip.Addr) error {
 		return errors.New("unsupported or invalid IP address")
 	}
 	addr := ip.As4()
-	return s.arp.StartQuery(addr[:])
+	return s.arp.StartQuery(nil, addr[:])
 }
 
 // ResultResolveHardwareAddress6
@@ -432,16 +457,15 @@ func (s *StackAsync) ReadStatistics(stats *Statistics) {
 // AssimilateDHCPResults sets the stack's following parameters:
 //   - IPv4 address.
 //   - DNS server.
+//   - Subnet (for ARP resolution of local addresses).
 func (stack *StackAsync) AssimilateDHCPResults(results *DHCPResults) error {
 	stack.mu.Lock()
 	defer stack.mu.Unlock()
+	if results.Subnet.IsValid() {
+		stack.subnet = results.Subnet
+	}
 	if results.AssignedAddr.IsValid() {
-		err := stack.ip.SetAddr(results.AssignedAddr)
-		if err != nil {
-			return err
-		}
-		// Reset ARP handler with new IP address so it can respond to ARP requests.
-		err = stack.resetARP()
+		err := stack.setIPAddr(results.AssignedAddr)
 		if err != nil {
 			return err
 		}

@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"math"
 	"net"
-	"slices"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
@@ -14,11 +13,10 @@ import (
 
 type StackEthernet struct {
 	connID   uint64
-	handlers []node
-	logger
-	mac   [6]byte
-	gwmac [6]byte
-	mtu   uint16
+	handlers handlers
+	mac      [6]byte
+	gwmac    [6]byte
+	mtu      uint16
 }
 
 func (ls *StackEthernet) SetGateway6(gw [6]byte) {
@@ -43,11 +41,10 @@ func (ls *StackEthernet) Reset6(mac, gateway [6]byte, mtu, maxNodes int) error {
 	} else if maxNodes <= 0 {
 		return errZeroMaxNodesArg
 	}
-	ls.handlers = slices.Grow(ls.handlers[:0], maxNodes)
+	ls.handlers.reset("StackEthernet", maxNodes)
 	*ls = StackEthernet{
 		connID:   ls.connID + 1,
 		handlers: ls.handlers,
-		logger:   ls.logger,
 		mac:      mac,
 		gwmac:    gateway,
 		mtu:      uint16(mtu),
@@ -68,18 +65,7 @@ func (ls *StackEthernet) Register(h StackNode) error {
 	if proto > math.MaxUint16 || proto <= 1500 {
 		return errInvalidProto
 	}
-	eproto := uint16(proto)
-	for i := range ls.handlers {
-		hgot := &ls.handlers[i]
-		if hgot.proto == eproto {
-			return errProtoRegistered
-		}
-	}
-	return registerNode(&ls.handlers, node{
-		demux:       h.Demux,
-		encapsulate: h.Encapsulate,
-		proto:       eproto,
-	})
+	return ls.handlers.registerByProto(nodeFromStackNode(h, 0, proto, nil))
 }
 
 func (ls *StackEthernet) Demux(carrierData []byte, frameOffset int) (err error) {
@@ -98,21 +84,17 @@ func (ls *StackEthernet) Demux(carrierData []byte, frameOffset int) (err error) 
 	if vld.HasError() {
 		return vld.ErrPop()
 	}
-
-	for i := range ls.handlers {
-		h := &ls.handlers[i]
-		if h.proto == uint16(etype) {
-			return h.demux(efrm.Payload(), 0)
-		}
+	if h, err := ls.handlers.demuxByProto(efrm.Payload(), 0, uint16(etype)); h != nil {
+		return err
 	}
 DROP:
-	ls.info("LinkStack:drop-packet", slog.String("dsthw", net.HardwareAddr(dstaddr[:]).String()), slog.String("ethertype", efrm.EtherTypeOrSize().String()))
+	ls.handlers.info("LinkStack:drop-packet", slog.String("dsthw", net.HardwareAddr(dstaddr[:]).String()), slog.String("ethertype", efrm.EtherTypeOrSize().String()))
 	return lneto.ErrPacketDrop
 }
 
-func (ls *StackEthernet) Encapsulate(carrierData []byte, frameOffset int) (n int, err error) {
+func (ls *StackEthernet) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (n int, err error) {
 	mtu := ls.mtu
-	dst := carrierData[frameOffset:]
+	dst := carrierData[offsetToFrame:]
 	if len(dst) < int(mtu) {
 		return 0, io.ErrShortBuffer
 	}
@@ -121,19 +103,19 @@ func (ls *StackEthernet) Encapsulate(carrierData []byte, frameOffset int) (n int
 		return 0, err
 	}
 	*efrm.DestinationHardwareAddr() = ls.gwmac
-	for i := range ls.handlers {
-		h := &ls.handlers[i]
-		n, err = h.encapsulate(dst[:mtu], 14)
-		if err != nil {
-			ls.error("handling", slog.String("proto", ethernet.Type(h.proto).String()), slog.String("err", err.Error()))
-			continue
-		}
-		if n > 0 {
-			// Found packet
-			*efrm.SourceHardwareAddr() = ls.mac
-			efrm.SetEtherType(ethernet.Type(h.proto))
-			return n + 14, nil
-		}
+	var h *node
+	// Children (IP/ARP) start at offset 14 (after ethernet header).
+	// For IP: offsetToIP=14, offsetToFrame=14
+	// For ARP: offsetToIP=-1, offsetToFrame=14 (but ARP ignores offsetToIP)
+	// Clip carrierData to MTU to prevent writes beyond MTU limit.
+	mtuLimit := offsetToFrame + int(mtu)
+	h, n, err = ls.handlers.encapsulateAny(carrierData[:mtuLimit], offsetToFrame+14, offsetToFrame+14)
+	if n == 0 {
+		return n, err
 	}
-	return 0, err
+	// Found packet
+	*efrm.SourceHardwareAddr() = ls.mac
+	efrm.SetEtherType(ethernet.Type(h.proto))
+	n += 14
+	return n, err
 }

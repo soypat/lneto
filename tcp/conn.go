@@ -246,7 +246,7 @@ func (conn *Conn) checkPipeOpen() error {
 	if conn.abortErr != nil {
 		return conn.abortErr
 	}
-	state := conn.State()
+	state := conn.h.State()
 	if state.IsClosed() {
 		return net.ErrClosed
 	}
@@ -278,23 +278,27 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 	return nil
 }
 
-func (conn *Conn) Encapsulate(buf []byte, off int) (n int, err error) {
+func (conn *Conn) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (n int, err error) {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	if len(conn.remoteAddr) == 0 {
 		return 0, errNoRemoteAddr
 	}
-	raddr, _, _, _, err := internal.GetIPAddr(buf[:off])
+	if offsetToIP < 0 {
+		return 0, errNoRemoteAddr // No IP layer present.
+	}
+	ipFrame := carrierData[offsetToIP:offsetToFrame]
+	raddr, _, _, _, err := internal.GetIPAddr(ipFrame)
 	if err != nil {
 		return 0, err
 	} else if len(raddr) != len(conn.remoteAddr) {
 		return 0, errMismatchedIPVersion
 	}
-	n, err = conn.h.Send(buf[off:])
+	n, err = conn.h.Send(carrierData[offsetToFrame:])
 	if err != nil {
 		return 0, err
 	}
-	err = internal.SetIPAddrs(buf[:off], conn.ipID, nil, conn.remoteAddr)
+	err = internal.SetIPAddrs(ipFrame, conn.ipID, nil, conn.remoteAddr)
 	if err != nil {
 		return 0, err
 	}
@@ -328,11 +332,11 @@ func (conn *Conn) reset(h Handler) {
 func (conn *Conn) SetDeadline(t time.Time) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	err := conn.SetReadDeadline(t)
+	err := conn.setReadDeadline(t)
 	if err != nil {
 		return err
 	}
-	return conn.SetWriteDeadline(t)
+	return conn.setWriteDeadline(t)
 }
 
 // SetReadDeadline sets the deadline for future Read calls
@@ -340,7 +344,11 @@ func (conn *Conn) SetDeadline(t time.Time) error {
 func (conn *Conn) SetReadDeadline(t time.Time) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	conn.trace("TCPConn.SetReadDeadline:start")
+	return conn.setReadDeadline(t)
+}
+
+func (conn *Conn) setReadDeadline(t time.Time) error {
+	conn.trace("TCPConn.setReadDeadline:start")
 	err := conn.checkPipeOpen()
 	if err == nil {
 		conn.rdead = t
@@ -354,6 +362,12 @@ func (conn *Conn) SetReadDeadline(t time.Time) error {
 // some of the data was successfully written.
 // A zero value for t means Write will not time out.
 func (conn *Conn) SetWriteDeadline(t time.Time) error {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.setWriteDeadline(t)
+}
+
+func (conn *Conn) setWriteDeadline(t time.Time) error {
 	conn.trace("TCPConn.SetWriteDeadline:start")
 	err := conn.checkPipeOpen()
 	if err == nil {

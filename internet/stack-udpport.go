@@ -17,7 +17,7 @@ type StackUDPPort struct {
 }
 
 func (sudp *StackUDPPort) SetStackNode(node StackNode, raddr []byte, rmport uint16) {
-	sudp.h = nodeFromStackNode(node, node.LocalPort(), node.Protocol())
+	sudp.h = nodeFromStackNode(node, node.LocalPort(), node.Protocol(), raddr)
 	sudp.rmport = rmport
 	sudp.raddr = append(sudp.raddr[:0], raddr...)
 }
@@ -61,24 +61,25 @@ func (sudp *StackUDPPort) Demux(carrierData []byte, frameOffset int) error {
 	return err
 }
 
-func (sudp *StackUDPPort) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
+func (sudp *StackUDPPort) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
 	if sudp.h.IsInvalid() {
 		sudp.h.destroy()
 		return 0, net.ErrClosed
 	}
-	ufrm, err := udp.NewFrame(carrierData[frameOffset:])
+	ufrm, err := udp.NewFrame(carrierData[offsetToFrame:])
 	if err != nil {
 		return 0, err
 	}
 	ufrm.SetSourcePort(sudp.h.port)
 	ufrm.SetDestinationPort(sudp.rmport)
-	if len(sudp.raddr) > 0 && frameOffset >= 20 {
-		err = internal.SetIPAddrs(carrierData, 0, nil, sudp.raddr)
+	if len(sudp.raddr) > 0 && offsetToIP >= 0 {
+		err = internal.SetIPAddrs(carrierData[offsetToIP:], 0, nil, sudp.raddr)
 		if err != nil {
 			return 0, err
 		}
 	}
-	n, err := sudp.h.encapsulate(carrierData, frameOffset+8)
+	// Child payload starts 8 bytes after UDP header start.
+	n, err := sudp.h.encapsulate(carrierData, offsetToIP, offsetToFrame+8)
 	if n == 0 {
 		if err != nil {
 			slog.Error("stackudp:encapsulate", slog.String("err", err.Error()))

@@ -5,7 +5,6 @@ import (
 	"io"
 	"log/slog"
 	"net/netip"
-	"slices"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
@@ -19,13 +18,11 @@ import (
 var _ StackNode = (*StackIP)(nil)
 
 type StackIP struct {
-	connID      uint64
-	ipID        uint16
-	ip          [4]byte
-	validator   lneto.Validator
-	handlers    []node
-	pendingICMP [][]byte
-	logger
+	connID    uint64
+	ipID      uint16
+	ip        [4]byte
+	validator lneto.Validator
+	handlers  handlers
 }
 
 func (sb *StackIP) Reset(addr netip.Addr, maxNodes int) error {
@@ -36,14 +33,12 @@ func (sb *StackIP) Reset(addr netip.Addr, maxNodes int) error {
 	if err != nil {
 		return err
 	}
-	sb.handlers = slices.Grow(sb.handlers[:0], maxNodes)
+	sb.handlers.reset("StackIP", maxNodes)
 	*sb = StackIP{
-		connID:      sb.connID + 1,
-		validator:   sb.validator,
-		handlers:    sb.handlers,
-		logger:      sb.logger,
-		ip:          sb.ip,
-		pendingICMP: make([][]byte, maxNodes*4),
+		connID:    sb.connID + 1,
+		validator: sb.validator,
+		handlers:  sb.handlers,
+		ip:        sb.ip,
 	}
 	return nil
 }
@@ -73,11 +68,11 @@ func (sb *StackIP) Addr() netip.Addr {
 }
 
 func (sb *StackIP) SetLogger(logger *slog.Logger) {
-	sb.logger.log = logger
+	sb.handlers.log = logger
 }
 
 func (sb *StackIP) Demux(carrierData []byte, offset int) error {
-	sb.info("StackIP.Demux:start")
+	sb.handlers.info("StackIP.Demux:start")
 	frame := carrierData[offset:] // we don't care about carrier data in IP.
 	ifrm, err := ipv4.NewFrame(frame)
 	if err != nil {
@@ -96,7 +91,7 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 	gotCRC := ifrm.CRC()
 	wantCRC := ifrm.CalculateHeaderCRC()
 	if gotCRC != wantCRC {
-		sb.error("StackIP:Demux:crc-mismatch", slog.Uint64("want", uint64(wantCRC)), slog.Uint64("got", uint64(gotCRC)))
+		sb.handlers.error("StackIP:Demux:crc-mismatch", slog.Uint64("want", uint64(wantCRC)), slog.Uint64("got", uint64(gotCRC)))
 		return errors.New("IPv4 CRC mismatch")
 	}
 	off := ifrm.HeaderLength()
@@ -105,10 +100,11 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 	if proto == lneto.IPProtoICMP {
 		return sb.recvicmp(ifrm.RawData(), ifrm.HeaderLength())
 	}
-	nodeIdx := getNodeByProto(sb.handlers, uint16(proto))
-	if nodeIdx < 0 {
+	node := sb.handlers.nodeByProto(uint16(proto))
+	// nodeIdx := getNodeByProto(sb.handlers, uint16(proto))
+	if node == nil {
 		// Drop packet.
-		sb.info("iprecv:drop", slog.String("dstaddr", netip.AddrFrom4(*ifrm.DestinationAddr()).String()), slog.String("proto", ifrm.Protocol().String()))
+		sb.handlers.info("iprecv:drop", slog.String("dstaddr", netip.AddrFrom4(*ifrm.DestinationAddr()).String()), slog.String("proto", ifrm.Protocol().String()))
 		return nil
 	}
 	// Incoming CRC Validation of common IP Protocols.
@@ -135,17 +131,17 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 			return errors.New("UDP CRC mismatch")
 		}
 	}
-	sb.info("ipDemux", slog.String("ipproto", proto.String()), slog.Int("plen", int(totalLen)))
-	err = sb.handlers[nodeIdx].demux(frame[:totalLen], off)
-	if handleNodeError(&sb.handlers, nodeIdx, err) {
-		sb.info("ipclose", slog.String("proto", proto.String()))
+	sb.handlers.info("ipDemux", slog.String("ipproto", proto.String()), slog.Int("plen", int(totalLen)))
+	err = node.demux(frame[:totalLen], off)
+	if sb.handlers.tryHandleError(node, err) {
+		sb.handlers.info("ipclose", slog.String("proto", proto.String()))
 		err = nil
 	}
 	return err
 }
 
-func (sb *StackIP) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
-	frame := carrierData[frameOffset:]
+func (sb *StackIP) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
+	frame := carrierData[offsetToFrame:]
 	if len(frame) < 256 {
 		return 0, io.ErrShortBuffer
 	}
@@ -162,46 +158,37 @@ func (sb *StackIP) Encapsulate(carrierData []byte, frameOffset int) (int, error)
 	ifrm.SetTTL(64)
 	*ifrm.SourceAddr() = sb.ip
 	sb.ipID = id
-	for i := range sb.handlers {
-		h := &sb.handlers[i]
-		proto := lneto.IPProto(h.proto)
-		n, err := h.encapsulate(frame[:], headerlen)
-		if err != nil {
-			if handleNodeError(&sb.handlers, i, err) {
-				println("IP NODE REMOVED", proto.String(), h.port)
-				h.destroy()
-			}
-			sb.error("StackIP:encapsulate", slog.String("proto", proto.String()), slog.String("err", err.Error()))
-			continue
-		} else if n == 0 {
-			continue
-		}
-		totalLen := n + headerlen
-		ifrm.SetTotalLength(uint16(totalLen))
-		ifrm.SetProtocol(proto)
-		ifrm.SetCRC(ifrm.CalculateHeaderCRC())
-		// Calculate CRC for our newly generated packet.
-		var crc lneto.CRC791
-		switch proto {
-		case lneto.IPProtoTCP:
-			ifrm.CRCWriteTCPPseudo(&crc)
-			tfrm, _ := tcp.NewFrame(ifrm.Payload())
-			tfrm.CRCWrite(&crc)
-			tfrm.SetCRC(crc.Sum16())
-		case lneto.IPProtoUDP:
-			ifrm.CRCWriteUDPPseudo(&crc)
-			ufrm, _ := udp.NewFrame(ifrm.Payload())
-			ufrm.SetLength(uint16(n))
-			ufrm.CRCWriteIPv4(&crc)
-			ufrm.SetCRC(crc.Sum16())
-			if n != int(ufrm.Length()) {
-				sb.error("StackIP:encaps", slog.Int("n", n), slog.Int("un", int(ufrm.Length())))
-				return 0, errors.New("invalid UDP length")
-			}
-		}
-		return totalLen, nil
+	// Children (TCP/UDP) start at offset headerlen (20 bytes after IP header start).
+	// offsetToIP is 0 relative to this slice (frame), children's frame starts at headerlen.
+	node, n, err := sb.handlers.encapsulateAny(carrierData, offsetToFrame, offsetToFrame+headerlen)
+	if n == 0 {
+		return n, err
 	}
-	return 0, nil
+	proto := lneto.IPProto(node.proto)
+	totalLen := n + headerlen
+	ifrm.SetTotalLength(uint16(totalLen))
+	ifrm.SetProtocol(proto)
+	ifrm.SetCRC(ifrm.CalculateHeaderCRC())
+	// Calculate CRC for our newly generated packet.
+	var crc lneto.CRC791
+	switch proto {
+	case lneto.IPProtoTCP:
+		ifrm.CRCWriteTCPPseudo(&crc)
+		tfrm, _ := tcp.NewFrame(ifrm.Payload())
+		tfrm.CRCWrite(&crc)
+		tfrm.SetCRC(crc.Sum16())
+	case lneto.IPProtoUDP:
+		ifrm.CRCWriteUDPPseudo(&crc)
+		ufrm, _ := udp.NewFrame(ifrm.Payload())
+		ufrm.SetLength(uint16(n))
+		ufrm.CRCWriteIPv4(&crc)
+		ufrm.SetCRC(crc.Sum16())
+		if n != int(ufrm.Length()) {
+			sb.handlers.error("StackIP:encaps", slog.Int("n", n), slog.Int("un", int(ufrm.Length())))
+			return 0, errors.New("invalid UDP length")
+		}
+	}
+	return totalLen, err
 }
 
 func (sb *StackIP) Register(h StackNode) error {
@@ -209,19 +196,7 @@ func (sb *StackIP) Register(h StackNode) error {
 	if proto > 255 {
 		return errInvalidProto
 	}
-	connID := h.ConnectionID()
-	var currConnID uint64
-	if connID != nil {
-		currConnID = *connID
-	}
-	return registerNode(&sb.handlers, node{
-		demux:       h.Demux,
-		encapsulate: h.Encapsulate,
-		proto:       uint16(proto),
-		port:        h.LocalPort(),
-		currConnID:  currConnID,
-		connID:      connID,
-	})
+	return sb.handlers.registerByPortProto(nodeFromStackNode(h, h.LocalPort(), proto, nil))
 }
 
 func (sb *StackIP) recvicmp(carrierData []byte, offset int) error {

@@ -159,9 +159,9 @@ func (sv *Server) Demux(carrierData []byte, frameOffset int) error {
 	return nil
 }
 
-func (sv *Server) Encapsulate(carrierData []byte, frameOffset int) (int, error) {
-	carrierIsIP := frameOffset >= 28
-	dfrm, err := NewFrame(carrierData[frameOffset:])
+func (sv *Server) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
+	carrierIsIP := offsetToIP >= 0
+	dfrm, err := NewFrame(carrierData[offsetToFrame:])
 	optBuf := dfrm.OptionsPayload()[:]
 	if err != nil {
 		return 0, err
@@ -220,7 +220,7 @@ func (sv *Server) Encapsulate(carrierData []byte, frameOffset int) (int, error) 
 	copy(dfrm.CHAddrAs6()[:], client.hwaddr[:])
 	dfrm.SetMagicCookie(MagicCookie)
 	if carrierIsIP {
-		err = internal.SetIPAddrs(carrierData, 0, sv.siaddr[:], client.addr[:])
+		err = internal.SetIPAddrs(carrierData[offsetToIP:], 0, sv.siaddr[:], client.addr[:])
 		if err != nil {
 			return 0, err
 		}

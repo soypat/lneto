@@ -28,7 +28,7 @@ func TestClientServer(t *testing.T) {
 	// CLIENT DISCOVER.
 	assertClState(StateInit)
 	var buf [1024]byte
-	n, err := cl.Encapsulate(buf[:], 0)
+	n, err := cl.Encapsulate(buf[:], -1, 0)
 	if err != nil {
 		t.Fatal(err)
 	} else if n == 0 {
@@ -40,7 +40,7 @@ func TestClientServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	// SERVER REPLY OFFER
-	n, err = sv.Encapsulate(buf[:], 0)
+	n, err = sv.Encapsulate(buf[:], -1, 0)
 	if err != nil {
 		t.Fatal(err)
 	} else if n == 0 {
@@ -53,7 +53,7 @@ func TestClientServer(t *testing.T) {
 	assertClState(StateSelecting)
 
 	// CLIENT SEND OUT REQUEST.
-	n, err = cl.Encapsulate(buf[:], 0)
+	n, err = cl.Encapsulate(buf[:], -1, 0)
 	if err != nil {
 		t.Fatal(err)
 	} else if n == 0 {
@@ -66,7 +66,7 @@ func TestClientServer(t *testing.T) {
 	}
 
 	// SERVER REPLIES WITH ACK.
-	n, err = sv.Encapsulate(buf[:], 0)
+	n, err = sv.Encapsulate(buf[:], -1, 0)
 	if err != nil {
 		t.Fatal(err)
 	} else if n == 0 {
@@ -99,13 +99,13 @@ func TestExample(t *testing.T) {
 	})
 	buf := make([]byte, 2048)
 	buf2 := make([]byte, len(buf))
-	n, err := cl.Encapsulate(buf, 0)
+	n, err := cl.Encapsulate(buf, -1, 0)
 	if err != nil {
 		t.Fatal(err)
 	} else if n <= 0 {
 		t.Fatal("no data sent out by client after starting request")
 	}
-	n, err = cl.Encapsulate(buf2, 0)
+	n, err = cl.Encapsulate(buf2, -1, 0)
 	if err != nil {
 		t.Error("client encaps double tap after discover:", err)
 	}
@@ -141,13 +141,13 @@ func TestExample(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	n, err = cl.Encapsulate(buf[:], 0)
+	n, err = cl.Encapsulate(buf[:], -1, 0)
 	if err != nil {
 		t.Fatal(err)
 	} else if n <= 0 {
 		t.Fatal("no data written from client in response to offer")
 	}
-	n, err = cl.Encapsulate(buf[:], 0)
+	n, err = cl.Encapsulate(buf[:], -1, 0)
 	if err != nil {
 		t.Error("encapsulate double tap after request:", err)
 	} else if n > 0 {
