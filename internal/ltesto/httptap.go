@@ -183,16 +183,15 @@ func (sv *HTTPTapServer) OnTransfer(cb func(channel int, pkt []byte)) {
 	sv.onTx = cb
 }
 
-func NewHTTPTapServer(iface Interface, queueOut, queueIn int) (*HTTPTapServer, error) {
+func NewHTTPTapServer(iface Interface, minMTU, queueOut, queueIn int) (*HTTPTapServer, error) {
 	if iface == nil {
 		return nil, errors.New("nil interface argument to HTTP interface server")
 	}
 	mtu, err := iface.MTU()
 	if err != nil {
 		return nil, err
-	} else if mtu < minMTU {
-		return nil, errors.New("too small MTU")
 	}
+	bufferSize := max(mtu, minMTU)
 	netmask, err := iface.IPMask()
 	if err != nil {
 		return nil, err
@@ -202,7 +201,7 @@ func NewHTTPTapServer(iface Interface, queueOut, queueIn int) (*HTTPTapServer, e
 	taps := &HTTPTapServer{
 		router: sv,
 		tap:    iface,
-		buf:    make([]byte, mtu),
+		buf:    make([]byte, bufferSize),
 	}
 	sv.HandleFunc("/send", func(w http.ResponseWriter, r *http.Request) {
 		retries := 10

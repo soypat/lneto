@@ -44,7 +44,7 @@ func (efrm Frame) Payload() []byte {
 	hl := efrm.HeaderLength()
 	et := efrm.EtherTypeOrSize()
 	if et.IsSize() {
-		return efrm.buf[hl:et]
+		return efrm.buf[hl : hl+int(et)]
 	}
 	return efrm.buf[hl:]
 }

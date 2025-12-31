@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"log/slog"
+	"math"
 	"net"
 	"net/netip"
 	"os"
@@ -107,7 +109,7 @@ func run() (err error) {
 	// Loop goroutine.
 	go func() {
 		lastAction := time.Now()
-		buf := make([]byte, mtu)
+		buf := make([]byte, math.MaxUint16) // Generic-receive Offload (GRO) can aggregate packets.
 		var cap pcap.PacketBreakdown
 		var frames []pcap.Frame
 		pf := pcap.Formatter{
@@ -120,9 +122,11 @@ func run() (err error) {
 			}
 			frames, err = cap.CaptureEthernet(frames[:0], pkt, 0)
 			if err != nil {
+				pkt := hex.EncodeToString(pkt)
+				slog.Error(err.Error(), slog.Any("pkt", pkt))
 				return err
 			}
-			pfbuf = append(pfbuf[:0], context...)
+			pfbuf = fmt.Appendf(pfbuf[:0], "%-3s %3d", context, len(pkt))
 			pfbuf = append(pfbuf, ' ', '[')
 			pfbuf, err = pf.FormatFrames(pfbuf, frames, pkt)
 			pfbuf = append(pfbuf, ']', '\n')
@@ -133,7 +137,6 @@ func run() (err error) {
 			return err
 		}
 		for {
-			clear(buf)
 			nwrite, err := stack.Encapsulate(buf[:], -1, 0)
 			if err != nil {
 				log.Println("ERR:ENCAPSULATE", err)
@@ -150,7 +153,7 @@ func run() (err error) {
 				}
 			}
 
-			clear(buf)
+			clear(buf[:nwrite])
 			nread, err := iface.Read(buf)
 			if err != nil {
 				log.Fatal("groutine read:", err)
@@ -165,7 +168,7 @@ func run() (err error) {
 					}
 				}
 			}
-
+			clear(buf[:nread])
 			if nread == 0 && nwrite == 0 && time.Since(lastAction) > 4*time.Second {
 				time.Sleep(5 * time.Millisecond)
 			} else {
