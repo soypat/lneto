@@ -42,6 +42,7 @@ func run() (err error) {
 		flagRequestedIP   = ""
 		flagDoNTP         = false
 		flagHTTPGet       = false
+		flagNoPcap        = false
 	)
 	flag.BoolVar(&flagHTTPGet, "httpget", flagHTTPGet, "Do an HTTP GET request ")
 	flag.StringVar(&flagInterface, "i", flagInterface, "Interface to use. Either tap* or the name of an existing interface to bridge to.")
@@ -49,6 +50,7 @@ func run() (err error) {
 	flag.StringVar(&flagHostToResolve, "host", flagHostToResolve, "Hostname to resolve via DNS.")
 	flag.StringVar(&flagRequestedIP, "addr", flagRequestedIP, "IP address to request via DHCP.")
 	flag.BoolVar(&flagDoNTP, "ntp", flagDoNTP, "Do NTP round and print result time")
+	flag.BoolVar(&flagNoPcap, "nopcap", flagNoPcap, "Disable pcap logging.")
 	flag.Parse()
 	fmt.Println("softrand", softRand)
 	_, err = dns.NewName(flagHostToResolve)
@@ -108,18 +110,37 @@ func run() (err error) {
 		buf := make([]byte, mtu)
 		var cap pcap.PacketBreakdown
 		var frames []pcap.Frame
+		pf := pcap.Formatter{
+			FilterClasses: []pcap.FieldClass{pcap.FieldClassFlags, pcap.FieldClassDst, pcap.FieldClassSrc, pcap.FieldClassAddress},
+		}
+		var pfbuf []byte
+		logFrames := func(context string, pkt []byte) error {
+			if flagNoPcap {
+				return nil
+			}
+			frames, err = cap.CaptureEthernet(frames[:0], pkt, 0)
+			if err != nil {
+				return err
+			}
+			pfbuf = append(pfbuf[:0], context...)
+			pfbuf = append(pfbuf, ' ', '[')
+			pfbuf, err = pf.FormatFrames(pfbuf, frames, pkt)
+			pfbuf = append(pfbuf, ']', '\n')
+			if err != nil {
+				return err
+			}
+			_, err = os.Stdout.Write(pfbuf)
+			return err
+		}
 		for {
 			clear(buf)
 			nwrite, err := stack.Encapsulate(buf[:], -1, 0)
 			if err != nil {
-				fmt.Println("ERR:ENCAPSULATE", err)
+				log.Println("ERR:ENCAPSULATE", err)
 			} else if nwrite > 0 {
-				frames, err = cap.CaptureEthernet(frames[:0], buf[:nwrite], 0)
+				err = logFrames("OUT", buf[:nwrite])
 				if err != nil {
-					log.Println("ERR capture", err)
-				}
-				if len(frames) > 0 {
-					fmt.Println("OUT", frames)
+					log.Println("ERR:OUTLOG", err)
 				}
 				n, err := iface.Write(buf[:nwrite])
 				if err != nil {
@@ -137,8 +158,10 @@ func run() (err error) {
 				err = stack.Demux(buf[:nread], 0)
 				if err != nil {
 					if !errors.Is(err, lneto.ErrPacketDrop) {
-						frames, err = cap.CaptureEthernet(frames[:0], buf[:nread], 0)
-						log.Println("groutine demux:", err, frames)
+						err = logFrames("IN", buf[:nread])
+						if err != nil {
+							log.Println("ERR:INLOG", err)
+						}
 					}
 				}
 			}
