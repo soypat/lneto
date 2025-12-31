@@ -63,22 +63,24 @@ func run() error {
 	}
 	defer sv.Close()
 	var cap pcap.PacketBreakdown
+	pf := pcap.Formatter{
+		FilterClasses: []pcap.FieldClass{pcap.FieldClassDst, pcap.FieldClassSrc, pcap.FieldClassSize, pcap.FieldClassFlags},
+	}
+	var pfbuf []byte
 	sv.OnTransfer(func(channel int, pkt []byte) {
 		captime := time.Now()
 		frames, err := cap.CaptureEthernet(nil, pkt, 0)
 		if err == nil {
-			flags, src, dst := getTCPData(frames, pkt)
-			if src != 0 {
-				if flags != 0 {
-					fmt.Println(channel, captime.Format("15:04:05.000"), frames, flags.String(), src, "->", dst)
-				} else {
-					fmt.Println(channel, captime.Format("15:04:05.000"), frames, src, "->", dst)
-				}
+			pfbuf = append(pfbuf[:0], '[')
+			pfbuf, err = pf.FormatFrames(pfbuf, frames, pkt)
+			pfbuf = append(pfbuf, ']')
+			if err != nil {
+				fmt.Printf("%d %s !err:%s\n", channel, captime.Format("15:04:05.000"), err)
 			} else {
-				fmt.Println(channel, captime.Format("15:04:05.000"), frames)
+				fmt.Printf("%d %s %s\n", channel, captime.Format("15:04:05.000"), pfbuf)
 			}
 		} else {
-			fmt.Println(channel, captime.Format("15:04:05.000"), "ERR", frames, err.Error())
+			fmt.Println(channel, captime.Format("15:04:05.000"), "cap ERR", frames, err.Error())
 		}
 	})
 	hwaddr, err := sv.HardwareAddress6()
