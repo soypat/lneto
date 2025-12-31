@@ -46,6 +46,7 @@ local
 *.zip
 *.gz
 *.tar
+*.txt
 
 # If running a python script.
 */__pycache__/*

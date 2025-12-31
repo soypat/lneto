@@ -187,10 +187,12 @@ func run() (err error) {
 		dhcpTimeout = 6 * time.Second
 		dhcpRetries = 2
 	)
+	timeDHCP := timer("DHCP request completed")
 	results, err := rstack.DoDHCPv4([4]byte{192, 168, 1, 96}, dhcpTimeout, dhcpRetries)
 	if err != nil {
 		return fmt.Errorf("DHCP failed: %w", err)
 	}
+	timeDHCP()
 	err = stack.AssimilateDHCPResults(results)
 	if err != nil {
 		return fmt.Errorf("assimilating DHCP results: %w", err)
@@ -204,31 +206,39 @@ func run() (err error) {
 		internetTimeout = 3 * time.Second
 		internetRetries = 2
 	)
+	timeResolveRouterHW := timer("Router ARP resolution")
 	routerHw, err := rstack.DoResolveHardwareAddress6(results.Router, arpTimeout, arpRetries)
 	if err != nil {
 		return fmt.Errorf("ARP resolution of router failed: %w", err)
 	}
+	timeResolveRouterHW()
 	stack.SetGateway6(routerHw)
 	if flagDoNTP {
+		timeLookupNTP := timer("NTP IP lookup")
 		const ntpHost = "pool.ntp.org"
 		addrs, err := rstack.DoLookupIP(ntpHost, internetTimeout, internetRetries)
 		if err != nil {
 			return fmt.Errorf("NTP address lookup of %q failed: %w", ntpHost, err)
 		}
+		timeLookupNTP()
+		timeNTP := timer("NTP exchange")
 		offset, err := rstack.DoNTP(addrs[0], internetTimeout, internetRetries)
 		if err != nil {
 			return fmt.Errorf("NTP address lookup of %q failed: %w", ntpHost, err)
 		}
+		timeNTP()
 		relative := "behind"
 		if offset < 0 {
 			relative = "ahead"
 		}
 		fmt.Println("NTP completed. You are", offset.Abs().String(), relative, "of the NTP server")
 	}
+	timeResolveIP := timer("resolve " + flagHostToResolve)
 	addrs, err := rstack.DoLookupIP(flagHostToResolve, internetTimeout, internetRetries)
 	if err != nil {
 		return fmt.Errorf("DNS of host %q failed: %w", flagHostToResolve, err)
 	}
+	timeResolveIP()
 	fmt.Printf("DNS resolution of %q complete and resolved to %v\n", flagHostToResolve, addrs)
 	var conn tcp.Conn
 	conn.Configure(tcp.ConnConfig{
@@ -237,6 +247,7 @@ func run() (err error) {
 		TxPacketQueueSize: 3,
 	})
 	if flagHTTPGet {
+		timeHTTPCreate := timer("create HTTP GET request")
 		var hdr httpraw.Header
 		hdr.SetMethod("GET")
 		hdr.SetRequestURI("/")
@@ -248,6 +259,9 @@ func run() (err error) {
 		if err != nil {
 			return err
 		}
+		timeHTTPCreate()
+
+		timeHTTP := timer("send http request")
 		const tcpDebugTimeout = 60 * time.Minute
 		target := netip.AddrPortFrom(addrs[0], 80)
 		err = rstack.DoDialTCP(&conn, uint16(softRand&0xefff)+1024, target, tcpDebugTimeout, internetRetries)
@@ -256,10 +270,13 @@ func run() (err error) {
 		}
 		conn.SetDeadline(time.Now().Add(internetTimeout))
 		_, err = conn.Write(req)
+		timeHTTP()
+		timeHTTPRcv := timer("recv http request")
 		if err != nil {
 			return err
 		}
 		rxbuf := make([]byte, 2048)
+
 		var page []byte
 		for {
 			var n int
@@ -272,6 +289,7 @@ func run() (err error) {
 		if len(page) == 0 {
 			return err
 		}
+		timeHTTPRcv()
 		os.Stdout.Write(page)
 	}
 	return nil
@@ -281,4 +299,30 @@ func clear(buf []byte) {
 	for i := range buf {
 		buf[i] = 0
 	}
+}
+
+func timer(context string) func() {
+	start := time.Now()
+	return func() {
+		elapsed := time.Since(start)
+		fmt.Printf("[%s] %s\n", prettyDuration(elapsed), context)
+	}
+}
+
+func prettyDuration(d time.Duration) string {
+	switch {
+	case d < time.Microsecond:
+		// Print as is.
+	case d < time.Millisecond:
+		d = d.Round(time.Microsecond)
+	case d < time.Second:
+		d = d.Round(time.Millisecond)
+	case d < 10*time.Second:
+		d = d.Round(100 * time.Millisecond)
+	case d < 10*time.Minute:
+		d = d.Round(1000 * time.Millisecond)
+	case d < time.Hour:
+		d = d.Round(time.Minute)
+	}
+	return d.String()
 }
