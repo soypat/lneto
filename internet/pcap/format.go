@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	_ "time"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
@@ -109,7 +110,8 @@ func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, p
 	default:
 		fallthrough
 	case FieldClassTimestamp:
-		const littlerfc3339 = "2006-01-02T15:04:05"
+		// inspired by [time.RFC3339]
+		const littlerfc3339 = "2006-01-02T15:04:05.9999"
 		ts := ntp.TimestampFromUint64(binary.BigEndian.Uint64(f.buf))
 		dst = ts.Time().AppendFormat(dst, littlerfc3339)
 	case FieldClassChecksum, FieldClassID, FieldClassFlags, FieldClassOptions:
