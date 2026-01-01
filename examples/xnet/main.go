@@ -255,6 +255,7 @@ func run() (err error) {
 		hdr.Set("Host", flagHostToResolve)
 		hdr.Set("User-Agent", "lneto")
 		hdr.Set("Accept-Language", "en-US,en;q=0.5")
+		hdr.Set("Connection", "close") // Encourage server to close connection after it finishes sending response.
 		req, err := hdr.AppendRequest(nil)
 		if err != nil {
 			return err
@@ -285,6 +286,11 @@ func run() (err error) {
 			n, err = conn.Read(rxbuf)
 			page = append(page, rxbuf[:n]...)
 			if err != nil {
+				break
+			}
+			ptrimmed := bytes.TrimSpace(page)
+			if bytes.EqualFold(ptrimmed[len(ptrimmed)-7:], []byte("</html>")) {
+				// We've received the last part of the HTML. we're done.
 				break
 			}
 		}
