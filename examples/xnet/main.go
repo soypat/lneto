@@ -174,6 +174,14 @@ func run() (err error) {
 			}
 
 			clear(buf[:nwrite])
+			// Poll before read if interface supports it, to avoid blocking indefinitely.
+			ready, err := tryPoll(iface, 5*time.Millisecond)
+			if err != nil {
+				log.Fatal("goroutine poll:", err)
+			}
+			if !ready {
+				continue
+			}
 			nread, err := iface.Read(buf)
 			if err != nil {
 				log.Fatal("groutine read:", err)
@@ -349,4 +357,15 @@ func prettyDuration(d time.Duration) string {
 		d = d.Round(time.Minute)
 	}
 	return d.String()
+}
+
+func tryPoll(iface ltesto.Interface, poll time.Duration) (dataMayBeReady bool, _ error) {
+	if poller, ok := iface.(interface {
+		Poll(time.Duration) (bool, error)
+	}); ok {
+		ready, err := poller.Poll(poll)
+		return ready, err
+	}
+	dataMayBeReady = true
+	return dataMayBeReady, nil
 }

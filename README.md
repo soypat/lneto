@@ -107,6 +107,7 @@ Using the provided method of interfacing mean's you'll always be able to easily 
 
 Alternatively there's the [`internet/pcap`](./internet/pcap) package that does the same thing as Wireshark but as a Go API. Here's the result of running xnet example with pcap logging:
 
+
 ```log
 go run ./examples/xnet -httpget -host google.com -ihttp -ntp
 softrand 1767229198
