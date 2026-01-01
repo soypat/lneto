@@ -131,7 +131,7 @@ func run() (err error) {
 		var cap pcap.PacketBreakdown
 		var frames []pcap.Frame
 		pf := pcap.Formatter{
-			FilterClasses: []pcap.FieldClass{pcap.FieldClassFlags, pcap.FieldClassOperation, pcap.FieldClassDst, pcap.FieldClassSrc, pcap.FieldClassAddress},
+			FilterClasses: []pcap.FieldClass{pcap.FieldClassFlags, pcap.FieldClassOperation, pcap.FieldClassDst, pcap.FieldClassSrc, pcap.FieldClassAddress, pcap.FieldClassTimestamp},
 		}
 		var pfbuf []byte
 		logFrames := func(context string, pkt []byte) error {

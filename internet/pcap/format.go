@@ -1,6 +1,7 @@
 package pcap
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"net/netip"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/ntp"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -106,6 +108,10 @@ func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, p
 	switch field.Class {
 	default:
 		fallthrough
+	case FieldClassTimestamp:
+		const littlerfc3339 = "2006-01-02T15:04:05"
+		ts := ntp.TimestampFromUint64(binary.BigEndian.Uint64(f.buf))
+		dst = ts.Time().AppendFormat(dst, littlerfc3339)
 	case FieldClassChecksum, FieldClassID, FieldClassFlags, FieldClassOptions:
 		// Binary data to be printed as hexadecimal.
 		dst = append(dst, "0x"...)
