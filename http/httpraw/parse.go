@@ -98,6 +98,12 @@ func (hb *headerBuf) offBuf() []byte {
 	return hb.buf[hb.off:]
 }
 
+func (hb *headerBuf) skipLeadingCRLF() {
+	for hb.off < len(hb.buf) && (hb.buf[hb.off] == '\n' || hb.buf[hb.off] == '\r') {
+		hb.off++
+	}
+}
+
 func (hb *headerBuf) scanLine() []byte {
 	buf := hb.scanUntilByte('\n')
 	if len(buf) > 0 && buf[len(buf)-1] == '\r' {
@@ -122,9 +128,8 @@ func (hb *headerBuf) scanUntilByte(c byte) []byte {
 func (hb *headerBuf) parseFirstLineRequest(initFlags flags) (method, uri, proto headerSlice, flags flags, err error) {
 	hb.off = 0 // Parsing first line resets offset.
 	var b []byte
-	for len(b) == 0 {
-		b = hb.scanLine()
-	}
+	hb.skipLeadingCRLF()
+	b = hb.scanLine()
 	flags = initFlags
 	if len(b) < 5 {
 		return method, uri, proto, flags, errNeedMore
@@ -154,9 +159,8 @@ func (hb *headerBuf) parseFirstLineRequest(initFlags flags) (method, uri, proto 
 func (hb *headerBuf) parseFirstLineResponse(initFlags flags) (statusCode, statusText headerSlice, flags flags, err error) {
 	hb.off = 0 // Parsing first line resets offset.
 	var b []byte
-	for len(b) == 0 {
-		b = hb.scanLine()
-	}
+	hb.skipLeadingCRLF()
+	b = hb.scanLine()
 	flags = initFlags
 	if len(b) < 5 {
 		return statusCode, statusText, flags, errNeedMore

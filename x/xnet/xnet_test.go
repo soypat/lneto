@@ -28,28 +28,40 @@ func TestStackAsyncTCP_multipacket(t *testing.T) {
 	tst := testerFrom(t, MTU)
 	rng := rand.New(rand.NewSource(seed))
 	client2, sv2, clconn2, svconn2 := newTCPStacks(t, seed, MTU)
-	_, _, _, _ = client2, sv2, clconn2, svconn2
-	tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1337)
-	tst.TestTCPClose(client, sv, clconn, svconn)
-	var buf [MTU]byte
-	for i := 0; i < 1; i++ {
-		payloadSize := rng.Intn(maxPktLen) + 1
+
+	for _, clientCloses := range []bool{true, false} {
+		testClose := func() {
+			t.Helper()
+			if clientCloses {
+				tst.TestTCPClose(client, sv, clconn, svconn)
+			} else {
+				tst.TestTCPClose(sv, client, svconn, clconn)
+			}
+		}
 		tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1337)
-		// npkt := rng.Intn(maxNPkt-1) + 2
-		a, _ := rng.Read(buf[:payloadSize])
-		tst.TestTCPEstablishedSingleData(sv, client, svconn, clconn, buf[:a])
-		a, _ = rng.Read(buf[:payloadSize])
-		tst.TestTCPEstablishedSingleData(sv, client, svconn, clconn, buf[:a])
-		// for ipkt := 0; ipkt < npkt; ipkt++ {
-		// 	a, _ := rng.Read(buf[:payloadSize])
-		// 	tst.TestTCPEstablishedSingleData(sv, client, svconn, clconn, buf[:a])
-		// }
-		tst.TestTCPClose(client, sv, clconn, svconn)
-		if t.Failed() {
-			t.Error("multi failed")
-			t.FailNow()
+		testClose()
+		var buf [MTU]byte
+		for i := 0; i < 20; i++ {
+			payloadSize := rng.Intn(maxPktLen) + 1
+			tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1337)
+			// npkt := rng.Intn(maxNPkt-1) + 2
+			a, _ := rng.Read(buf[:payloadSize])
+			tst.TestTCPEstablishedSingleData(sv, client, svconn, clconn, buf[:a])
+			a, _ = rng.Read(buf[:payloadSize])
+			tst.TestTCPEstablishedSingleData(sv, client, svconn, clconn, buf[:a])
+			// for ipkt := 0; ipkt < npkt; ipkt++ {
+			// 	a, _ := rng.Read(buf[:payloadSize])
+			// 	tst.TestTCPEstablishedSingleData(sv, client, svconn, clconn, buf[:a])
+			// }
+			testClose()
+			if t.Failed() {
+				t.Error("multi failed")
+				t.FailNow()
+			}
 		}
 	}
+	_, _, _, _ = client2, sv2, clconn2, svconn2
+
 }
 
 func TestStackAsyncTCP_singlepacket(t *testing.T) {
