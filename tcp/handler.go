@@ -228,7 +228,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	buffered := h.bufTx.Buffered()
+	buffered := h.bufTx.BufferedUnsent()
 	if buffered == 0 && h.closing {
 		// If Close called and no more data to be sent, terminate connection!
 		h.closing = false
@@ -326,6 +326,15 @@ func (h *Handler) BufferedInput() int {
 		return 0
 	}
 	return h.bufRx.Buffered()
+}
+
+// BufferedUnsent returns the number of bytes in the socket's transmit(output) buffer
+// that has yet to be sent.
+func (h *Handler) BufferedUnsent() int {
+	if h.State().IsClosed() {
+		return 0
+	}
+	return h.bufTx.BufferedUnsent()
 }
 
 // AvailableOutput returns amount of bytes available to write to output

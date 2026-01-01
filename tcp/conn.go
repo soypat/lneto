@@ -93,6 +93,14 @@ func (conn *Conn) BufferedInput() int {
 	return conn.h.BufferedInput()
 }
 
+// BufferedUnsent returns the number of bytes in the socket's transmit(output) buffer
+// that has yet to be sent.
+func (conn *Conn) BufferedUnsent() int {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.h.BufferedUnsent()
+}
+
 func (conn *Conn) AvailableInput() int {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
@@ -174,13 +182,12 @@ func (conn *Conn) InternalHandler() *Handler {
 
 // Write writes argument data to the TCPConns's output buffer which is queued to be sent.
 func (conn *Conn) Write(b []byte) (int, error) {
-	err := conn.checkPipeOpen()
+	connid, err := conn.lockPipeConnID()
 	if err != nil {
 		return 0, err
 	}
 	plen := len(b)
 	conn.trace("TCPConn.Write:start")
-	connid := conn.h.ConnectionID()
 	if conn.deadlineExceeded(&conn.wdead) {
 		return 0, errDeadlineExceeded
 	} else if plen == 0 {
@@ -189,10 +196,8 @@ func (conn *Conn) Write(b []byte) (int, error) {
 	backoff := internal.NewBackoff(internal.BackoffTCPConn)
 	n := 0
 	for {
-		if conn.abortErr != nil {
-			return n, conn.abortErr
-		} else if connid != conn.h.ConnectionID() {
-			return n, net.ErrClosed
+		if err := conn.checkPipe(connid, &conn.wdead); err != nil {
+			return 0, err
 		}
 		conn.mu.Lock()
 		ngot, _ := conn.h.Write(b)
@@ -215,24 +220,38 @@ func (conn *Conn) Write(b []byte) (int, error) {
 	return n, nil
 }
 
+func (conn *Conn) Flush() error {
+	connid, err := conn.lockPipeConnID()
+	if err != nil {
+		return err
+	}
+	if conn.deadlineExceeded(&conn.wdead) {
+		return errDeadlineExceeded
+	} else if conn.BufferedUnsent() == 0 {
+		return nil
+	}
+	backoff := internal.NewBackoff(internal.BackoffTCPConn)
+	for conn.BufferedUnsent() != 0 {
+		if err := conn.checkPipe(connid, &conn.wdead); err != nil {
+			return err
+		}
+		backoff.Miss()
+	}
+	return nil
+}
+
 // Read reads data from the socket's input buffer. If the buffer is empty,
 // Read will block until data is available or connection closes.
 func (conn *Conn) Read(b []byte) (int, error) {
-	err := conn.checkPipeOpen()
+	connid, err := conn.lockPipeConnID()
 	if err != nil {
 		return 0, err
 	}
 	conn.trace("TCPConn.Read:start")
-	connid := conn.h.ConnectionID()
 	backoff := internal.NewBackoff(internal.BackoffTCPConn)
 	for conn.h.BufferedInput() == 0 && conn.State() == StateEstablished {
-		if conn.abortErr != nil {
-			return 0, conn.abortErr
-		} else if connid != conn.h.ConnectionID() {
-			return 0, net.ErrClosed
-		}
-		if conn.deadlineExceeded(&conn.rdead) {
-			return 0, errDeadlineExceeded
+		if err := conn.checkPipe(connid, &conn.rdead); err != nil {
+			return 0, err
 		}
 		backoff.Miss()
 	}
@@ -240,6 +259,29 @@ func (conn *Conn) Read(b []byte) (int, error) {
 	n, err := conn.h.Read(b)
 	conn.mu.Unlock()
 	return n, err
+}
+
+func (conn *Conn) lockPipeConnID() (uint64, error) {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	err := conn.checkPipeOpen()
+	if err != nil {
+		return 0, err
+	}
+	return conn.h.connid, nil
+}
+
+func (conn *Conn) checkPipe(connID uint64, deadline *time.Time) (err error) {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if conn.abortErr != nil {
+		err = conn.abortErr
+	} else if connID != conn.h.connid {
+		err = net.ErrClosed
+	} else if !deadline.IsZero() && time.Since(*deadline) > 0 {
+		err = errDeadlineExceeded
+	}
+	return nil
 }
 
 func (conn *Conn) checkPipeOpen() error {

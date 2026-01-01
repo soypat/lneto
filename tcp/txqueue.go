@@ -90,8 +90,8 @@ func (rtx *ringTx) Free() int {
 	return r.Free()
 }
 
-// Buffered returns the amount of written but unsent bytes.
-func (rtx *ringTx) Buffered() int {
+// BufferedUnsent returns the amount of written but unsent bytes.
+func (rtx *ringTx) BufferedUnsent() int {
 	r, _ := rtx.unsentRing()
 	return r.Buffered()
 }

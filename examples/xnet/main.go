@@ -297,11 +297,16 @@ func run() (err error) {
 		timeHTTPSend := timer("send HTTP request")
 		conn.SetDeadline(time.Now().Add(internetTimeout))
 		_, err = conn.Write(req)
-		timeHTTPSend()
-		timeHTTPRcv := timer("recv http request")
 		if err != nil {
 			return err
 		}
+		err = conn.Flush()
+		if err != nil {
+			return err
+		}
+		timeHTTPSend()
+		timeHTTPRcv := timer("recv http request")
+
 		rxbuf := make([]byte, 2048)
 
 		var page []byte

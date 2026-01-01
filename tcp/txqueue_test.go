@@ -305,7 +305,7 @@ func TestTxQueue(t *testing.T) {
 						seq := currentAck
 						currentAck = Add(currentAck, Size(len(msg)))
 						operateOnRing(t, &rtx, msg, readBuf[:], aux[:], seq, &currentAck)
-						buffered := rtx.Buffered()
+						buffered := rtx.BufferedUnsent()
 						if buffered != 0 {
 							t.Fatalf("msg%d: want no buffered data after transaction, got %d", imsg, buffered)
 						}
@@ -334,14 +334,14 @@ func TestTxQueue(t *testing.T) {
 							return
 						}
 						expectBuffered += len(msg)
-						buffered := rtx.Buffered()
+						buffered := rtx.BufferedUnsent()
 						if buffered != expectBuffered {
 							t.Fatalf("expected seq to not change during writes")
 						}
 						currentAck = Add(currentAck, Size(len(msg)))
 					}
 					sent := rtx.BufferedSent()
-					unsent := rtx.Buffered()
+					unsent := rtx.BufferedUnsent()
 					wantUnsent := int(Add(currentAck, -startAck))
 					if unsent != wantUnsent {
 						t.Fatalf("want %d data buffered, got %d", wantUnsent, unsent)
@@ -349,7 +349,7 @@ func TestTxQueue(t *testing.T) {
 						t.Fatalf("want no data sent, got %d", sent)
 					}
 					operateOnRing(t, &rtx, nil, readBuf[:], aux[:], 0, &currentAck)
-					unsent = rtx.Buffered()
+					unsent = rtx.BufferedUnsent()
 					if unsent != 0 {
 						t.Fatalf("expected all data to be sent after ack of most recent packet, %d", unsent)
 					} else if rtx.BufferedSent() != 0 {
@@ -375,7 +375,7 @@ func TestTxQueue(t *testing.T) {
 					// Send all bytes over wire.
 					currentSeq := Value(startAck)
 					datalens = datalens[:0]
-					for rtx.Buffered() != 0 {
+					for rtx.BufferedUnsent() != 0 {
 						nbytes := rng.Intn(maxPacketSize-minBufferSize) + minBufferSize
 						n, err := rtx.MakePacket(readBuf[:nbytes], currentSeq)
 						if err != nil {
@@ -445,7 +445,7 @@ func testQueueSanity(t *testing.T, rtx *ringTx) {
 
 	free := rtx.Free()
 	sent := rtx.BufferedSent()
-	unsent := rtx.Buffered()
+	unsent := rtx.BufferedUnsent()
 	sz := rtx.Size()
 	gotSz := free + sent + unsent
 	if gotSz != sz {
@@ -553,14 +553,14 @@ func operateOnRing(t *testing.T, rtx *ringTx, write, readPacket, aux []byte, new
 
 	if len(write) != 0 {
 		testQueueSanity(t, rtx)
-		preBuffered := rtx.Buffered()
+		preBuffered := rtx.BufferedUnsent()
 		n, err := rtx.Write(write)
 		if err != nil && wantWritten > 0 {
 			t.Errorf("error writing packet: %s", err)
 		} else if n != wantWritten {
 			t.Errorf("want %d written, got %d", wantWritten, n)
 		}
-		newBuffered := rtx.Buffered()
+		newBuffered := rtx.BufferedUnsent()
 		gotWritten := newBuffered - preBuffered
 		if gotWritten != wantWritten {
 			t.Errorf("expected %d data written, got %d", wantWritten, gotWritten)
@@ -570,7 +570,7 @@ func operateOnRing(t *testing.T, rtx *ringTx, write, readPacket, aux []byte, new
 	if !t.Failed() && len(readPacket) != 0 {
 		testQueueSanity(t, rtx)
 		preSent := rtx.BufferedSent()
-		canRead := rtx.Buffered()
+		canRead := rtx.BufferedUnsent()
 		wantRead := min(canRead, len(readPacket))
 		if wantRead != len(wantBufRead) {
 			t.Fatalf("miscalculated expect read %d != %d", wantRead, len(wantBufRead))
