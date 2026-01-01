@@ -10,23 +10,29 @@ import (
 )
 
 const (
-	maxIter    = 1000
-	maxTimeout = time.Minute
-	maxSleep   = maxTimeout / maxIter
+	maxIter = 1000
 )
 
 var (
 	errDeadlineExceed = errors.New("cywnet: deadline exceeded")
 )
 
-func (s *StackAsync) StackBlocking() StackBlocking {
+func (s *StackAsync) StackBlocking(loopSleep time.Duration) StackBlocking {
+	if loopSleep < 0 {
+		panic("invalid sleep")
+	} else if loopSleep > 3*time.Second {
+		// loopSleep should be a very small amount of time for stack to remain responsive.
+		panic("StackBlocking sleep too large")
+	}
 	return StackBlocking{
-		async: s,
+		async:     s,
+		loopSleep: loopSleep,
 	}
 }
 
 type StackBlocking struct {
-	async *StackAsync
+	async     *StackAsync
+	loopSleep time.Duration
 }
 
 func (s StackBlocking) DoDHCPv4(reqAddr [4]byte, timeout time.Duration) (*DHCPResults, error) {
@@ -34,7 +40,7 @@ func (s StackBlocking) DoDHCPv4(reqAddr [4]byte, timeout time.Duration) (*DHCPRe
 	if err != nil {
 		return nil, err
 	}
-	sleep := timeout/maxIter + 1
+	sleep := s.loopSleep
 	deadline := time.Now().Add(timeout)
 	requested := false
 	for i := 0; i < maxIter; i++ {
@@ -57,7 +63,7 @@ func (s StackBlocking) DoNTP(hostAddr netip.Addr, timeout time.Duration) (offset
 	if err != nil {
 		return -1, err
 	}
-	sleep := timeout/maxIter + 1
+	sleep := s.loopSleep
 	deadline := time.Now().Add(timeout)
 	var done bool
 	for i := 0; i < maxIter; i++ {
@@ -77,7 +83,7 @@ func (s StackBlocking) DoResolveHardwareAddress6(addr netip.Addr, timeout time.D
 	if err != nil {
 		return hw, err
 	}
-	sleep := timeout/maxIter + 1
+	sleep := s.loopSleep
 	deadline := time.Now().Add(timeout)
 	for i := 0; i < maxIter; i++ {
 		hw, err = s.async.ResultResolveHardwareAddress6(addr)
@@ -97,7 +103,7 @@ func (s StackBlocking) DoLookupIP(host string, timeout time.Duration) (addrs []n
 	if err != nil {
 		return nil, err
 	}
-	sleep := timeout/maxIter + 1
+	sleep := s.loopSleep
 	deadline := time.Now().Add(timeout)
 	for i := 0; i < maxIter; i++ {
 		addrs, completed, err := s.async.ResultLookupIP(host)
@@ -118,7 +124,7 @@ func (s StackBlocking) DoDialTCP(conn *tcp.Conn, localPort uint16, addrp netip.A
 	if err != nil {
 		return err
 	}
-	sleep := timeout/maxIter + 1
+	sleep := s.loopSleep
 	deadline := time.Now().Add(timeout)
 	for i := 0; i < maxIter; i++ {
 		state := conn.State()

@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"runtime"
+	"runtime/pprof"
 	"strings"
 	"time"
 
@@ -47,6 +48,7 @@ func run() (err error) {
 		flagDoNTP         = false
 		flagHTTPGet       = false
 		flagNoPcap        = false
+		flagPprof         = false
 	)
 	flag.BoolVar(&flagHTTPGet, "httpget", flagHTTPGet, "Do an HTTP GET request ")
 	flag.StringVar(&flagInterface, "i", flagInterface, "Interface to use. Either tap* or the name of an existing interface to bridge to.")
@@ -55,7 +57,16 @@ func run() (err error) {
 	flag.StringVar(&flagRequestedIP, "addr", flagRequestedIP, "IP address to request via DHCP.")
 	flag.BoolVar(&flagDoNTP, "ntp", flagDoNTP, "Do NTP round and print result time")
 	flag.BoolVar(&flagNoPcap, "nopcap", flagNoPcap, "Disable pcap logging.")
+	flag.BoolVar(&flagPprof, "pprof", flagPprof, "Enable CPU profiling.")
 	flag.Parse()
+	if flagPprof {
+		var b bytes.Buffer
+		pprof.StartCPUProfile(&b)
+		defer func() {
+			pprof.StopCPUProfile()
+			os.WriteFile("xnet.pprof", b.Bytes(), 0777)
+		}()
+	}
 	fmt.Println("softrand", softRand)
 	_, err = dns.NewName(flagHostToResolve)
 	if err != nil {
@@ -74,6 +85,10 @@ func run() (err error) {
 			iface = tap
 		} else {
 			bridge, err := internal.NewBridge(flagInterface)
+			if err != nil {
+				return err
+			}
+			err = bridge.SetReadTimeout(5 * time.Millisecond)
 			if err != nil {
 				return err
 			}
@@ -108,6 +123,7 @@ func run() (err error) {
 	if err != nil {
 		return err
 	}
+
 	// Loop goroutine.
 	go func() {
 		lastAction := time.Now()
@@ -115,7 +131,7 @@ func run() (err error) {
 		var cap pcap.PacketBreakdown
 		var frames []pcap.Frame
 		pf := pcap.Formatter{
-			FilterClasses: []pcap.FieldClass{pcap.FieldClassFlags, pcap.FieldClassOperation, pcap.FieldClassDst, pcap.FieldClassSrc, pcap.FieldClassAddress},
+			FilterClasses: []pcap.FieldClass{pcap.FieldClassFlags, pcap.FieldClassOperation, pcap.FieldClassDst, pcap.FieldClassSrc, pcap.FieldClassAddress, pcap.FieldClassTimestamp},
 		}
 		var pfbuf []byte
 		logFrames := func(context string, pkt []byte) error {
@@ -158,6 +174,14 @@ func run() (err error) {
 			}
 
 			clear(buf[:nwrite])
+			// Poll before read if interface supports it, to avoid blocking indefinitely.
+			ready, err := tryPoll(iface, 5*time.Millisecond)
+			if err != nil {
+				log.Fatal("goroutine poll:", err)
+			}
+			if !ready {
+				continue
+			}
 			nread, err := iface.Read(buf)
 			if err != nil {
 				log.Fatal("groutine read:", err)
@@ -181,16 +205,18 @@ func run() (err error) {
 		}
 	}()
 
-	rstack := stack.StackRetrying()
+	rstack := stack.StackRetrying(5 * time.Millisecond)
 
 	const (
 		dhcpTimeout = 6 * time.Second
 		dhcpRetries = 2
 	)
+	timeDHCP := timer("DHCP request completed")
 	results, err := rstack.DoDHCPv4([4]byte{192, 168, 1, 96}, dhcpTimeout, dhcpRetries)
 	if err != nil {
 		return fmt.Errorf("DHCP failed: %w", err)
 	}
+	timeDHCP()
 	err = stack.AssimilateDHCPResults(results)
 	if err != nil {
 		return fmt.Errorf("assimilating DHCP results: %w", err)
@@ -204,31 +230,39 @@ func run() (err error) {
 		internetTimeout = 3 * time.Second
 		internetRetries = 2
 	)
+	timeResolveRouterHW := timer("Router ARP resolution")
 	routerHw, err := rstack.DoResolveHardwareAddress6(results.Router, arpTimeout, arpRetries)
 	if err != nil {
 		return fmt.Errorf("ARP resolution of router failed: %w", err)
 	}
+	timeResolveRouterHW()
 	stack.SetGateway6(routerHw)
 	if flagDoNTP {
+		timeLookupNTP := timer("NTP IP lookup")
 		const ntpHost = "pool.ntp.org"
 		addrs, err := rstack.DoLookupIP(ntpHost, internetTimeout, internetRetries)
 		if err != nil {
 			return fmt.Errorf("NTP address lookup of %q failed: %w", ntpHost, err)
 		}
+		timeLookupNTP()
+		timeNTP := timer("NTP exchange")
 		offset, err := rstack.DoNTP(addrs[0], internetTimeout, internetRetries)
 		if err != nil {
 			return fmt.Errorf("NTP address lookup of %q failed: %w", ntpHost, err)
 		}
+		timeNTP()
 		relative := "behind"
 		if offset < 0 {
 			relative = "ahead"
 		}
 		fmt.Println("NTP completed. You are", offset.Abs().String(), relative, "of the NTP server")
 	}
+	timeResolveIP := timer("resolve " + flagHostToResolve)
 	addrs, err := rstack.DoLookupIP(flagHostToResolve, internetTimeout, internetRetries)
 	if err != nil {
 		return fmt.Errorf("DNS of host %q failed: %w", flagHostToResolve, err)
 	}
+	timeResolveIP()
 	fmt.Printf("DNS resolution of %q complete and resolved to %v\n", flagHostToResolve, addrs)
 	var conn tcp.Conn
 	conn.Configure(tcp.ConnConfig{
@@ -237,6 +271,7 @@ func run() (err error) {
 		TxPacketQueueSize: 3,
 	})
 	if flagHTTPGet {
+		timeHTTPCreate := timer("create HTTP GET request")
 		var hdr httpraw.Header
 		hdr.SetMethod("GET")
 		hdr.SetRequestURI("/")
@@ -244,22 +279,31 @@ func run() (err error) {
 		hdr.Set("Host", flagHostToResolve)
 		hdr.Set("User-Agent", "lneto")
 		hdr.Set("Accept-Language", "en-US,en;q=0.5")
+		hdr.Set("Connection", "close") // Encourage server to close connection after it finishes sending response.
 		req, err := hdr.AppendRequest(nil)
 		if err != nil {
 			return err
 		}
-		const tcpDebugTimeout = 60 * time.Minute
+		timeHTTPCreate()
+
+		timeTCPDial := timer("TCP dial (handshake)")
+		const tcpDialTimeout = 8 * time.Second // Was 60 * time.Minute causing 3.6s sleep per iteration!
 		target := netip.AddrPortFrom(addrs[0], 80)
-		err = rstack.DoDialTCP(&conn, uint16(softRand&0xefff)+1024, target, tcpDebugTimeout, internetRetries)
+		err = rstack.DoDialTCP(&conn, uint16(softRand&0xefff)+1024, target, tcpDialTimeout, internetRetries)
 		if err != nil {
 			return fmt.Errorf("TCP failed: %w", err)
 		}
+		timeTCPDial()
+		timeHTTPSend := timer("send HTTP request")
 		conn.SetDeadline(time.Now().Add(internetTimeout))
 		_, err = conn.Write(req)
+		timeHTTPSend()
+		timeHTTPRcv := timer("recv http request")
 		if err != nil {
 			return err
 		}
 		rxbuf := make([]byte, 2048)
+
 		var page []byte
 		for {
 			var n int
@@ -268,10 +312,16 @@ func run() (err error) {
 			if err != nil {
 				break
 			}
+			ptrimmed := bytes.TrimSpace(page)
+			if bytes.EqualFold(ptrimmed[len(ptrimmed)-7:], []byte("</html>")) {
+				// We've received the last part of the HTML. we're done.
+				break
+			}
 		}
 		if len(page) == 0 {
 			return err
 		}
+		timeHTTPRcv()
 		os.Stdout.Write(page)
 	}
 	return nil
@@ -281,4 +331,41 @@ func clear(buf []byte) {
 	for i := range buf {
 		buf[i] = 0
 	}
+}
+
+func timer(context string) func() {
+	start := time.Now()
+	return func() {
+		elapsed := time.Since(start)
+		fmt.Printf("[%s] %s\n", prettyDuration(elapsed), context)
+	}
+}
+
+func prettyDuration(d time.Duration) string {
+	switch {
+	case d < time.Microsecond:
+		// Print as is.
+	case d < time.Millisecond:
+		d = d.Round(time.Microsecond)
+	case d < time.Second:
+		d = d.Round(time.Millisecond)
+	case d < 10*time.Second:
+		d = d.Round(100 * time.Millisecond)
+	case d < 10*time.Minute:
+		d = d.Round(1000 * time.Millisecond)
+	case d < time.Hour:
+		d = d.Round(time.Minute)
+	}
+	return d.String()
+}
+
+func tryPoll(iface ltesto.Interface, poll time.Duration) (dataMayBeReady bool, _ error) {
+	if poller, ok := iface.(interface {
+		Poll(time.Duration) (bool, error)
+	}); ok {
+		ready, err := poller.Poll(poll)
+		return ready, err
+	}
+	dataMayBeReady = true
+	return dataMayBeReady, nil
 }

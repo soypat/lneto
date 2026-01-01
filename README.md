@@ -100,5 +100,80 @@ Now run the application you wish to test without elevated privilidges. Stackbasi
 go run ./examples/stackbasic
 ```
 
-**Wireshark**: Using the provided method of interfacing mean's you'll always be able to easily reach the TAP interface on your machine over HTTP from any process, be it Python or Go. To visualize the packets over the interface we suggest using wireshark and selecting the `tap0` interface which will show all activity over the HTTP TAP interface created with [`./examples/tap`](./examples/tap/main.go).
 
+
+### Wireshark and Packet Capture API
+Using the provided method of interfacing mean's you'll always be able to easily reach the TAP interface on your machine over HTTP from any process, be it Python or Go. To visualize the packets over the interface we suggest using **Wireshark** and selecting the `tap0` interface which will show all activity over the HTTP TAP interface created with [`./examples/tap`](./examples/tap/main.go).
+
+Alternatively there's the [`internet/pcap`](./internet/pcap) package that does the same thing as Wireshark but as a Go API. Here's the result of running xnet example with pcap logging:
+
+
+```log
+go run ./examples/xnet -httpget -host google.com -ihttp -ntp
+softrand 1767229198
+NIC hardware address: d8:5e:d3:43:03:eb bridgeHW: d8:5e:d3:43:03:eb mtu: 1500 addr: 192.168.1.53/24
+OUT 328 [Ethernet len=14; destination=ff:ff:ff:ff:ff:ff; source=us | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=us; destination=255.255.255.255 | UDP [RFC768] len=8; (Source port)=68; (Destination port)=67 | DHCPv4 len=285; op=1; Flags=0x0000; (Client Address)=us; (Offered Address)=us; (Server Next Address)=255.255.255.255; (Relay Agent Address)=us; (Client Hardware Address)=d85e:d343:3eb::]
+IN   98 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=192.168.1.1; destination=192.168.1.53 | ICMP [RFC792] len=64]
+IN   98 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=192.168.1.1; destination=192.168.1.53 | ICMP [RFC792] len=64]
+IN   98 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=192.168.1.1; destination=192.168.1.53 | ICMP [RFC792] len=64]
+IN   98 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=192.168.1.1; destination=192.168.1.53 | ICMP [RFC792] len=64]
+IN   98 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=192.168.1.1; destination=192.168.1.53 | ICMP [RFC792] len=64]
+IN   98 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=192.168.1.1; destination=192.168.1.53 | ICMP [RFC792] len=64]
+IN   60 [Ethernet len=14; destination=ff:ff:ff:ff:ff:ff; source=e8:4d:74:9f:61:4a | ARP len=28; op=1; (Sender hardware address)=e8:4d:74:9f:61:4a; (Sender protocol address)=192.168.1.1; (Target hardware address)=00:00:00:00:00:00; (Target protocol address)=192.168.1.53]
+IN  590 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x0000; source=192.168.1.1; destination=192.168.1.53 | UDP [RFC768] len=8; (Source port)=67; (Destination port)=68 | DHCPv4 len=273; op=2; Flags=0x0000; (Client Address)=us; (Offered Address)=192.168.1.53; (Server Next Address)=us; (Relay Agent Address)=us; (Client Hardware Address)=d85e:d343:3eb::]
+OUT 326 [Ethernet len=14; destination=ff:ff:ff:ff:ff:ff; source=us | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=us; destination=255.255.255.255 | UDP [RFC768] len=8; (Source port)=68; (Destination port)=67 | DHCPv4 len=283; op=1; Flags=0x0000; (Client Address)=us; (Offered Address)=192.168.1.53; (Server Next Address)=us; (Relay Agent Address)=us; (Client Hardware Address)=d85e:d343:3eb::]
+IN  590 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x0000; source=192.168.1.1; destination=192.168.1.53 | UDP [RFC768] len=8; (Source port)=67; (Destination port)=68 | DHCPv4 len=273; op=2; Flags=0x0000; (Client Address)=us; (Offered Address)=192.168.1.53; (Server Next Address)=us; (Relay Agent Address)=us; (Client Hardware Address)=d85e:d343:3eb::]
+[119ms] DHCP request completed
+2025/12/31 21:59:58 INFO dhcp-complete assignedIP=192.168.1.53 routerIP=192.168.1.1 DNS=[192.168.1.1] subnet=192.168.1.0/24
+OUT  42 [Ethernet len=14; destination=ff:ff:ff:ff:ff:ff; source=us | ARP len=28; op=1; (Sender hardware address)=us; (Sender protocol address)=us; (Target hardware address)=00:00:00:00:00:00; (Target protocol address)=192.168.1.1]
+IN   60 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | ARP len=28; op=2; (Sender hardware address)=e8:4d:74:9f:61:4a; (Sender protocol address)=192.168.1.1; (Target hardware address)=us; (Target protocol address)=us]
+[1.1s] Router ARP resolution
+IN   60 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | ARP len=28; op=1; (Sender hardware address)=e8:4d:74:9f:61:4a; (Sender protocol address)=192.168.1.1; (Target hardware address)=00:00:00:00:00:00; (Target protocol address)=us]
+OUT  42 [Ethernet len=14; destination=e8:4d:74:9f:61:4a; source=us | ARP len=28; op=2; (Sender hardware address)=us; (Sender protocol address)=us; (Target hardware address)=e8:4d:74:9f:61:4a; (Target protocol address)=192.168.1.1]
+OUT  83 [Ethernet len=14; destination=e8:4d:74:9f:61:4a; source=us | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=us; destination=192.168.1.1 | UDP [RFC768] len=8; (Source port)=57216; (Destination port)=53 | DNS len=41]
+IN  147 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=192.168.1.1; destination=us | UDP [RFC768] len=8; (Source port)=53; (Destination port)=57216 | DNS len=105]
+[3.5s] NTP IP lookup
+OUT  90 [Ethernet len=14; destination=e8:4d:74:9f:61:4a; source=us | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=us; destination=170.210.222.10 | UDP [RFC768] len=8; (Source port)=1023; (Destination port)=123 | NTP len=48; (Reference Time)=1900-01-01T00:00:00; (Origin Time)=1900-01-01T00:00:00; (Receive Time)=1900-01-01T00:00:00; (Transit Time)=1900-01-01T00:00:00]
+IN   90 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x0000; source=170.210.222.10; destination=us | UDP [RFC768] len=8; (Source port)=123; (Destination port)=1023 | NTP len=48; (Reference Time)=2026-01-01T00:43:04; (Origin Time)=1900-01-01T00:00:00; (Receive Time)=2026-01-01T01:00:03; (Transit Time)=2026-01-01T01:00:03]
+[786ms] NTP exchange
+NTP completed. You are 11.493283ms ahead of the NTP server
+OUT  81 [Ethernet len=14; destination=e8:4d:74:9f:61:4a; source=us | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=us; destination=192.168.1.1 | UDP [RFC768] len=8; (Source port)=56316; (Destination port)=53 | DNS len=39]
+IN   97 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=192.168.1.1; destination=us | UDP [RFC768] len=8; (Source port)=53; (Destination port)=56316 | DNS len=55]
+[1s] resolve google.com
+DNS resolution of "google.com" complete and resolved to [142.251.129.142]
+[10µs] create HTTP GET request
+IN   98 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=192.168.1.1; destination=us | ICMP [RFC792] len=64]
+OUT  58 [Ethernet len=14; destination=e8:4d:74:9f:61:4a; source=us | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=us; destination=142.251.129.142 | TCP [RFC9293] len=24; (Source port)=51982; (Destination port)=80; flags=SYN]
+IN   98 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=192.168.1.1; destination=us | ICMP [RFC792] len=64]
+IN   60 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=142.251.129.142; destination=us | TCP [RFC9293] len=24; (Source port)=80; (Destination port)=51982; flags=SYN,ACK | payload? len=2]
+OUT  54 [Ethernet len=14; destination=e8:4d:74:9f:61:4a; source=us | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=us; destination=142.251.129.142 | TCP [RFC9293] len=20; (Source port)=51982; (Destination port)=80; flags=ACK]
+[646ms] TCP dial (handshake)
+[5µs] send HTTP request
+OUT 161 [Ethernet len=14; destination=e8:4d:74:9f:61:4a; source=us | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=us; destination=142.251.129.142 | TCP [RFC9293] len=20; (Source port)=51982; (Destination port)=80; flags=PSH,ACK | HTTP len=107]
+IN   60 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x0000; source=142.251.129.142; destination=us | TCP [RFC9293] len=20; (Source port)=80; (Destination port)=51982; flags=ACK | payload? len=6]
+IN  846 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x0000; source=142.251.129.142; destination=us | TCP [RFC9293] len=20; (Source port)=80; (Destination port)=51982; flags=PSH,ACK | HTTP len=792]
+IN   60 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x0000; source=142.251.129.142; destination=us | TCP [RFC9293] len=20; (Source port)=80; (Destination port)=51982; flags=FIN,ACK | payload? len=6]
+IN  804 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x0000; source=142.251.129.142; destination=us | TCP [RFC9293] len=20; (Source port)=80; (Destination port)=51982; flags=ACK | HTTP len=750]
+OUT  54 [Ethernet len=14; destination=e8:4d:74:9f:61:4a; source=us | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=us; destination=142.251.129.142 | TCP [RFC9293] len=20; (Source port)=51982; (Destination port)=80; flags=ACK]
+[2.9s] recv http request
+HTTP/1.1 301 Moved Permanently
+Location: http://www.google.com/
+Content-Type: text/html; charset=UTF-8
+Content-Security-Policy-Report-Only: object-src 'none';base-uri 'self';script-src 'nonce-v-ysoE0WjLlAMlo2ek5UrA' 'strict-dynamic' 'report-sample' 'unsafe-eval' 'unsafe-inline' https: http:;report-uri https://csp.withgoogle.com/csp/gws/other-hp
+Date: Thu, 01 Jan 2026 01:00:08 GMT
+Expires: Sat, 31 Jan 2026 01:00:08 GMT
+Cache-Control: public, max-age=2592000
+Server: gws
+Content-Length: 219
+X-XSS-Protection: 0
+X-Frame-Options: SAMEORIGIN
+Connection: close
+
+<HTML><HEAD><meta http-equiv="content-type" content="text/html;charset=utf-8">
+<TITLE>301 Moved</TITLE></HEAD><BODY>
+<H1>301 Moved</H1>
+The document has moved
+<A HREF="http://www.google.com/">here</A>.
+</BODY></HTML>
+success
+```

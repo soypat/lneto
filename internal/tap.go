@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -64,6 +65,22 @@ func (tap *Tap) IPMask() (netip.Prefix, error) {
 
 func (tap *Tap) Read(b []byte) (int, error) {
 	return syscall.Read(tap.fd, b)
+}
+
+// Poll waits up to timeout for the tap device to have data available for reading.
+// Returns true if data is available, false if timeout was reached.
+func (tap *Tap) Poll(timeout time.Duration) (bool, error) {
+	var readfds syscall.FdSet
+	readfds.Bits[tap.fd/64] |= 1 << (uint(tap.fd) % 64)
+	tv := syscall.Timeval{
+		Sec:  int64(timeout / time.Second),
+		Usec: int64((timeout % time.Second) / time.Microsecond),
+	}
+	n, err := syscall.Select(tap.fd+1, &readfds, nil, nil, &tv)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 func (tap *Tap) Write(b []byte) (int, error) {
@@ -245,6 +262,33 @@ func (br *Bridge) SetHardwareAddress6(hw [6]byte) error {
 
 func (br *Bridge) IPMask() (netip.Prefix, error) {
 	return getSocketMask(br.fd, br.name)
+}
+
+// SetReadTimeout sets the receive timeout for the bridge socket.
+// This prevents Read from blocking indefinitely, allowing the caller
+// to periodically call Encapsulate even when no packets arrive.
+func (br *Bridge) SetReadTimeout(timeout time.Duration) error {
+	tv := syscall.Timeval{
+		Sec:  int64(timeout / time.Second),
+		Usec: int64((timeout % time.Second) / time.Microsecond),
+	}
+	return syscall.SetsockoptTimeval(br.fd, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &tv)
+}
+
+// Poll waits up to timeout for the bridge socket to have data available for reading.
+// Returns true if data is available, false if timeout was reached.
+func (br *Bridge) Poll(timeout time.Duration) (bool, error) {
+	var readfds syscall.FdSet
+	readfds.Bits[br.fd/64] |= 1 << (uint(br.fd) % 64)
+	tv := syscall.Timeval{
+		Sec:  int64(timeout / time.Second),
+		Usec: int64((timeout % time.Second) / time.Microsecond),
+	}
+	n, err := syscall.Select(br.fd+1, &readfds, nil, nil, &tv)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 func (br *Bridge) Addr() (netip.Addr, error) {

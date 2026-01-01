@@ -26,6 +26,16 @@ type Interface interface {
 	IPMask() (netip.Prefix, error)
 }
 
+type HTTPTapClient struct {
+	c       http.Client
+	infoURL string
+	recvurl string
+	sendurl string
+	ip      netip.Prefix
+	hwaddr  [6]byte
+	buf     []byte
+}
+
 var _ Interface = (*HTTPTapClient)(nil)
 
 // NewHTTPTapClient returns a HTTPTapClient ready for use.
@@ -65,12 +75,7 @@ func (h *HTTPTapClient) ensureMTU() (err error) {
 			err = fmt.Errorf("unable to get MTU from server: %w", err)
 		}
 	}()
-	resp, err := h.c.Get(h.infoURL)
-	if err != nil {
-		return err
-	}
-	var info tapInfo
-	err = json.NewDecoder(resp.Body).Decode(&info)
+	info, err := h.info()
 	if err != nil {
 		return err
 	} else if info.MTU <= minMTU {
@@ -88,14 +93,14 @@ func (h *HTTPTapClient) ensureMTU() (err error) {
 	return nil
 }
 
-type HTTPTapClient struct {
-	c       http.Client
-	infoURL string
-	recvurl string
-	sendurl string
-	ip      netip.Prefix
-	hwaddr  [6]byte
-	buf     []byte
+func (h *HTTPTapClient) info() (tapInfo, error) {
+	resp, err := h.c.Get(h.infoURL)
+	if err != nil {
+		return tapInfo{}, err
+	}
+	var info tapInfo
+	err = json.NewDecoder(resp.Body).Decode(&info)
+	return info, err
 }
 
 func (h *HTTPTapClient) ReadDiscard() (err error) {
@@ -107,6 +112,24 @@ func (h *HTTPTapClient) ReadDiscard() (err error) {
 		}
 	}
 	return err
+}
+
+func (h *HTTPTapClient) Poll(d time.Duration) (ready bool, err error) {
+	info, err := h.info()
+	if err != nil {
+		return false, err
+	} else if info.DataReady {
+		return true, nil
+	}
+	deadline := time.Now().Add(d)
+	for !info.DataReady && time.Until(deadline) > 0 {
+		time.Sleep(5 * time.Millisecond)
+		info, err = h.info()
+		if err != nil {
+			return false, err
+		}
+	}
+	return info.DataReady, err
 }
 
 func (h *HTTPTapClient) ReadBytes() (data []byte, err error) {
@@ -177,6 +200,7 @@ type tapInfo struct {
 	MTU          int
 	IPPrefix     string
 	HardwareAddr string
+	DataReady    bool
 }
 
 func (sv *HTTPTapServer) OnTransfer(cb func(channel int, pkt []byte)) {
@@ -255,10 +279,17 @@ func NewHTTPTapServer(iface Interface, minMTU, queueOut, queueIn int) (*HTTPTapS
 	hwstr := net.HardwareAddr(hw6[:]).String()
 	ipstr := netmask.String()
 	sv.HandleFunc("/info", func(w http.ResponseWriter, r *http.Request) {
+		var dataready bool = true
+		if poller, ok := taps.tap.(interface {
+			Poll(time.Duration) (bool, error)
+		}); ok {
+			dataready, err = poller.Poll(0)
+		}
 		info := tapInfo{
 			MTU:          mtu,
 			IPPrefix:     ipstr,
 			HardwareAddr: hwstr,
+			DataReady:    dataready,
 		}
 		json.NewEncoder(w).Encode(info)
 	})

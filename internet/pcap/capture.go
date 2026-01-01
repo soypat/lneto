@@ -671,6 +671,7 @@ const (
 	// FieldClassBinaryText represents long stretches of binary data such as BOOTP DHCPv4 field.
 	FieldClassBinaryText // binary-text
 	FieldClassOperation  // op
+	FieldClassTimestamp  // timestamp
 )
 
 const octet = 8
@@ -1058,25 +1059,25 @@ var baseNTPFields = [...]FrameField{
 	},
 	{
 		Name:           "Reference Time",
-		Class:          FieldClassText,
+		Class:          FieldClassTimestamp,
 		FrameBitOffset: 16 * octet,
 		BitLength:      8 * octet,
 	},
 	{
 		Name:           "Origin Time",
-		Class:          FieldClassText,
+		Class:          FieldClassTimestamp,
 		FrameBitOffset: 24 * octet,
 		BitLength:      8 * octet,
 	},
 	{
 		Name:           "Receive Time",
-		Class:          FieldClassText,
+		Class:          FieldClassTimestamp,
 		FrameBitOffset: 32 * octet,
 		BitLength:      8 * octet,
 	},
 	{
 		Name:           "Transit Time",
-		Class:          FieldClassText,
+		Class:          FieldClassTimestamp,
 		FrameBitOffset: 40 * octet,
 		BitLength:      8 * octet,
 	},

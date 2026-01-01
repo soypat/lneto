@@ -8,9 +8,9 @@ import (
 	"github.com/soypat/lneto/tcp"
 )
 
-func (s *StackAsync) StackRetrying() StackRetrying {
+func (s *StackAsync) StackRetrying(loopSleep time.Duration) StackRetrying {
 	return StackRetrying{
-		block: s.StackBlocking(),
+		block: s.StackBlocking(loopSleep),
 	}
 }
 

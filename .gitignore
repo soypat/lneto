@@ -15,6 +15,10 @@ vendor/
 *.so
 *.dylib
 *.hex
+
+# Profiling
+*.pprof
+
 # example binaries.
 /tap
 /stack
@@ -46,6 +50,7 @@ local
 *.zip
 *.gz
 *.tar
+*.txt
 
 # If running a python script.
 */__pycache__/*
