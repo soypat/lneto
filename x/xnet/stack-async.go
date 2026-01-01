@@ -219,6 +219,12 @@ func (s *StackAsync) Addr() netip.Addr {
 	return s.ip.Addr()
 }
 
+func (s *StackAsync) SetSubnet(subnetMask netip.Prefix) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subnet = subnetMask
+}
+
 func (s *StackAsync) SetHardwareAddress(hw [6]byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

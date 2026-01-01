@@ -191,20 +191,8 @@ func (listener *NodeTCPListener) isClosed() bool {
 }
 
 func (listener *NodeTCPListener) maintainConns() {
-	listener.accepted = removeZeros(listener.accepted)
-	listener.ready = removeZeros(listener.ready)
-}
-
-func removeZeros[S ~[]E, E comparable](s S) S {
-	var z E
-	putIdx := 0
-	for i := range s {
-		if s[i] != z {
-			s[putIdx] = s[i]
-			putIdx++
-		}
-	}
-	return s[:putIdx]
+	listener.accepted = internal.DeleteZeroed(listener.accepted)
+	listener.ready = internal.DeleteZeroed(listener.ready)
 }
 
 func getConn(conns []*tcp.Conn, remotePort uint16, remoteAddr []byte) int {
