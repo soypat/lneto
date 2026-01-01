@@ -3,6 +3,7 @@ package pcap
 import (
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -112,6 +113,9 @@ func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, p
 	case FieldClassTimestamp:
 		// inspired by [time.RFC3339]
 		const littlerfc3339 = "2006-01-02T15:04:05.9999"
+		if len(f.buf) != 8 {
+			return dst, errors.New("only timestamp8 supported")
+		}
 		ts := ntp.TimestampFromUint64(binary.BigEndian.Uint64(f.buf))
 		dst = ts.Time().AppendFormat(dst, littlerfc3339)
 	case FieldClassChecksum, FieldClassID, FieldClassFlags, FieldClassOptions:
