@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"runtime"
+	"runtime/pprof"
 	"strings"
 	"time"
 
@@ -47,6 +48,7 @@ func run() (err error) {
 		flagDoNTP         = false
 		flagHTTPGet       = false
 		flagNoPcap        = false
+		flagPprof         = false
 	)
 	flag.BoolVar(&flagHTTPGet, "httpget", flagHTTPGet, "Do an HTTP GET request ")
 	flag.StringVar(&flagInterface, "i", flagInterface, "Interface to use. Either tap* or the name of an existing interface to bridge to.")
@@ -55,7 +57,16 @@ func run() (err error) {
 	flag.StringVar(&flagRequestedIP, "addr", flagRequestedIP, "IP address to request via DHCP.")
 	flag.BoolVar(&flagDoNTP, "ntp", flagDoNTP, "Do NTP round and print result time")
 	flag.BoolVar(&flagNoPcap, "nopcap", flagNoPcap, "Disable pcap logging.")
+	flag.BoolVar(&flagPprof, "pprof", flagPprof, "Enable CPU profiling.")
 	flag.Parse()
+	if flagPprof {
+		var b bytes.Buffer
+		pprof.StartCPUProfile(&b)
+		defer func() {
+			pprof.StopCPUProfile()
+			os.WriteFile("xnet.pprof", b.Bytes(), 0777)
+		}()
+	}
 	fmt.Println("softrand", softRand)
 	_, err = dns.NewName(flagHostToResolve)
 	if err != nil {
@@ -74,6 +85,10 @@ func run() (err error) {
 			iface = tap
 		} else {
 			bridge, err := internal.NewBridge(flagInterface)
+			if err != nil {
+				return err
+			}
+			err = bridge.SetReadTimeout(5 * time.Millisecond)
 			if err != nil {
 				return err
 			}
@@ -108,6 +123,7 @@ func run() (err error) {
 	if err != nil {
 		return err
 	}
+
 	// Loop goroutine.
 	go func() {
 		lastAction := time.Now()

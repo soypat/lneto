@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -245,6 +246,17 @@ func (br *Bridge) SetHardwareAddress6(hw [6]byte) error {
 
 func (br *Bridge) IPMask() (netip.Prefix, error) {
 	return getSocketMask(br.fd, br.name)
+}
+
+// SetReadTimeout sets the receive timeout for the bridge socket.
+// This prevents Read from blocking indefinitely, allowing the caller
+// to periodically call Encapsulate even when no packets arrive.
+func (br *Bridge) SetReadTimeout(timeout time.Duration) error {
+	tv := syscall.Timeval{
+		Sec:  int64(timeout / time.Second),
+		Usec: int64((timeout % time.Second) / time.Microsecond),
+	}
+	return syscall.SetsockoptTimeval(br.fd, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &tv)
 }
 
 func (br *Bridge) Addr() (netip.Addr, error) {
