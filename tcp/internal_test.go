@@ -9,16 +9,6 @@ import (
 // Here we define internal testing helpers that may be used in any *_test.go file
 // but are not exported.
 
-// Exchange represents a single exchange of segments.
-// TODO: replace [Exchange] tests with [ExchageTest].
-type Exchange struct {
-	Outgoing      *Segment
-	Incoming      *Segment
-	WantPending   *Segment // Expected pending segment. If nil not checked.
-	WantState     State    // Expected end state.
-	WantPeerState State    // Expected end state of peer. Not necessary when calling HelperExchange but can aid with logging information.
-}
-
 // ExchangeTest defines a complete TCP exchange scenario with initial state for both peers.
 // Use Run() to execute the test from both perspectives, or RunA()/RunB() individually.
 type ExchangeTest struct {
@@ -87,65 +77,6 @@ func (et ExchangeTest) RunB(t *testing.T) {
 		tcb.HelperInitRcv(et.ISSA, et.ISSA, et.WindowA)
 	}
 	tcb.HelperSteps(t, et.Steps, false)
-}
-
-func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
-	t.Helper()
-	var i int
-	var ex Exchange
-	defer func() {
-		if t.Failed() {
-			t.Errorf("exchange failed:\nwant: %s\ngot:  %s",
-				ex.RFC9293String(ex.WantState, ex.WantPeerState),
-				ex.RFC9293String(tcb._state, ex.WantPeerState),
-			)
-		}
-	}()
-	const pfx = "exchange"
-	t.Log(tcb._state, "Exchange start")
-	for i, ex = range exchange {
-		if ex.Outgoing != nil && ex.Incoming != nil {
-			t.Fatalf(pfx+"[%d] cannot send and receive in the same exchange, please split into two exchanges.", i)
-		} else if ex.Outgoing == nil && ex.Incoming == nil {
-			t.Fatalf(pfx+"[%d] must send or receive a segment.", i)
-		}
-		if ex.Outgoing != nil {
-			prevInflight := tcb.snd.inFlight()
-			err := tcb.Send(*ex.Outgoing)
-			gotSent := tcb.snd.inFlight() - prevInflight
-			if err != nil {
-				t.Fatalf(pfx+"[%d] snd: %s\nseg=%+v\nrcv=%+v\nsnd=%+v", i, err, *ex.Outgoing, tcb.rcv, tcb.snd)
-			} else if gotSent != ex.Outgoing.LEN() {
-				t.Fatalf(pfx+"[%d] snd: expected %d data sent, calculated inflight %d", i, ex.Outgoing.LEN(), gotSent)
-			}
-		}
-		if ex.Incoming != nil {
-			err := tcb.Recv(*ex.Incoming)
-			if err != nil {
-				msg := fmt.Sprintf(pfx+"[%d] rcv: %s\nseg=%+v\nrcv=%+v\nsnd=%+v", i, err, *ex.Incoming, tcb.rcv, tcb.snd)
-				if IsDroppedErr(err) {
-					t.Log(msg)
-				} else {
-					t.Fatal(msg)
-				}
-			}
-		}
-
-		t.Log(ex.RFC9293String(tcb._state, ex.WantPeerState))
-
-		state := tcb.State()
-		if state != ex.WantState {
-			t.Errorf(pfx+"[%d] unexpected state:\n got=%s\nwant=%s", i, state, ex.WantState)
-		}
-		pending, ok := tcb.PendingSegment(0)
-		if !ok && ex.WantPending != nil {
-			t.Fatalf(pfx+"[%d] pending:got none, want=%+v", i, *ex.WantPending)
-		} else if ex.WantPending != nil && pending != *ex.WantPending {
-			t.Fatalf(pfx+"[%d] pending:\n got=%+v\nwant=%+v", i, pending, *ex.WantPending)
-		} else if ok && ex.WantPending == nil {
-			t.Fatalf(pfx+"[%d] pending:\n got=%+v\nwant=none", i, pending)
-		}
-	}
 }
 
 // HelperSteps processes segment steps from a specific peer's perspective, calling Close() when indicated.
@@ -344,4 +275,73 @@ func (ex *Exchange) RFC9293String(A, B State) string {
 		return ""
 	}
 	return StringExchange(seg, A, B, !sentByA)
+}
+
+// Exchange represents a single exchange of segments.
+// TODO: replace [Exchange] tests with [ExchageTest].
+type Exchange struct {
+	Outgoing      *Segment
+	Incoming      *Segment
+	WantPending   *Segment // Expected pending segment. If nil not checked.
+	WantState     State    // Expected end state.
+	WantPeerState State    // Expected end state of peer. Not necessary when calling HelperExchange but can aid with logging information.
+}
+
+func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
+	t.Helper()
+	var i int
+	var ex Exchange
+	defer func() {
+		if t.Failed() {
+			t.Errorf("exchange failed:\nwant: %s\ngot:  %s",
+				ex.RFC9293String(ex.WantState, ex.WantPeerState),
+				ex.RFC9293String(tcb._state, ex.WantPeerState),
+			)
+		}
+	}()
+	const pfx = "exchange"
+	t.Log(tcb._state, "Exchange start")
+	for i, ex = range exchange {
+		if ex.Outgoing != nil && ex.Incoming != nil {
+			t.Fatalf(pfx+"[%d] cannot send and receive in the same exchange, please split into two exchanges.", i)
+		} else if ex.Outgoing == nil && ex.Incoming == nil {
+			t.Fatalf(pfx+"[%d] must send or receive a segment.", i)
+		}
+		if ex.Outgoing != nil {
+			prevInflight := tcb.snd.inFlight()
+			err := tcb.Send(*ex.Outgoing)
+			gotSent := tcb.snd.inFlight() - prevInflight
+			if err != nil {
+				t.Fatalf(pfx+"[%d] snd: %s\nseg=%+v\nrcv=%+v\nsnd=%+v", i, err, *ex.Outgoing, tcb.rcv, tcb.snd)
+			} else if gotSent != ex.Outgoing.LEN() {
+				t.Fatalf(pfx+"[%d] snd: expected %d data sent, calculated inflight %d", i, ex.Outgoing.LEN(), gotSent)
+			}
+		}
+		if ex.Incoming != nil {
+			err := tcb.Recv(*ex.Incoming)
+			if err != nil {
+				msg := fmt.Sprintf(pfx+"[%d] rcv: %s\nseg=%+v\nrcv=%+v\nsnd=%+v", i, err, *ex.Incoming, tcb.rcv, tcb.snd)
+				if IsDroppedErr(err) {
+					t.Log(msg)
+				} else {
+					t.Fatal(msg)
+				}
+			}
+		}
+
+		t.Log(ex.RFC9293String(tcb._state, ex.WantPeerState))
+
+		state := tcb.State()
+		if state != ex.WantState {
+			t.Errorf(pfx+"[%d] unexpected state:\n got=%s\nwant=%s", i, state, ex.WantState)
+		}
+		pending, ok := tcb.PendingSegment(0)
+		if !ok && ex.WantPending != nil {
+			t.Fatalf(pfx+"[%d] pending:got none, want=%+v", i, *ex.WantPending)
+		} else if ex.WantPending != nil && pending != *ex.WantPending {
+			t.Fatalf(pfx+"[%d] pending:\n got=%+v\nwant=%+v", i, pending, *ex.WantPending)
+		} else if ok && ex.WantPending == nil {
+			t.Fatalf(pfx+"[%d] pending:\n got=%+v\nwant=none", i, pending)
+		}
+	}
 }
