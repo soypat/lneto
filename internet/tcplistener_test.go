@@ -227,54 +227,68 @@ func TestNodeTCPListener_MultiConn(t *testing.T) {
 
 	// Close connections, alternating between client-initiated and server-initiated.
 	for i := 0; i < numClients; i++ {
-		var initiator, responder *StackIP
-		var initiatorConn, responderConn *tcp.Conn
+		var closer, responder *StackIP
+		var closerConn, responderConn *tcp.Conn
+		var serverClosed bool
+		whoCloses := "client"
+		whoResponds := "server"
+		expectStates := func(ctx string, wantCloserState, wantResponderState tcp.State) {
+			t.Helper()
+			if closerConn.State() != wantCloserState {
+				t.Errorf("%s: %s closer want %s, got %s", ctx, whoCloses, wantCloserState, closerConn.State())
+			}
+			if responderConn.State() != wantResponderState {
+				t.Errorf("%s: %s respon want %s, got %s", ctx, whoResponds, wantResponderState, responderConn.State())
+			}
+		}
 		if i%2 == 0 {
 			// Client initiates close.
-			initiator, responder = &clientStacks[i], &serverStack
-			initiatorConn, responderConn = &clientConns[i], acceptedConns[i]
+			closer, responder = &clientStacks[i], &serverStack
+			closerConn, responderConn = &clientConns[i], acceptedConns[i]
 		} else {
 			// Server initiates close.
-			initiator, responder = &serverStack, &clientStacks[i]
-			initiatorConn, responderConn = acceptedConns[i], &clientConns[i]
+			serverClosed = true
+			whoCloses, whoResponds = whoResponds, whoCloses
+			closer, responder = &serverStack, &clientStacks[i]
+			closerConn, responderConn = acceptedConns[i], &clientConns[i]
 		}
+		_ = serverClosed // Used for context in debugging.
 
-		// Initiator sends FIN.
-		if err := initiatorConn.Close(); err != nil {
+		// Closer calls Close(), FIN not sent yet.
+		if err := closerConn.Close(); err != nil {
 			t.Fatalf("conn %d close: %v", i, err)
 		}
-		expectExchange(t, initiator, responder, buf[:]) // FIN
-		if initiatorConn.State() != tcp.StateFinWait1 {
-			t.Errorf("conn %d initiator: expected StateFinWait1, got %s", i, initiatorConn.State())
-		}
-		if responderConn.State() != tcp.StateCloseWait {
-			t.Errorf("conn %d responder: expected StateCloseWait, got %s", i, responderConn.State())
-		}
+		expectStates("after-close()", tcp.StateEstablished, tcp.StateEstablished)
 
-		// Responder sends ACK (may be combined with FIN if responder also closes).
-		expectExchange(t, responder, initiator, buf[:]) // ACK
-		if initiatorConn.State() != tcp.StateFinWait2 {
-			t.Errorf("conn %d initiator: expected StateFinWait2, got %s", i, initiatorConn.State())
-		}
+		// Closer sends FIN -> responder receives, goes to CLOSE-WAIT.
+		expectExchange(t, closer, responder, buf[:])
+		expectStates("after-FIN", tcp.StateFinWait1, tcp.StateCloseWait)
 
-		// Responder closes and sends FIN.
+		// Responder sends ACK -> closer goes to FIN-WAIT-2.
+		expectExchange(t, responder, closer, buf[:])
+		expectStates("after-ACK", tcp.StateFinWait2, tcp.StateCloseWait)
+
+		// Responder closes and sends FIN -> closer goes to TIME-WAIT.
 		if err := responderConn.Close(); err != nil {
 			t.Fatalf("conn %d responder close: %v", i, err)
 		}
-		expectExchange(t, responder, initiator, buf[:]) // FIN
-		if responderConn.State() != tcp.StateLastAck {
-			t.Errorf("conn %d responder: expected StateLastAck, got %s", i, responderConn.State())
-		}
-		if initiatorConn.State() != tcp.StateTimeWait {
-			t.Errorf("conn %d initiator: expected StateTimeWait, got %s", i, initiatorConn.State())
-		}
+		expectExchange(t, responder, closer, buf[:])
+		expectStates("after-resp-FIN", tcp.StateTimeWait, tcp.StateLastAck)
 
-		// Initiator sends final ACK.
-		expectExchange(t, initiator, responder, buf[:]) // ACK
-		if responderConn.State() != tcp.StateClosed {
-			t.Errorf("conn %d responder: expected StateClosed, got %s", i, responderConn.State())
-		}
+		// Closer sends final ACK -> responder goes to CLOSED.
+		expectExchange(t, closer, responder, buf[:])
+		expectStates("after-final-ACK", tcp.StateTimeWait, tcp.StateClosed)
 	}
+}
+
+// tryExchange attempts an exchange but doesn't fail if no data to send.
+func tryExchange(t *testing.T, from, to *StackIP, buf []byte) {
+	t.Helper()
+	n, err := from.Encapsulate(buf, -1, 0)
+	if err != nil || n == 0 {
+		return // No data to send.
+	}
+	_ = to.Demux(buf[:n], 0) // Ignore errors during close.
 }
 
 func setupClient(t *testing.T, client *StackIP, conn *tcp.Conn, serverAddr netip.Addr, serverPort, clientPort uint16) {

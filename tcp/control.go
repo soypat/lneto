@@ -533,7 +533,7 @@ func (tcb *ControlBlock) Close() (err error) {
 		err = errConnNotExist
 	case StateCloseWait:
 		tcb._state = StateLastAck
-		tcb.pending = [2]Flags{FlagFIN, FlagACK}
+		tcb.pending = [2]Flags{FlagFIN | FlagACK, 0}
 	case StateListen, StateSynSent:
 		// In Listen State there is no established connection.
 		// In SynSent the remote endpoint is not yet synchronized and upon receiving an RST will abort connection.

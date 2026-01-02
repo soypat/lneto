@@ -10,12 +10,83 @@ import (
 // but are not exported.
 
 // Exchange represents a single exchange of segments.
+// TODO: replace [Exchange] tests with [ExchageTest].
 type Exchange struct {
 	Outgoing      *Segment
 	Incoming      *Segment
 	WantPending   *Segment // Expected pending segment. If nil not checked.
 	WantState     State    // Expected end state.
 	WantPeerState State    // Expected end state of peer. Not necessary when calling HelperExchange but can aid with logging information.
+}
+
+// ExchangeTest defines a complete TCP exchange scenario with initial state for both peers.
+// Use Run() to execute the test from both perspectives, or RunA()/RunB() individually.
+type ExchangeTest struct {
+	ISSA       Value // Initial Send Sequence for peer A.
+	ISSB       Value // Initial Send Sequence for peer B.
+	WindowA    Size  // A's receive window size.
+	WindowB    Size  // B's receive window size.
+	InitStateA State // A's state before exchanges.
+	InitStateB State // B's state before exchanges.
+	Steps      []SegmentStep
+}
+type StepAction uint8
+
+const (
+	_ StepAction = iota
+	StepASends
+	StepBSends
+	StepACloses
+	StepBCloses
+)
+
+// SegmentStep defines a single segment exchange with resulting states for both peers.
+type SegmentStep struct {
+	Seg    Segment // The segment being exchanged.
+	Action StepAction
+
+	// States after the segment is processed.
+	AState State
+	BState State
+
+	// Pending segments after the step (nil if none expected).
+	APending *Segment
+	BPending *Segment
+}
+
+// Run executes the test from both peers' perspectives as subtests.
+func (et ExchangeTest) Run(t *testing.T) {
+	t.Helper()
+	t.Run("PeerA", func(t *testing.T) {
+		t.Helper()
+		et.RunA(t)
+	})
+	t.Run("PeerB", func(t *testing.T) {
+		t.Helper()
+		et.RunB(t)
+	})
+}
+
+// RunA executes the test from peer A's perspective.
+func (et ExchangeTest) RunA(t *testing.T) {
+	t.Helper()
+	var tcb ControlBlock
+	tcb.HelperInitState(et.InitStateA, et.ISSA, et.ISSA, et.WindowA)
+	if et.InitStateA.hasIRS() {
+		tcb.HelperInitRcv(et.ISSB, et.ISSB, et.WindowB)
+	}
+	tcb.HelperSteps(t, et.Steps, true)
+}
+
+// RunB executes the test from peer B's perspective.
+func (et ExchangeTest) RunB(t *testing.T) {
+	t.Helper()
+	var tcb ControlBlock
+	tcb.HelperInitState(et.InitStateB, et.ISSB, et.ISSB, et.WindowB)
+	if et.InitStateB.hasIRS() {
+		tcb.HelperInitRcv(et.ISSA, et.ISSA, et.WindowA)
+	}
+	tcb.HelperSteps(t, et.Steps, false)
 }
 
 func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
@@ -72,6 +143,89 @@ func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
 		} else if ex.WantPending != nil && pending != *ex.WantPending {
 			t.Fatalf(pfx+"[%d] pending:\n got=%+v\nwant=%+v", i, pending, *ex.WantPending)
 		} else if ok && ex.WantPending == nil {
+			t.Fatalf(pfx+"[%d] pending:\n got=%+v\nwant=none", i, pending)
+		}
+	}
+}
+
+// HelperSteps processes segment steps from a specific peer's perspective, calling Close() when indicated.
+func (tcb *ControlBlock) HelperSteps(t *testing.T, steps []SegmentStep, isPeerA bool) {
+	t.Helper()
+	var i int
+	var st SegmentStep
+	defer func() {
+		if t.Failed() {
+			peer := "B"
+			if isPeerA {
+				peer = "A"
+			}
+			t.Errorf("step[%d] failed (peer %s)", i, peer)
+		}
+	}()
+	const pfx = "step"
+	t.Log(tcb._state, "Steps start, isPeerA:", isPeerA)
+	for i, st = range steps {
+		// Determine if this peer should close before this step.
+		nop := isPeerA && st.Action == StepBCloses || !isPeerA && st.Action == StepACloses
+		if nop {
+			continue
+		}
+		switch st.Action {
+		default:
+			panic("unknown action")
+		case StepACloses, StepBCloses:
+			err := tcb.Close()
+			if err != nil {
+				t.Fatalf(pfx+"[%d] Close: %s", i, err)
+			}
+		case StepASends, StepBSends:
+			// Determine if this peer sends or receives.
+			isSender := isPeerA && st.Action == StepASends || !isPeerA && st.Action == StepBSends
+			seg := st.Seg
+			if isSender {
+				prevInflight := tcb.snd.inFlight()
+				err := tcb.Send(seg)
+				gotSent := tcb.snd.inFlight() - prevInflight
+				if err != nil {
+					t.Fatalf(pfx+"[%d] snd: %s\nseg=%+v\nrcv=%+v\nsnd=%+v", i, err, seg, tcb.rcv, tcb.snd)
+				} else if gotSent != seg.LEN() {
+					t.Fatalf(pfx+"[%d] snd: expected %d data sent, calculated inflight %d", i, seg.LEN(), gotSent)
+				}
+			} else if tcb._state != StateTimeWait { // TODO: should we support receiving in TimeWait?
+				err := tcb.Recv(seg)
+				if err != nil {
+					msg := fmt.Sprintf(pfx+"[%d] rcv: %s\nseg=%+v\nrcv=%+v\nsnd=%+v", i, err, seg, tcb.rcv, tcb.snd)
+					if IsDroppedErr(err) {
+						t.Log(msg)
+					} else {
+						t.Fatal(msg)
+					}
+				}
+			}
+		}
+		// Select expected state and pending based on which peer we are.
+		var wantState State
+		var wantPending *Segment
+		if isPeerA {
+			wantState = st.AState
+			wantPending = st.APending
+		} else {
+			wantState = st.BState
+			wantPending = st.BPending
+		}
+
+		t.Logf(pfx+"[%d] state=%s (want=%s)", i, tcb._state, wantState)
+
+		state := tcb.State()
+		if state != wantState {
+			t.Errorf(pfx+"[%d] unexpected state:\n got=%s\nwant=%s", i, state, wantState)
+		}
+		pending, ok := tcb.PendingSegment(0)
+		if !ok && wantPending != nil {
+			t.Fatalf(pfx+"[%d] pending:got none, want=%+v", i, *wantPending)
+		} else if wantPending != nil && pending != *wantPending {
+			t.Fatalf(pfx+"[%d] pending:\n got=%+v\nwant=%+v", i, pending, *wantPending)
+		} else if ok && wantPending == nil {
 			t.Fatalf(pfx+"[%d] pending:\n got=%+v\nwant=none", i, pending)
 		}
 	}
