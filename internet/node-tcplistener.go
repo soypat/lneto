@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"sync"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -20,6 +21,7 @@ type tcpPool interface {
 
 type NodeTCPListener struct {
 	connID uint64
+	mu     sync.Mutex
 	// ready have received a
 	ready    []*tcp.Conn
 	accepted []*tcp.Conn
@@ -39,6 +41,8 @@ func (listener *NodeTCPListener) ConnectionID() *uint64 { return &listener.connI
 func (listener *NodeTCPListener) Protocol() uint64 { return uint64(lneto.IPProtoTCP) }
 
 func (listener *NodeTCPListener) Close() error {
+	listener.mu.Lock()
+	defer listener.mu.Unlock()
 	if listener.isClosed() {
 		return errors.New("already closed")
 	}
@@ -53,7 +57,10 @@ func (listener *NodeTCPListener) Reset(port uint16, pool tcpPool) error {
 	} else if pool == nil {
 		return errors.New("nil TCP pool")
 	}
+	listener.mu.Lock()
+	defer listener.mu.Unlock()
 	*listener = NodeTCPListener{
+		mu:         listener.mu,
 		connID:     listener.connID + 1,
 		port:       port,
 		poolGet:    pool.GetTCP,
@@ -65,6 +72,8 @@ func (listener *NodeTCPListener) Reset(port uint16, pool tcpPool) error {
 }
 
 func (listener *NodeTCPListener) NumberOfReadyToAccept() (nready int) {
+	listener.mu.Lock()
+	defer listener.mu.Unlock()
 	if listener.isClosed() {
 		return 0
 	}
@@ -78,6 +87,8 @@ func (listener *NodeTCPListener) NumberOfReadyToAccept() (nready int) {
 }
 
 func (listener *NodeTCPListener) TryAccept() (*tcp.Conn, error) {
+	listener.mu.Lock()
+	defer listener.mu.Unlock()
 	if listener.isClosed() {
 		return nil, net.ErrClosed
 	}
@@ -95,6 +106,8 @@ func (listener *NodeTCPListener) TryAccept() (*tcp.Conn, error) {
 
 // Encapsulate implements [StackNode].
 func (listener *NodeTCPListener) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
+	listener.mu.Lock()
+	defer listener.mu.Unlock()
 	if listener.isClosed() {
 		return 0, net.ErrClosed
 	}
@@ -116,6 +129,8 @@ func (listener *NodeTCPListener) Encapsulate(carrierData []byte, offsetToIP, off
 
 // Demux implements [StackNode].
 func (listener *NodeTCPListener) Demux(carrierData []byte, tcpFrameOffset int) error {
+	listener.mu.Lock()
+	defer listener.mu.Unlock()
 	if listener.isClosed() {
 		return net.ErrClosed
 	}
@@ -144,23 +159,24 @@ func (listener *NodeTCPListener) Demux(carrierData []byte, tcpFrameOffset int) e
 	// Connection not in ready nor accepted.
 	_, flags := tfrm.OffsetAndFlags()
 	if flags != tcp.FlagSYN {
-		return nil // Not a synchronizing packet, drop it.
+		return lneto.ErrPacketDrop // Not a synchronizing packet, drop it.
 	}
 	conn, iss := listener.poolGet()
 	if conn == nil {
 		slog.Error("tcpListener:no-free-conn")
-		return nil
+		return lneto.ErrPacketDrop
 	}
 	err = conn.OpenListen(dst, iss)
 	if err != nil {
+		listener.poolReturn(conn)
 		slog.Error("NodeTCPListener:open", slog.String("err", err.Error()))
 		return err // This should not happend
 	}
 	err = conn.Demux(carrierData, tcpFrameOffset)
 	if err != nil {
-		conn.Abort()
+		listener.poolReturn(conn)
 		slog.Error("NodeTCPListener:demux", slog.String("err", err.Error()))
-		return nil
+		return lneto.ErrPacketDrop
 	}
 	listener.ready = append(listener.ready, conn)
 	return nil
@@ -211,7 +227,6 @@ func getConn(conns []*tcp.Conn, remotePort uint16, remoteAddr []byte) int {
 
 func (listener *NodeTCPListener) maintainConn(conns []*tcp.Conn, idx int, err error) error {
 	if err == net.ErrClosed {
-		println("CLOSING CONN")
 		conn := conns[idx]
 		listener.poolReturn(conn)
 		conns[idx] = nil
