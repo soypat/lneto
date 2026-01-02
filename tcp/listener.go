@@ -29,7 +29,11 @@ type Listener struct {
 }
 
 // LocalPort implements [StackNode].
-func (listener *Listener) LocalPort() uint16 { return listener.port }
+func (listener *Listener) LocalPort() uint16 {
+	listener.mu.Lock()
+	defer listener.mu.Unlock()
+	return listener.port
+}
 
 // ConnectionID implements [StackNode].
 func (listener *Listener) ConnectionID() *uint64 { return &listener.connID }
@@ -189,14 +193,6 @@ func (listener *Listener) tryDemux(conns []*Conn, remotePort uint16, remoteAddr,
 		return true, err
 	}
 	return false, nil
-}
-
-func (listener *Listener) maintainAccepted(connIdx int, err error) {
-	if err == net.ErrClosed {
-		conn := listener.accepted[connIdx]
-		listener.poolReturn(conn)
-		listener.accepted[connIdx] = nil
-	}
 }
 
 func (listener *Listener) isClosed() bool {

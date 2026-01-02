@@ -292,6 +292,16 @@ func (s *StackAsync) ListenTCP(conn *tcp.Conn, localPort uint16) (err error) {
 	return nil
 }
 
+func (s *StackAsync) RegisterListener(listener *tcp.Listener) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lport := listener.LocalPort()
+	if lport == 0 {
+		return lneto.ErrZeroSource
+	}
+	return s.tcps.Register(listener, nil)
+}
+
 var errNoDNSServer = errors.New("no DNS server- did DHCP complete? You can set a predetermined DNS server in Stack configuration")
 
 func (s *StackAsync) StartLookupIP(host string) error {
