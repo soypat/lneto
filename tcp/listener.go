@@ -1,4 +1,4 @@
-package internet
+package tcp
 
 import (
 	"bytes"
@@ -9,38 +9,35 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
-	"github.com/soypat/lneto/tcp"
 )
 
-var _ StackNode = (*NodeTCPListener)(nil)
-
-type tcpPool interface {
-	GetTCP() (*tcp.Conn, tcp.Value)
-	PutTCP(*tcp.Conn)
+type pool interface {
+	GetTCP() (*Conn, Value)
+	PutTCP(*Conn)
 }
 
-type NodeTCPListener struct {
+type Listener struct {
 	connID uint64
 	mu     sync.Mutex
 	// ready have received a
-	ready    []*tcp.Conn
-	accepted []*tcp.Conn
+	ready    []*Conn
+	accepted []*Conn
 
 	port       uint16
-	poolGet    func() (*tcp.Conn, tcp.Value)
-	poolReturn func(*tcp.Conn)
+	poolGet    func() (*Conn, Value)
+	poolReturn func(*Conn)
 }
 
 // LocalPort implements [StackNode].
-func (listener *NodeTCPListener) LocalPort() uint16 { return listener.port }
+func (listener *Listener) LocalPort() uint16 { return listener.port }
 
 // ConnectionID implements [StackNode].
-func (listener *NodeTCPListener) ConnectionID() *uint64 { return &listener.connID }
+func (listener *Listener) ConnectionID() *uint64 { return &listener.connID }
 
 // Protocol implements [StackNode].
-func (listener *NodeTCPListener) Protocol() uint64 { return uint64(lneto.IPProtoTCP) }
+func (listener *Listener) Protocol() uint64 { return uint64(lneto.IPProtoTCP) }
 
-func (listener *NodeTCPListener) Close() error {
+func (listener *Listener) Close() error {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
 	if listener.isClosed() {
@@ -51,15 +48,15 @@ func (listener *NodeTCPListener) Close() error {
 	return nil
 }
 
-func (listener *NodeTCPListener) Reset(port uint16, pool tcpPool) error {
+func (listener *Listener) Reset(port uint16, pool pool) error {
 	if port == 0 {
-		return errZeroPort
+		return errZeroDstPort
 	} else if pool == nil {
 		return errors.New("nil TCP pool")
 	}
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
-	*listener = NodeTCPListener{
+	*listener = Listener{
 		mu:         listener.mu,
 		connID:     listener.connID + 1,
 		port:       port,
@@ -71,7 +68,7 @@ func (listener *NodeTCPListener) Reset(port uint16, pool tcpPool) error {
 	return nil
 }
 
-func (listener *NodeTCPListener) NumberOfReadyToAccept() (nready int) {
+func (listener *Listener) NumberOfReadyToAccept() (nready int) {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
 	if listener.isClosed() {
@@ -86,7 +83,7 @@ func (listener *NodeTCPListener) NumberOfReadyToAccept() (nready int) {
 	return nready
 }
 
-func (listener *NodeTCPListener) TryAccept() (*tcp.Conn, error) {
+func (listener *Listener) BeginAccept() (*Conn, error) {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
 	if listener.isClosed() {
@@ -105,7 +102,7 @@ func (listener *NodeTCPListener) TryAccept() (*tcp.Conn, error) {
 }
 
 // Encapsulate implements [StackNode].
-func (listener *NodeTCPListener) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
+func (listener *Listener) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
 	if listener.isClosed() {
@@ -128,13 +125,13 @@ func (listener *NodeTCPListener) Encapsulate(carrierData []byte, offsetToIP, off
 }
 
 // Demux implements [StackNode].
-func (listener *NodeTCPListener) Demux(carrierData []byte, tcpFrameOffset int) error {
+func (listener *Listener) Demux(carrierData []byte, tcpFrameOffset int) error {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
 	if listener.isClosed() {
 		return net.ErrClosed
 	}
-	tfrm, err := tcp.NewFrame(carrierData[tcpFrameOffset:])
+	tfrm, err := NewFrame(carrierData[tcpFrameOffset:])
 	if err != nil {
 		return err
 	}
@@ -158,7 +155,7 @@ func (listener *NodeTCPListener) Demux(carrierData []byte, tcpFrameOffset int) e
 	}
 	// Connection not in ready nor accepted.
 	_, flags := tfrm.OffsetAndFlags()
-	if flags != tcp.FlagSYN {
+	if flags != FlagSYN {
 		return lneto.ErrPacketDrop // Not a synchronizing packet, drop it.
 	}
 	conn, iss := listener.poolGet()
@@ -169,20 +166,20 @@ func (listener *NodeTCPListener) Demux(carrierData []byte, tcpFrameOffset int) e
 	err = conn.OpenListen(dst, iss)
 	if err != nil {
 		listener.poolReturn(conn)
-		slog.Error("NodeTCPListener:open", slog.String("err", err.Error()))
+		slog.Error("Listener:open", slog.String("err", err.Error()))
 		return err // This should not happend
 	}
 	err = conn.Demux(carrierData, tcpFrameOffset)
 	if err != nil {
 		listener.poolReturn(conn)
-		slog.Error("NodeTCPListener:demux", slog.String("err", err.Error()))
+		slog.Error("Listener:demux", slog.String("err", err.Error()))
 		return lneto.ErrPacketDrop
 	}
 	listener.ready = append(listener.ready, conn)
 	return nil
 }
 
-func (listener *NodeTCPListener) tryDemux(conns []*tcp.Conn, remotePort uint16, remoteAddr, carrierData []byte, tcpFrameOffset int) (demuxed bool, err error) {
+func (listener *Listener) tryDemux(conns []*Conn, remotePort uint16, remoteAddr, carrierData []byte, tcpFrameOffset int) (demuxed bool, err error) {
 	idx := getConn(conns, remotePort, remoteAddr)
 	if idx >= 0 {
 		err := conns[idx].Demux(carrierData, tcpFrameOffset)
@@ -194,7 +191,7 @@ func (listener *NodeTCPListener) tryDemux(conns []*tcp.Conn, remotePort uint16, 
 	return false, nil
 }
 
-func (listener *NodeTCPListener) maintainAccepted(connIdx int, err error) {
+func (listener *Listener) maintainAccepted(connIdx int, err error) {
 	if err == net.ErrClosed {
 		conn := listener.accepted[connIdx]
 		listener.poolReturn(conn)
@@ -202,16 +199,16 @@ func (listener *NodeTCPListener) maintainAccepted(connIdx int, err error) {
 	}
 }
 
-func (listener *NodeTCPListener) isClosed() bool {
+func (listener *Listener) isClosed() bool {
 	return listener.port == 0
 }
 
-func (listener *NodeTCPListener) maintainConns() {
+func (listener *Listener) maintainConns() {
 	listener.accepted = internal.DeleteZeroed(listener.accepted)
 	listener.ready = internal.DeleteZeroed(listener.ready)
 }
 
-func getConn(conns []*tcp.Conn, remotePort uint16, remoteAddr []byte) int {
+func getConn(conns []*Conn, remotePort uint16, remoteAddr []byte) int {
 	for i, conn := range conns {
 		if conn == nil {
 			continue
@@ -225,7 +222,7 @@ func getConn(conns []*tcp.Conn, remotePort uint16, remoteAddr []byte) int {
 	return -1
 }
 
-func (listener *NodeTCPListener) maintainConn(conns []*tcp.Conn, idx int, err error) error {
+func (listener *Listener) maintainConn(conns []*Conn, idx int, err error) error {
 	if err == net.ErrClosed {
 		conn := conns[idx]
 		listener.poolReturn(conn)

@@ -8,11 +8,12 @@ import (
 	"github.com/soypat/lneto/tcp"
 )
 
-func TestNodeTCPListener_SingleConnection(t *testing.T) {
+func TestListener_SingleConnection(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	var clientStack, serverStack StackIP
 	var clientConn, serverConn tcp.Conn
-	var listener NodeTCPListener
+	var listener tcp.Listener
+
 	pool := newMockTCPPool(1, 3, 2048)
 
 	// Use existing setup but replace server's conn registration with listener.
@@ -33,7 +34,7 @@ func TestNodeTCPListener_SingleConnection(t *testing.T) {
 	if listener.NumberOfReadyToAccept() != 1 {
 		t.Fatalf("expected 1 ready, got %d", listener.NumberOfReadyToAccept())
 	}
-	acceptedConn, err := listener.TryAccept()
+	acceptedConn, err := listener.BeginAccept()
 	if err != nil {
 		t.Fatalf("TryAccept: %v", err)
 	}
@@ -45,11 +46,11 @@ func TestNodeTCPListener_SingleConnection(t *testing.T) {
 	testEstablishAfterSYN(t, &clientStack, &serverStack, &clientConn, acceptedConn)
 }
 
-func TestNodeTCPListener_AcceptAfterEstablished(t *testing.T) {
+func TestListener_AcceptAfterEstablished(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	var client1Stack, serverStack StackIP
 	var client1Conn, serverConn tcp.Conn
-	var listener NodeTCPListener
+	var listener tcp.Listener
 	pool := newMockTCPPool(2, 3, 2048)
 
 	// Setup server with listener.
@@ -67,9 +68,9 @@ func TestNodeTCPListener_AcceptAfterEstablished(t *testing.T) {
 
 	// Client1 sends SYN.
 	expectExchange(t, &client1Stack, &serverStack, buf[:])
-	accepted1, err := listener.TryAccept()
+	accepted1, err := listener.BeginAccept()
 	if err != nil {
-		t.Fatalf("TryAccept client1: %v", err)
+		t.Fatalf("BeginAccept client1: %v", err)
 	}
 
 	// Complete handshake for client1 (SYN already sent/received).
@@ -86,21 +87,21 @@ func TestNodeTCPListener_AcceptAfterEstablished(t *testing.T) {
 		t.Fatalf("after client2 SYN: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
 	}
 
-	accepted2, err := listener.TryAccept()
+	accepted2, err := listener.BeginAccept()
 	if err != nil {
-		t.Fatalf("TryAccept client2: %v", err)
+		t.Fatalf("BeginAccept client2: %v", err)
 	}
 
 	// Complete handshake for client2 (SYN already sent/received).
 	testEstablishAfterSYN(t, &client2Stack, &serverStack, &client2Conn, accepted2)
 }
 
-func TestNodeTCPListener_MultiConn(t *testing.T) {
+func TestListener_MultiConn(t *testing.T) {
 	const numClients = 5
 	rng := rand.New(rand.NewSource(1))
 	var serverStack StackIP
 	var serverConn tcp.Conn
-	var listener NodeTCPListener
+	var listener tcp.Listener
 	pool := newMockTCPPool(numClients, 3, 2048)
 
 	// Create slices for clients.
@@ -141,9 +142,9 @@ func TestNodeTCPListener_MultiConn(t *testing.T) {
 	// Accept all connections.
 	for i := 0; i < numClients; i++ {
 		var err error
-		acceptedConns[i], err = listener.TryAccept()
+		acceptedConns[i], err = listener.BeginAccept()
 		if err != nil {
-			t.Fatalf("TryAccept client %d: %v", i, err)
+			t.Fatalf("BeginAccept client %d: %v", i, err)
 		}
 	}
 	if listener.NumberOfReadyToAccept() != 0 {
