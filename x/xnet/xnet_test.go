@@ -325,6 +325,8 @@ func (tst *tester) TestTCPClose(stack1, stack2 *StackAsync, conn1, conn2 *tcp.Co
 }
 
 func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAsync) tcp.Segment {
+	tst.bufmu.Lock()
+	defer tst.bufmu.Unlock()
 	var src, dst *StackAsync
 	defer func(failed bool) {
 		if !failed && tst.t.Failed() {
@@ -344,8 +346,7 @@ func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAs
 	default:
 		panic("OOB")
 	}
-	tst.bufmu.Lock()
-	defer tst.bufmu.Unlock()
+
 	n, err := src.Encapsulate(buf[:], -1, 0)
 	if err != nil {
 		t.Fatal(err)

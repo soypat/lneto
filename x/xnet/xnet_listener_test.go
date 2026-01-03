@@ -2,6 +2,7 @@ package xnet
 
 import (
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
@@ -228,14 +229,18 @@ func TestStackAsyncListener_Concurrent(t *testing.T) {
 		const maxConcurrents = poolsize
 		const sleep = time.Millisecond
 		queue := make(chan struct{}, maxConcurrents)
-		for range 1000 {
+		var wg sync.WaitGroup
+		for range 12 {
 			caddr = caddr.Next()
+			wg.Add(1)
 			go func(caddrp netip.AddrPort) {
 				queue <- struct{}{}
 				doRequest(caddrp, sleep, []byte("HTTP 1.0\r\n"))
 				<-queue
+				wg.Done()
 			}(netip.AddrPortFrom(caddr, uint16(sv.Prand32())))
 		}
+		wg.Wait()
 	})
 
 }
