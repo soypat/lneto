@@ -34,7 +34,7 @@ func TestListener_SingleConnection(t *testing.T) {
 	if listener.NumberOfReadyToAccept() != 1 {
 		t.Fatalf("expected 1 ready, got %d", listener.NumberOfReadyToAccept())
 	}
-	acceptedConn, err := listener.BeginAccept()
+	acceptedConn, err := listener.TryAccept()
 	if err != nil {
 		t.Fatalf("TryAccept: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestListener_AcceptAfterEstablished(t *testing.T) {
 
 	// Client1 sends SYN.
 	expectExchange(t, &client1Stack, &serverStack, buf[:])
-	accepted1, err := listener.BeginAccept()
+	accepted1, err := listener.TryAccept()
 	if err != nil {
 		t.Fatalf("BeginAccept client1: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestListener_AcceptAfterEstablished(t *testing.T) {
 		t.Fatalf("after client2 SYN: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
 	}
 
-	accepted2, err := listener.BeginAccept()
+	accepted2, err := listener.TryAccept()
 	if err != nil {
 		t.Fatalf("BeginAccept client2: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestListener_MultiConn(t *testing.T) {
 	// Accept all connections.
 	for i := 0; i < numClients; i++ {
 		var err error
-		acceptedConns[i], err = listener.BeginAccept()
+		acceptedConns[i], err = listener.TryAccept()
 		if err != nil {
 			t.Fatalf("BeginAccept client %d: %v", i, err)
 		}

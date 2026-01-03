@@ -87,7 +87,7 @@ func main() {
 			}
 		}
 		if conn == nil && listener.NumberOfReadyToAccept() > 0 {
-			conn, err = listener.BeginAccept()
+			conn, err = listener.TryAccept()
 			if err != nil {
 				lg.Error("tryaccept", slog.String("err", err.Error()))
 			}

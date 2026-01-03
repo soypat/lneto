@@ -11,6 +11,7 @@ import (
 	"github.com/soypat/lneto/internal"
 )
 
+// pool is a [sync.Pool] like
 type pool interface {
 	GetTCP() (*Conn, Value)
 	PutTCP(*Conn)
@@ -19,10 +20,10 @@ type pool interface {
 type Listener struct {
 	connID uint64
 	mu     sync.Mutex
-	// ready have received a
-	ready    []*Conn
-	accepted []*Conn
-
+	// incoming stores connections that are potential candidates for acceptance.
+	incoming []*Conn
+	// accepted stores all connections that have been accepted and are open.
+	accepted   []*Conn
 	port       uint16
 	poolGet    func() (*Conn, Value)
 	poolReturn func(*Conn)
@@ -66,7 +67,7 @@ func (listener *Listener) Reset(port uint16, pool pool) error {
 		port:       port,
 		poolGet:    pool.GetTCP,
 		poolReturn: pool.PutTCP,
-		ready:      listener.ready[:0],
+		incoming:   listener.incoming[:0],
 		accepted:   listener.accepted[:0],
 	}
 	return nil
@@ -78,8 +79,8 @@ func (listener *Listener) NumberOfReadyToAccept() (nready int) {
 	if listener.isClosed() {
 		return 0
 	}
-	for _, conn := range listener.ready {
-		if conn == nil {
+	for _, conn := range listener.incoming {
+		if conn == nil || conn.State() != StateEstablished {
 			continue
 		}
 		nready++
@@ -87,19 +88,20 @@ func (listener *Listener) NumberOfReadyToAccept() (nready int) {
 	return nready
 }
 
-func (listener *Listener) BeginAccept() (*Conn, error) {
+// TryAccept polls the list of ready connections that have been established
+func (listener *Listener) TryAccept() (*Conn, error) {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
 	if listener.isClosed() {
 		return nil, net.ErrClosed
 	}
 	listener.maintainConns()
-	for i, conn := range listener.ready {
-		if conn == nil {
+	for i, conn := range listener.incoming {
+		if conn == nil || conn.State() != StateEstablished {
 			continue
 		}
 		listener.accepted = append(listener.accepted, conn)
-		listener.ready[i] = nil // discard from ready.
+		listener.incoming[i] = nil // discard from ready.
 		return conn, nil
 	}
 	return nil, errors.New("no conns available")
@@ -153,7 +155,7 @@ func (listener *Listener) Demux(carrierData []byte, tcpFrameOffset int) error {
 	if demuxed {
 		return err
 	}
-	demuxed, err = listener.tryDemux(listener.ready, src, srcaddr, carrierData, tcpFrameOffset)
+	demuxed, err = listener.tryDemux(listener.incoming, src, srcaddr, carrierData, tcpFrameOffset)
 	if demuxed {
 		return err
 	}
@@ -179,7 +181,7 @@ func (listener *Listener) Demux(carrierData []byte, tcpFrameOffset int) error {
 		slog.Error("Listener:demux", slog.String("err", err.Error()))
 		return lneto.ErrPacketDrop
 	}
-	listener.ready = append(listener.ready, conn)
+	listener.incoming = append(listener.incoming, conn)
 	return nil
 }
 
@@ -201,7 +203,17 @@ func (listener *Listener) isClosed() bool {
 
 func (listener *Listener) maintainConns() {
 	listener.accepted = internal.DeleteZeroed(listener.accepted)
-	listener.ready = internal.DeleteZeroed(listener.ready)
+	for i := range listener.incoming {
+		if listener.incoming[i] == nil {
+			continue
+		}
+		if listener.incoming[i].State() > StateEstablished || listener.incoming[i].State().IsClosed() {
+			// Something went wrong in handshake or pool aborted/closed the connection.
+			listener.poolReturn(listener.incoming[i])
+			listener.incoming[i] = nil
+		}
+	}
+	listener.incoming = internal.DeleteZeroed(listener.incoming)
 }
 
 func getConn(conns []*Conn, remotePort uint16, remoteAddr []byte) int {
@@ -220,8 +232,7 @@ func getConn(conns []*Conn, remotePort uint16, remoteAddr []byte) int {
 
 func (listener *Listener) maintainConn(conns []*Conn, idx int, err error) error {
 	if err == net.ErrClosed {
-		conn := conns[idx]
-		listener.poolReturn(conn)
+		listener.poolReturn(conns[idx])
 		conns[idx] = nil
 		return nil // avoid closing listener entirely.
 	}
