@@ -29,21 +29,37 @@ func TestListener_SingleConnection(t *testing.T) {
 
 	var buf [2048]byte
 
-	// Client sends SYN, server receives via listener.
+	// Complete full handshake before TryAccept (TryAccept only works for ESTABLISHED).
+	// Client sends SYN.
 	expectExchange(t, &clientStack, &serverStack, buf[:])
+	if listener.NumberOfReadyToAccept() != 0 {
+		t.Fatalf("after SYN: expected 0 ready (not established yet), got %d", listener.NumberOfReadyToAccept())
+	}
+	// Server sends SYN-ACK.
+	expectExchange(t, &serverStack, &clientStack, buf[:])
+	if listener.NumberOfReadyToAccept() != 0 {
+		t.Fatalf("after SYN: expected 0 ready (not established yet), got %d", listener.NumberOfReadyToAccept())
+	}
+	// Client sends ACK.
+	expectExchange(t, &clientStack, &serverStack, buf[:])
+
+	// Now connection is ESTABLISHED, TryAccept should work.
 	if listener.NumberOfReadyToAccept() != 1 {
-		t.Fatalf("expected 1 ready, got %d", listener.NumberOfReadyToAccept())
+		t.Fatalf("after handshake: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
 	}
 	acceptedConn, err := listener.TryAccept()
 	if err != nil {
 		t.Fatalf("TryAccept: %v", err)
 	}
 	if listener.NumberOfReadyToAccept() != 0 {
-		t.Fatalf("expected 0 ready, got %d", listener.NumberOfReadyToAccept())
+		t.Fatalf("after accept: expected 0 ready, got %d", listener.NumberOfReadyToAccept())
 	}
-
-	// Complete handshake (SYN already sent/received).
-	testEstablishAfterSYN(t, &clientStack, &serverStack, &clientConn, acceptedConn)
+	if acceptedConn.State() != tcp.StateEstablished {
+		t.Fatalf("accepted conn: expected StateEstablished, got %s", acceptedConn.State())
+	}
+	if clientConn.State() != tcp.StateEstablished {
+		t.Fatalf("client conn: expected StateEstablished, got %s", clientConn.State())
+	}
 }
 
 func TestListener_AcceptAfterEstablished(t *testing.T) {
@@ -66,34 +82,48 @@ func TestListener_AcceptAfterEstablished(t *testing.T) {
 
 	var buf [2048]byte
 
-	// Client1 sends SYN.
-	expectExchange(t, &client1Stack, &serverStack, buf[:])
+	// Complete full handshake for client1.
+	expectExchange(t, &client1Stack, &serverStack, buf[:]) // SYN
+	expectExchange(t, &serverStack, &client1Stack, buf[:]) // SYN-ACK
+	expectExchange(t, &client1Stack, &serverStack, buf[:]) // ACK
+
+	// Now TryAccept client1.
+	if listener.NumberOfReadyToAccept() != 1 {
+		t.Fatalf("after client1 handshake: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
+	}
 	accepted1, err := listener.TryAccept()
 	if err != nil {
-		t.Fatalf("BeginAccept client1: %v", err)
+		t.Fatalf("TryAccept client1: %v", err)
+	} else if listener.NumberOfReadyToAccept() != 0 {
+		t.Fatalf("after accepting conn: expected 0 ready, got %d", listener.NumberOfReadyToAccept())
 	}
-
-	// Complete handshake for client1 (SYN already sent/received).
-	testEstablishAfterSYN(t, &client1Stack, &serverStack, &client1Conn, accepted1)
+	if accepted1.State() != tcp.StateEstablished {
+		t.Fatalf("accepted1: expected StateEstablished, got %s", accepted1.State())
+	}
 
 	// Setup second client and verify we can still accept.
 	var client2Stack StackIP
 	var client2Conn tcp.Conn
 	setupClient(t, &client2Stack, &client2Conn, serverStack.Addr(), serverPort, 1338)
 
-	// Client2 sends SYN.
-	expectExchange(t, &client2Stack, &serverStack, buf[:])
-	if listener.NumberOfReadyToAccept() != 1 {
-		t.Fatalf("after client2 SYN: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
-	}
+	// Complete full handshake for client2.
+	expectExchange(t, &client2Stack, &serverStack, buf[:]) // SYN
+	expectExchange(t, &serverStack, &client2Stack, buf[:]) // SYN-ACK
+	expectExchange(t, &client2Stack, &serverStack, buf[:]) // ACK
 
+	// Now TryAccept client2.
+	if listener.NumberOfReadyToAccept() != 1 {
+		t.Fatalf("after client2 handshake: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
+	}
 	accepted2, err := listener.TryAccept()
 	if err != nil {
-		t.Fatalf("BeginAccept client2: %v", err)
+		t.Fatalf("TryAccept client2: %v", err)
+	} else if listener.NumberOfReadyToAccept() != 0 {
+		t.Fatalf("after client2 accept: expected 0 ready, got %d", listener.NumberOfReadyToAccept())
 	}
-
-	// Complete handshake for client2 (SYN already sent/received).
-	testEstablishAfterSYN(t, &client2Stack, &serverStack, &client2Conn, accepted2)
+	if accepted2.State() != tcp.StateEstablished {
+		t.Fatalf("accepted2: expected StateEstablished, got %s", accepted2.State())
+	}
 }
 
 func TestListener_MultiConn(t *testing.T) {
@@ -128,12 +158,14 @@ func TestListener_MultiConn(t *testing.T) {
 
 	var buf [2048]byte
 
-	// All clients send SYN.
+	// Complete full handshakes for all clients.
 	for i := 0; i < numClients; i++ {
-		expectExchange(t, &clientStacks[i], &serverStack, buf[:])
+		expectExchange(t, &clientStacks[i], &serverStack, buf[:]) // SYN
+		expectExchange(t, &serverStack, &clientStacks[i], buf[:]) // SYN-ACK
+		expectExchange(t, &clientStacks[i], &serverStack, buf[:]) // ACK
 	}
 	if listener.NumberOfReadyToAccept() != numClients {
-		t.Fatalf("after all SYNs: expected %d ready, got %d", numClients, listener.NumberOfReadyToAccept())
+		t.Fatalf("after all handshakes: expected %d ready, got %d", numClients, listener.NumberOfReadyToAccept())
 	}
 	if pool.NumberOfAcquired() != numClients {
 		t.Fatalf("pool should have %d acquired, got %d", numClients, pool.NumberOfAcquired())
@@ -144,16 +176,11 @@ func TestListener_MultiConn(t *testing.T) {
 		var err error
 		acceptedConns[i], err = listener.TryAccept()
 		if err != nil {
-			t.Fatalf("BeginAccept client %d: %v", i, err)
+			t.Fatalf("TryAccept client %d: %v", i, err)
 		}
 	}
 	if listener.NumberOfReadyToAccept() != 0 {
 		t.Fatalf("after all accepts: expected 0 ready, got %d", listener.NumberOfReadyToAccept())
-	}
-
-	// Complete handshakes for all clients.
-	for i := 0; i < numClients; i++ {
-		testEstablishAfterSYN(t, &clientStacks[i], &serverStack, &clientConns[i], acceptedConns[i])
 	}
 
 	// Verify all connections established.
@@ -313,32 +340,6 @@ func setupClient(t *testing.T, client *StackIP, conn *tcp.Conn, serverAddr netip
 	err = client.Register(conn)
 	if err != nil {
 		t.Fatal(err)
-	}
-}
-
-// testEstablishAfterSYN completes the TCP handshake after SYN has already been sent and received.
-// Use this when testing listeners where the SYN was already processed.
-func testEstablishAfterSYN(t *testing.T, client, server *StackIP, connClient, connServer *tcp.Conn) {
-	t.Helper()
-	var buf [2048]byte
-	// Server sends SYN-ACK.
-	expectExchange(t, server, client, buf[:])
-	if connClient.State() != tcp.StateEstablished {
-		t.Errorf("after SYN-ACK: want client StateEstablished, got %s", connClient.State())
-	}
-	if connServer.State() != tcp.StateSynRcvd {
-		t.Errorf("after SYN-ACK: want server StateSynRcvd, got %s", connServer.State())
-	}
-	// Client sends ACK.
-	expectExchange(t, client, server, buf[:])
-	if connClient.State() != tcp.StateEstablished {
-		t.Errorf("after ACK: want client StateEstablished, got %s", connClient.State())
-	}
-	if connServer.State() != tcp.StateEstablished {
-		t.Errorf("after ACK: want server StateEstablished, got %s", connServer.State())
-	}
-	if t.Failed() {
-		t.FailNow()
 	}
 }
 

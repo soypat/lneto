@@ -114,6 +114,22 @@ func (listener *Listener) Encapsulate(carrierData []byte, offsetToIP, offsetToFr
 	if listener.isClosed() {
 		return 0, net.ErrClosed
 	}
+	// First try incoming connections (for handshake SYN-ACK).
+	for i, conn := range listener.incoming {
+		if conn == nil || conn.State() == StateEstablished {
+			// Nil or already established.
+			continue
+		}
+		n, err := conn.Encapsulate(carrierData, offsetToIP, offsetToFrame)
+		if err != nil {
+			err = listener.maintainConn(listener.incoming, i, err)
+		}
+		if n == 0 {
+			continue
+		}
+		return n, err
+	}
+	// Then try accepted connections.
 	for i, conn := range listener.accepted {
 		if conn == nil {
 			continue
