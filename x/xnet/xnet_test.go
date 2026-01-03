@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math/rand"
 	"net/netip"
+	"sync"
 	"testing"
 
 	"github.com/soypat/lneto/arp"
@@ -14,6 +15,8 @@ import (
 )
 
 const (
+	logExchange = false
+
 	synack = tcp.FlagSYN | tcp.FlagACK
 	pshack = tcp.FlagPSH | tcp.FlagACK
 	finack = tcp.FlagFIN | tcp.FlagACK
@@ -144,6 +147,7 @@ func testerFrom(t *testing.T, mtu int) *tester {
 
 type tester struct {
 	t       *testing.T
+	mu      sync.Mutex
 	cap     pcap.PacketBreakdown
 	frmbuf  []pcap.Frame
 	buf     []byte
@@ -285,7 +289,9 @@ func (tst *tester) TestTCPClose(stack1, stack2 *StackAsync, conn1, conn2 *tcp.Co
 		noExchange(0),
 		noExchange(1),
 	}...)
-	t.Log(conn1.State().String(), conn2.State().String())
+	if logExchange {
+		t.Log(conn1.State().String(), conn2.State().String())
+	}
 	for i, exch := range tst.exch {
 		failed := t.Failed()
 		tst.TCPExchange(exch, stack1, stack2)
@@ -295,8 +301,9 @@ func (tst *tester) TestTCPClose(stack1, stack2 *StackAsync, conn1, conn2 *tcp.Co
 		if exch.WantFlags == 0 {
 			continue
 		}
-
-		t.Log(i, tcp.StringExchange(tst.lastSeg, conn1.State(), conn2.State(), exch.SourceIdx != 0))
+		if logExchange {
+			t.Log(i, tcp.StringExchange(tst.lastSeg, conn1.State(), conn2.State(), exch.SourceIdx != 0))
+		}
 	}
 
 	state1 := conn1.State()
@@ -318,6 +325,8 @@ func (tst *tester) TestTCPClose(stack1, stack2 *StackAsync, conn1, conn2 *tcp.Co
 func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAsync) {
 	tst.lastSeg = tcp.Segment{}
 	var src, dst *StackAsync
+	tst.mu.Lock()
+	defer tst.mu.Unlock()
 	defer func(failed bool) {
 		if !failed && tst.t.Failed() {
 			tst.t.Helper()
@@ -395,6 +404,8 @@ func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAs
 func (tst *tester) ARPExchangeOnly(querying, target *StackAsync) {
 	t := tst.t
 	t.Helper()
+	tst.mu.Lock()
+	defer tst.mu.Unlock()
 	buf := tst.buf[:cap(tst.buf)]
 
 	// === PHASE 1: ARP Request from querying stack ===

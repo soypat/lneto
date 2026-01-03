@@ -3,6 +3,7 @@ package xnet
 import (
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/soypat/lneto/tcp"
 )
@@ -121,7 +122,8 @@ func TestStackAsyncListener_Concurrent(t *testing.T) {
 	const MTU = 1500
 	const svPort = 80
 	const clPort = 1337
-
+	const poolsize = 10
+	const bufsize = 128
 	// Create two stacks.
 	sv := new(StackAsync)
 	err := sv.Reset(StackConfig{
@@ -136,22 +138,11 @@ func TestStackAsyncListener_Concurrent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create client connection.
-	var clConn tcp.Conn
-	err = clConn.Configure(tcp.ConnConfig{
-		RxBuf:             make([]byte, MTU),
-		TxBuf:             make([]byte, MTU),
-		TxPacketQueueSize: 4,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	// Create pool and listener for server.
 	pool, err := NewTCPPool(TCPPoolConfig{
-		PoolSize:           1,
+		PoolSize:           poolsize,
 		QueueSize:          4,
-		BufferSize:         MTU,
+		BufferSize:         bufsize,
 		EstablishedTimeout: 10e9,
 		ClosingTimeout:     10e9,
 	})
@@ -172,7 +163,7 @@ func TestStackAsyncListener_Concurrent(t *testing.T) {
 	chw := [6]byte{0xbe, 0xef, 0, 0, 0, 1}
 	sv.SetGateway6(chw)
 	tst := testerFrom(t, MTU)
-	for range 1000 {
+	doRequest := func(sleep time.Duration, data []byte) {
 		caddr = caddr.Next()
 		var client StackAsync
 		err := client.Reset(StackConfig{
@@ -190,15 +181,15 @@ func TestStackAsyncListener_Concurrent(t *testing.T) {
 		// Create client connection.
 		var clConn tcp.Conn
 		err = clConn.Configure(tcp.ConnConfig{
-			RxBuf:             make([]byte, MTU),
-			TxBuf:             make([]byte, MTU),
+			RxBuf:             make([]byte, bufsize),
+			TxBuf:             make([]byte, bufsize),
 			TxPacketQueueSize: 4,
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
 		// Client dials server.
-		err = client.DialTCP(&clConn, clPort, netip.AddrPortFrom(sv.Addr(), svPort))
+		err = client.DialTCP(&clConn, uint16(sv.Prand32()), netip.AddrPortFrom(sv.Addr(), svPort))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -208,10 +199,41 @@ func TestStackAsyncListener_Concurrent(t *testing.T) {
 		if listener.NumberOfReadyToAccept() != 1 {
 			t.Fatalf("after handshake: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
 		}
+		svconn, err := listener.TryAccept()
+		if err != nil {
+			t.Fatal(err)
+		} else if svconn.RemotePort() != clConn.LocalPort() ||
+			[4]byte(svconn.RemoteAddr()) != client.Addr().As4() {
+			t.Fatal("race condition to listener acquisition")
+		}
 		// Verify both connections are established.
 		if clConn.State() != tcp.StateEstablished {
 			t.Fatalf("client: expected StateEstablished, got %s", clConn.State())
 		}
-
+		if len(data) > 0 {
+			tst.TestTCPEstablishedSingleData(&client, sv, &clConn, svconn, data)
+		}
+		if sleep > 0 {
+			time.Sleep(sleep)
+		}
+		tst.TestTCPClose(&client, sv, &clConn, svconn)
 	}
+	t.Run("serial-conns", func(t *testing.T) {
+		for range 100 {
+			doRequest(0, []byte("HTTP 1.0\r\n"))
+		}
+	})
+	t.Run("concurrent-conns", func(t *testing.T) {
+		const maxConcurrents = poolsize
+		const sleep = time.Millisecond
+		queue := make(chan struct{}, maxConcurrents)
+		for range 1000 {
+			go func() {
+				queue <- struct{}{}
+				doRequest(sleep, []byte("HTTP 1.0\r\n"))
+				<-queue
+			}()
+		}
+	})
+
 }

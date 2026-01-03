@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+const logExchange = false
+
 // Here we define internal testing helpers that may be used in any *_test.go file
 // but are not exported.
 
@@ -94,7 +96,9 @@ func (tcb *ControlBlock) HelperSteps(t *testing.T, steps []SegmentStep, isPeerA 
 		}
 	}()
 	const pfx = "step"
-	t.Log(tcb._state, "Steps start, isPeerA:", isPeerA)
+	if logExchange {
+		t.Log(tcb._state, "Steps start, isPeerA:", isPeerA)
+	}
 	for i, st = range steps {
 		// Determine if this peer should close before this step.
 		nop := isPeerA && st.Action == StepBCloses || !isPeerA && st.Action == StepACloses
@@ -144,8 +148,9 @@ func (tcb *ControlBlock) HelperSteps(t *testing.T, steps []SegmentStep, isPeerA 
 			wantState = st.BState
 			wantPending = st.BPending
 		}
-
-		t.Logf(pfx+"[%d] state=%s (want=%s)", i, tcb._state, wantState)
+		if logExchange {
+			t.Logf(pfx+"[%d] state=%s (want=%s)", i, tcb._state, wantState)
+		}
 
 		state := tcb.State()
 		if state != wantState {
@@ -300,7 +305,9 @@ func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
 		}
 	}()
 	const pfx = "exchange"
-	t.Log(tcb._state, "Exchange start")
+	if logExchange {
+		t.Log(tcb._state, "Exchange start")
+	}
 	for i, ex = range exchange {
 		if ex.Outgoing != nil && ex.Incoming != nil {
 			t.Fatalf(pfx+"[%d] cannot send and receive in the same exchange, please split into two exchanges.", i)
@@ -328,8 +335,9 @@ func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
 				}
 			}
 		}
-
-		t.Log(ex.RFC9293String(tcb._state, ex.WantPeerState))
+		if logExchange {
+			t.Log(ex.RFC9293String(tcb._state, ex.WantPeerState))
+		}
 
 		state := tcb.State()
 		if state != ex.WantState {
