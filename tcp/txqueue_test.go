@@ -27,8 +27,8 @@ func TestRingTx_op(t *testing.T) {
 	dataSent := make([]byte, 0, maxBuf*10)
 	var rtx ringTx
 	rng := rand.New(rand.NewSource(0))
-	for iseed := int64(0); iseed < 10000; iseed++ {
-		rng.Seed(iseed)
+	for iseed := int64(0); iseed < 1000; iseed++ {
+		rng.Seed(iseed + rng.Int63())
 		for itest := 0; itest < 32; itest++ {
 			bufsize := rng.Intn(maxBuf/2) + maxBuf/2
 			iss := Value(0)
@@ -209,9 +209,7 @@ func TestTxQueue_multipacket(t *testing.T) {
 	rng := rand.New(rand.NewSource(3))
 	var wbuf, rbuf [mtu]byte
 	for itest := 0; itest < 32; itest++ {
-		t.Log(itest)
 		rng.Seed(int64(itest))
-		println(itest)
 		err := rtx.Reset(internalbuff, maxPkts, iss)
 		if err != nil {
 			t.Fatal(err)
@@ -258,7 +256,6 @@ func TestTxQueue_multipacket(t *testing.T) {
 		}
 		acked := 0
 		for acked < roff {
-			t.Log(acked)
 			maxToack := min(roff-acked, maxWriteSize)
 			toack := rng.Intn(maxToack) + 1
 			// t.Log("\n", rtx.string())

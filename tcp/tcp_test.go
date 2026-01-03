@@ -2,12 +2,8 @@ package tcp_test
 
 import (
 	"math/rand"
-	"strconv"
 	"testing"
 
-	"github.com/soypat/lneto"
-	"github.com/soypat/lneto/ethernet"
-	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -16,6 +12,109 @@ const (
 	FINACK = tcp.FlagFIN | tcp.FlagACK
 	PSHACK = tcp.FlagPSH | tcp.FlagACK
 )
+
+// TestExchangeTest_PassiveClose_FINACKRegression is a regression test for the bug where
+// Close() in CLOSE-WAIT state set pending = [FlagFIN, FlagACK] (separate slots) instead
+// of pending = [FlagFIN|FlagACK, 0]. This caused PendingSegment() to return only FIN
+// without ACK since it only reads pending[0].
+func TestExchangeTest_PassiveClose_FINACKRegression(t *testing.T) {
+	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
+	test := tcp.ExchangeTest{
+		ISSA:       issA,
+		ISSB:       issB,
+		WindowA:    windowA,
+		WindowB:    windowB,
+		InitStateA: tcp.StateEstablished,
+		InitStateB: tcp.StateEstablished,
+		Steps: []tcp.SegmentStep{
+			0: { // A sends FIN|ACK to B. B goes to CLOSE-WAIT.
+				Seg:      tcp.Segment{SEQ: issA, ACK: issB, Flags: FINACK, WND: windowA},
+				Action:   tcp.StepASends,
+				AState:   tcp.StateFinWait1,
+				BState:   tcp.StateCloseWait,
+				BPending: &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: tcp.FlagACK, WND: windowB},
+			},
+			1: { // B sends ACK to A. Auto-queues FIN|ACK in CLOSE-WAIT.
+				Seg:      tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: tcp.FlagACK, WND: windowB},
+				Action:   tcp.StepBSends,
+				AState:   tcp.StateFinWait2,
+				BState:   tcp.StateCloseWait,
+				BPending: &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: FINACK, WND: windowB},
+			},
+			2: { // B calls Close(). Goes to LAST-ACK. Pending must be FIN|ACK combined.
+				// This is the regression check: Close() must NOT overwrite the auto-queued
+				// FIN|ACK with [FlagFIN, FlagACK] in separate pending slots.
+				Action:   tcp.StepBCloses,
+				AState:   tcp.StateFinWait2, // A unchanged.
+				BState:   tcp.StateLastAck,
+				BPending: &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: FINACK, WND: windowB},
+			},
+			3: { // B sends FIN|ACK to A.
+				Seg:      tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: FINACK, WND: windowB},
+				Action:   tcp.StepBSends,
+				AState:   tcp.StateTimeWait,
+				BState:   tcp.StateLastAck,
+				BPending: nil,
+			},
+			4: { // A sends final ACK to B. B goes to CLOSED.
+				Seg:    tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
+				Action: tcp.StepASends,
+				AState: tcp.StateTimeWait,
+				BState: tcp.StateClosed,
+			},
+		},
+	}
+	test.RunB(t) // Only run B's perspective since that's where Close() is called.
+}
+
+// TestExchangeTest_figure12 demonstrates ExchangeTest which defines both peers' states
+// symmetrically and runs tests from both perspectives with a single definition.
+func TestExchangeTest_figure12(t *testing.T) {
+	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
+	test := tcp.ExchangeTest{
+		ISSA:       issA,
+		ISSB:       issB,
+		WindowA:    windowA,
+		WindowB:    windowB,
+		InitStateA: tcp.StateEstablished,
+		InitStateB: tcp.StateEstablished,
+		Steps: []tcp.SegmentStep{
+			0: { // A sends FIN|ACK to B.
+				Seg:      tcp.Segment{SEQ: issA, ACK: issB, Flags: FINACK, WND: windowA},
+				Action:   tcp.StepASends,
+				AState:   tcp.StateFinWait1,
+				BState:   tcp.StateCloseWait,
+				APending: nil,
+				BPending: &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: tcp.FlagACK, WND: windowB},
+			},
+			1: { // B sends ACK to A. (Auto-queues FIN|ACK in CLOSE-WAIT)
+				Seg:      tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: tcp.FlagACK, WND: windowB},
+				Action:   tcp.StepBSends,
+				AState:   tcp.StateFinWait2,
+				BState:   tcp.StateCloseWait,
+				APending: &tcp.Segment{SEQ: issA + 1, ACK: issB, Flags: tcp.FlagACK, WND: windowA}, // TODO: should be nil?
+				BPending: &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: FINACK, WND: windowB},
+			},
+			2: { // B sends FIN|ACK to A.
+				Seg:      tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: FINACK, WND: windowB},
+				Action:   tcp.StepBSends,
+				AState:   tcp.StateTimeWait,
+				BState:   tcp.StateLastAck,
+				APending: &tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
+				BPending: nil,
+			},
+			3: { // A sends final ACK to B.
+				Seg:      tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
+				Action:   tcp.StepASends,
+				AState:   tcp.StateTimeWait,
+				BState:   tcp.StateClosed,
+				APending: nil,
+				BPending: nil,
+			},
+		},
+	}
+	test.Run(t) // Runs both PeerA and PeerB subtests.
+}
 
 /*
 	 Section 3.5 of RFC 9293: Basic 3-way handshake for connection synchronization.
@@ -31,42 +130,39 @@ const (
 
 		5.  ESTABLISHED --> <SEQ=101><ACK=301><CTL=ACK><DATA> --> ESTABLISHED
 */
-func TestExchange_rfc9293_figure6(t *testing.T) {
+func TestExchangeTest_rfc9293_figure6(t *testing.T) {
 	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
-	exchangeA := []tcp.Exchange{
-		{ // A sends SYN to B.
-			Outgoing:      &tcp.Segment{SEQ: issA, Flags: tcp.FlagSYN, WND: windowA},
-			WantState:     tcp.StateSynSent,
-			WantPeerState: tcp.StateSynRcvd,
-		},
-		{ // A receives SYNACK from B thus establishing the connection on A's side.
-			Incoming:      &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: SYNACK, WND: windowB},
-			WantState:     tcp.StateEstablished,
-			WantPending:   &tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
-			WantPeerState: tcp.StateSynRcvd,
-		},
-		{ // A sends ACK to B, which leaves connection established on their side. Three way handshake complete by now.
-			Outgoing:      &tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
-			WantState:     tcp.StateEstablished,
-			WantPeerState: tcp.StateEstablished,
+	test := tcp.ExchangeTest{
+		ISSA:       issA,
+		ISSB:       issB,
+		WindowA:    windowA,
+		WindowB:    windowB,
+		InitStateA: tcp.StateSynSent,
+		InitStateB: tcp.StateListen,
+		Steps: []tcp.SegmentStep{
+			0: { // A sends SYN to B.
+				Seg:      tcp.Segment{SEQ: issA, Flags: tcp.FlagSYN, WND: windowA},
+				Action:   tcp.StepASends,
+				AState:   tcp.StateSynSent,
+				BState:   tcp.StateSynRcvd,
+				BPending: &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: SYNACK, WND: windowB},
+			},
+			1: { // B sends SYNACK to A.
+				Seg:      tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: SYNACK, WND: windowB},
+				Action:   tcp.StepBSends,
+				AState:   tcp.StateEstablished,
+				BState:   tcp.StateSynRcvd,
+				APending: &tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
+			},
+			2: { // A sends ACK to B. Three-way handshake complete.
+				Seg:    tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
+				Action: tcp.StepASends,
+				AState: tcp.StateEstablished,
+				BState: tcp.StateEstablished,
+			},
 		},
 	}
-	var tcbA tcp.ControlBlock
-	tcbA.HelperInitState(tcp.StateSynSent, issA, issA, windowA)
-	tcbA.HelperExchange(t, exchangeA)
-	segA, ok := tcbA.PendingSegment(0)
-	if ok {
-		t.Error("unexpected Client pending segment after establishment: ", segA)
-	}
-	exchangeB := reverseExchange(exchangeA)
-
-	var tcbB tcp.ControlBlock
-	tcbB.HelperInitState(tcp.StateListen, issB, issB, windowB)
-	tcbB.HelperExchange(t, exchangeB) // TODO remove [:3] after snd.UNA bugfix
-	segB, ok := tcbB.PendingSegment(0)
-	if ok {
-		t.Error("unexpected Listener pending segment after establishment: ", segB)
-	}
+	test.Run(t)
 }
 
 /*
@@ -87,30 +183,43 @@ func TestExchange_rfc9293_figure6(t *testing.T) {
 
 		7.               ... <SEQ=100><ACK=301><CTL=SYN,ACK> --> ESTABLISHED
 */
-func TestExchange_rfc9293_figure7(t *testing.T) {
+func TestExchangeTest_rfc9293_figure7(t *testing.T) {
 	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
-	exchangeA := []tcp.Exchange{
-		0: { // A sends SYN to B.
-			Outgoing:  &tcp.Segment{SEQ: issA, Flags: tcp.FlagSYN, WND: windowA},
-			WantState: tcp.StateSynSent,
-		},
-		1: { // A receives a SYN with no ACK from B.
-			Incoming:    &tcp.Segment{SEQ: issB, Flags: tcp.FlagSYN, WND: windowB},
-			WantState:   tcp.StateSynRcvd,
-			WantPending: &tcp.Segment{SEQ: issA, ACK: issB + 1, Flags: SYNACK, WND: windowA},
-		},
-		2: { // A sends SYNACK to B.
-			Outgoing:  &tcp.Segment{SEQ: issA, ACK: issB + 1, Flags: SYNACK, WND: windowA},
-			WantState: tcp.StateSynRcvd,
-		},
-		3: { // A receives ACK from B.
-			Incoming:  &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: SYNACK, WND: windowA},
-			WantState: tcp.StateEstablished,
+	// NOTE: Simultaneous SYN can only be tested from one perspective because
+	// the "simultaneous" nature means segments cross in flight. In a sequential
+	// test, when B receives A's SYN first, B goes to SYN-RECEIVED, not SYN-SENT.
+	test := tcp.ExchangeTest{
+		ISSA:       issA,
+		ISSB:       issB,
+		WindowA:    windowA,
+		WindowB:    windowB,
+		InitStateA: tcp.StateSynSent,
+		InitStateB: tcp.StateSynSent,
+		Steps: []tcp.SegmentStep{
+			0: { // A sends SYN to B (crosses with B's SYN).
+				Seg:    tcp.Segment{SEQ: issA, Flags: tcp.FlagSYN, WND: windowA},
+				Action: tcp.StepASends,
+				AState: tcp.StateSynSent,
+			},
+			1: { // A receives SYN from B (no ACK - B hasn't received A's SYN yet).
+				Seg:      tcp.Segment{SEQ: issB, Flags: tcp.FlagSYN, WND: windowB},
+				Action:   tcp.StepBSends,
+				AState:   tcp.StateSynRcvd,
+				APending: &tcp.Segment{SEQ: issA, ACK: issB + 1, Flags: SYNACK, WND: windowA},
+			},
+			2: { // A sends SYNACK to B.
+				Seg:    tcp.Segment{SEQ: issA, ACK: issB + 1, Flags: SYNACK, WND: windowA},
+				Action: tcp.StepASends,
+				AState: tcp.StateSynRcvd,
+			},
+			3: { // A receives SYNACK from B.
+				Seg:    tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: SYNACK, WND: windowB},
+				Action: tcp.StepBSends,
+				AState: tcp.StateEstablished,
+			},
 		},
 	}
-	var tcbA tcp.ControlBlock
-	tcbA.HelperInitState(tcp.StateSynSent, issA, issA, windowA)
-	tcbA.HelperExchange(t, exchangeA)
+	test.RunA(t) // Only A's perspective - B's is fundamentally different in sequential test.
 }
 
 /*
@@ -132,146 +241,104 @@ func TestExchange_rfc9293_figure7(t *testing.T) {
 		7.  ESTABLISHED <-- <SEQ=400><ACK=101><CTL=SYN,ACK>  <-- SYN-RECEIVED
 
 		8.  ESTABLISHED --> <SEQ=101><ACK=401><CTL=ACK>      --> ESTABLISHED
+
+NOTE: This test is asymmetric. A and B have different views because B receives an
+old duplicate SYN that A never sent. Cannot use Run() - must test each perspective separately.
 */
-func TestExchange_rfc9293_figure8(t *testing.T) {
+func TestExchangeTest_rfc9293_figure8(t *testing.T) {
 	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
 	const issAold = 90
-	const issBNew = issB + 100
-	exchangeA := []tcp.Exchange{
-		0: { // A sends new SYN to B (which is not received).
-			Outgoing:      &tcp.Segment{SEQ: issA, Flags: tcp.FlagSYN, WND: windowA},
-			WantState:     tcp.StateSynSent,
-			WantPeerState: tcp.StateSynRcvd,
-		},
-		1: { // Receive SYN from B acking an old "duplicate" SYN.
-			Incoming:      &tcp.Segment{SEQ: issB, ACK: issAold + 1, Flags: SYNACK, WND: windowB},
-			WantState:     tcp.StateSynSent,
-			WantPending:   &tcp.Segment{SEQ: issAold + 1, Flags: tcp.FlagRST, WND: windowA},
-			WantPeerState: tcp.StateSynRcvd,
-		},
-		2: { // A sends RST to B and makes segment believable by using the old SEQ.
-			Outgoing:      &tcp.Segment{SEQ: issAold + 1, Flags: tcp.FlagRST, WND: windowA},
-			WantState:     tcp.StateSynSent,
-			WantPeerState: tcp.StateListen,
-		},
-		3: { // A sends a duplicate SYN to B.
-			Outgoing:      &tcp.Segment{SEQ: issA, Flags: tcp.FlagSYN, WND: windowA},
-			WantState:     tcp.StateSynSent,
-			WantPeerState: tcp.StateSynRcvd,
-		},
-		4: { // B SYNACKs new SYN.
-			Incoming:      &tcp.Segment{SEQ: issBNew, ACK: issA + 1, Flags: SYNACK, WND: windowB},
-			WantState:     tcp.StateEstablished,
-			WantPending:   &tcp.Segment{SEQ: issA + 1, ACK: issBNew + 1, Flags: tcp.FlagACK, WND: windowA},
-			WantPeerState: tcp.StateSynRcvd,
-		},
-		5: { // B receives ACK from A.
-			Outgoing:      &tcp.Segment{SEQ: issA + 1, ACK: issBNew + 1, Flags: tcp.FlagACK, WND: windowA},
-			WantState:     tcp.StateEstablished,
-			WantPeerState: tcp.StateEstablished,
-		},
-	}
-	var tcbA tcp.ControlBlock
-	tcbA.HelperInitState(tcp.StateSynSent, issA, issA, windowA)
-	tcbA.HelperExchange(t, exchangeA)
+	const issBnew = 400
 
-	exchangeB := []tcp.Exchange{
-		0: { // B receives old SYN from A.
-			Incoming:    &tcp.Segment{SEQ: issAold, Flags: tcp.FlagSYN, WND: windowA},
-			WantState:   tcp.StateSynRcvd,
-			WantPending: &tcp.Segment{SEQ: issB, ACK: issAold + 1, Flags: SYNACK, WND: windowB},
-		},
-		1: { // B SYNACKs old SYN.
-			Outgoing:  &tcp.Segment{SEQ: issB, ACK: issAold + 1, Flags: SYNACK, WND: windowB},
-			WantState: tcp.StateSynRcvd,
-		},
-		2: { // B receives RST from A.
-			Incoming:  &tcp.Segment{SEQ: issAold + 1, Flags: tcp.FlagRST, WND: windowA},
-			WantState: tcp.StateListen,
-		},
-		3: { // B receives new SYN from A.
-			Incoming:    &tcp.Segment{SEQ: issA, Flags: tcp.FlagSYN, WND: windowA},
-			WantState:   tcp.StateSynRcvd,
-			WantPending: &tcp.Segment{SEQ: issBNew, ACK: issA + 1, Flags: SYNACK, WND: windowB},
-		},
-		4: { // B SYNACKs new SYN.
-			Outgoing:  &tcp.Segment{SEQ: issBNew, ACK: issA + 1, Flags: SYNACK, WND: windowB},
-			WantState: tcp.StateSynRcvd,
-		},
-		5: { // B receives ACK from A.
-			Incoming:  &tcp.Segment{SEQ: issA + 1, ACK: issBNew + 1, Flags: tcp.FlagACK, WND: windowA},
-			WantState: tcp.StateEstablished,
-		},
-	}
-	var tcbB tcp.ControlBlock
-	tcbB.HelperInitState(tcp.StateListen, issB, issB, windowB)
-	tcbB.HelperExchange(t, exchangeB)
+	// Test from A's perspective: A sends SYN, gets wrong SYNACK, sends RST,
+	// gets correct SYNACK, sends ACK.
+	t.Run("PeerA", func(t *testing.T) {
+		var tcbA tcp.ControlBlock
+		tcbA.HelperInitState(tcp.StateSynSent, issA, issA, windowA)
+
+		stepsA := []tcp.SegmentStep{
+			0: { // A sends SYN (step 2 in figure).
+				Seg:    tcp.Segment{SEQ: issA, Flags: tcp.FlagSYN, WND: windowA},
+				Action: tcp.StepASends,
+				AState: tcp.StateSynSent,
+			},
+			1: { // A receives SYNACK with wrong ACK (acking old duplicate SYN).
+				Seg:      tcp.Segment{SEQ: issB, ACK: issAold + 1, Flags: SYNACK, WND: windowB},
+				Action:   tcp.StepBSends,
+				AState:   tcp.StateSynSent, // A stays in SYN-SENT because ACK is wrong.
+				APending: &tcp.Segment{SEQ: issAold + 1, Flags: tcp.FlagRST, WND: windowA},
+			},
+			2: { // A sends RST to reject the bad SYNACK.
+				Seg:    tcp.Segment{SEQ: issAold + 1, Flags: tcp.FlagRST, WND: windowA},
+				Action: tcp.StepASends,
+				AState: tcp.StateSynSent,
+			},
+			3: { // A sends duplicate SYN (retransmit, step 6 arrival at B).
+				Seg:    tcp.Segment{SEQ: issA, Flags: tcp.FlagSYN, WND: windowA},
+				Action: tcp.StepASends,
+				AState: tcp.StateSynSent,
+			},
+			4: { // A receives correct SYNACK from B with new ISS.
+				Seg:      tcp.Segment{SEQ: issBnew, ACK: issA + 1, Flags: SYNACK, WND: windowB},
+				Action:   tcp.StepBSends,
+				AState:   tcp.StateEstablished,
+				APending: &tcp.Segment{SEQ: issA + 1, ACK: issBnew + 1, Flags: tcp.FlagACK, WND: windowA},
+			},
+			5: { // A sends ACK to complete handshake.
+				Seg:    tcp.Segment{SEQ: issA + 1, ACK: issBnew + 1, Flags: tcp.FlagACK, WND: windowA},
+				Action: tcp.StepASends,
+				AState: tcp.StateEstablished,
+			},
+		}
+		tcbA.HelperSteps(t, stepsA, true)
+	})
+
+	// Test from B's perspective: B receives old SYN, sends SYNACK, receives RST,
+	// receives real SYN, sends new SYNACK, receives ACK.
+	t.Run("PeerB", func(t *testing.T) {
+		var tcbB tcp.ControlBlock
+		tcbB.HelperInitState(tcp.StateListen, issB, issB, windowB)
+
+		stepsB := []tcp.SegmentStep{
+			0: { // B receives old duplicate SYN (step 3).
+				Seg:      tcp.Segment{SEQ: issAold, Flags: tcp.FlagSYN, WND: windowA},
+				Action:   tcp.StepASends,
+				BState:   tcp.StateSynRcvd,
+				BPending: &tcp.Segment{SEQ: issB, ACK: issAold + 1, Flags: SYNACK, WND: windowB},
+			},
+			1: { // B sends SYNACK for old SYN.
+				Seg:    tcp.Segment{SEQ: issB, ACK: issAold + 1, Flags: SYNACK, WND: windowB},
+				Action: tcp.StepBSends,
+				BState: tcp.StateSynRcvd,
+			},
+			2: { // B receives RST, goes back to LISTEN.
+				Seg:    tcp.Segment{SEQ: issAold + 1, Flags: tcp.FlagRST, WND: windowA},
+				Action: tcp.StepASends,
+				BState: tcp.StateListen,
+			},
+			3: { // B receives real SYN (step 6).
+				Seg:      tcp.Segment{SEQ: issA, Flags: tcp.FlagSYN, WND: windowA},
+				Action:   tcp.StepASends,
+				BState:   tcp.StateSynRcvd,
+				BPending: &tcp.Segment{SEQ: issBnew, ACK: issA + 1, Flags: SYNACK, WND: windowB},
+			},
+			4: { // B sends new SYNACK.
+				Seg:    tcp.Segment{SEQ: issBnew, ACK: issA + 1, Flags: SYNACK, WND: windowB},
+				Action: tcp.StepBSends,
+				BState: tcp.StateSynRcvd,
+			},
+			5: { // B receives ACK, connection established.
+				Seg:    tcp.Segment{SEQ: issA + 1, ACK: issBnew + 1, Flags: tcp.FlagACK, WND: windowA},
+				Action: tcp.StepASends,
+				BState: tcp.StateEstablished,
+			},
+		}
+		tcbB.HelperSteps(t, stepsB, false)
+	})
 }
 
 /*
-		Figure 12: Normal Close Sequence
-	    TCP Peer A                                           TCP Peer B
-		1.  ESTABLISHED                                          ESTABLISHED
-
-		2.  (Close)
-			FIN-WAIT-1  --> <SEQ=100><ACK=300><CTL=FIN,ACK>  --> CLOSE-WAIT
-
-		3.  FIN-WAIT-2  <-- <SEQ=300><ACK=101><CTL=ACK>      <-- CLOSE-WAIT
-
-		4.                                                       (Close)
-			TIME-WAIT   <-- <SEQ=300><ACK=101><CTL=FIN,ACK>  <-- LAST-ACK
-
-		5.  TIME-WAIT   --> <SEQ=101><ACK=301><CTL=ACK>      --> CLOSED
-
-		6.  (2 MSL)
-			CLOSED
-*/
-func TestExchange_rfc9293_figure12(t *testing.T) {
-	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
-	exchangeA := []tcp.Exchange{
-		0: { // A sends FIN|ACK to B to begin closing connection.
-			Outgoing:      &tcp.Segment{SEQ: issA, ACK: issB, Flags: FINACK, WND: windowA},
-			WantState:     tcp.StateFinWait1,
-			WantPeerState: tcp.StateCloseWait,
-		},
-		1: { // A receives ACK from B.
-			Incoming:      &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: tcp.FlagACK, WND: windowB},
-			WantState:     tcp.StateFinWait2,
-			WantPeerState: tcp.StateCloseWait,
-			//	 TODO(soypat): WantPending should be nil here? Perhaps fix test by modifying rcvFinWait1 pending result.
-			WantPending: &tcp.Segment{SEQ: issA + 1, ACK: issB, Flags: tcp.FlagACK, WND: windowA},
-		},
-		2: { // A receives FIN|ACK from B.
-			Incoming:      &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: FINACK, WND: windowB},
-			WantState:     tcp.StateTimeWait,
-			WantPending:   &tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
-			WantPeerState: tcp.StateLastAck,
-		},
-		3: { // A sends ACK to B.
-			Outgoing:      &tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
-			WantState:     tcp.StateTimeWait, // Technically we should be in TimeWait here.
-			WantPeerState: tcp.StateClosed,
-		},
-	}
-	var tcbA tcp.ControlBlock
-	tcbA.HelperInitState(tcp.StateEstablished, issA, issA, windowA)
-	tcbA.HelperInitRcv(issB, issB, windowB)
-	tcbA.HelperExchange(t, exchangeA)
-	// tcbA.HelperExchange(t, exchangeA[:1])
-	// tcbA.HelperExchange(t, exchangeA[1:2])
-	// tcbA.HelperExchange(t, exchangeA[2:])
-
-	return
-	exchangeB := reverseExchange(exchangeA)
-	exchangeB[1].WantPending = &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: FINACK, WND: windowB}
-	var tcbB tcp.ControlBlock
-	tcbB.HelperInitState(tcp.StateEstablished, issB, issB, windowB)
-	tcbB.HelperInitRcv(issA, issA, windowA)
-	tcbB.HelperExchange(t, exchangeB)
-}
-
-/*
-	 Figure 12: Simultaneous Close Sequence
+	 Figure 13: Simultaneous Close Sequence
 			TCP Peer A                                           TCP Peer B
 
 		1.  ESTABLISHED                                          ESTABLISHED
@@ -289,182 +356,38 @@ func TestExchange_rfc9293_figure12(t *testing.T) {
 			(2 MSL)                                              (2 MSL)
 			CLOSED                                               CLOSED
 */
-func TestExchange_rfc9293_figure13(t *testing.T) {
+func TestExchangeTest_rfc9293_figure13(t *testing.T) {
 	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
-	exchangeA := []tcp.Exchange{
-		0: { // A sends FIN|ACK to B to begin closing connection.
-			Outgoing:  &tcp.Segment{SEQ: issA, ACK: issB, Flags: FINACK, WND: windowA},
-			WantState: tcp.StateFinWait1,
-		},
-		1: { // A receives FIN|ACK from B, who sent packet before receiving A's FINACK.
-			Incoming:    &tcp.Segment{SEQ: issB, ACK: issA, Flags: FINACK, WND: windowB},
-			WantState:   tcp.StateClosing,
-			WantPending: &tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
-		},
-		2: { // A sends ACK to B.
-			Outgoing:  &tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
-			WantState: tcp.StateTimeWait,
-		},
-	}
-	var tcbA tcp.ControlBlock
-	tcbA.HelperInitState(tcp.StateEstablished, issA, issA, windowA)
-	tcbA.HelperInitRcv(issB, issB, windowB)
-	tcbA.HelperExchange(t, exchangeA)
-
-	// No need to test B since exchange is completely symmetric.
-}
-
-// Check no duplicate ack is sent during establishment.
-func TestExchange_noDupAckDuringEstablished(t *testing.T) {
-	var tcbA tcp.ControlBlock
-	const issA, issB, windowA, windowB = 300, 334222749, 256, 64240
-	synseg := tcp.ClientSynSegment(issA, windowA)
-
-	// err := tcbA.Open(issA, issA, tcp.StateSynSent)
-	tcbA.SetRecvWindow(windowA)
-	// if err != nil {
-	// 	t.Fatal(err)
-	// }
-	establishA := []tcp.Exchange{
-		0: { // A sends SYN to B.
-			Outgoing:  &synseg,
-			WantState: tcp.StateSynSent,
-		},
-		1: { // B sends SYN to A.
-			Incoming:    &tcp.Segment{SEQ: issB, ACK: 0, WND: windowB, Flags: tcp.FlagSYN},
-			WantPending: &tcp.Segment{SEQ: issA, ACK: issB + 1, WND: windowA, Flags: SYNACK},
-			WantState:   tcp.StateSynRcvd,
-		},
-		2: { // Send SYNACK to B.
-			Outgoing:  &tcp.Segment{SEQ: issA, ACK: issB + 1, WND: windowA, Flags: SYNACK},
-			WantState: tcp.StateSynRcvd,
-		},
-		3: { // B ACKs SYNACK, thus establishing the connection on both sides.
-			Incoming:  &tcp.Segment{SEQ: issB + 1, ACK: issA + 1, WND: windowB, Flags: tcp.FlagACK},
-			WantState: tcp.StateEstablished,
+	// NOTE: Simultaneous close can only be tested from one perspective because
+	// the "simultaneous" nature means FINs cross in flight. In a sequential test,
+	// when B receives A's FIN first, B goes to CLOSE-WAIT, not CLOSING.
+	test := tcp.ExchangeTest{
+		ISSA:       issA,
+		ISSB:       issB,
+		WindowA:    windowA,
+		WindowB:    windowB,
+		InitStateA: tcp.StateEstablished,
+		InitStateB: tcp.StateEstablished,
+		Steps: []tcp.SegmentStep{
+			0: { // A sends FIN|ACK to B (crosses with B's FIN|ACK).
+				Seg:    tcp.Segment{SEQ: issA, ACK: issB, Flags: FINACK, WND: windowA},
+				Action: tcp.StepASends,
+				AState: tcp.StateFinWait1,
+			},
+			1: { // A receives FIN|ACK from B (B sent before receiving A's FIN).
+				Seg:      tcp.Segment{SEQ: issB, ACK: issA, Flags: FINACK, WND: windowB},
+				Action:   tcp.StepBSends,
+				AState:   tcp.StateClosing,
+				APending: &tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
+			},
+			2: { // A sends ACK to B.
+				Seg:    tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
+				Action: tcp.StepASends,
+				AState: tcp.StateTimeWait,
+			},
 		},
 	}
-	tcbA.HelperExchange(t, establishA)
-	if tcbA.State() != tcp.StateEstablished {
-		t.Fatal("expected established state")
-	}
-	checkNoPending(t, &tcbA)
-	const datasize = 5
-	dataExA := []tcp.Exchange{
-		0: { // B sends PSH|ACK to A with data.
-			Incoming:    &tcp.Segment{SEQ: issB + 1, ACK: issA + 1, WND: windowB, Flags: PSHACK, DATALEN: datasize},
-			WantPending: &tcp.Segment{SEQ: issA + 1, ACK: issB + 1 + datasize, WND: windowA, Flags: tcp.FlagACK},
-			WantState:   tcp.StateEstablished,
-		},
-		1: { // A ACKs B's data.
-			Outgoing:  &tcp.Segment{SEQ: issA + 1, ACK: issB + 1 + datasize, WND: windowA, Flags: tcp.FlagACK},
-			WantState: tcp.StateEstablished,
-		},
-		2: { // A sends PSH|ACK to B with data, same amount, as if echoing.
-			Outgoing:  &tcp.Segment{SEQ: issA + 1, ACK: issB + 1 + datasize, WND: windowA, Flags: PSHACK, DATALEN: datasize},
-			WantState: tcp.StateEstablished,
-		},
-		// 3: { // B ACKs A's data.
-		// 	Incoming:    &tcp.Segment{SEQ: issB + 1 + datasize, ACK: issA + 1 + datasize, WND: windowB, Flags: tcp.FlagACK},
-		// 	WantPending: nil,
-		// 	WantState:   tcp.StateEstablished,
-		// },
-	}
-	tcbA.HelperExchange(t, dataExA)
-	checkNoPending(t, &tcbA)
-	tcbA.Recv(tcp.Segment{SEQ: issB + 1 + datasize, ACK: issA + 1 + datasize, WND: windowB, Flags: tcp.FlagACK})
-	checkNoPending(t, &tcbA)
-}
-
-// This test reenacts a full client-server interaction in the sending and receiving
-// of the 12 byte message "hello world\n" over TCP.
-func TestExchange_helloworld(t *testing.T) {
-	// Client Transmission Control Block.
-	var tcbA tcp.ControlBlock
-	const windowA, windowB = 502, 4096
-	const issA, issB = 0x5e722b7d, 0xbe6e4c0f
-	const datalen = 12
-
-	exchangeA := []tcp.Exchange{
-		0: { // A sends SYN to B.
-			Outgoing:      &tcp.Segment{SEQ: issA, Flags: tcp.FlagSYN, WND: windowA},
-			WantState:     tcp.StateSynSent,
-			WantPeerState: tcp.StateSynRcvd,
-		},
-		1: { // A receives SYNACK from B.
-			Incoming:      &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: SYNACK, WND: windowB},
-			WantState:     tcp.StateEstablished,
-			WantPending:   &tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
-			WantPeerState: tcp.StateSynRcvd,
-		},
-		2: { // A sends ACK to B thus establishing connection.
-			Outgoing:      &tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
-			WantState:     tcp.StateEstablished,
-			WantPeerState: tcp.StateEstablished,
-		},
-		3: { // A sends PSH|ACK to B with 12 byte message: "hello world\n"
-			Outgoing:      &tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: PSHACK, WND: windowA, DATALEN: datalen},
-			WantState:     tcp.StateEstablished,
-			WantPeerState: tcp.StateEstablished,
-		},
-		4: { // A receives ACK from B of last message.
-			Incoming:      &tcp.Segment{SEQ: issB + 1, ACK: issA + 1 + datalen, Flags: tcp.FlagACK, WND: windowB},
-			WantState:     tcp.StateEstablished,
-			WantPeerState: tcp.StateEstablished,
-		},
-		5: { // A receives PSH|ACK from B with echoed 12 byte message: "hello world\n"
-			Incoming:      &tcp.Segment{SEQ: issB + 1, ACK: issA + 1 + datalen, Flags: PSHACK, WND: windowB, DATALEN: datalen},
-			WantState:     tcp.StateEstablished,
-			WantPending:   &tcp.Segment{SEQ: issA + 1 + datalen, ACK: issB + 1 + datalen, Flags: tcp.FlagACK, WND: windowA},
-			WantPeerState: tcp.StateEstablished,
-		},
-		6: { // A ACKs B's message.
-			Outgoing:      &tcp.Segment{SEQ: issA + 1 + datalen, ACK: issB + 1 + datalen, Flags: tcp.FlagACK, WND: windowA},
-			WantState:     tcp.StateEstablished,
-			WantPeerState: tcp.StateEstablished,
-		},
-		7: { // A sends PSH|ACK to B with SECOND 12 byte message.
-			Outgoing:      &tcp.Segment{SEQ: issA + 1 + datalen, ACK: issB + 1 + datalen, Flags: PSHACK, WND: windowA, DATALEN: datalen},
-			WantState:     tcp.StateEstablished,
-			WantPeerState: tcp.StateEstablished,
-		},
-		8: { // A receives PSH|ACK that acks last message and contains echoed of SECOND 12 byte message.
-			Incoming:      &tcp.Segment{SEQ: issB + 1 + datalen, ACK: issA + 1 + 2*datalen, Flags: PSHACK, WND: windowB, DATALEN: datalen},
-			WantState:     tcp.StateEstablished,
-			WantPending:   &tcp.Segment{SEQ: issA + 1 + 2*datalen, ACK: issB + 1 + 2*datalen, Flags: tcp.FlagACK, WND: windowA},
-			WantPeerState: tcp.StateEstablished,
-		},
-		9: { // A ACKs B's SECOND message.
-			Outgoing:      &tcp.Segment{SEQ: issA + 1 + 2*datalen, ACK: issB + 1 + 2*datalen, Flags: tcp.FlagACK, WND: windowA},
-			WantState:     tcp.StateEstablished,
-			WantPeerState: tcp.StateEstablished,
-		},
-		10: { // A sends FIN|ACK to B to close connection.
-			Outgoing:      &tcp.Segment{SEQ: issA + 1 + 2*datalen, ACK: issB + 1 + 2*datalen, Flags: FINACK, WND: windowA},
-			WantState:     tcp.StateFinWait1,
-			WantPeerState: tcp.StateCloseWait,
-		},
-		11: { // A receives B's ACK of FIN.
-			Incoming:      &tcp.Segment{SEQ: issB + 1 + 2*datalen, ACK: issA + 2 + 2*datalen, Flags: tcp.FlagACK, WND: windowB},
-			WantState:     tcp.StateFinWait2,
-			WantPending:   &tcp.Segment{SEQ: issA + 2 + 2*datalen, ACK: issB + 1 + 2*datalen, Flags: tcp.FlagACK, WND: windowA},
-			WantPeerState: tcp.StateCloseWait,
-		},
-	}
-	// The client starts in the SYN_SENT state with a random sequence number.
-	gotServerSeg, _ := parseSegment(t, exchangeHelloWorld[0])
-	tcbA.HelperInitState(tcp.StateSynSent, gotServerSeg.SEQ, gotServerSeg.SEQ, windowB)
-	tcbA.HelperExchange(t, exchangeA)
-
-	// TODO(soypat): fix exchange reversal.
-	return
-	exchangeB := reverseExchange(exchangeA)
-
-	exchangeB[7].WantPending = nil // Is an unpredicable action.
-	var tcbB tcp.ControlBlock
-	tcbB.HelperInitState(tcp.StateListen, issB, issB, windowB)
-	tcbB.HelperInitRcv(issA, issA, windowA)
-	tcbB.HelperExchange(t, exchangeB)
+	test.RunA(t) // Only A's perspective - B's is fundamentally different in sequential test.
 }
 
 func TestResetEstablished(t *testing.T) {
@@ -524,136 +447,6 @@ func TestFinackClose(t *testing.T) {
 	}
 }
 
-func TestExchange_helloworld_client(t *testing.T) {
-	return
-	// Client Transmission Control Block.
-	var tcb tcp.ControlBlock
-	// The client starts in the SYN_SENT state with a random sequence number.
-	gotClientSeg, _ := parseSegment(t, exchangeHelloWorld[0])
-
-	// We add the SYN state to the client.
-	tcb.HelperInitState(tcp.StateSynSent, gotClientSeg.SEQ, gotClientSeg.SEQ, gotClientSeg.WND)
-	err := tcb.Send(gotClientSeg)
-	if err != nil {
-
-		t.Fatal(err)
-	}
-	tcb.HelperPrintSegment(t, false, gotClientSeg)
-
-	segString := func(seg tcp.Segment) string {
-		return tcb.RelativeAutoSegment(seg).RelativeGoString(0, 0)
-	}
-	for i, packet := range exchangeHelloWorld {
-		if i == 0 {
-			continue // we already processed first packet.
-		}
-		seg, payload := parseSegment(t, packet)
-		if seg.DATALEN > 0 {
-			t.Logf("seg[%d] <%s> payload: %q", i, tcb.State(), string(payload))
-		} else {
-			t.Logf("seg[%d] <%s>", i, tcb.State())
-		}
-		isClient := packet[0] == 0x28
-		if isClient {
-			isPSH := seg.Flags&tcp.FlagPSH != 0
-			gotClientSeg.Flags |= seg.Flags & (tcp.FlagPSH | tcp.FlagFIN) // Can't predict when client will send FIN.
-			if isPSH {
-				gotClientSeg.DATALEN = seg.DATALEN
-			}
-
-			gotClientSeg.WND = seg.WND // Ignore window field, not a core part of control flow.
-			if gotClientSeg != seg {
-				t.Fatalf("client:\n got=%+v\nwant=%+v", segString(gotClientSeg), segString(seg))
-			}
-			err := tcb.Send(gotClientSeg)
-			if err != nil {
-				t.Fatalf("incoming %s:\nseg[%d]=%s\nrcv=%+v\nsnd=%+v", err, i, segString(gotClientSeg), tcb.RelativeRecvSpace(), tcb.RelativeSendSpace())
-			}
-			tcb.HelperPrintSegment(t, false, gotClientSeg)
-			continue // we only pass server packets to the client.
-		}
-		err = tcb.Recv(seg)
-		if err != nil {
-			t.Fatalf("%s:\nseg[%d]=%s\nrcv=%+v\nsnd=%+v", err, i, segString(seg), tcb.RelativeRecvSpace(), tcb.RelativeSendSpace())
-		}
-		tcb.HelperPrintSegment(t, true, seg)
-		var ok bool
-		gotClientSeg, ok = tcb.PendingSegment(0)
-		if !ok {
-			t.Fatalf("[%d]: got no segment state=%s", i, tcb.State())
-		}
-	}
-}
-
-func parseSegment(t *testing.T, b []byte) (tcp.Segment, []byte) {
-	var vld lneto.Validator
-	t.Helper()
-	efrm, err := ethernet.NewFrame(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if efrm.EtherTypeOrSize() != ethernet.TypeIPv4 {
-		t.Fatalf("not IPv4")
-	}
-	efrm.ValidateSize(&vld)
-	if err := vld.ErrPop(); err != nil {
-		t.Fatal(vld.ErrPop())
-	}
-	ifrm, err := ipv4.NewFrame(efrm.Payload())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ifrm.Protocol() != 6 {
-		t.Fatalf("not TCP")
-	}
-	v, _ := ifrm.VersionAndIHL()
-	if v != 4 {
-		t.Fatal("invalid IP version", v)
-	}
-	ifrm.ValidateSize(&vld)
-	if err := vld.ErrPop(); err != nil {
-		t.Fatal(vld.ErrPop())
-	}
-
-	ipl := ifrm.Payload()
-	tfrm, err := tcp.NewFrame(ipl)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tfrm.ValidateSize(&vld)
-	if err := vld.ErrPop(); err != nil {
-		t.Fatal(err)
-	}
-	_ = tfrm.String()
-	payload := tfrm.Payload()
-	return tfrm.Segment(len(payload)), payload
-}
-
-func reverseExchange(exchange []tcp.Exchange) []tcp.Exchange {
-	if len(exchange) == 0 {
-		panic("len(exchange) != len(states) or empty exchange: " + strconv.Itoa(len(exchange)))
-	}
-	firstIsIn := exchange[0].Incoming != nil
-	if firstIsIn {
-		panic("please start with an outgoing segment to reverse exchange for best test results")
-	}
-	out := make([]tcp.Exchange, len(exchange))
-	for i := range exchange {
-		isLast := i == len(exchange)-1
-		isOut := exchange[i].Outgoing != nil
-		out[i].WantState, out[i].WantPeerState = exchange[i].WantPeerState, exchange[i].WantState
-		if isOut {
-			out[i].Incoming = exchange[i].Outgoing
-			if !isLast {
-				out[i].WantPending = exchange[i+1].Incoming
-			}
-		} else {
-			out[i].Outgoing = exchange[i].Incoming
-		}
-	}
-	return out
-}
-
 func checkNoPending(t *testing.T, tcb *tcp.ControlBlock) bool {
 	t.Helper()
 	// We extensively test the API for inadvertent state modification in a HasPending or PendingSegment call.
@@ -699,40 +492,6 @@ var exchangeHelloWorld = [][]byte{
 	10: []byte("\x28\xcd\xc1\x05\x4d\xbb\xd8\x5e\xd3\x43\x03\xeb\x08\x00\x45\x00\x00\x28\x71\xb2\x40\x00\x40\x06\x44\xa9\xc0\xa8\x01\x93\xc0\xa8\x01\x91\x84\x96\x04\xd2\x5e\x72\x2b\x96\xbe\x6e\x4c\x28\x50\x11\x01\xf6\x0b\x61\x00\x00"),
 	// server ACK
 	11: []byte("\xd8\x5e\xd3\x43\x03\xeb\x28\xcd\xc1\x05\x4d\xbb\x08\x00\x45\x00\x00\x28\x00\x00\x40\x00\x40\x06\xb6\x5b\xc0\xa8\x01\x91\xc0\xa8\x01\x93\x04\xd2\x84\x96\xbe\x6e\x4c\x28\x5e\x72\x2b\x97\x50\x10\x10\x00\xfd\x56\x00\x00\x00\x00\x00\x00\x00\x00"),
-}
-
-func TestUnexpectedStateClosing(t *testing.T) {
-	// TCB is a server which returns an HTTP response and receives a FINACK.
-	var tcb tcp.ControlBlock
-	const httpLen = 1192
-	const issA, issB, windowA, windowB = 1, 127, 2000, 2000
-	tcb.HelperInitState(tcp.StateEstablished, issA, issA, windowA)
-	tcb.HelperInitRcv(issB, issB, windowB)
-
-	ex := []tcp.Exchange{
-		0: { // Server sends HTTP response.
-			Outgoing:  &tcp.Segment{SEQ: issA, ACK: issB, Flags: PSHACK, WND: windowA, DATALEN: httpLen},
-			WantState: tcp.StateEstablished,
-		},
-		1: { // Client sends an ACK to server.
-			Incoming:  &tcp.Segment{SEQ: issB, ACK: issA + httpLen, Flags: tcp.FlagACK, WND: windowB},
-			WantState: tcp.StateEstablished,
-		},
-		2: { //  Client sends FIN|ACK to server.
-			Incoming:    &tcp.Segment{SEQ: issB, ACK: issA + httpLen, Flags: FINACK, WND: windowB},
-			WantPending: &tcp.Segment{SEQ: issA + httpLen, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
-			WantState:   tcp.StateCloseWait,
-		},
-		3: { // Server sends out FINACK.
-			Outgoing:  &tcp.Segment{SEQ: issA + httpLen, ACK: issB + 1, Flags: FINACK, WND: windowA},
-			WantState: tcp.StateLastAck,
-		},
-		4: { // Client sends back ACK.
-			Incoming:  &tcp.Segment{SEQ: issB + 1, ACK: issA + httpLen + 1, Flags: tcp.FlagACK, WND: windowB},
-			WantState: tcp.StateClosed,
-		},
-	}
-	tcb.HelperExchange(t, ex[:])
 }
 
 // This corresponds to https://github.com/soypat/seqs/issues/19

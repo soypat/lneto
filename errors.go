@@ -19,9 +19,11 @@ type errGeneric uint8
 
 // Generic errors common to internet functioning.
 const (
-	_             errGeneric = iota // non-initialized err
-	ErrPacketDrop                   // packet dropped
-	ErrBadCRC                       // incorrect checksum
+	_                  errGeneric = iota // non-initialized err
+	ErrPacketDrop                        // packet dropped
+	ErrBadCRC                            // incorrect checksum
+	ErrZeroSource                        // zero source(port/addr)
+	ErrZeroDestination                   // zero destination(port/addr)
 )
 
 func (err errGeneric) Error() string {

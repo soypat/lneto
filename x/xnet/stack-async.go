@@ -219,6 +219,12 @@ func (s *StackAsync) Addr() netip.Addr {
 	return s.ip.Addr()
 }
 
+func (s *StackAsync) SetSubnet(subnetMask netip.Prefix) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subnet = subnetMask
+}
+
 func (s *StackAsync) SetHardwareAddress(hw [6]byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -284,6 +290,16 @@ func (s *StackAsync) ListenTCP(conn *tcp.Conn, localPort uint16) (err error) {
 		return err
 	}
 	return nil
+}
+
+func (s *StackAsync) RegisterListener(listener *tcp.Listener) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lport := listener.LocalPort()
+	if lport == 0 {
+		return lneto.ErrZeroSource
+	}
+	return s.tcps.Register(listener, nil)
 }
 
 var errNoDNSServer = errors.New("no DNS server- did DHCP complete? You can set a predetermined DNS server in Stack configuration")

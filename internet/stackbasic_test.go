@@ -60,6 +60,11 @@ func expectExchange(t *testing.T, from, to *StackIP, buf []byte) {
 func setupClientServerEstablished(t *testing.T, rng *rand.Rand, client, server *StackIP, connClient, connServer *tcp.Conn) {
 	t.Helper()
 	setupClientServer(t, rng, client, server, connClient, connServer)
+	testClientServerEstablish(t, client, server, connClient, connServer)
+}
+
+func testClientServerEstablish(t *testing.T, client, server *StackIP, connClient, connServer *tcp.Conn) {
+	t.Helper()
 	var buf [2048]byte
 	nextToSend := client
 	nextToRecv := server

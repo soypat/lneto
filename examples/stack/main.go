@@ -233,8 +233,8 @@ func (stack *Stack) Send(b []byte) (int, error) {
 	return stack.ethernet.Encapsulate(b, -1, 0)
 }
 
-func (stack *Stack) OpenTCPListener(port uint16) (*internet.NodeTCPListener, error) {
-	var listener internet.NodeTCPListener
+func (stack *Stack) OpenTCPListener(port uint16) (*tcp.Listener, error) {
+	var listener tcp.Listener
 	err := listener.Reset(port, naiveTCPPool{})
 	if err != nil {
 		return nil, err

@@ -83,13 +83,12 @@ func (h *Handler) RemotePort() uint16 {
 // OpenActive opens an "active" TCP connection to a known remote port. The caller holds knowledge of the IP address.
 // OpenActive is used by TCP Clients to initiate a connection.
 func (h *Handler) OpenActive(localPort, remotePort uint16, iss Value) error {
-	if h.bufRx.Size() < minBufferSize || h.bufTx.Size() < minBufferSize {
+	if remotePort == 0 {
+		return lneto.ErrZeroDestination
+	} else if h.bufRx.Size() < minBufferSize || h.bufTx.Size() < minBufferSize {
 		return errBufferTooSmall
-	}
-	if h.scb.State() != StateClosed && h.scb.State() != StateTimeWait {
+	} else if h.scb.State() != StateClosed && h.scb.State() != StateTimeWait {
 		return errNeedClosedTCBToOpen
-	} else if remotePort == 0 {
-		return errors.New("zero port on open call")
 	}
 	// reset/Abort prepares a SCB for active connection by resetting state to closed.
 	h.scb.reset()
@@ -101,7 +100,9 @@ func (h *Handler) OpenActive(localPort, remotePort uint16, iss Value) error {
 // OpenListen prepares a passive TCP connection where the Handler acts as a server.
 // OpenListen is used by TCP Servers to begin listening for remote connections.
 func (h *Handler) OpenListen(localPort uint16, iss Value) error {
-	if h.bufRx.Size() < minBufferSize || h.bufTx.Size() < minBufferSize {
+	if localPort == 0 {
+		return lneto.ErrZeroSource
+	} else if h.bufRx.Size() < minBufferSize || h.bufTx.Size() < minBufferSize {
 		return errBufferTooSmall
 	}
 	// Open will fail unless SCB in closed state.
