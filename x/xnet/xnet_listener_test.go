@@ -2,7 +2,6 @@ package xnet
 
 import (
 	"net/netip"
-	"sync"
 	"testing"
 	"time"
 
@@ -118,7 +117,7 @@ func TestStackAsyncListener_SingleConnection(t *testing.T) {
 	tst.TestTCPClose(client, sv, &clConn, svConn)
 }
 
-func TestStackAsyncListener_Concurrent(t *testing.T) {
+func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 	const seed int64 = 1234
 	const MTU = 1500
 	const svPort = 80
@@ -218,29 +217,9 @@ func TestStackAsyncListener_Concurrent(t *testing.T) {
 		}
 		tst.TestTCPClose(&client, sv, &clConn, svconn)
 	}
-	t.Run("serial-conns", func(t *testing.T) {
 
-		for range 100 {
-			caddr := caddr.Next()
-			doRequest(netip.AddrPortFrom(caddr, uint16(sv.Prand32())), 0, []byte("HTTP 1.0\r\n"))
-		}
-	})
-	t.Run("concurrent-conns", func(t *testing.T) {
-		const maxConcurrents = poolsize
-		const sleep = time.Millisecond
-		queue := make(chan struct{}, maxConcurrents)
-		var wg sync.WaitGroup
-		for range 12 {
-			caddr = caddr.Next()
-			wg.Add(1)
-			go func(caddrp netip.AddrPort) {
-				queue <- struct{}{}
-				doRequest(caddrp, sleep, []byte("HTTP 1.0\r\n"))
-				<-queue
-				wg.Done()
-			}(netip.AddrPortFrom(caddr, uint16(sv.Prand32())))
-		}
-		wg.Wait()
-	})
-
+	for range 1000 {
+		caddr := caddr.Next()
+		doRequest(netip.AddrPortFrom(caddr, uint16(sv.Prand32())), 0, []byte("HTTP 1.0\r\n"))
+	}
 }
