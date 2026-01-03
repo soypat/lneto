@@ -163,13 +163,12 @@ func TestStackAsyncListener_Concurrent(t *testing.T) {
 	chw := [6]byte{0xbe, 0xef, 0, 0, 0, 1}
 	sv.SetGateway6(chw)
 	tst := testerFrom(t, MTU)
-	doRequest := func(sleep time.Duration, data []byte) {
-		caddr = caddr.Next()
+	doRequest := func(caddrp netip.AddrPort, sleep time.Duration, data []byte) {
 		var client StackAsync
 		err := client.Reset(StackConfig{
 			Hostname:        "Client",
 			RandSeed:        seed,
-			StaticAddress:   caddr,
+			StaticAddress:   caddrp.Addr(),
 			MaxTCPConns:     1,
 			HardwareAddress: chw,
 			MTU:             MTU,
@@ -189,7 +188,7 @@ func TestStackAsyncListener_Concurrent(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Client dials server.
-		err = client.DialTCP(&clConn, uint16(sv.Prand32()), netip.AddrPortFrom(sv.Addr(), svPort))
+		err = client.DialTCP(&clConn, caddrp.Port(), netip.AddrPortFrom(sv.Addr(), svPort))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -219,8 +218,10 @@ func TestStackAsyncListener_Concurrent(t *testing.T) {
 		tst.TestTCPClose(&client, sv, &clConn, svconn)
 	}
 	t.Run("serial-conns", func(t *testing.T) {
+
 		for range 100 {
-			doRequest(0, []byte("HTTP 1.0\r\n"))
+			caddr := caddr.Next()
+			doRequest(netip.AddrPortFrom(caddr, uint16(sv.Prand32())), 0, []byte("HTTP 1.0\r\n"))
 		}
 	})
 	t.Run("concurrent-conns", func(t *testing.T) {
@@ -228,11 +229,12 @@ func TestStackAsyncListener_Concurrent(t *testing.T) {
 		const sleep = time.Millisecond
 		queue := make(chan struct{}, maxConcurrents)
 		for range 1000 {
-			go func() {
+			caddr = caddr.Next()
+			go func(caddrp netip.AddrPort) {
 				queue <- struct{}{}
-				doRequest(sleep, []byte("HTTP 1.0\r\n"))
+				doRequest(caddrp, sleep, []byte("HTTP 1.0\r\n"))
 				<-queue
-			}()
+			}(netip.AddrPortFrom(caddr, uint16(sv.Prand32())))
 		}
 	})
 

@@ -146,13 +146,12 @@ func testerFrom(t *testing.T, mtu int) *tester {
 }
 
 type tester struct {
-	t       *testing.T
-	mu      sync.Mutex
-	cap     pcap.PacketBreakdown
-	frmbuf  []pcap.Frame
-	buf     []byte
-	exch    []tcpExpectExchange
-	lastSeg tcp.Segment
+	t *testing.T
+
+	cap    pcap.PacketBreakdown
+	frmbuf []pcap.Frame
+	bufmu  sync.Mutex
+	buf    []byte
 }
 
 type tcpExpectExchange struct {
@@ -181,7 +180,7 @@ func (tst *tester) TestTCPSetupAndEstablish(svStack, clStack *StackAsync, svConn
 
 func (tst *tester) TestTCPHandshake(stack1, stack2 *StackAsync) {
 	tst.t.Helper()
-	tst.exch = append(tst.exch[:0], []tcpExpectExchange{
+	exch := [...]tcpExpectExchange{
 		{
 			SourceIdx: 0,
 			WantFlags: tcp.FlagSYN,
@@ -198,8 +197,8 @@ func (tst *tester) TestTCPHandshake(stack1, stack2 *StackAsync) {
 		},
 		noExchange(0),
 		noExchange(1),
-	}...)
-	for _, wants := range tst.exch {
+	}
+	for _, wants := range exch {
 		tst.TCPExchange(wants, stack1, stack2)
 	}
 }
@@ -221,7 +220,7 @@ func (tst *tester) TestTCPEstablishedSingleData(srcStack, dstStack *StackAsync, 
 		t.Fatal(err)
 	}
 	nprev := dstConn.BufferedInput()
-	tst.exch = append(tst.exch[:0], []tcpExpectExchange{
+	exch := [...]tcpExpectExchange{
 		{
 			SourceIdx: 0,
 			WantFlags: pshack,
@@ -234,10 +233,12 @@ func (tst *tester) TestTCPEstablishedSingleData(srcStack, dstStack *StackAsync, 
 		},
 		noExchange(0),
 		noExchange(1),
-	}...)
-	for _, wants := range tst.exch {
+	}
+	for _, wants := range exch {
 		tst.TCPExchange(wants, srcStack, dstStack)
 	}
+	tst.bufmu.Lock()
+	defer tst.bufmu.Unlock()
 	n, err := dstConn.Read(tst.buf)
 	if err != nil {
 		t.Errorf("reading back data %q on conn2: %s", sendData, err)
@@ -253,6 +254,7 @@ func (tst *tester) TestTCPEstablishedSingleData(srcStack, dstStack *StackAsync, 
 			t.Errorf("expected to read back %q from conn, got %q", sendData, got)
 		}
 	}
+
 	setzero(tst.buf[:n])
 }
 
@@ -267,7 +269,7 @@ func (tst *tester) TestTCPClose(stack1, stack2 *StackAsync, conn1, conn2 *tcp.Co
 	if err != nil {
 		t.Fatal(err)
 	}
-	tst.exch = append(tst.exch[:0], []tcpExpectExchange{
+	exch := [...]tcpExpectExchange{
 		{
 			SourceIdx: 0,
 			WantFlags: finack, // Closer sends FINACK
@@ -288,13 +290,13 @@ func (tst *tester) TestTCPClose(stack1, stack2 *StackAsync, conn1, conn2 *tcp.Co
 		},
 		noExchange(0),
 		noExchange(1),
-	}...)
+	}
 	if logExchange {
 		t.Log(conn1.State().String(), conn2.State().String())
 	}
-	for i, exch := range tst.exch {
+	for i, exch := range exch {
 		failed := t.Failed()
-		tst.TCPExchange(exch, stack1, stack2)
+		seg := tst.TCPExchange(exch, stack1, stack2)
 		if !failed && t.Failed() {
 			t.Error(i, exch.SourceIdx, "close failure")
 		}
@@ -302,7 +304,7 @@ func (tst *tester) TestTCPClose(stack1, stack2 *StackAsync, conn1, conn2 *tcp.Co
 			continue
 		}
 		if logExchange {
-			t.Log(i, tcp.StringExchange(tst.lastSeg, conn1.State(), conn2.State(), exch.SourceIdx != 0))
+			t.Log(i, tcp.StringExchange(seg, conn1.State(), conn2.State(), exch.SourceIdx != 0))
 		}
 	}
 
@@ -322,11 +324,8 @@ func (tst *tester) TestTCPClose(stack1, stack2 *StackAsync, conn1, conn2 *tcp.Co
 	}
 }
 
-func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAsync) {
-	tst.lastSeg = tcp.Segment{}
+func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAsync) tcp.Segment {
 	var src, dst *StackAsync
-	tst.mu.Lock()
-	defer tst.mu.Unlock()
 	defer func(failed bool) {
 		if !failed && tst.t.Failed() {
 			tst.t.Helper()
@@ -337,7 +336,6 @@ func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAs
 	t.Helper()
 	buf := tst.buf[:cap(tst.buf)]
 	nodata := expect.WantFlags == 0
-
 	switch expect.SourceIdx {
 	case 0:
 		src, dst = stack1, stack2
@@ -346,17 +344,19 @@ func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAs
 	default:
 		panic("OOB")
 	}
+	tst.bufmu.Lock()
+	defer tst.bufmu.Unlock()
 	n, err := src.Encapsulate(buf[:], -1, 0)
 	if err != nil {
 		t.Fatal(err)
 	} else if n == 0 {
 		if nodata {
-			return // No data sent and no data expected.
+			return tcp.Segment{} // No data sent and no data expected.
 		}
 		t.Error("zero bits sent")
 	} else if nodata && n > 0 {
 		t.Error("expected no data sent and got data")
-		return
+		return tcp.Segment{}
 	}
 	defer setzero(buf[:n])
 
@@ -388,7 +388,6 @@ func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAs
 
 	payload := tfrm.Payload()
 	seg := tfrm.Segment(len(payload))
-	tst.lastSeg = seg
 	if !bytes.Equal(payload, expect.WantData) {
 		t.Errorf("mismatched data sent, \nwant=%q\ngot=%q\n", expect.WantData, payload)
 	}
@@ -399,13 +398,14 @@ func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAs
 	if err != nil {
 		t.Fatal(err)
 	}
+	return seg
 }
 
 func (tst *tester) ARPExchangeOnly(querying, target *StackAsync) {
 	t := tst.t
 	t.Helper()
-	tst.mu.Lock()
-	defer tst.mu.Unlock()
+	tst.bufmu.Lock()
+	defer tst.bufmu.Unlock()
 	buf := tst.buf[:cap(tst.buf)]
 
 	// === PHASE 1: ARP Request from querying stack ===
