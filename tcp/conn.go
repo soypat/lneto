@@ -249,7 +249,7 @@ func (conn *Conn) Read(b []byte) (int, error) {
 	}
 	conn.trace("TCPConn.Read:start")
 	backoff := internal.NewBackoff(internal.BackoffTCPConn)
-	for conn.h.BufferedInput() == 0 && conn.State() == StateEstablished {
+	for conn.BufferedInput() == 0 && conn.State() == StateEstablished {
 		if err := conn.checkPipe(connid, &conn.rdead); err != nil {
 			return 0, err
 		}

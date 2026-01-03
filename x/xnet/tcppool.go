@@ -78,7 +78,7 @@ func (p *TCPPool) GetTCP() (*tcp.Conn, tcp.Value) {
 	defer p.mu.Unlock()
 	for i := range p.conns {
 		if p.acquiredAt[i].IsZero() {
-			p.acquiredAt[i] = p._now()
+			p.acquiredAt[i] = p.now()
 			p.nextISS += 1000
 			p.naqcuired++
 			return &p.conns[i], p.nextISS
