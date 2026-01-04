@@ -29,6 +29,15 @@ type Listener struct {
 	poolReturn func(*Conn)
 }
 
+func (listener *Listener) reset(port uint16, tcppool pool) {
+	listener.accepted = listener.accepted[:0]
+	listener.incoming = listener.incoming[:0]
+	listener.connID++
+	listener.port = port
+	listener.poolGet = tcppool.GetTCP
+	listener.poolReturn = tcppool.PutTCP
+}
+
 // LocalPort implements [StackNode].
 func (listener *Listener) LocalPort() uint16 {
 	listener.mu.Lock()
@@ -61,15 +70,7 @@ func (listener *Listener) Reset(port uint16, pool pool) error {
 	}
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
-	*listener = Listener{
-		mu:         listener.mu,
-		connID:     listener.connID + 1,
-		port:       port,
-		poolGet:    pool.GetTCP,
-		poolReturn: pool.PutTCP,
-		incoming:   listener.incoming[:0],
-		accepted:   listener.accepted[:0],
-	}
+	listener.reset(port, pool)
 	return nil
 }
 
@@ -223,7 +224,8 @@ func (listener *Listener) maintainConns() {
 		if listener.incoming[i] == nil {
 			continue
 		}
-		if listener.incoming[i].State() > StateEstablished || listener.incoming[i].State().IsClosed() {
+		state := listener.incoming[i].State()
+		if state > StateEstablished || state.IsClosed() {
 			// Something went wrong in handshake or pool aborted/closed the connection.
 			listener.poolReturn(listener.incoming[i])
 			listener.incoming[i] = nil

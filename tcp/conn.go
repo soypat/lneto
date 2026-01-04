@@ -40,6 +40,19 @@ type Conn struct {
 	ipID uint16
 }
 
+// reset must be called while holding [Conn.mu].
+func (conn *Conn) reset(h Handler) {
+	// Reset fields individually - DO NOT copy the mutex (undefined behavior in Go).
+	// "A Mutex must not be copied after first use." - sync package docs.
+	// Copying a locked mutex causes corruption on multi-core systems.
+	conn.h = h
+	conn.remoteAddr = conn.remoteAddr[:0]
+	conn.rdead = time.Time{}
+	conn.wdead = time.Time{}
+	conn.abortErr = nil
+	conn.ipID = 0
+}
+
 type ConnConfig struct {
 	RxBuf             []byte
 	TxBuf             []byte
@@ -164,13 +177,7 @@ func (conn *Conn) Abort() {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	conn.h.Abort()
-	*conn = Conn{
-		mu:         conn.mu,
-		h:          conn.h,
-		remoteAddr: conn.remoteAddr[:0],
-		logger:     conn.logger,
-		ipID:       conn.ipID,
-	}
+	conn.reset(conn.h)
 }
 
 // InternalHandler returns the internal [Handler] instance. The Handler contains lower level implementation logic for a TCP connection.
@@ -287,7 +294,7 @@ func (conn *Conn) checkPipe(connID uint64, deadline *time.Time) (err error) {
 	} else if !deadline.IsZero() && time.Since(*deadline) > 0 {
 		err = errDeadlineExceeded
 	}
-	return nil
+	return err
 }
 
 func (conn *Conn) checkPipeOpen() error {
@@ -360,18 +367,6 @@ func (conn *Conn) Protocol() uint64 {
 
 func (conn *Conn) isRaddrSet() bool {
 	return len(conn.remoteAddr) != 0
-}
-
-func (conn *Conn) reset(h Handler) {
-	if conn.mu.TryLock() {
-		panic("reset must be called from within locked conn")
-	}
-	*conn = Conn{
-		h:          h,
-		mu:         conn.mu,
-		remoteAddr: conn.remoteAddr[:0],
-		logger:     conn.logger,
-	}
 }
 
 // SetDeadline sets the read and write deadlines associated
