@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/ethernet"
@@ -21,6 +22,83 @@ const (
 	pshack = tcp.FlagPSH | tcp.FlagACK
 	finack = tcp.FlagFIN | tcp.FlagACK
 )
+
+func TestTCPConn_ReadBlocksUntilDataAvailable(t *testing.T) {
+	const seed = 5678
+	const MTU = 1500
+	const svPort = 8080
+	client, sv, clconn, svconn := newTCPStacks(t, seed, MTU)
+	tst := testerFrom(t, MTU)
+
+	tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1337)
+
+	// Verify no data buffered initially.
+	if svconn.BufferedInput() != 0 {
+		t.Fatal("expected no buffered input on server conn")
+	}
+
+	sendData := []byte("blocking test data")
+	readDone := make(chan struct{})
+	var readN int
+	var readErr error
+	var readBuf [64]byte
+
+	// Start a goroutine to read from svconn - this should block since no data available.
+	go func() {
+		readN, readErr = svconn.Read(readBuf[:])
+		close(readDone)
+	}()
+
+	// Give Read time to enter blocking state.
+	select {
+	case <-readDone:
+		t.Fatal("Read returned immediately without data - expected blocking")
+	case <-time.After(50 * time.Millisecond):
+		// Good - Read is blocking as expected.
+	}
+
+	// Write data on client side.
+	_, err := clconn.Write(sendData)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Perform packet exchange to deliver data.
+	tst.bufmu.Lock()
+	buf := tst.buf[:cap(tst.buf)]
+	n, err := client.Encapsulate(buf, -1, 0)
+	if err != nil {
+		tst.bufmu.Unlock()
+		t.Fatal(err)
+	}
+	if n == 0 {
+		tst.bufmu.Unlock()
+		t.Fatal("expected data packet from client")
+	}
+	err = sv.Demux(buf[:n], 0)
+	tst.bufmu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Now Read should unblock and return data.
+	select {
+	case <-readDone:
+		// Good - Read unblocked.
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Read did not unblock after data became available")
+	}
+
+	if readErr != nil {
+		t.Fatalf("Read returned error: %v", readErr)
+	}
+	if readN != len(sendData) {
+		t.Fatalf("expected to read %d bytes, got %d", len(sendData), readN)
+	}
+	if !bytes.Equal(readBuf[:readN], sendData) {
+		t.Fatalf("read data mismatch: got %q, want %q", readBuf[:readN], sendData)
+	}
+}
 
 func TestStackAsyncTCP_multipacket(t *testing.T) {
 	const seed = 1234

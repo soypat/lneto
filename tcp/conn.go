@@ -200,11 +200,12 @@ func (conn *Conn) Write(b []byte) (int, error) {
 			return 0, err
 		}
 		conn.mu.Lock()
-		ngot, _ := conn.h.Write(b)
+		var ngot int
+		ngot, err = conn.h.Write(b)
 		conn.mu.Unlock()
 		n += ngot
 		b = b[ngot:]
-		if n == plen {
+		if err != nil || n == plen {
 			break
 		} else if ngot > 0 {
 			backoff.Hit()
@@ -217,7 +218,7 @@ func (conn *Conn) Write(b []byte) (int, error) {
 			return n, errDeadlineExceeded
 		}
 	}
-	return n, nil
+	return n, err
 }
 
 func (conn *Conn) Flush() error {
@@ -242,6 +243,7 @@ func (conn *Conn) Flush() error {
 
 // Read reads data from the socket's input buffer. If the buffer is empty,
 // Read will block until data is available or connection closes.
+// Returns io.EOF when the remote has closed the connection and all buffered data has been read.
 func (conn *Conn) Read(b []byte) (int, error) {
 	connid, err := conn.lockPipeConnID()
 	if err != nil {
@@ -249,8 +251,12 @@ func (conn *Conn) Read(b []byte) (int, error) {
 	}
 	conn.trace("TCPConn.Read:start")
 	backoff := internal.NewBackoff(internal.BackoffTCPConn)
-	for conn.BufferedInput() == 0 && conn.State() == StateEstablished {
-		if err := conn.checkPipe(connid, &conn.rdead); err != nil {
+	for conn.BufferedInput() == 0 {
+		state := conn.State()
+		if !state.RxDataOpen() {
+			// No use waiting for data, jump to read and return corresponding error from there.
+			break
+		} else if err := conn.checkPipe(connid, &conn.rdead); err != nil {
 			return 0, err
 		}
 		backoff.Miss()
