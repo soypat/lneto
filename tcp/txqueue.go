@@ -2,7 +2,6 @@ package tcp
 
 import (
 	"errors"
-	"slices"
 
 	"github.com/soypat/lneto/internal"
 )
@@ -63,6 +62,7 @@ func (rtx *ringTx) Reset(buf []byte, maxqueuedPackets int, iss Value) error {
 
 	*rtx = ringTx{
 		rawbuf: buf,
+		slist:  rtx.slist,
 	}
 	rtx.slist.Reset(maxqueuedPackets, iss)
 	rtx.iss = iss
@@ -260,8 +260,11 @@ type sentlist struct {
 	pkts []ringidx
 }
 
+// Reset clears the sent packet list and prepares it for reuse.
+// The packet queue capacity is set to exactly pktQueueSize.
+// The initial sequence number is set to iss.
 func (sl *sentlist) Reset(pktQueueSize int, iss Value) {
-	sl.pkts = slices.Grow(sl.pkts[:0], pktQueueSize)
+	internal.SliceReuse(&sl.pkts, pktQueueSize)
 	sl.ssn = iss
 }
 
