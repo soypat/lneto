@@ -136,7 +136,8 @@ func (conn *Conn) OpenActive(localPort uint16, remote netip.AddrPort, iss Value)
 	if !remote.IsValid() {
 		return errInvalidIP
 	}
-	err := conn.h.OpenActive(localPort, remote.Port(), iss)
+	rport := remote.Port()
+	err := conn.h.OpenActive(localPort, rport, iss)
 	if err != nil {
 		return err
 	}
@@ -149,6 +150,7 @@ func (conn *Conn) OpenActive(localPort uint16, remote netip.AddrPort, iss Value)
 		addr6 := raddr.As16()
 		conn.remoteAddr = append(conn.remoteAddr[:0], addr6[:]...)
 	}
+	conn.debug("conn:dial", slog.Uint64("lport", uint64(localPort)), slog.Uint64("rport", uint64(rport)))
 	return nil
 }
 
@@ -162,13 +164,14 @@ func (conn *Conn) OpenListen(localPort uint16, iss Value) error {
 		return err
 	}
 	conn.reset(conn.h)
+	conn.debug("conn:listen", slog.Uint64("lport", uint64(localPort)))
 	return nil
 }
 
 func (conn *Conn) Close() error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	conn.trace("TCPConn.Close")
+	conn.trace("TCPConn.Close", slog.Uint64("lport", uint64(conn.h.localPort)))
 	return conn.h.Close()
 }
 
@@ -176,6 +179,7 @@ func (conn *Conn) Close() error {
 func (conn *Conn) Abort() {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
+	conn.trace("TCPConn.Abort", slog.Uint64("lport", uint64(conn.h.localPort)))
 	conn.h.Abort()
 	conn.reset(conn.h)
 }
@@ -193,8 +197,10 @@ func (conn *Conn) Write(b []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	rport := conn.RemotePort()
 	plen := len(b)
-	conn.trace("TCPConn.Write:start")
+	lport := conn.LocalPort()
+	conn.trace("TCPConn.Write:start", slog.Uint64("lport", uint64(lport)), slog.Uint64("rport", uint64(rport)))
 	if conn.deadlineExceeded(&conn.wdead) {
 		return 0, errDeadlineExceeded
 	} else if plen == 0 {
@@ -220,7 +226,7 @@ func (conn *Conn) Write(b []byte) (int, error) {
 		} else {
 			backoff.Miss()
 		}
-		conn.trace("TCPConn.Write:insuf-buf", slog.Int("missing", plen-n))
+		conn.trace("TCPConn.Write:insuf-buf", slog.Int("missing", plen-n), slog.Uint64("lport", uint64(lport)), slog.Uint64("rport", uint64(rport)))
 		if conn.deadlineExceeded(&conn.wdead) {
 			return n, errDeadlineExceeded
 		}
@@ -256,7 +262,9 @@ func (conn *Conn) Read(b []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	conn.trace("TCPConn.Read:start")
+	lport := conn.LocalPort()
+	rport := conn.RemotePort()
+	conn.trace("TCPConn.Read:start", slog.Uint64("lport", uint64(lport)), slog.Uint64("rport", uint64(rport)))
 	backoff := internal.NewBackoff(internal.BackoffTCPConn)
 	for conn.BufferedInput() == 0 {
 		state := conn.State()
@@ -311,7 +319,6 @@ func (conn *Conn) checkPipeOpen() error {
 func (conn *Conn) Demux(buf []byte, off int) (err error) {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	conn.trace("tcpconn.Recv:start")
 	if off >= len(buf) {
 		return errors.New("bad offset in TCPConn.Recv")
 	}
@@ -322,6 +329,7 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 	if conn.isRaddrSet() && !bytes.Equal(conn.remoteAddr, raddr) {
 		return errors.New("IP addr mismatch on TCPConn")
 	}
+	conn.trace("tcpconn.Recv", slog.Uint64("lport", uint64(conn.h.LocalPort())), slog.Uint64("rport", uint64(conn.h.remotePort)))
 	err = conn.h.Recv(buf[off:])
 	if err != nil {
 		return err
@@ -349,6 +357,7 @@ func (conn *Conn) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 	} else if len(raddr) != len(conn.remoteAddr) {
 		return 0, errMismatchedIPVersion
 	}
+	conn.trace("TCPConn.encaps", slog.Uint64("lport", uint64(conn.h.LocalPort())), slog.Uint64("rport", uint64(conn.h.remotePort)))
 	n, err = conn.h.Send(carrierData[offsetToFrame:])
 	if err != nil {
 		return 0, err
