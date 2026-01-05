@@ -304,20 +304,29 @@ func (h *Handler) SizeRx() int {
 // Write implements [io.Writer] by copying b to a internal buffer to be sent over the network on the next
 // [Handler.Send] call that can send data to remote peer. Use [Handler.Free] to know the maximum length the argument slice can be before erroring.
 func (h *Handler) Write(b []byte) (int, error) {
+	state := h.State()
 	if h.closing {
 		return 0, errConnectionClosing
-	} else if h.State().IsClosed() { // Reject write call if data cannot be sent.
+	} else if !state.TxDataOpen() { // Reject write call if data cannot be sent.
 		return 0, net.ErrClosed
 	}
 	return h.bufTx.Write(b)
 }
 
 // Read implements [io.Reader] by reading received data from remote peer in internal buffer.
-func (h *Handler) Read(b []byte) (int, error) {
-	if h.State().IsClosed() { // Reject read call if state is at StateClosed. Note this is less strict than Write call condition.
-		return 0, net.ErrClosed
+func (h *Handler) Read(b []byte) (n int, err error) {
+	if h.bufRx.Buffered() > 0 {
+		n, err = h.bufRx.Read(b)
 	}
-	return h.bufRx.Read(b)
+	if n == 0 && err == nil {
+		state := h.State()
+		if state.IsClosed() {
+			err = net.ErrClosed
+		} else if !state.RxDataOpen() {
+			err = io.EOF
+		}
+	}
+	return n, err
 }
 
 // BufferedInput returns amount of bytes buffered in receive(input) buffer and ready to read

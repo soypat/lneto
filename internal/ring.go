@@ -131,7 +131,7 @@ func (r *Ring) ReadPeek(b []byte) (int, error) {
 // Read reads up to len(b) bytes from the ring buffer and advances the read pointer. [io.EOF] returned when no data available.
 func (r *Ring) Read(b []byte) (int, error) {
 	n, err := r.read(b)
-	if err != nil {
+	if err != nil || len(b) == 0 {
 		return n, err
 	}
 	r.onReadEnd(n)
@@ -139,7 +139,9 @@ func (r *Ring) Read(b []byte) (int, error) {
 }
 
 func (r *Ring) read(b []byte) (n int, err error) {
-	if r.IsEmpty() {
+	if len(b) == 0 {
+		return 0, nil
+	} else if r.IsEmpty() {
 		return 0, io.EOF
 	}
 	if r.End > r.Off {

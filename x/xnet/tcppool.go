@@ -1,6 +1,7 @@
 package xnet
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"sync"
@@ -21,6 +22,7 @@ type TCPPool struct {
 	_now           func() time.Time
 	estbTimeout    time.Duration
 	closingTimeout time.Duration
+	logger         *slog.Logger
 }
 
 func _() {
@@ -32,6 +34,7 @@ type TCPPoolConfig struct {
 	PoolSize   int
 	QueueSize  int
 	BufferSize int
+	Logger     *slog.Logger
 	ConnLogger *slog.Logger
 	Now        func() time.Time
 	// EstablishedTimeout sets the timeout for a TCP connection since it is acquired until it is established.
@@ -56,6 +59,7 @@ func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
 		_now:           cfg.Now,
 		estbTimeout:    cfg.EstablishedTimeout,
 		closingTimeout: cfg.ClosingTimeout,
+		logger:         cfg.Logger,
 	}
 	bufSpace := make([]byte, 2*n*bufsize)
 	for i := range pool.conns {
@@ -73,9 +77,16 @@ func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
 	return pool, nil
 }
 
+func (p *TCPPool) NumberOfAcquired() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.naqcuired
+}
+
 func (p *TCPPool) GetTCP() (*tcp.Conn, tcp.Value) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.debug("TCPPool:get")
 	for i := range p.conns {
 		if p.acquiredAt[i].IsZero() {
 			p.acquiredAt[i] = p.now()
@@ -88,15 +99,18 @@ func (p *TCPPool) GetTCP() (*tcp.Conn, tcp.Value) {
 }
 
 func (p *TCPPool) PutTCP(conn *tcp.Conn) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.debug("TCPPool:put", slog.Uint64("lport", uint64(conn.LocalPort())))
 	for i := range p.conns {
 		if &p.conns[i] == conn {
-			p.mu.Lock()
+			// p.mu.Lock()
 			p.conns[i].Abort()
 			p.acquiredAt[i] = time.Time{}
 			p.abortedAt[i] = time.Time{}
 			p.closingAt[i] = time.Time{}
 			p.naqcuired--
-			p.mu.Unlock()
+			// p.mu.Unlock()
 			return
 		}
 	}
@@ -104,14 +118,17 @@ func (p *TCPPool) PutTCP(conn *tcp.Conn) {
 }
 
 func (p *TCPPool) CheckTimeouts() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.debug("TCPPool:checktimeouts", slog.Int("acq", p.naqcuired))
 	for i := range p.conns {
 		st := p.conns[i].State()
 		if st == tcp.StateEstablished {
 			continue
 		}
-		p.mu.Lock()
+		// p.mu.Lock()
 		acq := p.acquiredAt[i]
-		p.mu.Unlock()
+		// p.mu.Unlock()
 		if acq.IsZero() {
 			continue
 		} else if st.IsPreestablished() && p.since(acq) > p.estbTimeout {
@@ -119,7 +136,7 @@ func (p *TCPPool) CheckTimeouts() {
 			// This is part of a syn-flood defense mechanism.
 			p.conns[i].Close()
 		} else if st.IsClosed() || st.IsClosing() {
-			p.mu.Lock()
+			// p.mu.Lock()
 			if p.closingAt[i].IsZero() {
 				p.closingAt[i] = p.now()
 			} else if p.abortedAt[i].IsZero() && p.since(p.closingAt[i]) > p.closingTimeout {
@@ -128,7 +145,7 @@ func (p *TCPPool) CheckTimeouts() {
 			} else if p.since(p.abortedAt[i]) > 10*time.Second {
 				println("connection aborted and still not returned to TCPPool")
 			}
-			p.mu.Unlock()
+			// p.mu.Unlock()
 		}
 	}
 }
@@ -147,6 +164,14 @@ func (p *TCPPool) now() time.Time {
 	return p._now()
 }
 
-func (p *TCPPool) NumberOfAcquired() int {
-	return p.naqcuired
+func (p *TCPPool) trace(msg string, attrs ...slog.Attr) {
+	p.log(slog.LevelDebug-2, msg, attrs...)
+}
+func (p *TCPPool) debug(msg string, attrs ...slog.Attr) {
+	p.log(slog.LevelDebug, msg, attrs...)
+}
+func (p *TCPPool) log(lvl slog.Level, msg string, attrs ...slog.Attr) {
+	if p.logger != nil {
+		p.logger.LogAttrs(context.Background(), lvl, msg, attrs...)
+	}
 }

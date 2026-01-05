@@ -40,6 +40,19 @@ type Conn struct {
 	ipID uint16
 }
 
+// reset must be called while holding [Conn.mu].
+func (conn *Conn) reset(h Handler) {
+	// Reset fields individually - DO NOT copy the mutex (undefined behavior in Go).
+	// "A Mutex must not be copied after first use." - sync package docs.
+	// Copying a locked mutex causes corruption on multi-core systems.
+	conn.h = h
+	conn.remoteAddr = conn.remoteAddr[:0]
+	conn.rdead = time.Time{}
+	conn.wdead = time.Time{}
+	conn.abortErr = nil
+	conn.ipID = 0
+}
+
 type ConnConfig struct {
 	RxBuf             []byte
 	TxBuf             []byte
@@ -123,7 +136,8 @@ func (conn *Conn) OpenActive(localPort uint16, remote netip.AddrPort, iss Value)
 	if !remote.IsValid() {
 		return errInvalidIP
 	}
-	err := conn.h.OpenActive(localPort, remote.Port(), iss)
+	rport := remote.Port()
+	err := conn.h.OpenActive(localPort, rport, iss)
 	if err != nil {
 		return err
 	}
@@ -136,6 +150,7 @@ func (conn *Conn) OpenActive(localPort uint16, remote netip.AddrPort, iss Value)
 		addr6 := raddr.As16()
 		conn.remoteAddr = append(conn.remoteAddr[:0], addr6[:]...)
 	}
+	conn.debug("conn:dial", slog.Uint64("lport", uint64(localPort)), slog.Uint64("rport", uint64(rport)))
 	return nil
 }
 
@@ -149,13 +164,14 @@ func (conn *Conn) OpenListen(localPort uint16, iss Value) error {
 		return err
 	}
 	conn.reset(conn.h)
+	conn.debug("conn:listen", slog.Uint64("lport", uint64(localPort)))
 	return nil
 }
 
 func (conn *Conn) Close() error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	conn.trace("TCPConn.Close")
+	conn.trace("TCPConn.Close", slog.Uint64("lport", uint64(conn.h.localPort)))
 	return conn.h.Close()
 }
 
@@ -163,14 +179,9 @@ func (conn *Conn) Close() error {
 func (conn *Conn) Abort() {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
+	conn.trace("TCPConn.Abort", slog.Uint64("lport", uint64(conn.h.localPort)))
 	conn.h.Abort()
-	*conn = Conn{
-		mu:         conn.mu,
-		h:          conn.h,
-		remoteAddr: conn.remoteAddr[:0],
-		logger:     conn.logger,
-		ipID:       conn.ipID,
-	}
+	conn.reset(conn.h)
 }
 
 // InternalHandler returns the internal [Handler] instance. The Handler contains lower level implementation logic for a TCP connection.
@@ -186,8 +197,10 @@ func (conn *Conn) Write(b []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	rport := conn.RemotePort()
 	plen := len(b)
-	conn.trace("TCPConn.Write:start")
+	lport := conn.LocalPort()
+	conn.trace("TCPConn.Write:start", slog.Uint64("lport", uint64(lport)), slog.Uint64("rport", uint64(rport)))
 	if conn.deadlineExceeded(&conn.wdead) {
 		return 0, errDeadlineExceeded
 	} else if plen == 0 {
@@ -200,11 +213,12 @@ func (conn *Conn) Write(b []byte) (int, error) {
 			return 0, err
 		}
 		conn.mu.Lock()
-		ngot, _ := conn.h.Write(b)
+		var ngot int
+		ngot, err = conn.h.Write(b)
 		conn.mu.Unlock()
 		n += ngot
 		b = b[ngot:]
-		if n == plen {
+		if err != nil || n == plen {
 			break
 		} else if ngot > 0 {
 			backoff.Hit()
@@ -212,12 +226,12 @@ func (conn *Conn) Write(b []byte) (int, error) {
 		} else {
 			backoff.Miss()
 		}
-		conn.trace("TCPConn.Write:insuf-buf", slog.Int("missing", plen-n))
+		conn.trace("TCPConn.Write:insuf-buf", slog.Int("missing", plen-n), slog.Uint64("lport", uint64(lport)), slog.Uint64("rport", uint64(rport)))
 		if conn.deadlineExceeded(&conn.wdead) {
 			return n, errDeadlineExceeded
 		}
 	}
-	return n, nil
+	return n, err
 }
 
 func (conn *Conn) Flush() error {
@@ -242,15 +256,22 @@ func (conn *Conn) Flush() error {
 
 // Read reads data from the socket's input buffer. If the buffer is empty,
 // Read will block until data is available or connection closes.
+// Returns io.EOF when the remote has closed the connection and all buffered data has been read.
 func (conn *Conn) Read(b []byte) (int, error) {
 	connid, err := conn.lockPipeConnID()
 	if err != nil {
 		return 0, err
 	}
-	conn.trace("TCPConn.Read:start")
+	lport := conn.LocalPort()
+	rport := conn.RemotePort()
+	conn.trace("TCPConn.Read:start", slog.Uint64("lport", uint64(lport)), slog.Uint64("rport", uint64(rport)))
 	backoff := internal.NewBackoff(internal.BackoffTCPConn)
-	for conn.BufferedInput() == 0 && conn.State() == StateEstablished {
-		if err := conn.checkPipe(connid, &conn.rdead); err != nil {
+	for conn.BufferedInput() == 0 {
+		state := conn.State()
+		if !state.RxDataOpen() {
+			// No use waiting for data, jump to read and return corresponding error from there.
+			break
+		} else if err := conn.checkPipe(connid, &conn.rdead); err != nil {
 			return 0, err
 		}
 		backoff.Miss()
@@ -281,7 +302,7 @@ func (conn *Conn) checkPipe(connID uint64, deadline *time.Time) (err error) {
 	} else if !deadline.IsZero() && time.Since(*deadline) > 0 {
 		err = errDeadlineExceeded
 	}
-	return nil
+	return err
 }
 
 func (conn *Conn) checkPipeOpen() error {
@@ -298,7 +319,6 @@ func (conn *Conn) checkPipeOpen() error {
 func (conn *Conn) Demux(buf []byte, off int) (err error) {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	conn.trace("tcpconn.Recv:start")
 	if off >= len(buf) {
 		return errors.New("bad offset in TCPConn.Recv")
 	}
@@ -309,6 +329,7 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 	if conn.isRaddrSet() && !bytes.Equal(conn.remoteAddr, raddr) {
 		return errors.New("IP addr mismatch on TCPConn")
 	}
+	conn.trace("tcpconn.Recv", slog.Uint64("lport", uint64(conn.h.LocalPort())), slog.Uint64("rport", uint64(conn.h.remotePort)))
 	err = conn.h.Recv(buf[off:])
 	if err != nil {
 		return err
@@ -336,6 +357,7 @@ func (conn *Conn) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 	} else if len(raddr) != len(conn.remoteAddr) {
 		return 0, errMismatchedIPVersion
 	}
+	conn.trace("TCPConn.encaps", slog.Uint64("lport", uint64(conn.h.LocalPort())), slog.Uint64("rport", uint64(conn.h.remotePort)))
 	n, err = conn.h.Send(carrierData[offsetToFrame:])
 	if err != nil {
 		return 0, err
@@ -354,18 +376,6 @@ func (conn *Conn) Protocol() uint64 {
 
 func (conn *Conn) isRaddrSet() bool {
 	return len(conn.remoteAddr) != 0
-}
-
-func (conn *Conn) reset(h Handler) {
-	if conn.mu.TryLock() {
-		panic("reset must be called from within locked conn")
-	}
-	*conn = Conn{
-		h:          h,
-		mu:         conn.mu,
-		remoteAddr: conn.remoteAddr[:0],
-		logger:     conn.logger,
-	}
 }
 
 // SetDeadline sets the read and write deadlines associated

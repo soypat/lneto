@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/soypat/lneto/internal"
 )
 
 // Global parameters.
@@ -288,11 +290,27 @@ func (m *Message) AddAdditionals(rsc []Resource) {
 	}
 }
 
+// LimitResourceDecoding sets the maximum number of resources that can be decoded
+// by a subsequent call to [Message.Decode]. This is useful for limiting memory
+// usage when decoding untrusted DNS messages.
+//
+// After calling LimitResourceDecoding, a call to Decode will:
+//   - Decode at most maxQ questions
+//   - Decode at most maxAns answers
+//   - Decode at most maxAuth authority records
+//   - Decode at most maxAdd additional records
+//
+// If the message contains more resources than the limits, Decode returns
+// incompleteButOK=true along with an error indicating which resource type
+// exceeded the limit. The message is still usable with the decoded resources.
+//
+// Call this method before Decode to set up the limits. The limits are based on
+// slice capacity, which is set exactly to the specified values.
 func (m *Message) LimitResourceDecoding(maxQ, maxAns, maxAuth, maxAdd uint16) {
-	m.Questions = slices.Grow(m.Questions, int(maxQ))
-	m.Answers = slices.Grow(m.Answers, int(maxQ))
-	m.Authorities = slices.Grow(m.Authorities, int(maxQ))
-	m.Additionals = slices.Grow(m.Additionals, int(maxQ))
+	internal.SliceReuse(&m.Questions, int(maxQ))
+	internal.SliceReuse(&m.Answers, int(maxAns))
+	internal.SliceReuse(&m.Authorities, int(maxAuth))
+	internal.SliceReuse(&m.Additionals, int(maxAdd))
 }
 
 func (m *Message) Reset() {
@@ -616,10 +634,10 @@ LOOP:
 }
 
 func (dst *Message) CopyFrom(m Message) {
-	reuseGrowSlice(&dst.Questions, len(m.Questions))
-	reuseGrowSlice(&dst.Answers, len(m.Answers))
-	reuseGrowSlice(&dst.Authorities, len(m.Authorities))
-	reuseGrowSlice(&dst.Additionals, len(m.Additionals))
+	internal.SliceReuse(&dst.Questions, len(m.Questions))
+	internal.SliceReuse(&dst.Answers, len(m.Answers))
+	internal.SliceReuse(&dst.Authorities, len(m.Authorities))
+	internal.SliceReuse(&dst.Additionals, len(m.Additionals))
 	for i := range dst.Questions {
 		dst.Questions[i].CopyFrom(m.Questions[i])
 	}
@@ -651,11 +669,4 @@ func (dst *ResourceHeader) CopyFrom(rh ResourceHeader) {
 	dst.Class = rh.Class
 	dst.TTL = rh.TTL
 	dst.Length = rh.Length
-}
-
-func reuseGrowSlice[T any](dst *[]T, n int) {
-	if n == 0 {
-		return
-	}
-	*dst = slices.Grow(*dst, n)[:n]
 }

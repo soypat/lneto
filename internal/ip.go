@@ -56,34 +56,3 @@ func SetIPAddrs(buf []byte, id uint16, src, dst []byte) (err error) {
 	copy(dstaddr, dst)
 	return nil
 }
-
-// IsZeroed returns true if all arguments are set to their zero value.
-func IsZeroed[T comparable](a ...T) bool {
-	var z T
-	for i := range a {
-		if a[i] != z {
-			return false
-		}
-	}
-	return true
-}
-
-// DeleteZeroed deletes zero values in-place contained within the
-// slice and returns the modified slice without zero values.
-// Does not modify capacity.
-func DeleteZeroed[T comparable](a []T) []T {
-	var z T
-	off := 0
-	deleted := false
-	for i := 0; i < len(a); i++ {
-		if a[i] != z {
-			if deleted {
-				a[off] = a[i]
-			}
-			off++
-		} else if !deleted {
-			deleted = true
-		}
-	}
-	return a[:off]
-}

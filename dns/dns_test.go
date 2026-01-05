@@ -178,14 +178,15 @@ func TestMessageAppendEncodeIncompleteOK(t *testing.T) {
 		}
 
 		var msg Message
-		msg.LimitResourceDecoding(uint16(len(tt.Message.Questions)), uint16(len(tt.Message.Answers)), uint16(len(tt.Message.Authorities)), uint16(len(tt.Message.Additionals)))
+		// Limit answers to 1 to test incomplete parsing (message has 2 answers).
+		msg.LimitResourceDecoding(uint16(len(tt.Message.Questions)), 1, uint16(len(tt.Message.Authorities)), uint16(len(tt.Message.Additionals)))
 		_, incomplete, err := msg.Decode(b)
 		if err != nil && !incomplete {
 			t.Fatal(err)
 		} else if !incomplete {
 			t.Fatal("expected incomplete parse")
 		}
-		tt.Message.Answers = tt.Message.Answers[:1] // Trim off the last answer that was not parsed.
+		tt.Message.Answers = tt.Message.Answers[:1] // Trim to match the limited decode.
 		if msg.String() != tt.Message.String() {
 			t.Errorf("mismatch message strings after append/decode:\n%s\n%s", tt.Message.String(), msg.String())
 		}

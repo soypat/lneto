@@ -27,6 +27,22 @@ type Listener struct {
 	port       uint16
 	poolGet    func() (*Conn, Value)
 	poolReturn func(*Conn)
+	logger
+}
+
+func (listener *Listener) reset(port uint16, tcppool pool) {
+	listener.accepted = listener.accepted[:0]
+	listener.incoming = listener.incoming[:0]
+	listener.connID++
+	listener.port = port
+	listener.poolGet = tcppool.GetTCP
+	listener.poolReturn = tcppool.PutTCP
+}
+
+func (listener *Listener) SetLogger(logger *slog.Logger) {
+	listener.mu.Lock()
+	defer listener.mu.Unlock()
+	listener.logger.log = logger
 }
 
 // LocalPort implements [StackNode].
@@ -48,6 +64,7 @@ func (listener *Listener) Close() error {
 	if listener.isClosed() {
 		return errors.New("already closed")
 	}
+	listener.debug("listener:reset", slog.Uint64("port", uint64(listener.port)))
 	listener.connID++
 	listener.port = 0
 	return nil
@@ -61,15 +78,8 @@ func (listener *Listener) Reset(port uint16, pool pool) error {
 	}
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
-	*listener = Listener{
-		mu:         listener.mu,
-		connID:     listener.connID + 1,
-		port:       port,
-		poolGet:    pool.GetTCP,
-		poolReturn: pool.PutTCP,
-		incoming:   listener.incoming[:0],
-		accepted:   listener.accepted[:0],
-	}
+	listener.debug("listener:reset", slog.Uint64("port", uint64(port)))
+	listener.reset(port, pool)
 	return nil
 }
 
@@ -95,6 +105,7 @@ func (listener *Listener) TryAccept() (*Conn, error) {
 	if listener.isClosed() {
 		return nil, net.ErrClosed
 	}
+	listener.debug("listener:tryaccept", slog.Uint64("port", uint64(listener.port)))
 	listener.maintainConns()
 	for i, conn := range listener.incoming {
 		if conn == nil || conn.State() != StateEstablished {
@@ -114,6 +125,7 @@ func (listener *Listener) Encapsulate(carrierData []byte, offsetToIP, offsetToFr
 	if listener.isClosed() {
 		return 0, net.ErrClosed
 	}
+	//listener.trace("listener:encaps", slog.Uint64("port", uint64(listener.port)))
 	// First try incoming connections (for handshake SYN-ACK).
 	for i, conn := range listener.incoming {
 		if conn == nil || conn.State() == StateEstablished {
@@ -127,6 +139,7 @@ func (listener *Listener) Encapsulate(carrierData []byte, offsetToIP, offsetToFr
 		if n == 0 {
 			continue
 		}
+		listener.debug("listener:encaps", slog.Uint64("port", uint64(listener.port)), slog.Int("plen", n), slog.String("list", "incoming"))
 		return n, err
 	}
 	// Then try accepted connections.
@@ -141,6 +154,7 @@ func (listener *Listener) Encapsulate(carrierData []byte, offsetToIP, offsetToFr
 		if n == 0 {
 			continue
 		}
+		listener.debug("listener:encaps", slog.Uint64("port", uint64(listener.port)), slog.Int("plen", n), slog.String("list", "accepted"))
 		return n, err
 	}
 	return 0, nil
@@ -166,15 +180,19 @@ func (listener *Listener) Demux(carrierData []byte, tcpFrameOffset int) error {
 		return errors.New("not our port")
 	}
 	src := tfrm.SourcePort()
+
 	// Try to demux in accepted:
+	accepted := true
 	demuxed, err := listener.tryDemux(listener.accepted, src, srcaddr, carrierData, tcpFrameOffset)
+	if !demuxed {
+		accepted = false
+		demuxed, err = listener.tryDemux(listener.incoming, src, srcaddr, carrierData, tcpFrameOffset)
+	}
 	if demuxed {
+		listener.debug("tcplistener:demux", slog.Uint64("lport", uint64(listener.port)), slog.Uint64("rport", uint64(src)), slog.Bool("accepted", accepted))
 		return err
 	}
-	demuxed, err = listener.tryDemux(listener.incoming, src, srcaddr, carrierData, tcpFrameOffset)
-	if demuxed {
-		return err
-	}
+
 	// Connection not in ready nor accepted.
 	_, flags := tfrm.OffsetAndFlags()
 	if flags != FlagSYN {
@@ -198,6 +216,7 @@ func (listener *Listener) Demux(carrierData []byte, tcpFrameOffset int) error {
 		return lneto.ErrPacketDrop
 	}
 	listener.incoming = append(listener.incoming, conn)
+	listener.debug("tcplistener:demux-new", slog.Uint64("lport", uint64(listener.port)), slog.Uint64("rport", uint64(src)))
 	return nil
 }
 
@@ -223,7 +242,8 @@ func (listener *Listener) maintainConns() {
 		if listener.incoming[i] == nil {
 			continue
 		}
-		if listener.incoming[i].State() > StateEstablished || listener.incoming[i].State().IsClosed() {
+		state := listener.incoming[i].State()
+		if state > StateEstablished || state.IsClosed() {
 			// Something went wrong in handshake or pool aborted/closed the connection.
 			listener.poolReturn(listener.incoming[i])
 			listener.incoming[i] = nil
