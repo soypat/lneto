@@ -119,9 +119,6 @@ func (sv *Server) Demux(carrierData []byte, frameOffset int) error {
 			err = errors.New("DHCP Discover on initialized client")
 			break
 		}
-		if len(reqAddr) == 4 {
-			println("requested", reqAddr[0], reqAddr[1], reqAddr[2], reqAddr[3])
-		}
 		sv.nextAddr = sv.nextAddr.Next()
 		copy(client.requestlist[:], reqlist)
 		client.addr = sv.nextAddr.As4()

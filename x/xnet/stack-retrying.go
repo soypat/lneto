@@ -43,7 +43,7 @@ func (s StackRetrying) DoNTP(ntpHost netip.Addr, timeout time.Duration, retries 
 	expectEnd := time.Now().Add(timeout * time.Duration(retries))
 	for i := 0; i < retries; i++ {
 		if i > 0 {
-			println("Retrying DHCP")
+			println("Retrying NTP")
 		}
 		offset, err = s.block.DoNTP(ntpHost, timeout)
 		if err == nil {
