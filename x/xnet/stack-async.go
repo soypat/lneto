@@ -189,11 +189,13 @@ func (s *StackAsync) resetARP() error {
 // Prand32 generates a pseudo random 32-bit unsigned integer from the internal state and advances the seed.
 func (s *StackAsync) Prand32() uint32 {
 	/* Algorithm "xor" from p. 4 of Marsaglia, "Xorshift RNGs" */
+	s.mu.Lock()
 	seed := s.prng
 	seed ^= seed << 13
 	seed ^= seed >> 17
 	seed ^= seed << 5
 	s.prng = seed
+	s.mu.Unlock()
 	return seed
 }
 
@@ -360,10 +362,13 @@ func (s *StackAsync) ResultLookupIP(host string) ([]netip.Addr, bool, error) {
 		} else if len(data) == 16 {
 			addrs = append(addrs, netip.AddrFrom16([16]byte(data)))
 		} else {
-			return addrs, done, errors.New("bogus IP")
+			err = errors.New("bogus IP")
 		}
 	}
-	return addrs, done, nil
+	if err == nil && len(addrs) == 0 {
+		err = errors.New("no address in DNS answer")
+	}
+	return addrs, done, err
 }
 
 func (s *StackAsync) StartDHCPv4Request(request [4]byte) error {

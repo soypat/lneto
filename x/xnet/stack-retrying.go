@@ -56,6 +56,9 @@ func (s StackRetrying) DoNTP(ntpHost netip.Addr, timeout time.Duration, retries 
 	return -1, errRetriesExceeded
 }
 func (s StackRetrying) DoLookupIP(host string, timeout time.Duration, retries int) (addrs []netip.Addr, err error) {
+	if !s.block.async.dnssv.IsValid() {
+		return nil, errNoDNSServer
+	}
 	expectEnd := time.Now().Add(timeout * time.Duration(retries))
 	for i := 0; i < retries; i++ {
 		addrs, err = s.block.DoLookupIP(host, timeout)
