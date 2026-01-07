@@ -187,15 +187,20 @@ func (s *StackAsync) resetARP() error {
 }
 
 // Prand32 generates a pseudo random 32-bit unsigned integer from the internal state and advances the seed.
-func (s *StackAsync) Prand32() uint32 {
-	/* Algorithm "xor" from p. 4 of Marsaglia, "Xorshift RNGs" */
+func (s *StackAsync) Prand32() (randval uint32) {
 	s.mu.Lock()
+	randval = s.prand32()
+	s.mu.Unlock()
+	return randval
+}
+
+func (s *StackAsync) prand32() uint32 {
+	/* Algorithm "xor" from p. 4 of Marsaglia, "Xorshift RNGs" */
 	seed := s.prng
 	seed ^= seed << 13
 	seed ^= seed >> 17
 	seed ^= seed << 5
 	s.prng = seed
-	s.mu.Unlock()
 	return seed
 }
 
@@ -267,7 +272,7 @@ func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrP
 			return err
 		}
 	}
-	err = conn.OpenActive(localPort, addrp, tcp.Value(s.Prand32()))
+	err = conn.OpenActive(localPort, addrp, tcp.Value(s.prand32()))
 	if err != nil {
 		return err
 	}
@@ -282,7 +287,7 @@ func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrP
 func (s *StackAsync) ListenTCP(conn *tcp.Conn, localPort uint16) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	err = conn.OpenListen(localPort, tcp.Value(s.Prand32()))
+	err = conn.OpenListen(localPort, tcp.Value(s.prand32()))
 	if err != nil {
 		return err
 	}
@@ -318,7 +323,7 @@ func (s *StackAsync) StartLookupIP(host string) error {
 	}
 
 	s.ednsopt.SetEDNS0(uint16(s.link.MTU())-100, 0, 0, nil)
-	rand := s.Prand32()
+	rand := s.prand32()
 	err = s.dns.StartResolve(uint16(rand>>1)+1024, uint16(rand), dns.ResolveConfig{
 		Questions: []dns.Question{
 			{
@@ -375,7 +380,7 @@ func (s *StackAsync) StartDHCPv4Request(request [4]byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dhcp.Reset()
-	xid := s.Prand32()
+	xid := s.prand32()
 	err := s.dhcp.BeginRequest(xid, dhcpv4.RequestConfig{
 		RequestedAddr:      request,
 		ClientHardwareAddr: s.link.HardwareAddr6(),
