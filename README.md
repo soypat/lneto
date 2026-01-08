@@ -22,6 +22,18 @@ Userspace networking primitives.
 - Extremely simple networking stack construction. Can be used to teach basics of networking
     - Only one networking interface fulfilled by all implementations. See [abstractions](#abstractions).
 
+## `xcurl` example
+You may try lneto out on linux with the [xcurl example](./examples/xcurl/) which gets an HTTP page by doing all the low-level networking part using absolutely no standard library. 
+
+- DHCP client address lease
+- ARP address resolution
+- DNS address resolution of requested host
+- HTTP over TCP/IPv4/Ethernet connection using
+- NTP time check (optional)
+- Print packet captures using lneto's [internet/pcap](./internet/pcap) package 
+
+See Developing section below for more information.
+
 ## Why?(!)
 `lneto` was created to have networking on systems with a networking interface (wifi or ethernet cable) but no operating-system provided networking facilties. 
 
@@ -82,34 +94,34 @@ go mod download github.com/soypat/lneto@latest
 
 ## Developing (linux)
 
-- [`tap`](./examples/tap) (linux only, root privilidges required) Program opens a TAP interface and assigns an IP address to it and exposes the interface via a HTTP interface. This program is run with root privilidges to facilitate debugging of lneto since no root privilidges are required to interact with the HTTP interface exposed.
+- [`examples/httptap`](./examples/httptap) (linux only, root privilidges required) Program opens a TAP interface and assigns an IP address to it and exposes the interface via a HTTP interface. This program is run with root privilidges to facilitate debugging of lneto since no root privilidges are required to interact with the HTTP interface exposed.
     - `POST http://127.0.0.1:7070/send`: Receives a POST with request body containing JSON string of data to send over TAP interface. Response contains only status code.
     - `GET http://127.0.0.1:7070/recv`: Receives a GET request. Response contains a JSON string of oldest unread TAP interface packet. If string is empty then there is no more data to read.
 
-- [`stack`](./examples/stack) Contains stack implementation which can interact with `tap` program. No root privilidges required.
-    - Can expose a HTTP server.
+- [`xcurl`](./examples/xcurl) Contains example of a application that uses lneto and can attach to a linux tap/bridge interface or a [httptap](./examples/httptap)(with -ihttp flag) to work. When using httptap can be run as non-root user to be debugged comfortably. 
+    - Example: `go run ./examples/xcurl -host google.com -ihttp`
 
-To run the HTTP TAP server run the following commands. Requires elevated privilidges!
+### Quick run xcurl
+Run xcurl over httptap interface. Requires running two programs in separate shell/consoles in linux:
 ```sh
 # Build+Run HTTP Tap server from one shell, this will expose the `tap0` TAP interface over an HTTP interface at http://127.0.0.1:7070 on /recv and /send endpoints.
-go build ./examples/tap && sudo ./tap
+go build ./examples/httptap && sudo ./httpap
 ```
-
-Now run the application you wish to test without elevated privilidges. Stackbasic shows a basic HTTP demo in action.
+No privilidge escalation required for xcurl using `-ihttp` flag which taps using `httptap`:
 ```sh
-go run ./examples/stackbasic
+go run ./examples/xcurl -host google.com -ihttp
 ```
 
 
 
 ### Wireshark and Packet Capture API
-Using the provided method of interfacing mean's you'll always be able to easily reach the TAP interface on your machine over HTTP from any process, be it Python or Go. To visualize the packets over the interface we suggest using **Wireshark** and selecting the `tap0` interface which will show all activity over the HTTP TAP interface created with [`./examples/tap`](./examples/tap/main.go).
+Using the provided method of interfacing mean's you'll always be able to easily reach the TAP interface on your machine over HTTP from any process, be it Python or Go. To visualize the packets over the interface we suggest using **Wireshark** and selecting the `tap0` interface which will show all activity over the HTTP TAP interface created with [`./examples/httptap`](./examples/httptap/main.go).
 
-Alternatively there's the [`internet/pcap`](./internet/pcap) package that does the same thing as Wireshark but as a Go API. Here's the result of running xnet example with pcap logging:
+Alternatively there's the [`internet/pcap`](./internet/pcap) package that does the same thing as Wireshark but as a Go API. Here's the result of running xcurl example with pcap logging:
 
 
 ```log
-go run ./examples/xnet -httpget -host google.com -ihttp -ntp
+go run ./examples/xcurl -host google.com -ihttp -ntp
 softrand 1767229198
 NIC hardware address: d8:5e:d3:43:03:eb bridgeHW: d8:5e:d3:43:03:eb mtu: 1500 addr: 192.168.1.53/24
 OUT 328 [Ethernet len=14; destination=ff:ff:ff:ff:ff:ff; source=us | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=us; destination=255.255.255.255 | UDP [RFC768] len=8; (Source port)=68; (Destination port)=67 | DHCPv4 len=285; op=1; Flags=0x0000; (Client Address)=us; (Offered Address)=us; (Server Next Address)=255.255.255.255; (Relay Agent Address)=us; (Client Hardware Address)=d85e:d343:3eb::]

@@ -48,11 +48,9 @@ func run() (err error) {
 		flagHostToResolve = ""
 		flagRequestedIP   = ""
 		flagDoNTP         = false
-		flagHTTPGet       = false
 		flagNoPcap        = false
 		flagPprof         = false
 	)
-	flag.BoolVar(&flagHTTPGet, "httpget", flagHTTPGet, "Do an HTTP GET request ")
 	flag.StringVar(&flagInterface, "i", flagInterface, "Interface to use. Either tap* or the name of an existing interface to bridge to.")
 	flag.BoolVar(&flagUseHTTP, "ihttp", flagUseHTTP, "Use HTTP tap interface.")
 	flag.StringVar(&flagHostToResolve, "host", flagHostToResolve, "Hostname to resolve via DNS.")
@@ -60,6 +58,10 @@ func run() (err error) {
 	flag.BoolVar(&flagDoNTP, "ntp", flagDoNTP, "Do NTP round and print result time")
 	flag.BoolVar(&flagNoPcap, "nopcap", flagNoPcap, "Disable pcap logging.")
 	flag.BoolVar(&flagPprof, "pprof", flagPprof, "Enable CPU profiling.")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "xcurl is a curl-like command line utility to test lneto's networking features.\n")
+		flag.PrintDefaults()
+	}
 	flag.Parse()
 	if flagPprof {
 		var b bytes.Buffer
@@ -69,12 +71,12 @@ func run() (err error) {
 			os.WriteFile("xnet.pprof", b.Bytes(), 0777)
 		}()
 	}
-	fmt.Println("softrand", softRand)
 	_, err = dns.NewName(flagHostToResolve)
 	if err != nil {
 		flag.Usage()
 		return err
 	}
+	fmt.Println("softrand", softRand)
 	var iface ltesto.Interface
 	if flagUseHTTP {
 		iface = ltesto.NewHTTPTapClient("http://127.0.0.1:7070")
@@ -272,65 +274,65 @@ func run() (err error) {
 		TxBuf:             make([]byte, mtu),
 		TxPacketQueueSize: 3,
 	})
-	if flagHTTPGet {
-		timeHTTPCreate := timer("create HTTP GET request")
-		var hdr httpraw.Header
-		hdr.SetMethod("GET")
-		hdr.SetRequestURI("/")
-		hdr.SetProtocol("HTTP/1.1")
-		hdr.Set("Host", flagHostToResolve)
-		hdr.Set("User-Agent", "lneto")
-		hdr.Set("Accept-Language", "en-US,en;q=0.5")
-		hdr.Set("Connection", "close") // Encourage server to close connection after it finishes sending response.
-		req, err := hdr.AppendRequest(nil)
-		if err != nil {
-			return err
-		}
-		timeHTTPCreate()
 
-		timeTCPDial := timer("TCP dial (handshake)")
-		const tcpDialTimeout = 8 * time.Second // Was 60 * time.Minute causing 3.6s sleep per iteration!
-		target := netip.AddrPortFrom(addrs[0], 80)
-		err = rstack.DoDialTCP(&conn, uint16(softRand&0xefff)+1024, target, tcpDialTimeout, internetRetries)
-		if err != nil {
-			return fmt.Errorf("TCP failed: %w", err)
-		}
-		timeTCPDial()
-		timeHTTPSend := timer("send HTTP request")
-		conn.SetDeadline(time.Now().Add(internetTimeout))
-		_, err = conn.Write(req)
-		if err != nil {
-			return err
-		}
-		err = conn.Flush()
-		if err != nil {
-			return err
-		}
-		timeHTTPSend()
-		timeHTTPRcv := timer("recv http request")
-
-		rxbuf := make([]byte, 2048)
-
-		var page []byte
-		for {
-			var n int
-			n, err = conn.Read(rxbuf)
-			page = append(page, rxbuf[:n]...)
-			if err != nil {
-				break
-			}
-			ptrimmed := bytes.TrimSpace(page)
-			if bytes.EqualFold(ptrimmed[len(ptrimmed)-7:], []byte("</html>")) {
-				// We've received the last part of the HTML. we're done.
-				break
-			}
-		}
-		if len(page) == 0 {
-			return err
-		}
-		timeHTTPRcv()
-		os.Stdout.Write(page)
+	timeHTTPCreate := timer("create HTTP GET request")
+	var hdr httpraw.Header
+	hdr.SetMethod("GET")
+	hdr.SetRequestURI("/")
+	hdr.SetProtocol("HTTP/1.1")
+	hdr.Set("Host", flagHostToResolve)
+	hdr.Set("User-Agent", "lneto")
+	hdr.Set("Accept-Language", "en-US,en;q=0.5")
+	hdr.Set("Connection", "close") // Encourage server to close connection after it finishes sending response.
+	req, err := hdr.AppendRequest(nil)
+	if err != nil {
+		return err
 	}
+	timeHTTPCreate()
+
+	timeTCPDial := timer("TCP dial (handshake)")
+	const tcpDialTimeout = 8 * time.Second // Was 60 * time.Minute causing 3.6s sleep per iteration!
+	target := netip.AddrPortFrom(addrs[0], 80)
+	err = rstack.DoDialTCP(&conn, uint16(softRand&0xefff)+1024, target, tcpDialTimeout, internetRetries)
+	if err != nil {
+		return fmt.Errorf("TCP failed: %w", err)
+	}
+	timeTCPDial()
+	timeHTTPSend := timer("send HTTP request")
+	conn.SetDeadline(time.Now().Add(internetTimeout))
+	_, err = conn.Write(req)
+	if err != nil {
+		return err
+	}
+	err = conn.Flush()
+	if err != nil {
+		return err
+	}
+	timeHTTPSend()
+	timeHTTPRcv := timer("recv http request")
+
+	rxbuf := make([]byte, 2048)
+
+	var page []byte
+	for {
+		var n int
+		n, err = conn.Read(rxbuf)
+		page = append(page, rxbuf[:n]...)
+		if err != nil {
+			break
+		}
+		ptrimmed := bytes.TrimSpace(page)
+		if bytes.EqualFold(ptrimmed[len(ptrimmed)-7:], []byte("</html>")) {
+			// We've received the last part of the HTML. we're done.
+			break
+		}
+	}
+	if len(page) == 0 {
+		return err
+	}
+	timeHTTPRcv()
+	os.Stdout.Write(page)
+
 	return nil
 }
 
