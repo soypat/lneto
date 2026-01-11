@@ -111,6 +111,11 @@ func (h *Header) TryParse(asResponse bool) (needMoreData bool, err error) {
 	return err == errNeedMore, err
 }
 
+// ParsingSuccess returns true if TryParse was successful, that is to say it returned needMoreData==false and err==nil.
+func (h *Header) ParsingSuccess() bool {
+	return h.flags.hasAny(flagDoneParsingHeader)
+}
+
 // ReadFromLimited reads at most maxBytesToRead from reader and appends them to underlying buffer.
 // Used to accumulate HTTP header for later parsing with [Header.TryParse].
 // If read is successful (read length>0) and reader returns [io.EOF] then ReadFromLimited will return a nil error.
@@ -155,6 +160,14 @@ func (h *Header) ReadFromBytes(b []byte) (int, error) {
 	}
 	h.hbuf.readFromBytes(b)
 	return len(b), nil
+}
+
+// BufferReceived returns the amoung of bytes read during calls to Read* methods.
+func (h *Header) BufferReceived() int {
+	if h.flags.hasAny(flagMangledBuffer | flagOOMReached) {
+		return 0
+	}
+	return len(h.hbuf.buf)
 }
 
 // BufferParsed returns the amount of bytes parsed during a call to Parse* methods.
@@ -321,11 +334,15 @@ func (h *Header) getNonEmptyValue(s headerSlice) []byte {
 
 // AppendRequest appends the request header representation to the buffer and returns the result.
 func (h *Header) AppendRequest(dst []byte) ([]byte, error) {
+	proto := h.Protocol()
 	if h.flags.hasAny(flagOOMReached) {
 		return dst, errOOM
-	} else if h.requestURI.len == 0 || h.proto.len == 0 || h.method.len == 0 {
-		return dst, errors.New("need method/protocol/request URI to create request header")
+	} else if h.requestURI.len == 0 || h.method.len == 0 {
+		return dst, errors.New("need method/request URI to create request header")
+	} else if len(proto) == 0 {
+		return dst, errNoProto
 	}
+
 	method := h.Method()
 	if len(method) == 0 {
 		dst = append(dst, methodGet...)
@@ -333,7 +350,6 @@ func (h *Header) AppendRequest(dst []byte) ([]byte, error) {
 		dst = append(dst, method...)
 	}
 	uri := h.RequestURI()
-	proto := h.Protocol()
 
 	dst = append(dst, ' ')
 	dst = append(dst, uri...)
@@ -348,12 +364,18 @@ func (h *Header) AppendRequest(dst []byte) ([]byte, error) {
 
 // AppendResponse appends the response header representation to the buffer and returns the result.
 func (h *Header) AppendResponse(dst []byte) ([]byte, error) {
+	proto := h.Protocol()
 	if h.flags.hasAny(flagOOMReached) {
 		return dst, errOOM
 	} else if h.statusCode.len == 0 || h.statusText.len == 0 {
 		return dst, errors.New("invalid status code or text")
+	} else if len(proto) == 0 {
+		return dst, errNoProto
 	}
 	code, text := h.Status()
+
+	dst = append(dst, proto...)
+	dst = append(dst, ' ')
 	dst = append(dst, code...)
 	dst = append(dst, ' ')
 	dst = append(dst, text...)

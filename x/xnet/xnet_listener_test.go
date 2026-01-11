@@ -56,7 +56,8 @@ func TestStackAsyncListener_SingleConnection(t *testing.T) {
 	pool, err := NewTCPPool(TCPPoolConfig{
 		PoolSize:           1,
 		QueueSize:          4,
-		BufferSize:         MTU,
+		TxBufSize:          MTU,
+		RxBufSize:          MTU,
 		EstablishedTimeout: 10e9,
 		ClosingTimeout:     10e9,
 	})
@@ -89,7 +90,7 @@ func TestStackAsyncListener_SingleConnection(t *testing.T) {
 	if listener.NumberOfReadyToAccept() != 1 {
 		t.Fatalf("after handshake: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
 	}
-	svConn, err := listener.TryAccept()
+	svConn, _, err := listener.TryAccept()
 	if err != nil {
 		t.Fatalf("TryAccept: %v", err)
 	}
@@ -142,7 +143,8 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 	pool, err := NewTCPPool(TCPPoolConfig{
 		PoolSize:           poolsize,
 		QueueSize:          4,
-		BufferSize:         bufsize,
+		TxBufSize:          bufsize,
+		RxBufSize:          bufsize,
 		EstablishedTimeout: 10e9,
 		ClosingTimeout:     10e9,
 	})
@@ -198,7 +200,7 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 		if listener.NumberOfReadyToAccept() != 1 {
 			t.Fatalf("after handshake: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
 		}
-		svconn, err := listener.TryAccept()
+		svconn, _, err := listener.TryAccept()
 		if err != nil {
 			t.Fatal(err)
 		} else if svconn.RemotePort() != clConn.LocalPort() ||

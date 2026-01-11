@@ -47,7 +47,7 @@ func TestListener_SingleConnection(t *testing.T) {
 	if listener.NumberOfReadyToAccept() != 1 {
 		t.Fatalf("after handshake: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
 	}
-	acceptedConn, err := listener.TryAccept()
+	acceptedConn, _, err := listener.TryAccept()
 	if err != nil {
 		t.Fatalf("TryAccept: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestListener_AcceptAfterEstablished(t *testing.T) {
 	if listener.NumberOfReadyToAccept() != 1 {
 		t.Fatalf("after client1 handshake: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
 	}
-	accepted1, err := listener.TryAccept()
+	accepted1, _, err := listener.TryAccept()
 	if err != nil {
 		t.Fatalf("TryAccept client1: %v", err)
 	} else if listener.NumberOfReadyToAccept() != 0 {
@@ -115,7 +115,7 @@ func TestListener_AcceptAfterEstablished(t *testing.T) {
 	if listener.NumberOfReadyToAccept() != 1 {
 		t.Fatalf("after client2 handshake: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
 	}
-	accepted2, err := listener.TryAccept()
+	accepted2, _, err := listener.TryAccept()
 	if err != nil {
 		t.Fatalf("TryAccept client2: %v", err)
 	} else if listener.NumberOfReadyToAccept() != 0 {
@@ -174,7 +174,7 @@ func TestListener_MultiConn(t *testing.T) {
 	// Accept all connections.
 	for i := 0; i < numClients; i++ {
 		var err error
-		acceptedConns[i], err = listener.TryAccept()
+		acceptedConns[i], _, err = listener.TryAccept()
 		if err != nil {
 			t.Fatalf("TryAccept client %d: %v", i, err)
 		}
@@ -369,16 +369,16 @@ func newMockTCPPool(n, queuesize, bufsize int) *mockTCPPool {
 	return pool
 }
 
-func (p *mockTCPPool) GetTCP() (*tcp.Conn, tcp.Value) {
+func (p *mockTCPPool) GetTCP() (*tcp.Conn, any, tcp.Value) {
 	for i := range p.conns {
 		if !p.acquired[i] {
 			p.acquired[i] = true
 			p.nextISS += 1000
 			p.naqcuired++
-			return &p.conns[i], p.nextISS
+			return &p.conns[i], nil, p.nextISS
 		}
 	}
-	return nil, 0
+	return nil, nil, 0
 }
 
 func (p *mockTCPPool) PutTCP(conn *tcp.Conn) {

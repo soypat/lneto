@@ -30,9 +30,13 @@ func TestCap(t *testing.T) {
 		Flags:   tcp.FlagFIN, //tcp.FlagSYN | tcp.FlagACK | tcp.FlagPSH,
 	})
 	var hdr httpraw.Header
+	hdr.SetProtocol("HTTP/1.1")
 	hdr.SetStatus("200", "OK")
 	hdr.Set("Cookie", "ABC=123")
-	pkt, _ = hdr.AppendResponse(pkt)
+	pkt, err := hdr.AppendResponse(pkt)
+	if err != nil {
+		t.Fatal(err)
+	}
 	pkt = append(pkt, httpBody...)
 	var pbreak PacketBreakdown
 	frames, err := pbreak.CaptureEthernet(nil, pkt, 0)
@@ -233,12 +237,12 @@ func TestRightAlignedFields(t *testing.T) {
 // with right-aligned fields that have trailing bits.
 func TestAppendFieldRightAligned(t *testing.T) {
 	testCases := []struct {
-		name           string
-		pkt            []byte
-		fieldBitStart  int
-		bitlen         int
-		rightAligned   bool
-		wantData       []byte
+		name          string
+		pkt           []byte
+		fieldBitStart int
+		bitlen        int
+		rightAligned  bool
+		wantData      []byte
 	}{
 		{
 			// IPv6 Traffic Class: bits 4-11 (8 bits spanning bytes 0-1)

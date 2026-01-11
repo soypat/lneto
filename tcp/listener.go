@@ -13,7 +13,7 @@ import (
 
 // pool is a [sync.Pool] like
 type pool interface {
-	GetTCP() (*Conn, Value)
+	GetTCP() (*Conn, any, Value)
 	PutTCP(*Conn)
 }
 
@@ -25,14 +25,15 @@ type Listener struct {
 	// accepted stores all connections that have been accepted and are open.
 	accepted   []handler
 	port       uint16
-	poolGet    func() (*Conn, Value)
+	poolGet    func() (*Conn, any, Value)
 	poolReturn func(*Conn)
 	logger
 }
 
 type handler struct {
-	conn *Conn
-	id   uint64
+	conn     *Conn
+	id       uint64
+	userData any
 }
 
 func (listener *Listener) reset(port uint16, tcppool pool) {
@@ -105,11 +106,11 @@ func (listener *Listener) NumberOfReadyToAccept() (nready int) {
 }
 
 // TryAccept polls the list of ready connections that have been established
-func (listener *Listener) TryAccept() (*Conn, error) {
+func (listener *Listener) TryAccept() (*Conn, any, error) {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
 	if listener.isClosed() {
-		return nil, net.ErrClosed
+		return nil, nil, net.ErrClosed
 	}
 	listener.debug("listener:tryaccept", slog.Uint64("port", uint64(listener.port)))
 	listener.maintainConns()
@@ -118,11 +119,12 @@ func (listener *Listener) TryAccept() (*Conn, error) {
 		if conn == nil || conn.State() != StateEstablished {
 			continue
 		}
+		userData := listener.incoming[i].userData
 		listener.accepted = append(listener.accepted, listener.incoming[i])
 		listener.incoming[i] = handler{} // discard from ready.
-		return conn, nil
+		return conn, userData, nil
 	}
-	return nil, errors.New("no conns available")
+	return nil, nil, errors.New("no conns available")
 }
 
 // Encapsulate implements [StackNode].
@@ -209,7 +211,7 @@ func (listener *Listener) Demux(carrierData []byte, tcpFrameOffset int) error {
 	if flags != FlagSYN {
 		return lneto.ErrPacketDrop // Not a synchronizing packet, drop it.
 	}
-	conn, iss := listener.poolGet()
+	conn, userData, iss := listener.poolGet()
 	if conn == nil {
 		slog.Error("tcpListener:no-free-conn")
 		return lneto.ErrPacketDrop
@@ -227,8 +229,9 @@ func (listener *Listener) Demux(carrierData []byte, tcpFrameOffset int) error {
 		return lneto.ErrPacketDrop
 	}
 	listener.incoming = append(listener.incoming, handler{
-		conn: conn,
-		id:   *conn.ConnectionID(),
+		conn:     conn,
+		id:       *conn.ConnectionID(),
+		userData: userData,
 	})
 	listener.debug("tcplistener:demux-new", slog.Uint64("lport", uint64(listener.port)), slog.Uint64("rport", uint64(src)))
 	return nil
