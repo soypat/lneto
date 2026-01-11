@@ -8,6 +8,7 @@ import (
 )
 
 var (
+	errNoProto     = errors.New("missing protocol, HTTP/0.9 unsupported")
 	errNeedMore    = errors.New("need more data: cannot find trailing lf")
 	errUnparsed    = errors.New("need to finish parsing")
 	errInvalidName = errors.New("invalid header name")
@@ -250,7 +251,7 @@ func (h *Header) appendSlice(value string) headerSlice {
 			h.flags |= flagOOMReached
 			return headerSlice{}
 		}
-		h.hbuf.buf = slices.Grow(h.hbuf.buf, len(value))
+		h.hbuf.buf = slices.Grow(h.hbuf.buf, len(value)+1) // Grow 1 beyond due to slice validity.
 	}
 	h.flags |= flagMangledBuffer
 	return h.hbuf.mustAppendSlice(value)

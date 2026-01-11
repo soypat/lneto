@@ -13,7 +13,7 @@ import (
 
 // pool is a [sync.Pool] like
 type pool interface {
-	GetTCP() (*Conn, Value)
+	GetTCP() (*Conn, any, Value)
 	PutTCP(*Conn)
 }
 
@@ -21,13 +21,19 @@ type Listener struct {
 	connID uint64
 	mu     sync.Mutex
 	// incoming stores connections that are potential candidates for acceptance.
-	incoming []*Conn
+	incoming []handler
 	// accepted stores all connections that have been accepted and are open.
-	accepted   []*Conn
+	accepted   []handler
 	port       uint16
-	poolGet    func() (*Conn, Value)
+	poolGet    func() (*Conn, any, Value)
 	poolReturn func(*Conn)
 	logger
+}
+
+type handler struct {
+	conn     *Conn
+	id       uint64
+	userData any
 }
 
 func (listener *Listener) reset(port uint16, tcppool pool) {
@@ -89,7 +95,8 @@ func (listener *Listener) NumberOfReadyToAccept() (nready int) {
 	if listener.isClosed() {
 		return 0
 	}
-	for _, conn := range listener.incoming {
+	for i := range listener.incoming {
+		conn := listener.incoming[i].conn
 		if conn == nil || conn.State() != StateEstablished {
 			continue
 		}
@@ -99,27 +106,29 @@ func (listener *Listener) NumberOfReadyToAccept() (nready int) {
 }
 
 // TryAccept polls the list of ready connections that have been established
-func (listener *Listener) TryAccept() (*Conn, error) {
+func (listener *Listener) TryAccept() (*Conn, any, error) {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
 	if listener.isClosed() {
-		return nil, net.ErrClosed
+		return nil, nil, net.ErrClosed
 	}
 	listener.debug("listener:tryaccept", slog.Uint64("port", uint64(listener.port)))
 	listener.maintainConns()
-	for i, conn := range listener.incoming {
+	for i := range listener.incoming {
+		conn := listener.incoming[i].conn
 		if conn == nil || conn.State() != StateEstablished {
 			continue
 		}
-		listener.accepted = append(listener.accepted, conn)
-		listener.incoming[i] = nil // discard from ready.
-		return conn, nil
+		userData := listener.incoming[i].userData
+		listener.accepted = append(listener.accepted, listener.incoming[i])
+		listener.incoming[i] = handler{} // discard from ready.
+		return conn, userData, nil
 	}
-	return nil, errors.New("no conns available")
+	return nil, nil, errors.New("no conns available")
 }
 
 // Encapsulate implements [StackNode].
-func (listener *Listener) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
+func (listener *Listener) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (n int, err error) {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
 	if listener.isClosed() {
@@ -127,7 +136,8 @@ func (listener *Listener) Encapsulate(carrierData []byte, offsetToIP, offsetToFr
 	}
 	//listener.trace("listener:encaps", slog.Uint64("port", uint64(listener.port)))
 	// First try incoming connections (for handshake SYN-ACK).
-	for i, conn := range listener.incoming {
+	for i := range listener.incoming {
+		conn := listener.incoming[i].conn
 		if conn == nil || conn.State() == StateEstablished {
 			// Nil or already established.
 			continue
@@ -143,21 +153,24 @@ func (listener *Listener) Encapsulate(carrierData []byte, offsetToIP, offsetToFr
 		return n, err
 	}
 	// Then try accepted connections.
-	for i, conn := range listener.accepted {
+	for i := range listener.accepted {
+		conn := listener.accepted[i].conn
 		if conn == nil {
 			continue
-		}
-		n, err := conn.Encapsulate(carrierData, offsetToIP, offsetToFrame)
-		if err != nil {
-			err = listener.maintainConn(listener.accepted, i, err)
-		}
-		if n == 0 {
+		} else if conn.h.connid != listener.accepted[i].id {
+			listener.returnAccepted(i)
 			continue
 		}
-		listener.debug("listener:encaps", slog.Uint64("port", uint64(listener.port)), slog.Int("plen", n), slog.String("list", "accepted"))
-		return n, err
+		n, err = conn.Encapsulate(carrierData, offsetToIP, offsetToFrame)
+		if n > 0 {
+			listener.debug("listener:encaps", slog.Uint64("port", uint64(listener.port)), slog.Int("plen", n), slog.String("list", "accepted"))
+			break
+		} else if err == net.ErrClosed {
+			listener.returnAccepted(i)
+			err = nil
+		}
 	}
-	return 0, nil
+	return n, err
 }
 
 // Demux implements [StackNode].
@@ -198,7 +211,7 @@ func (listener *Listener) Demux(carrierData []byte, tcpFrameOffset int) error {
 	if flags != FlagSYN {
 		return lneto.ErrPacketDrop // Not a synchronizing packet, drop it.
 	}
-	conn, iss := listener.poolGet()
+	conn, userData, iss := listener.poolGet()
 	if conn == nil {
 		slog.Error("tcpListener:no-free-conn")
 		return lneto.ErrPacketDrop
@@ -215,15 +228,19 @@ func (listener *Listener) Demux(carrierData []byte, tcpFrameOffset int) error {
 		slog.Error("Listener:demux", slog.String("err", err.Error()))
 		return lneto.ErrPacketDrop
 	}
-	listener.incoming = append(listener.incoming, conn)
+	listener.incoming = append(listener.incoming, handler{
+		conn:     conn,
+		id:       *conn.ConnectionID(),
+		userData: userData,
+	})
 	listener.debug("tcplistener:demux-new", slog.Uint64("lport", uint64(listener.port)), slog.Uint64("rport", uint64(src)))
 	return nil
 }
 
-func (listener *Listener) tryDemux(conns []*Conn, remotePort uint16, remoteAddr, carrierData []byte, tcpFrameOffset int) (demuxed bool, err error) {
+func (listener *Listener) tryDemux(conns []handler, remotePort uint16, remoteAddr, carrierData []byte, tcpFrameOffset int) (demuxed bool, err error) {
 	idx := getConn(conns, remotePort, remoteAddr)
 	if idx >= 0 {
-		err := conns[idx].Demux(carrierData, tcpFrameOffset)
+		err := conns[idx].conn.Demux(carrierData, tcpFrameOffset)
 		if err != nil {
 			err = listener.maintainConn(conns, idx, err)
 		}
@@ -239,21 +256,22 @@ func (listener *Listener) isClosed() bool {
 func (listener *Listener) maintainConns() {
 	listener.accepted = internal.DeleteZeroed(listener.accepted)
 	for i := range listener.incoming {
-		if listener.incoming[i] == nil {
+		conn := listener.incoming[i].conn
+		if conn == nil {
 			continue
 		}
-		state := listener.incoming[i].State()
+		state := conn.State()
 		if state > StateEstablished || state.IsClosed() {
 			// Something went wrong in handshake or pool aborted/closed the connection.
-			listener.poolReturn(listener.incoming[i])
-			listener.incoming[i] = nil
+			listener.returnIncoming(i)
 		}
 	}
 	listener.incoming = internal.DeleteZeroed(listener.incoming)
 }
 
-func getConn(conns []*Conn, remotePort uint16, remoteAddr []byte) int {
-	for i, conn := range conns {
+func getConn(conns []handler, remotePort uint16, remoteAddr []byte) int {
+	for i := range conns {
+		conn := conns[i].conn
 		if conn == nil {
 			continue
 		}
@@ -266,11 +284,20 @@ func getConn(conns []*Conn, remotePort uint16, remoteAddr []byte) int {
 	return -1
 }
 
-func (listener *Listener) maintainConn(conns []*Conn, idx int, err error) error {
+func (listener *Listener) maintainConn(conns []handler, idx int, err error) error {
 	if err == net.ErrClosed {
-		listener.poolReturn(conns[idx])
-		conns[idx] = nil
+		listener.returnAccepted(idx)
 		return nil // avoid closing listener entirely.
 	}
 	return err
+}
+
+func (listener *Listener) returnAccepted(idx int) {
+	listener.poolReturn(listener.accepted[idx].conn)
+	listener.accepted[idx] = handler{}
+}
+
+func (listener *Listener) returnIncoming(idx int) {
+	listener.poolReturn(listener.incoming[idx].conn)
+	listener.incoming[idx] = handler{}
 }
