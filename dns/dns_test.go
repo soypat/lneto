@@ -237,3 +237,81 @@ func TestDecodeMessage(t *testing.T) {
 		t.Fatal(incomplete, err, off)
 	}
 }
+
+func TestClient_ReceivesDNSResponse(t *testing.T) {
+	const hostname = "example.com"
+	const txid = uint16(12345)
+	const clientPort = uint16(54321)
+	wantIP := [4]byte{93, 184, 216, 34}
+
+	// Build a DNS response message.
+	name := MustNewName(hostname)
+	responseMsg := Message{
+		Questions: []Question{{
+			Name:  name,
+			Type:  TypeA,
+			Class: ClassINET,
+		}},
+		Answers: []Resource{
+			NewResource(name, TypeA, ClassINET, 300, wantIP[:]),
+		},
+	}
+
+	// Response flags: QR=1 (response), RD=1, RA=1.
+	responseFlags := HeaderFlags(1<<15 | 1<<8 | 1<<7)
+
+	var buf [512]byte
+	dnsPayload, err := responseMsg.AppendTo(buf[:0], txid, responseFlags)
+	if err != nil {
+		t.Fatal("failed to build DNS response:", err)
+	}
+
+	// Set up the DNS client.
+	var client Client
+	client.StartResolve(clientPort, txid, ResolveConfig{
+		Questions: []Question{{
+			Name:  MustNewName(hostname),
+			Type:  TypeA,
+			Class: ClassINET,
+		}},
+		EnableRecursion: true,
+	})
+
+	// Simulate sending by calling Encapsulate (changes state to AwaitResponse).
+	var dummy [512]byte
+	client.Encapsulate(dummy[:], 0, 0)
+
+	// Call Demux with DNS payload.
+	err = client.Demux(dnsPayload, 0)
+	if err != nil {
+		t.Fatal("Client Demux error:", err)
+	}
+
+	// Check the client received the answer.
+	answers := client.Answers()
+	if len(answers) != 1 {
+		t.Fatalf("expected 1 answer, got %d", len(answers))
+	}
+
+	data := answers[0].RawData()
+	if len(data) != 4 {
+		t.Fatalf("expected 4 bytes in answer, got %d", len(data))
+	}
+	if [4]byte(data) != wantIP {
+		t.Errorf("expected IP %v, got %v", wantIP, data)
+	}
+
+	// Test MessageCopyTo as well.
+	var lookup Message
+	lookup.LimitResourceDecoding(1, 1, 0, 0)
+	done, err := client.MessageCopyTo(&lookup)
+	if err != nil {
+		t.Fatal("MessageCopyTo error:", err)
+	}
+	if !done {
+		t.Fatal("expected done=true")
+	}
+	if len(lookup.Answers) != 1 {
+		t.Fatalf("MessageCopyTo: expected 1 answer, got %d", len(lookup.Answers))
+	}
+}

@@ -638,6 +638,10 @@ func (dst *Message) CopyFrom(m Message) {
 	internal.SliceReuse(&dst.Answers, len(m.Answers))
 	internal.SliceReuse(&dst.Authorities, len(m.Authorities))
 	internal.SliceReuse(&dst.Additionals, len(m.Additionals))
+	dst.Questions = dst.Questions[:len(m.Questions)]
+	dst.Answers = dst.Answers[:len(m.Answers)]
+	dst.Authorities = dst.Authorities[:len(m.Authorities)]
+	dst.Additionals = dst.Additionals[:len(m.Additionals)]
 	for i := range dst.Questions {
 		dst.Questions[i].CopyFrom(m.Questions[i])
 	}

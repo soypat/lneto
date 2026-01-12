@@ -74,26 +74,6 @@ func TestDNS_QueryReceivesAnswer(t *testing.T) {
 		t.Fatal("client Demux failed:", err)
 	}
 
-	// Verify our DNS response is valid by decoding it separately.
-	var testMsg dns.Message
-	testMsg.LimitResourceDecoding(1, 1, 0, 0)
-	// Find DNS payload offset in response packet.
-	const ethLen, ipLen, udpLen = 14, 20, 8
-	dnsOffset := ethLen + ipLen + udpLen
-	_, _, decodeErr := testMsg.Decode(responsePkt[dnsOffset:])
-	if decodeErr != nil {
-		t.Logf("DNS decode error: %v", decodeErr)
-	}
-	t.Logf("Test decode: questions=%d, answers=%d", len(testMsg.Questions), len(testMsg.Answers))
-	if len(testMsg.Answers) > 0 {
-		data := testMsg.Answers[0].RawData()
-		t.Logf("Answer data: %v (len=%d)", data, len(data))
-	}
-
-	// Also verify DNS header flags in the packet.
-	dnsFrame, _ := dns.NewFrame(responsePkt[dnsOffset:])
-	t.Logf("DNS Frame: txid=%d, flags=%s, QD=%d, AN=%d", dnsFrame.TxID(), dnsFrame.Flags(), dnsFrame.QDCount(), dnsFrame.ANCount())
-
 	// Check the result.
 	addrs, done, err := client.ResultLookupIP(hostname)
 	if err != nil {
