@@ -240,7 +240,7 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 			c.state = StateBound
 		}
 	default:
-		return fmt.Errorf("dcpv4 unexpected state in recv %s", c.state.String())
+		return fmt.Errorf("dhcpv4 unexpected state in recv %s", c.state.String())
 	}
 	if frameOffset > 28 && c.svIPtos == 0 {
 		ifrm, _ := ipv4.NewFrame(carrierData)
