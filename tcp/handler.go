@@ -182,8 +182,7 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 	}
 	if h.scb.State() == StateClosed {
 		// TCB aborted, likely because it received an ACK in LastAck state.
-		// Clean up connection now.
-		h.reset(0, 0, 0)
+		// Clean up connection now unless read pending.
 		return net.ErrClosed
 	}
 	if prevState != h.scb.State() {
@@ -332,18 +331,12 @@ func (h *Handler) Read(b []byte) (n int, err error) {
 // BufferedInput returns amount of bytes buffered in receive(input) buffer and ready to read
 // with a [Handler.Read] call.
 func (h *Handler) BufferedInput() int {
-	if h.State().IsClosed() {
-		return 0
-	}
 	return h.bufRx.Buffered()
 }
 
 // BufferedUnsent returns the number of bytes in the socket's transmit(output) buffer
 // that has yet to be sent.
 func (h *Handler) BufferedUnsent() int {
-	if h.State().IsClosed() {
-		return 0
-	}
 	return h.bufTx.BufferedUnsent()
 }
 

@@ -260,6 +260,9 @@ func (conn *Conn) Flush() error {
 func (conn *Conn) Read(b []byte) (int, error) {
 	connid, err := conn.lockPipeConnID()
 	if err != nil {
+		if conn.BufferedInput() > 0 {
+			return conn.handlerRead(b) // Ensure remaining buffered data is read.
+		}
 		return 0, err
 	}
 	lport := conn.LocalPort()
@@ -272,14 +275,20 @@ func (conn *Conn) Read(b []byte) (int, error) {
 			// No use waiting for data, jump to read and return corresponding error from there.
 			break
 		} else if err := conn.checkPipe(connid, &conn.rdead); err != nil {
+			if conn.BufferedInput() > 0 {
+				return conn.handlerRead(b) // Ensure remaining buffered data is read.
+			}
 			return 0, err
 		}
 		backoff.Miss()
 	}
+	return conn.handlerRead(b)
+}
+
+func (conn *Conn) handlerRead(b []byte) (int, error) {
 	conn.mu.Lock()
-	n, err := conn.h.Read(b)
-	conn.mu.Unlock()
-	return n, err
+	defer conn.mu.Unlock()
+	return conn.h.Read(b)
 }
 
 func (conn *Conn) lockPipeConnID() (uint64, error) {

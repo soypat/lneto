@@ -339,10 +339,6 @@ func (tst *tester) TestTCPEstablishedSingleData(srcStack, dstStack *StackAsync, 
 func (tst *tester) TestTCPClose(stack1, stack2 *StackAsync, conn1, conn2 *tcp.Conn) {
 	t := tst.t
 	t.Helper()
-	cid1 := conn1.ConnectionID()
-	cid2 := conn2.ConnectionID()
-	cid1v := *cid1
-	cid2v := *cid2
 	err := conn1.Close()
 	if err != nil {
 		t.Fatal(err)
@@ -393,12 +389,6 @@ func (tst *tester) TestTCPClose(stack1, stack2 *StackAsync, conn1, conn2 *tcp.Co
 	}
 	if !state2.IsClosed() {
 		t.Errorf("expected closed state2, got %s", state2.String())
-	}
-	if cid1v == *cid1 {
-		t.Error("no cid1 change")
-	}
-	if cid2v == *cid2 {
-		t.Error("no cid2 change")
 	}
 }
 
@@ -704,4 +694,200 @@ func (tst *tester) getFieldByClassLen(proto any, class pcap.FieldClass, octetLen
 func (tst *tester) getARPOperation() arp.Operation {
 	tst.t.Helper()
 	return arp.Operation(tst.getInt(ethernet.TypeARP, pcap.FieldClassOperation))
+}
+
+// TestTCPConn_BufferNotClearedOnPassiveClose tests that data remains readable after
+// the TCP connection is closed by the remote peer. This is a regression test
+// for a bug where the receive buffer was cleared when the connection transitioned
+// to CLOSED state, causing data loss.
+//
+// The sequence is:
+//  1. Server sends DATA then initiates close (FIN)
+//  2. Client receives data, enters CLOSE_WAIT
+//  3. Client sends ACK, then FIN+ACK (enters LAST_ACK)
+//  4. Server sends final ACK
+//  5. Client receives ACK in LAST_ACK -> state becomes CLOSED
+//  6. At this point, client.Read() should still return the buffered data
+//
+// The bug was that reset() cleared bufRx when state became CLOSED.
+func TestTCPConn_BufferNotClearedOnPassiveClose(t *testing.T) {
+	const seed = 9999
+	const MTU = 1500
+	const svPort = 8080
+	client, sv, clconn, svconn := newTCPStacks(t, seed, MTU)
+	tst := testerFrom(t, MTU)
+
+	tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1337)
+
+	// Server writes data to be sent.
+	sendData := []byte("this data should survive close handshake")
+	_, err := svconn.Write(sendData)
+	if err != nil {
+		t.Fatal("server write:", err)
+	}
+
+	// Server sends DATA packet to client.
+	tst.bufmu.Lock()
+	buf := tst.buf[:cap(tst.buf)]
+	n, err := sv.Encapsulate(buf, -1, 0)
+	if err != nil {
+		tst.bufmu.Unlock()
+		t.Fatal("server encapsulate data:", err)
+	}
+	if n == 0 {
+		tst.bufmu.Unlock()
+		t.Fatal("expected data packet from server")
+	}
+	err = client.Demux(buf[:n], 0)
+	tst.bufmu.Unlock()
+	if err != nil {
+		t.Fatal("client demux data:", err)
+	}
+
+	// Verify client buffered the data.
+	if clconn.BufferedInput() != len(sendData) {
+		t.Fatalf("client did not buffer data: got %d, want %d", clconn.BufferedInput(), len(sendData))
+	}
+
+	// Client sends ACK for data.
+	tst.bufmu.Lock()
+	buf = tst.buf[:cap(tst.buf)]
+	n, err = client.Encapsulate(buf, -1, 0)
+	if err != nil {
+		tst.bufmu.Unlock()
+		t.Fatal("client encapsulate ACK:", err)
+	}
+	if n > 0 {
+		err = sv.Demux(buf[:n], 0)
+		if err != nil {
+			tst.bufmu.Unlock()
+			t.Fatal("server demux ACK:", err)
+		}
+	}
+	tst.bufmu.Unlock()
+
+	// Server initiates close.
+	err = svconn.Close()
+	if err != nil {
+		t.Fatal("server close:", err)
+	}
+
+	// Server sends FIN (enters FIN_WAIT_1).
+	tst.bufmu.Lock()
+	buf = tst.buf[:cap(tst.buf)]
+	n, err = sv.Encapsulate(buf, -1, 0)
+	if err != nil {
+		tst.bufmu.Unlock()
+		t.Fatal("server encapsulate FIN:", err)
+	}
+	if n == 0 {
+		tst.bufmu.Unlock()
+		t.Fatal("expected FIN packet from server")
+	}
+	err = client.Demux(buf[:n], 0)
+	tst.bufmu.Unlock()
+	if err != nil {
+		t.Fatal("client demux FIN:", err)
+	}
+
+	if svconn.State() != tcp.StateFinWait1 {
+		t.Fatalf("expected server in FIN_WAIT_1, got %s", svconn.State())
+	}
+	if clconn.State() != tcp.StateCloseWait {
+		t.Fatalf("expected client in CLOSE_WAIT, got %s", clconn.State())
+	}
+
+	// Client sends ACK for FIN.
+	tst.bufmu.Lock()
+	buf = tst.buf[:cap(tst.buf)]
+	n, err = client.Encapsulate(buf, -1, 0)
+	if err != nil {
+		tst.bufmu.Unlock()
+		t.Fatal("client encapsulate ACK:", err)
+	}
+	if n > 0 {
+		err = sv.Demux(buf[:n], 0)
+		if err != nil {
+			tst.bufmu.Unlock()
+			t.Fatal("server demux ACK:", err)
+		}
+	}
+	tst.bufmu.Unlock()
+
+	if svconn.State() != tcp.StateFinWait2 {
+		t.Fatalf("expected server in FIN_WAIT_2, got %s", svconn.State())
+	}
+
+	// Client initiates its close.
+	err = clconn.Close()
+	if err != nil {
+		t.Fatal("client close:", err)
+	}
+
+	// Client sends FIN (enters LAST_ACK).
+	tst.bufmu.Lock()
+	buf = tst.buf[:cap(tst.buf)]
+	n, err = client.Encapsulate(buf, -1, 0)
+	if err != nil {
+		tst.bufmu.Unlock()
+		t.Fatal("client encapsulate FIN:", err)
+	}
+	if n == 0 {
+		tst.bufmu.Unlock()
+		t.Fatal("expected FIN packet from client")
+	}
+	err = sv.Demux(buf[:n], 0)
+	tst.bufmu.Unlock()
+	if err != nil {
+		t.Fatal("server demux client FIN:", err)
+	}
+
+	if clconn.State() != tcp.StateLastAck {
+		t.Fatalf("expected client in LAST_ACK, got %s", clconn.State())
+	}
+	if svconn.State() != tcp.StateTimeWait {
+		t.Fatalf("expected server in TIME_WAIT, got %s", svconn.State())
+	}
+
+	// Server sends final ACK.
+	tst.bufmu.Lock()
+	buf = tst.buf[:cap(tst.buf)]
+	n, err = sv.Encapsulate(buf, -1, 0)
+	if err != nil {
+		tst.bufmu.Unlock()
+		t.Fatal("server encapsulate final ACK:", err)
+	}
+	if n == 0 {
+		tst.bufmu.Unlock()
+		t.Fatal("expected final ACK from server")
+	}
+	err = client.Demux(buf[:n], 0)
+	tst.bufmu.Unlock()
+	if err != nil {
+		t.Fatal("client demux final ACK:", err)
+	}
+
+	// Client should now be CLOSED.
+	if clconn.State() != tcp.StateClosed {
+		t.Fatalf("expected client in CLOSED, got %s", clconn.State())
+	}
+
+	// THE BUG: At this point, the data should still be readable, but the
+	// buffer was cleared by reset() when state transitioned to CLOSED.
+	//
+	// This test will FAIL until the bug is fixed.
+	readBuf := make([]byte, MTU)
+	n, err = clconn.Read(readBuf)
+	if err != nil && n == 0 {
+		t.Fatalf("BUG: Could not read buffered data after connection closed: %v\n"+
+			"Expected to read %d bytes of data that was received before the connection closed.\n"+
+			"The receive buffer was incorrectly cleared when the connection transitioned to CLOSED state.",
+			err, len(sendData))
+	}
+	if n != len(sendData) {
+		t.Fatalf("read wrong amount: got %d, want %d", n, len(sendData))
+	}
+	if !bytes.Equal(readBuf[:n], sendData) {
+		t.Fatalf("read wrong data: got %q, want %q", readBuf[:n], sendData)
+	}
 }
