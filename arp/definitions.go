@@ -13,7 +13,7 @@ const (
 var (
 	errARPBufferFull  = errors.New("ARP client need handling:too many ops pending")
 	errShortARP       = errors.New("packet too short to be ARP")
-	errARPUnsupported = errors.New("ARP not supprortedf")
+	errARPUnsupported = errors.New("ARP not supported")
 	errLargeSizes     = errors.New("size of ARP protocol+hardware is unusually large")
 )
 
