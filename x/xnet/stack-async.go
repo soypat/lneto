@@ -153,6 +153,9 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	}
 	s.totalrecv = 0
 	s.totalsent = 0
+	if cfg.DNSServer.IsValid() {
+		s.dnssv = cfg.DNSServer
+	}
 	return nil
 }
 
