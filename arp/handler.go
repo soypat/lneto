@@ -129,8 +129,14 @@ func (h *Handler) DiscardQuery(protoAddr []byte) error {
 func (h *Handler) compactQueries() {
 	validOff := 0
 	for i := 0; i < len(h.queries); i++ {
-		if h.queries[i].isInvalid() {
-			h.queries[validOff] = h.queries[i]
+		if !h.queries[i].isInvalid() {
+			if i != validOff {
+				// We swap the queries here so that when `StartQuery` extends
+				// queries slice, we don't have sharing of the internal structures.
+				// An alternative would be to zero things, however that would incur
+				// an allocation cost.
+				h.queries[validOff], h.queries[i] = h.queries[i], h.queries[validOff]
+			}
 			validOff++
 		}
 	}
