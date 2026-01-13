@@ -61,11 +61,11 @@ BenchmarkTCPHandshake-12          987534              1200 ns/op               0
 PASS
 ok      github.com/soypat/lneto/x/xnet  2.589s
 
-tinygo test -bench=. -benchmem ./x/xnet
-BenchmarkARPExchange     1945710               615.6 ns/op           176 B/op          0 allocs/op
-BenchmarkTCPHandshake     624374              1915 ns/op             192 B/op          0 allocs/op
+tinygo test -opt=2 -bench=. -benchmem ./x/xnet      
+BenchmarkARPExchange     2729166               435.9 ns/op           144 B/op          0 allocs/op
+BenchmarkTCPHandshake    1000000              1174 ns/op             192 B/op          0 allocs/op
 PASS
-ok      github.com/soypat/lneto/x/xnet  3.149s
+ok      github.com/soypat/lneto/x/xnet  2.926s
 ```
 
 ## Packages
