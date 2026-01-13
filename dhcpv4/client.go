@@ -340,6 +340,9 @@ func (c *Client) reset(xid uint32) {
 		reqIP:       c.reqIP,
 		clientMAC:   c.clientMAC,
 		clientID:    c.clientID,
+		dns:         c.dns[:0],
+		ntps:        c.ntps[:0],
+		hostname:    c.hostname[:0],
 	}
 }
 
