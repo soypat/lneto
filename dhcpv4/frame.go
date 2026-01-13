@@ -132,9 +132,6 @@ func (frm Frame) ForEachOption(fn func(off int, op OptNum, data []byte) error) e
 	}
 	callback := fn != nil
 	for ptr+1 < len(frm.buf) {
-		if int(frm.buf[ptr+1]) >= len(frm.buf) {
-			return errDHCPBadOption
-		}
 		optnum := OptNum(frm.buf[ptr])
 		if optnum == 0xff {
 			break
@@ -142,14 +139,17 @@ func (frm Frame) ForEachOption(fn func(off int, op OptNum, data []byte) error) e
 			ptr++
 			continue
 		}
-		optlen := frm.buf[ptr+1]
+		optlen := int(frm.buf[ptr+1])
+		if ptr+2+optlen > len(frm.buf) {
+			return errDHCPBadOption
+		}
 		if callback {
-			optionData := frm.buf[ptr+2 : ptr+2+int(optlen)]
+			optionData := frm.buf[ptr+2 : ptr+2+optlen]
 			if err := fn(ptr, optnum, optionData); err != nil {
 				return err
 			}
 		}
-		ptr += int(optlen) + 2
+		ptr += optlen + 2
 	}
 	return nil
 }
