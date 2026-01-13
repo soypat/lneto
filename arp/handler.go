@@ -191,24 +191,25 @@ func (h *Handler) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 		return n, nil
 	}
 	for i := range h.queries {
-		if !h.queries[i].querysent {
-			h.queries[i].querysent = true
-			afrm, _ := NewFrame(b)
-			afrm.SetHardware(h.htype, uint8(len(h.ourHWAddr)))
-			afrm.SetProtocol(h.protoType, uint8(len(h.ourProtoAddr)))
-			afrm.SetOperation(OpRequest)
-			hwSender, protoSender := afrm.Sender()
-			copy(hwSender, h.ourHWAddr)
-			copy(protoSender, h.ourProtoAddr)
-			hwTarget, protoTarget := afrm.Target()
-			copy(protoTarget, h.queries[i].protoaddr)
-			for j := range hwTarget {
-				hwTarget[j] = 0
-			}
-			broadcast := ethernet.BroadcastAddr()
-			trySetEthernetDst(carrierData[:offsetToFrame], broadcast[:])
-			return n, nil
+		if h.queries[i].isInvalid() || h.queries[i].querysent {
+			continue
 		}
+		h.queries[i].querysent = true
+		afrm, _ := NewFrame(b)
+		afrm.SetHardware(h.htype, uint8(len(h.ourHWAddr)))
+		afrm.SetProtocol(h.protoType, uint8(len(h.ourProtoAddr)))
+		afrm.SetOperation(OpRequest)
+		hwSender, protoSender := afrm.Sender()
+		copy(hwSender, h.ourHWAddr)
+		copy(protoSender, h.ourProtoAddr)
+		hwTarget, protoTarget := afrm.Target()
+		copy(protoTarget, h.queries[i].protoaddr)
+		for j := range hwTarget {
+			hwTarget[j] = 0
+		}
+		broadcast := ethernet.BroadcastAddr()
+		trySetEthernetDst(carrierData[:offsetToFrame], broadcast[:])
+		return n, nil
 	}
 	return 0, nil
 }

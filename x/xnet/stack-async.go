@@ -450,6 +450,17 @@ func (s *StackAsync) ResultResolveHardwareAddress6(ip netip.Addr) (hw [6]byte, e
 	return [6]byte(hwslice), nil
 }
 
+// DiscardResolveHardwareAddress6 discards a pending ARP query for the given IP address.
+func (s *StackAsync) DiscardResolveHardwareAddress6(ip netip.Addr) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !ip.Is4() {
+		return errors.New("unsupported or invalid IP address")
+	}
+	addr := ip.As4()
+	return s.arp.DiscardQuery(addr[:])
+}
+
 type DHCPResults struct {
 	DNSServers    []netip.Addr
 	Router        netip.Addr
