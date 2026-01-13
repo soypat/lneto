@@ -48,6 +48,25 @@ If you can use the `net` package, use it. Need something faster and less-heap al
 #### Use Case: gopacket package replacement
 `gopacket` is fully featured, mature and can do BPF hooks. If you need extensive packet decoding facilities, consider using gopacket instead of `lneto`. If you need something simpler, easier to use and even more low level, lneto may be for you. `lneto`'s packet decoding is VERY flexible and provides features for bit-by-bit interpreting. That said, lneto is in early development and you may need to implement some packet processing features yourself!
 
+## Benchmarks
+Go and TinyGo compiler tested with ARP and TCP exchanges with all Ethernet/IPv4 stack functionality:
+```
+go test -bench=. -benchmem ./x/xnet
+goos: linux
+goarch: amd64
+pkg: github.com/soypat/lneto/x/xnet
+cpu: 12th Gen Intel(R) Core(TM) i5-12400F
+BenchmarkARPExchange-12          6122306               177.1 ns/op             0 B/op          0 allocs/op
+BenchmarkTCPHandshake-12          987534              1200 ns/op               0 B/op          0 allocs/op
+PASS
+ok      github.com/soypat/lneto/x/xnet  2.589s
+
+tinygo test -bench=. -benchmem ./x/xnet
+BenchmarkARPExchange     1945710               615.6 ns/op           176 B/op          0 allocs/op
+BenchmarkTCPHandshake     624374              1915 ns/op             192 B/op          0 allocs/op
+PASS
+ok      github.com/soypat/lneto/x/xnet  3.149s
+```
 
 ## Packages
 - `lneto`: Low-level Networking Operations, or "El Neto", the networking package. Zero copy network frame marshalling and unmarshalling.
