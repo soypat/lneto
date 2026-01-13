@@ -159,7 +159,7 @@ func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) 
 		}
 		n, _ = EncodeOption16(opts[numOpts:], OptMaximumMessageSize, uint16(maxlen))
 		numOpts += n
-		if !c.reqIP.valid {
+		if c.reqIP.valid {
 			n, _ = EncodeOption(opts[numOpts:], OptRequestedIPaddress, c.reqIP.addr[:]...)
 			numOpts += n
 		}
@@ -253,7 +253,7 @@ func (c *Client) getMessageType(frm Frame) MessageType {
 	c.auxbuf[0] = 255
 	ptrMsgType := &c.auxbuf[0]
 	frm.ForEachOption(func(_ int, opt OptNum, data []byte) error {
-		if len(data) == 1 {
+		if opt == OptMessageType && len(data) == 1 {
 			*ptrMsgType = data[0]
 			return io.EOF
 		}
