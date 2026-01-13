@@ -136,7 +136,7 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 		}
 	}
 	sb.handlers.info("ipDemux", slog.String("ipproto", proto.String()), slog.Int("plen", int(totalLen)))
-	err = node.demux(frame[:totalLen], off)
+	err = node.callbacks.Demux(frame[:totalLen], off)
 	if sb.handlers.tryHandleError(node, err) {
 		sb.handlers.info("ipclose", slog.String("proto", proto.String()))
 		err = nil

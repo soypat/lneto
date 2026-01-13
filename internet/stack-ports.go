@@ -134,7 +134,7 @@ func (ps *StackPortsMACFiltered) Encapsulate(carrierData []byte, offsetToIP, off
 		if node.IsInvalid() || (len(node.remoteAddr) > 0 && internal.IsZeroed(node.remoteAddr...)) {
 			continue
 		}
-		n, err = node.encapsulate(carrierData, offsetToIP, offsetToFrame)
+		n, err = node.callbacks.Encapsulate(carrierData, offsetToIP, offsetToFrame)
 		if h.tryHandleError(node, err) {
 			err = nil // CLOSE error handled gracefully by deleting node.
 		}

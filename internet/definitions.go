@@ -40,12 +40,15 @@ type StackNode interface {
 
 // node is a concrete StackNode as stored in Stacks. Methods are devirtualized for performance benefits, especially on TinyGo.
 type node struct {
-	currConnID  uint64
-	connID      *uint64
-	demux       func([]byte, int) error
-	encapsulate func([]byte, int, int) (int, error)
-	proto       uint16
-	port        uint16
+	currConnID uint64
+	connID     *uint64
+	// cbnode has different definitions in tinygo and normal Go compiled programs
+	// for performance and heap control reasons.
+	callbacks cbnode
+	// demux       func([]byte, int) error
+	// encapsulate func([]byte, int, int) (int, error)
+	proto uint16
+	port  uint16
 	// remoteAddr will be set on active(outbound) port connections
 	// that require an ARP to set the remoteAddr beforehand.
 	remoteAddr []byte
@@ -152,7 +155,7 @@ func (h *handlers) demuxByProto(buf []byte, offset int, proto uint16) (*node, er
 	if node == nil {
 		return nil, lneto.ErrPacketDrop
 	}
-	err := node.demux(buf, offset)
+	err := node.callbacks.Demux(buf, offset)
 	if h.tryHandleError(node, err) {
 		err = nil
 	}
@@ -165,7 +168,7 @@ func (h *handlers) demuxByPort(buf []byte, offset int, port uint16) (*node, erro
 	if node == nil {
 		return nil, lneto.ErrPacketDrop
 	}
-	err := node.demux(buf, offset)
+	err := node.callbacks.Demux(buf, offset)
 	if h.tryHandleError(node, err) {
 		err = nil
 		node = nil // Node is destroyed in tryHandleError and invalidated.
@@ -181,7 +184,7 @@ func (h *handlers) encapsulateAny(buf []byte, offsetIP, offsetThisFrame int) (_ 
 		if node.IsInvalid() {
 			continue
 		}
-		n, err = node.encapsulate(buf, offsetIP, offsetThisFrame)
+		n, err = node.callbacks.Encapsulate(buf, offsetIP, offsetThisFrame)
 		if h.tryHandleError(node, err) {
 			err = nil  // CLOSE error handled gracefully by deleting node.
 			node = nil // Node is destroyed in tryHandleError and invalidated.
@@ -206,7 +209,7 @@ var (
 )
 
 func (node *node) IsInvalid() bool {
-	return node.demux == nil || node.encapsulate == nil || (node.connID != nil && node.currConnID != *node.connID)
+	return node.callbacks.IsZeroed() || (node.connID != nil && node.currConnID != *node.connID)
 }
 
 func checkNodeErr(node *node, err error) (discard bool) {
@@ -223,13 +226,12 @@ func nodeFromStackNode(s StackNode, port uint16, protocol uint64, remoteAddr []b
 		currConnID = *connIDPtr
 	}
 	return node{
-		currConnID:  currConnID,
-		connID:      connIDPtr,
-		demux:       s.Demux,
-		encapsulate: s.Encapsulate,
-		proto:       uint16(protocol),
-		port:        port,
-		remoteAddr:  remoteAddr, // SHARED MEMORY- used to signal.
+		currConnID: currConnID,
+		connID:     connIDPtr,
+		callbacks:  makecbnode(s),
+		proto:      uint16(protocol),
+		port:       port,
+		remoteAddr: remoteAddr, // SHARED MEMORY- used to signal.
 	}
 }
 

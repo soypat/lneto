@@ -51,7 +51,7 @@ func (sudp *StackUDPPort) Demux(carrierData []byte, frameOffset int) error {
 	if sudp.rmport != 0 && src != sudp.rmport {
 		return lneto.ErrPacketDrop // Not from our target remote port.
 	}
-	err = sudp.h.demux(carrierData, frameOffset+8)
+	err = sudp.h.callbacks.Demux(carrierData, frameOffset+8)
 	if err != nil {
 		if checkNodeErr(&sudp.h, err) {
 			sudp.h.destroy()
@@ -79,7 +79,7 @@ func (sudp *StackUDPPort) Encapsulate(carrierData []byte, offsetToIP, offsetToFr
 		}
 	}
 	// Child payload starts 8 bytes after UDP header start.
-	n, err := sudp.h.encapsulate(carrierData, offsetToIP, offsetToFrame+8)
+	n, err := sudp.h.callbacks.Encapsulate(carrierData, offsetToIP, offsetToFrame+8)
 	if n == 0 {
 		if err != nil {
 			slog.Error("stackudp:encapsulate", slog.String("err", err.Error()))
