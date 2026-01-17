@@ -284,8 +284,13 @@ func (br *Bridge) Poll(timeout time.Duration) (bool, error) {
 		Sec:  int64(timeout / time.Second),
 		Usec: int64((timeout % time.Second) / time.Microsecond),
 	}
+again:
 	n, err := syscall.Select(br.fd+1, &readfds, nil, nil, &tv)
 	if err != nil {
+		if err == syscall.EINTR {
+			// under linux, select updates tv with the remaining time
+			goto again
+		}
 		return false, err
 	}
 	return n > 0, nil
