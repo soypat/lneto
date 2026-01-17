@@ -195,6 +195,8 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 	if pc.validator().HasError() {
 		return dst, pc.validator().ErrPop()
 	}
+	// limit packet to the actual IPv4 frame size
+	pkt = pkt[:bitOffset/8+int(ifrm4.TotalLength())]
 	finfo := Frame{
 		Protocol:        ethernet.TypeIPv4,
 		PacketBitOffset: bitOffset,
