@@ -194,6 +194,10 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 			return err
 		}
 	}
+	if segIncoming.Flags.HasAny(FlagACK) {
+		// Update TX ring buffer to free up acked data.
+		h.bufTx.RecvACK(segIncoming.ACK)
+	}
 	if segIncoming.Flags.HasAny(FlagSYN) && h.remotePort == 0 {
 		// Remote reached out and has given us their port, set it on our side.
 		h.debug("tcp.Handler:rx-remoteport-set", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("remoteport", uint64(remotePort)))
