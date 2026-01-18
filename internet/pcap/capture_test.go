@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"math"
 	"math/rand"
+	"strings"
 	"testing"
 
 	"github.com/soypat/lneto"
@@ -15,29 +16,46 @@ import (
 	"github.com/soypat/lneto/tcp"
 )
 
+const httpProtocol = "HTTP/1.1"
+
+func makeHttpPayload(body string) ([]byte, error) {
+	var hdr httpraw.Header
+	hdr.SetProtocol(httpProtocol)
+	hdr.SetStatus("200", "OK")
+	hdr.Set("Cookie", "ABC=123")
+
+	payload, err := hdr.AppendResponse(nil)
+	if err != nil {
+		return nil, err
+	}
+	return append(payload, body...), nil
+}
+
 func TestCap(t *testing.T) {
 	const mtu = 1500
 	const httpBody = "{200,ok}"
 	var buf [mtu]byte
 	var gen ltesto.PacketGen
+
+	payload, err := makeHttpPayload(httpBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	rng := rand.New(rand.NewSource(1))
 	gen.RandomizeAddrs(rng)
 	pkt := gen.AppendRandomIPv4TCPPacket(buf[:0], rng, tcp.Segment{
 		SEQ:     100,
 		ACK:     200,
-		DATALEN: 256,
+		DATALEN: tcp.Size(len(payload)),
 		WND:     1024,
 		Flags:   tcp.FlagFIN, //tcp.FlagSYN | tcp.FlagACK | tcp.FlagPSH,
 	})
-	var hdr httpraw.Header
-	hdr.SetProtocol("HTTP/1.1")
-	hdr.SetStatus("200", "OK")
-	hdr.Set("Cookie", "ABC=123")
-	pkt, err := hdr.AppendResponse(pkt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pkt = append(pkt, httpBody...)
+
+	copy(pkt[len(pkt)-len(payload):], payload)
+	// padding should not be included in the captured payload
+	pkt = append(pkt, "padding"...)
+
 	var pbreak PacketBreakdown
 	frames, err := pbreak.CaptureEthernet(nil, pkt, 0)
 	if err != nil {
@@ -121,6 +139,10 @@ func TestCap(t *testing.T) {
 	gotHeaderLen := getClass(ptfrm, FieldClassSize)
 	if gotHeaderLen != uint64(wantHeaderLen) {
 		t.Errorf("want %d TCP header length, got %d", wantHeaderLen, gotHeaderLen)
+	}
+	gotHttpHeader := string(getClassData(phfrm, FieldClassText))
+	if !strings.HasPrefix(gotHttpHeader, httpProtocol) {
+		t.Errorf("want HTTP header starting with %q, got %q", httpProtocol, gotHttpHeader)
 	}
 	gotBody := getClassData(phfrm, FieldClassPayload)
 	if string(gotBody) != httpBody {
