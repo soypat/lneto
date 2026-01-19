@@ -196,11 +196,13 @@ func _() {
 	var x [1]struct{}
 	_ = x[ErrPacketDrop-1]
 	_ = x[ErrBadCRC-2]
+	_ = x[ErrZeroSource-3]
+	_ = x[ErrZeroDestination-4]
 }
 
-const _errGeneric_name = "packet droppedincorrect checksum"
+const _errGeneric_name = "packet droppedincorrect checksumzero source(port/addr)zero destination(port/addr)"
 
-var _errGeneric_index = [...]uint8{0, 14, 32}
+var _errGeneric_index = [...]uint8{0, 14, 32, 54, 81}
 
 func (i errGeneric) String() string {
 	i -= 1

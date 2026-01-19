@@ -3,13 +3,33 @@
 // for configuring and monitoring physical layer transceivers.
 package phy
 
+// Add more stringers in linecomment mode by adding them to type flag (comma separated).
+//go:generate stringer -type=LinkMode -linecomment -output=phy_stringers.go
+
 import (
 	"errors"
 	"time"
 )
 
+// MDIOBus is a HAL for MDIO bus access supporting both Clause 22 and Clause 45 devices.
+// Implementations should use devaddr to select the framing:
+//   - devaddr=0: Clause 22 framing (devaddr ignored in transaction)
+//   - devaddr>=1: Clause 45 framing (PMA/PMD=1, WIS=2, PCS=3, PHY XS=4, DTE XS=5, AN=7)
+//
+// Register address range: Clause 22 uses 0-31, Clause 45 uses 0-65535.
+// Invalid combinations of devaddr and regAddr may or may not return an error
+// depending on the implementation or result in undefined behavior.
+// To avoid this wrap your MDIOBus interfaces with a wrapper type that checks validity of ranges.
+type MDIOBus interface {
+	// Read reads a 16-bit register from the PHY.
+	Read(phyAddr, devAddr uint8, regAddr uint16) (value uint16, err error)
+	// Write writes a 16-bit value to a PHY register.
+	Write(phyAddr, devAddr uint8, regAddr, value uint16) error
+}
+
 // FindPHYs finds all regular non-clause45 PHYs on the MDIO bus and writes them to dst.
-func FindPHYs(mdio MDIOBus, dst []uint8) (n int, err error) {
+// FindClause22PHYs returns error only if unable to find no PHYs.
+func FindClause22PHYs(mdio MDIOBus, dst []uint8) (n int, err error) {
 	const maxAddr = 31
 	const regBasicStatus = 0x01
 	if len(dst) < 32 {
@@ -19,9 +39,7 @@ func FindPHYs(mdio MDIOBus, dst []uint8) (n int, err error) {
 	for addr := uint8(0); addr <= maxAddr; addr++ {
 		// Future proofing for supported clause 45.
 		// Check PMA/PMD device (DEVAD 1), register 0 (control)
-		const devAddr = 1
-		var val uint16
-		val, err = mdio.Read(addr, devAddr, BMCRAddr)
+		val, err := mdio.Read(addr, 0, AddrBMSR)
 		if err != nil {
 			continue
 		}
@@ -32,36 +50,87 @@ func FindPHYs(mdio MDIOBus, dst []uint8) (n int, err error) {
 		}
 		time.Sleep(150 * time.Microsecond)
 	}
+	if n <= 0 {
+		err = errors.New("no phy found")
+	}
 	return n, err
 }
 
 type Device struct {
 	mdio    MDIOBus
 	phyaddr uint8
-	// Is 1 for Clause 45 devices and 0 for clause 22 devices.
-	clause45 uint8
+	// isClause45 is 0 for clause 22 devices and 1 for clause45 devices.
+	isClause45 uint8
 }
 
-func (d *Device) BasicControl() (BMCR, error) {
-	ctl, err := d.rread(BMCRAddr)
+// ConfigureAs22 resets all state of device to be used as a Clause22 device. Does not do a software reset.
+func (phy *Device) ConfigureAs22(mdio MDIOBus, phyAddr uint8) {
+	if phyAddr > 31 || mdio == nil {
+		panic("invalid argument to phy.Device.Reset")
+	}
+	phy.mdio = mdio
+	phy.phyaddr = phyAddr
+	phy.isClause45 = 0
+}
+
+// IsClause45 returns true if the device uses Clause 45 MDIO addressing (extended register access).
+func (phy *Device) IsClause45() bool {
+	return phy.isClause45 == 1
+}
+
+// PHYAddr returns the PHY address on the MDIO bus (0-31).
+func (phy *Device) PHYAddr() uint8 {
+	return phy.phyaddr
+}
+
+// BasicControl reads the Basic Mode Control Register (BMCR, register 0).
+func (phy *Device) BasicControl() (BMCR, error) {
+	ctl, err := phy.rread(AddrBMCR)
 	return BMCR(ctl), err
 }
 
-func (d *Device) BasicStatus(phyaddr uint8) (BMSR, error) {
-	stat, err := d.rread(BMSRAddr)
+// BasicStatus reads the Basic Mode Status Register (BMSR, register 1).
+func (phy *Device) BasicStatus() (BMSR, error) {
+	stat, err := phy.rread(AddrBMSR)
 	return BMSR(stat), err
 }
 
-func (d *Device) ID1() (uint16, error) {
-	return d.rread(regPhyId1)
+// EnableAutoNegotiation enables or disables PHY auto-negotiation and verifies the change took effect.
+func (phy *Device) EnableAutoNegotiation(b bool) error {
+	ctl, err := phy.BasicControl()
+	if err != nil {
+		return err
+	}
+	if b {
+		ctl |= BMCRANEnable
+	} else {
+		ctl &^= BMCRANEnable
+	}
+	err = phy.rwrite(AddrBMCR, uint16(ctl))
+	if err != nil {
+		return err
+	}
+	ctl, err = phy.BasicControl()
+	if (ctl&BMCRANEnable != 0) != b {
+		return errors.New("unable to set control enable bit")
+	}
+	return nil
 }
 
-func (d *Device) ID2() (uint16, error) {
-	return d.rread(regPhyId2)
+// ID1 reads the PHY Identifier 1 register (register 2), containing bits 3-18 of the OUI.
+func (phy *Device) ID1() (uint16, error) {
+	return phy.rread(regPhyId1)
 }
 
-func (d *Device) Reset(phyaddr uint8) error {
-	err := d.rwrite(BMCRAddr, uint16(BMCRReset))
+// ID2 reads the PHY Identifier 2 register (register 3), containing bits 19-24 of the OUI and model/revision.
+func (phy *Device) ID2() (uint16, error) {
+	return phy.rread(regPhyId2)
+}
+
+// ResetPHY performs a software reset and waits for completion.
+// Returns an error on IO error on MDIO bus or on timeout during wait for register reset.
+func (phy *Device) ResetPHY() (err error) {
+	err = phy.rwrite(AddrBMCR, uint16(BMCRReset))
 	if err != nil {
 		return err
 	}
@@ -69,9 +138,10 @@ func (d *Device) Reset(phyaddr uint8) error {
 	// IEEE 802.3 allows up to 500ms.
 	const maxPolls = 50
 	const resetTimeout = 500 * time.Millisecond // As per standard.
+	var ctl BMCR
 	for i := 0; i < maxPolls; i++ {
 		time.Sleep(resetTimeout / maxPolls)
-		ctl, err := d.BasicControl()
+		ctl, err = phy.BasicControl()
 		if err != nil {
 			continue
 		}
@@ -79,15 +149,104 @@ func (d *Device) Reset(phyaddr uint8) error {
 			return nil
 		}
 	}
+	if err != nil {
+		return err
+	}
 	return errors.New("PHY reset timeout")
 }
 
-// rwrite mdio register write.
-func (d *Device) rwrite(addr uint16, value uint16) error {
-	return d.mdio.Write(d.phyaddr, d.clause45, addr, value)
+// SetupForced disables auto-negotiation and forces a specific link mode.
+//
+// Inspired by drivers/net/phy/phy_device.c
+func (phy *Device) SetupForced(mode LinkMode) error {
+	var ctl BMCR
+	switch mode.SpeedMbps() {
+	case 1000:
+		ctl |= BMCRSpeed1000
+	case 100:
+		ctl |= BMCRSpeed100
+	case 10:
+		// No speed bits = 10Mbps
+	default:
+		return errors.New("unsupported forced link mode")
+	}
+	if mode.IsFullDuplex() {
+		ctl |= BMCRFullDuplex
+	}
+	// Note: BMCRANEnable is NOT set, disabling auto-negotiation
+	return phy.rwrite(AddrBMCR, uint16(ctl))
 }
 
-// rread mdio register read.
-func (d *Device) rread(addr uint16) (value uint16, _ error) {
-	return d.mdio.Read(d.phyaddr, d.clause45, addr)
+// Advertisement reads the current Auto-Negotiation Advertisement Register.
+func (phy *Device) Advertisement() (ANAR, error) {
+	val, err := phy.rread(AddrANAR)
+	return ANAR(val), err
+}
+
+// SetAdvertisement writes to the Auto-Negotiation Advertisement Register.
+// Does NOT restart auto-negotiation; call RestartAutoNeg() after if needed.
+func (phy *Device) SetAdvertisement(ad ANAR) error {
+	return phy.rwrite(AddrANAR, uint16(ad))
+}
+
+// LinkPartnerAdvertisement reads what the link partner is advertising (ANLPAR).
+func (phy *Device) LinkPartnerAdvertisement() (ANAR, error) {
+	val, err := phy.rread(AddrANLPAR)
+	return ANAR(val), err
+}
+
+// RestartAutoNeg enables auto-negotiation and restarts it.
+func (phy *Device) RestartAutoNeg() error {
+	ctl, err := phy.BasicControl()
+	if err != nil {
+		return err
+	}
+	ctl |= BMCRANEnable | BMCRANRestart
+	return phy.rwrite(AddrBMCR, uint16(ctl))
+}
+
+// IsLinkUp returns true if link is established.
+func (phy *Device) IsLinkUp() (bool, error) {
+	status, err := phy.BasicStatus()
+	if err != nil {
+		return false, err
+	}
+	return status&BMSRLinkStatus != 0, nil
+}
+
+// NegotiatedLink returns the auto-negotiated link mode using standard MII registers.
+// Returns LinkMode based on ANAR (our advertisement) AND ANLPAR (link partner ability).
+// Priority order per IEEE 802.3 Annex 28B.3.
+func (phy *Device) NegotiatedLink() (LinkMode, error) {
+	// First check if auto-negotiation is complete
+	status, err := phy.BasicStatus()
+	if err != nil {
+		return LinkDown, err
+	}
+	if status&BMSRANComplete == 0 {
+		return LinkDown, errors.New("auto-negotiation not complete")
+	}
+
+	// Read our advertisement
+	anar, err := phy.Advertisement()
+	if err != nil {
+		return LinkDown, err
+	}
+
+	// Read link partner's advertisement
+	anlpar, err := phy.LinkPartnerAdvertisement()
+	if err != nil {
+		return LinkDown, err
+	}
+
+	// Common capabilities = what both sides support
+	common := anar & anlpar
+	return common.LinkMode(), nil
+}
+
+func (phy *Device) rread(regaddr uint16) (uint16, error) {
+	return phy.mdio.Read(phy.phyaddr, phy.isClause45, regaddr)
+}
+func (phy *Device) rwrite(regaddr, value uint16) error {
+	return phy.mdio.Write(phy.phyaddr, phy.isClause45, regaddr, value)
 }
