@@ -148,6 +148,125 @@ func clear[E any, T []E](s T) {
 	}
 }
 
+// TestTxBufferFreedOnACK tests that the TX buffer is freed when ACKs are received.
+// This is a regression test for https://github.com/soypat/lneto/issues/22
+// where ringTx.sentoff and ringTx.sentend were not being updated when ACKs
+// were received, causing AvailableOutput() to return 0 indefinitely after
+// the initial buffer was consumed.
+func TestTxBufferFreedOnACK(t *testing.T) {
+	const mtu = 256
+	const maxpackets = 4
+	const txBufSize = 128 // Small TX buffer to easily fill it
+	rng := rand.New(rand.NewSource(42))
+
+	// Create handlers with small TX buffers to easily trigger the issue.
+	client := new(Handler)
+	server := new(Handler)
+	err := client.SetBuffers(make([]byte, txBufSize), make([]byte, mtu), maxpackets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = server.SetBuffers(make([]byte, txBufSize), make([]byte, mtu), maxpackets)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Setup and establish connection.
+	err = server.OpenListen(uint16(rng.Uint32()), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.OpenActive(uint16(rng.Uint32()), server.LocalPort(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var rawbuf [mtu]byte
+	establish(t, client, server, rawbuf[:])
+
+	// Record initial available space.
+	initialAvailable := client.AvailableOutput()
+	if initialAvailable == 0 {
+		t.Fatal("expected non-zero initial available output")
+	}
+
+	// Write data to fill a significant portion of the TX buffer.
+	data := make([]byte, txBufSize/2)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	n, err := client.Write(data)
+	if err != nil {
+		t.Fatal("client write:", err)
+	} else if n != len(data) {
+		t.Fatalf("expected to write %d bytes, wrote %d", len(data), n)
+	}
+
+	// Available space should have decreased.
+	afterWriteAvailable := client.AvailableOutput()
+	if afterWriteAvailable >= initialAvailable {
+		t.Fatalf("expected available to decrease after write: before=%d, after=%d",
+			initialAvailable, afterWriteAvailable)
+	}
+
+	// Client sends DATA packet.
+	clear(rawbuf[:])
+	n, err = client.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("client sending data:", err)
+	}
+	if n < len(data)+sizeHeaderTCP {
+		t.Fatal("expected client to send full data packet")
+	}
+	dataPacket := append([]byte(nil), rawbuf[:n]...)
+
+	// After sending, data moves from "unsent" to "sent" - available should still be reduced
+	// until we receive an ACK.
+	afterSendAvailable := client.AvailableOutput()
+
+	// Server receives DATA.
+	err = server.Recv(dataPacket)
+	if err != nil {
+		t.Fatal("server receiving data:", err)
+	}
+
+	// Server sends ACK.
+	clear(rawbuf[:])
+	n, err = server.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("server sending ACK:", err)
+	}
+	ackPacket := append([]byte(nil), rawbuf[:n]...)
+
+	// Client receives ACK - this is where the bug manifests.
+	// Without the fix, the TX buffer's sentoff/sentend are not updated,
+	// so AvailableOutput() remains low.
+	err = client.Recv(ackPacket)
+	if err != nil {
+		t.Fatal("client receiving ACK:", err)
+	}
+
+	// THE BUG: After receiving ACK, the TX buffer should be freed.
+	// Without the fix, AvailableOutput() stays at the post-send value.
+	afterAckAvailable := client.AvailableOutput()
+
+	if afterAckAvailable <= afterSendAvailable {
+		t.Fatalf("BUG (issue #22): TX buffer not freed after receiving ACK\n"+
+			"AvailableOutput() after send: %d\n"+
+			"AvailableOutput() after ACK:  %d\n"+
+			"Expected available space to increase after ACK is received.\n"+
+			"The ringTx.sentoff and ringTx.sentend fields are not being updated\n"+
+			"because ringTx.RecvACK() is not called when ACKs are received.",
+			afterSendAvailable, afterAckAvailable)
+	}
+
+	// Should be back to (approximately) initial available space.
+	if afterAckAvailable < initialAvailable-10 { // Allow small margin for overhead
+		t.Fatalf("expected available to return close to initial: initial=%d, afterAck=%d",
+			initialAvailable, afterAckAvailable)
+	}
+}
+
 // TestBufferNotClearedOnPassiveClose tests that data remains readable after
 // the TCP connection is closed by the remote peer. This is a regression test
 // for a bug where the receive buffer was cleared when the connection transitioned

@@ -138,17 +138,17 @@ func TestSentlist_multi(t *testing.T) {
 	sl.Reset(3, 0)
 
 	// Test multi packet x2.
-	p1 := sl.AddPacket(5, 0, bufsize)
-	p2 := sl.AddPacket(5, p1.end, bufsize)
+	p1 := sl.AddPacket(5, 0, bufsize, 0)
+	p2 := sl.AddPacket(5, p1.end, bufsize, p1.endSeq())
 	sl.RecvAck(Value(p2.size+p1.size), bufsize)
 	if sl.Oldest() != nil {
 		t.Fatal("expected full ack")
 	}
 	// multi packet x3.
 	sl.Reset(3, 0)
-	p1 = sl.AddPacket(3, 0, bufsize)
-	p2 = sl.AddPacket(3, p1.end, bufsize)
-	p3 := sl.AddPacket(4, p2.end, bufsize)
+	p1 = sl.AddPacket(3, 0, bufsize, 0)
+	p2 = sl.AddPacket(3, p1.end, bufsize, p1.endSeq())
+	p3 := sl.AddPacket(4, p2.end, bufsize, p2.endSeq())
 	sl.RecvAck(2, bufsize)
 	oldest := sl.Oldest()
 	if oldest != p1 {
@@ -167,7 +167,7 @@ func TestSentlist_simple(t *testing.T) {
 	// Test full ack.
 	const bufsize = 16
 	const pkt = 10
-	sl.AddPacket(pkt, 0, bufsize)
+	sl.AddPacket(pkt, 0, bufsize, 0)
 	if sl.Oldest() == nil || sl.Newest() != sl.Oldest() {
 		t.Error("expected same oldest/newest non-nil packet")
 	}
@@ -179,7 +179,7 @@ func TestSentlist_simple(t *testing.T) {
 	}
 
 	// Test partial ack.
-	sl.AddPacket(pkt, 0, bufsize)
+	sl.AddPacket(pkt, 0, bufsize, sl.ssn)
 	for i := Value(0); i < pkt-1; i++ {
 		ack++
 		sl.RecvAck(ack, bufsize)

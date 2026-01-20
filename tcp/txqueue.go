@@ -139,7 +139,7 @@ func (rtx *ringTx) MakePacket(b []byte, currentSeq Value) (int, error) {
 	// Start of buffer will be SENT, end of buffer will be UNSENT(or empty).
 	// Packet generated has offset at old unsentOff.
 	size := rtx.Size()
-	pkt := rtx.slist.AddPacket(n, oldUnsentOff, size)
+	pkt := rtx.slist.AddPacket(n, oldUnsentOff, size, currentSeq)
 	if pkt.off != oldUnsentOff || pkt.end != addEnd(pkt.off, n, size) {
 		panic("invalid generated packet")
 	}
@@ -295,7 +295,7 @@ func (sl *sentlist) Free() int {
 	return cap(sl.pkts) - len(sl.pkts)
 }
 
-func (sl *sentlist) AddPacket(datalen, off, bufsize int) *ringidx {
+func (sl *sentlist) AddPacket(datalen, off, bufsize int, seq Value) *ringidx {
 	free := sl.Free()
 	if free == 0 {
 		panic("pkt buffer full")
@@ -307,7 +307,7 @@ func (sl *sentlist) AddPacket(datalen, off, bufsize int) *ringidx {
 	sl.pkts = append(sl.pkts, ringidx{
 		off:  off,
 		end:  addEnd(off, datalen, bufsize),
-		seq:  sl.EndSeq(),
+		seq:  seq,
 		size: Size(datalen),
 	})
 	return &sl.pkts[len(sl.pkts)-1]
