@@ -599,7 +599,7 @@ func FuzzTCBActions(f *testing.F) {
 		actionMax
 	)
 	f.Add(
-		0x2313_2313,
+		int64(0x2313_2313),
 		[]byte{actionSend, actionRecv, actionSend, actionRecv, actionSend, actionRecv},
 	)
 	f.Add(
