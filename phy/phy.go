@@ -244,6 +244,21 @@ func (phy *Device) NegotiatedLink() (LinkMode, error) {
 	return common.LinkMode(), nil
 }
 
+// SetLoopback enables or disables PHY near-end loopback mode (BMCR bit 14).
+// In loopback mode, TX data is routed back to RX internally through PCS/PMA/PMD.
+func (phy *Device) SetLoopback(enable bool) error {
+	ctl, err := phy.BasicControl()
+	if err != nil {
+		return err
+	}
+	if enable {
+		ctl |= BMCRLoopback
+	} else {
+		ctl &^= BMCRLoopback
+	}
+	return phy.rwrite(AddrBMCR, uint16(ctl))
+}
+
 func (phy *Device) rread(regaddr uint16) (uint16, error) {
 	return phy.mdio.Read(phy.phyaddr, phy.isClause45, regaddr)
 }

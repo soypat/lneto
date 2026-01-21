@@ -603,21 +603,21 @@ func FuzzTCBActions(f *testing.F) {
 		[]byte{actionSend, actionRecv, actionSend, actionRecv, actionSend, actionRecv},
 	)
 	f.Add(
-		0x2fefe_feefe,
+		int64(0x2fefe_feefe),
 		[]byte{actionSend, actionRecv, actionSend, actionClose, actionSend, actionRecv},
 	)
 	f.Add(
-		0x2fefe_feefe,
+		int64(0x2fefe_feefe),
 		[]byte{actionClose, actionRecv, actionSend, actionClose, actionSend, actionRecv},
 	)
 	recvsendSize := func(rng *rand.Rand) int {
 		return rng.Int() % mtu
 	}
-	f.Fuzz(func(t *testing.T, seed int, actions []byte) {
+	f.Fuzz(func(t *testing.T, seed int64, actions []byte) {
 		if len(actions) == 0 || len(actions) > 100 {
 			t.SkipNow()
 		}
-		rng := rand.New(rand.NewSource(int64(seed)))
+		rng := rand.New(rand.NewSource(seed))
 		var clientISS tcp.Value = tcp.Value(rng.Int31())
 		var serverISS tcp.Value = tcp.Value(rng.Int31())
 

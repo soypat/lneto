@@ -11,6 +11,11 @@ import (
 	"github.com/soypat/lneto/tcp"
 )
 
+// Socket types
+const (
+	sockSTREAM = 0x1
+)
+
 type BerkeleyConfig struct {
 	ListenerPoolConfig TCPPoolConfig
 }
@@ -51,7 +56,7 @@ func (s StackBerkeley) Socket(ctx context.Context, network string, family, sotyp
 	case "udp", "udp4":
 		return nil, errors.New("udp not yet supported")
 	case "tcp", "tcp4":
-		if sotype != syscall.SOCK_STREAM {
+		if sotype != sockSTREAM {
 			return nil, errors.New("unsupported socket type")
 		}
 

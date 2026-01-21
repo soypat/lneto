@@ -64,6 +64,29 @@ const (
 	BMSR100Base4    BMSR = 0x8000 // 100BASE-T4 capable
 )
 
+// JabberDetected returns true if jabber condition was detected (bit 1).
+// Jabber occurs when transmission exceeds the maximum allowed frame time.
+// This bit is latched-high and cleared on read. Only meaningful for 10BASE-T.
+func (b BMSR) JabberDetected() bool {
+	return b&BMSRJabber != 0
+}
+
+// RemoteFault returns true if the link partner has detected a fault (bit 4).
+// This bit is latched-high and cleared on read.
+func (b BMSR) RemoteFault() bool {
+	return b&BMSRRemoteFault != 0
+}
+
+// LinkUp returns true if link is established (bit 2).
+func (b BMSR) LinkUp() bool {
+	return b&BMSRLinkStatus != 0
+}
+
+// AutoNegotiationComplete returns true if auto-negotiation has completed (bit 5).
+func (b BMSR) AutoNegotiationComplete() bool {
+	return b&BMSRANComplete != 0
+}
+
 // ANAR represents the Auto-Negotiation Advertisement Register value at address 0x04.
 // ANLPAR (Link Partner Ability Register at 0x05) shares the same bit layout.
 // Reference: IEEE 802.3 Clause 28.2.4.1
