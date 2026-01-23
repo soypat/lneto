@@ -108,8 +108,9 @@ func (ls *StackEthernet) Encapsulate(carrierData []byte, offsetToIP, offsetToFra
 	// For IP: offsetToIP=14, offsetToFrame=14
 	// For ARP: offsetToIP=-1, offsetToFrame=14 (but ARP ignores offsetToIP)
 	// Clip carrierData to MTU to prevent writes beyond MTU limit.
+	offsetToFrame += 14
 	mtuLimit := offsetToFrame + int(mtu)
-	h, n, err = ls.handlers.encapsulateAny(carrierData[:mtuLimit], offsetToFrame+14, offsetToFrame+14)
+	h, n, err = ls.handlers.encapsulateAny(carrierData[:mtuLimit], offsetToFrame, offsetToFrame)
 	if n == 0 {
 		return n, err
 	}
