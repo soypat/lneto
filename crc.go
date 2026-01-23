@@ -77,7 +77,11 @@ func (c *CRC791) Sum16() uint16 {
 	for sum>>16 != 0 {
 		sum = (sum & 0xffff) + (sum >> 16)
 	}
-	return uint16(^sum)
+	sum16 := uint16(^sum)
+	if sum16 == 0 {
+		sum16 = 0xffff
+	}
+	return sum16
 }
 
 // Reset zeros out the CRC791, resetting it to the initial state.
