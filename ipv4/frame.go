@@ -131,9 +131,13 @@ func (ifrm Frame) SetCRC(cs uint16) {
 // CalculateHeaderCRC calculates the CRC for this IPv4 frame.
 func (ifrm Frame) CalculateHeaderCRC() uint16 {
 	var crc lneto.CRC791
+	ifrm.CRCWriteHeader(&crc)
+	return crc.Sum16()
+}
+
+func (ifrm Frame) CRCWriteHeader(crc *lneto.CRC791) {
 	crc.Write(ifrm.buf[0:10])
 	crc.Write(ifrm.buf[12:20])
-	return crc.Sum16()
 }
 
 func (ifrm Frame) CRCWriteTCPPseudo(crc *lneto.CRC791) {

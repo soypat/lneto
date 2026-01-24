@@ -90,11 +90,12 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 		sb.handlers.error("ip:Demux.validate")
 		return err
 	}
-	gotCRC := ifrm.CRC()
-	wantCRC := ifrm.CalculateHeaderCRC()
-	if gotCRC != wantCRC {
-		sb.handlers.error("StackIP:Demux:crc-mismatch", slog.Uint64("want", uint64(wantCRC)), slog.Uint64("got", uint64(gotCRC)))
-		return lneto.ErrBadCRC
+
+	// Incoming CRC Validation of common IP Protocols.
+	var crc lneto.CRC791
+	ifrm.CRCWriteHeader(&crc)
+	if !crc.VerifySum16(ifrm.CRC()) {
+		sb.handlers.error("ip:demux.crc")
 	}
 	off := ifrm.HeaderLength()
 	totalLen := ifrm.TotalLength()
@@ -110,7 +111,7 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 		return lneto.ErrPacketDrop
 	}
 	// Incoming CRC Validation of common IP Protocols.
-	var crc lneto.CRC791
+	crc.Reset()
 	switch proto {
 	case lneto.IPProtoTCP:
 		ifrm.CRCWriteTCPPseudo(&crc)
@@ -119,7 +120,7 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 			return err
 		}
 		tfrm.CRCWrite(&crc)
-		if crc.Sum16() != tfrm.CRC() {
+		if !crc.VerifySum16(tfrm.CRC()) {
 			sb.handlers.error("ip:demux.tcpcrc")
 			return lneto.ErrBadCRC
 		}
@@ -130,7 +131,8 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 			return err
 		}
 		ufrm.CRCWriteIPv4(&crc)
-		if crc.Sum16() != ufrm.CRC() {
+		// checksums are optional in UDP: the field is set to zero in this case
+		if gotCrc := ufrm.CRC(); gotCrc != 0 && !crc.VerifySum16(gotCrc) {
 			sb.handlers.error("ip:demux.udpcrc")
 			return lneto.ErrBadCRC
 		}
@@ -210,7 +212,7 @@ func (sb *StackIP) recvicmp(carrierData []byte, offset int) error {
 		return err
 	}
 	cfrm.CRCWrite(&crc)
-	if crc.Sum16() != cfrm.CRC() {
+	if !crc.VerifySum16(cfrm.CRC()) {
 		return errors.New("ICMP CRC mismatch")
 	}
 	return nil
