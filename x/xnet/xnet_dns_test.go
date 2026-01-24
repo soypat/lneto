@@ -47,7 +47,8 @@ func TestDNS_QueryReceivesAnswer(t *testing.T) {
 	}
 
 	// Client sends DNS query.
-	var buf [MTU]byte
+	const carrierDataSize = MTU + 14
+	var buf [carrierDataSize]byte
 	n, err := client.Encapsulate(buf[:], -1, 0)
 	if err != nil {
 		t.Fatal("client Encapsulate failed:", err)
