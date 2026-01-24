@@ -40,6 +40,36 @@ All RMII signals are synchronous to a continuous 50 MHz reference clock. Two mod
 
 
 ## Tx0/Tx1/TxEN and CLKREF/RETCLK interface
+
+### Frame Transmission Sequence
+First 8 bytes in transmission are preamble and start of frame delimiter (SFD).
+The preamble is composed of 7 bytes, all dibits valued 0b01, so TX0=1, TX1=0.
+The SFD is composed of 3 0b01 dibits and a 0b11 dibit where both TX0 and TX1 are high for a single CLKREF cycle. After the final SFD(0b11) dibit the frame data is presented of the wire.
+
+TX_EN is asserted synchronously with the first dibit of preamble and remains HIGH throughout the entire frame (preamble, SFD, payload, CRC). 
+
+Example at 100M link mode:
+```
+REF_CLK:   _|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_ ...
+TX_EN:     __|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾ ... (HIGH until end of frame)
+TX0:       __|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾...‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|.D ...
+TX1:       _______________________________...____________|‾‾‾|.A ...
+TXD[1:0]:  00|01 |01 |01 |01 |01 |01 |01 |...|01 |01 |01 |11 |DA|TA|...
+              └───────────── Preamble (28 dibits) ─────────┘└SFD┘└─ Frame data ─...
+```
+
+
+**Inter-Packet Gap (IPG)**: After TX_EN deasserts, TXD[1:0] must be held at 00 for a minimum of 96 bit times (48 dibits = 12 bytes at 100M). This is the minimum gap required between consecutive frame transmissions.
+
+```
+End of frame with IPG at 100M link mode:
+
+REF_CLK:   _|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_ ...
+TX_EN:     ‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|_____________________________ ...
+TXD[1:0]:  ...data...|CR|C |00|00|00|00|00|00|00|00|...
+                      └CRC┘ └──── IPG (≥48 dibits) ────...
+```
+
 ### Practical Tx example:
 To illustrate programatically we'll suppose we have a hardware which requires a byte for every clock. Each byte contains 3 bits to be sent out: Tx0,Tx1,TxEn bits.
 This is not a contrived example, it is how Sandeep Mistry's and Rob Scott's LAN8720 drivers work.
