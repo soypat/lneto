@@ -19,7 +19,15 @@ const (
 // MDIOBitBang provides a software defined(bitbang) MDIO/MDC management interface for PHY register access
 // as the STA (Management station, this implementation) which communicates to the PHY (Physical layer device).
 // Inspired by linux/v3.13.1/source/drivers/net/phy/mdio-bitbang.c
+type MDIOBitBang struct {
+	_sendBit func(bit bool)
+	_getBit  func() (inputBit bool)
+	_setDir  func(output bool)
+}
+
+// Configure initializes the MDIO bit-bang interface with the given pin control callbacks.
 // Below is a TinyGo oriented HAL needed to use MDIOBitBang. MDC is clock line, MDIO is data line.
+// Example uses Z(high impedance) tristate level output encoding to avoid MAC/PHY simultaneous driving of data line.
 //
 //	const mdioDelay = 340 * time.Nanosecond // MDIO spec max turnaround time
 //	pinMDIO.Configure(machine.PinConfig{Mode: machine.PinInputPullup})
@@ -29,7 +37,7 @@ const (
 //	mdio2.Configure(func(outBit bool) {
 //		// sendBit: set data, clock high, clock low
 //		if outBit {
-//			pinMDIO.Configure(machine.PinConfig{Mode: machine.PinInputPullup})
+//			pinMDIO.Configure(machine.PinConfig{Mode: machine.PinInputPullup}) // Z high.
 //		} else {
 //			pinMDIO.Low()
 //			pinMDIO.Configure(machine.PinConfig{Mode: machine.PinOutput})
@@ -53,13 +61,6 @@ const (
 //			pinMDIO.Configure(machine.PinConfig{Mode: machine.PinInput})
 //		}
 //	})
-type MDIOBitBang struct {
-	_sendBit func(bit bool)
-	_getBit  func() (inputBit bool)
-	_setDir  func(output bool)
-}
-
-// Configure initializes the MDIO bit-bang interface with the given pin control callbacks.
 func (m *MDIOBitBang) Configure(sendBit func(bit bool), getBit func() bool, setDir func(setOut bool)) {
 	if sendBit == nil || getBit == nil || setDir == nil {
 		panic("nil callback")
@@ -71,7 +72,7 @@ func (m *MDIOBitBang) Configure(sendBit func(bit bool), getBit func() bool, setD
 }
 
 func (m *MDIOBitBang) reset() {
-	// setting direction to output releases the bus.
+	// setting direction to output releases the bus. Pin idle at high impedance state when using Z mode.
 	m.setDir(true)
 }
 
