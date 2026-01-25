@@ -140,7 +140,8 @@ func TestTCPListener_ConcurrentEcho(t *testing.T) {
 
 func kernelLoop(ctx context.Context, server *StackAsync, clients []StackAsync) {
 	const MTU = 1500
-	buf := make([]byte, MTU)
+	const carrierDataSize = MTU + 14
+	buf := make([]byte, carrierDataSize)
 	rng := rand.New(rand.NewSource(1)) // Seed 1 for deterministic but randomized order
 	order := make([]int, len(clients))
 	for i := range order {

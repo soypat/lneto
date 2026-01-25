@@ -244,11 +244,12 @@ func (h *Handler) Send(b []byte) (int, error) {
 		}
 	}
 	offset := uint8(5)
+	mss := uint16(len(b) - sizeHeaderTCP)
 	var segment Segment
 	if h.AwaitingSynSend() {
 		// Handling init syn segment.
 		segment = ClientSynSegment(h.bufTx.iss, Size(h.bufRx.Size()))
-		h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, uint16(len(b)))
+		h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
 		offset++
 	} else {
 		var ok bool
@@ -266,7 +267,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 				panic("expected n == available")
 			}
 		} else if segment.Flags == synack {
-			h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, uint16(len(b)))
+			h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
 			offset++
 		}
 	}
