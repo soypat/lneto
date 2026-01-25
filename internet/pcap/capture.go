@@ -161,26 +161,17 @@ func (pc *PacketBreakdown) CaptureIPv6(dst []Frame, pkt []byte, bitOffset int) (
 	end := bitOffset + 40*octet
 	var protoErrs []error
 	var crc lneto.CRC791
-	if proto == lneto.IPProtoTCP {
-		ifrm6.CRCWritePseudo(&crc)
-		tfrm, err := tcp.NewFrame(ifrm6.Payload())
-		if err == nil {
-			tfrm.CRCWrite(&crc)
-			wantSum := crc.Sum16()
-			gotSum := tfrm.CRC()
-			if wantSum != gotSum {
-				protoErrs = append(protoErrs, &crcError16{protocol: "ipv6+tcp", want: wantSum, got: gotSum})
-			}
+	ifrm6.CRCWritePseudo(&crc)
+	switch proto {
+	case lneto.IPProtoTCP:
+		if crc.PayloadSum16(ifrm6.Payload()) != 0 {
+			protoErrs = append(protoErrs, lneto.ErrBadCRC)
 		}
-	} else if proto == lneto.IPProtoUDP || proto == lneto.IPProtoUDPLite {
-		ifrm6.CRCWritePseudo(&crc)
-		ufrm, err := udp.NewFrame(ifrm6.Payload())
-		if err == nil {
-			ufrm.CRCWriteIPv6(&crc)
-			wantSum := crc.Sum16()
-			gotSum := ufrm.CRC()
-			if wantSum != gotSum {
-				protoErrs = append(protoErrs, &crcError16{protocol: "ipv6+udp", want: wantSum, got: gotSum})
+	case lneto.IPProtoUDP, lneto.IPProtoUDPLite:
+		checksummedData := udp.ChecksummedFrameData(ifrm6.Payload())
+		if len(checksummedData) > 0 {
+			if crc.PayloadSum16(checksummedData) != 0 {
+				protoErrs = append(protoErrs, lneto.ErrBadCRC)
 			}
 		}
 	}
@@ -214,47 +205,43 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 			BitLength:      octet * len(options),
 		})
 	}
-	gotSum := ifrm4.CRC()
-	wantSum := ifrm4.CalculateHeaderCRC()
-	if gotSum != wantSum {
-		finfo.Errors = append(finfo.Errors, &crcError16{protocol: "ipv4", want: wantSum, got: gotSum})
+	if ifrm4.CalculateHeaderCRC() != 0 {
+		finfo.Errors = append(finfo.Errors, lneto.ErrBadCRC)
 	}
 	dst = append(dst, finfo)
 	proto := ifrm4.Protocol()
 	end := bitOffset + octet*ifrm4.HeaderLength()
 	var protoErrs []error
 	var crc lneto.CRC791
+	payload := ifrm4.Payload()
 	switch proto {
 	case lneto.IPProtoTCP:
-		ifrm4.CRCWriteTCPPseudo(&crc)
-		tfrm, err := tcp.NewFrame(ifrm4.Payload())
+		tfrm, err := tcp.NewFrame(payload)
 		if err == nil {
 			tfrm.ValidateSize(pc.validator())
 			if pc.vld.HasError() {
 				println("BAD TCP")
 				return dst, pc.vld.ErrPop()
 			}
-			tfrm.CRCWrite(&crc)
-			wantSum := crc.Sum16()
-			gotSum := tfrm.CRC()
-			if wantSum != gotSum {
-				protoErrs = append(protoErrs, &crcError16{protocol: "ipv4+tcp", want: wantSum, got: gotSum})
+			ifrm4.CRCWriteTCPPseudo(&crc)
+			if crc.PayloadSum16(payload) != 0 {
+				protoErrs = append(protoErrs, lneto.ErrBadCRC)
 			}
 		}
 	case lneto.IPProtoUDP:
-		ifrm4.CRCWriteUDPPseudo(&crc)
-		ufrm, err := udp.NewFrame(ifrm4.Payload())
+		ufrm, err := udp.NewFrame(payload)
 		if err == nil {
 			ufrm.ValidateSize(pc.validator())
 			if pc.vld.HasError() {
 				println("BAD UDP")
 				return dst, pc.vld.ErrPop()
 			}
-			ufrm.CRCWriteIPv4(&crc)
-			wantSum := crc.Sum16()
-			gotSum := ufrm.CRC()
-			if wantSum != gotSum {
-				protoErrs = append(protoErrs, &crcError16{protocol: "ipv4+udp", want: wantSum, got: gotSum})
+			checksummedData := udp.ChecksummedFrameData(payload)
+			if len(checksummedData) > 0 {
+				ifrm4.CRCWriteUDPPseudo(&crc, len(checksummedData))
+				if crc.PayloadSum16(checksummedData) != 0 {
+					protoErrs = append(protoErrs, lneto.ErrBadCRC)
+				}
 			}
 		}
 	case lneto.IPProtoICMP:
@@ -1308,14 +1295,4 @@ func remainingFrameInfo(proto any, class FieldClass, pktBitOffset, pktBitLen int
 				BitLength: pktBitLen - pktBitOffset,
 			}},
 	}
-}
-
-type crcError16 struct {
-	protocol string
-	want     uint16
-	got      uint16
-}
-
-func (cerr *crcError16) Error() string {
-	return fmt.Sprintf("%s:incorrect checksum. want 0x%x, got 0x%x", cerr.protocol, cerr.want, cerr.got)
 }

@@ -88,6 +88,10 @@ func (i6frm Frame) SetHopLimit(hop uint8) {
 	i6frm.buf[7] = hop
 }
 
+func (i6frm Frame) sourceAndDestinationAddr() []byte {
+	return i6frm.buf[8:40]
+}
+
 // SourceAddr returns pointer to the sending node unicast IPv6 address in the IP header.
 func (i6frm Frame) SourceAddr() *[16]byte {
 	return (*[16]byte)(i6frm.buf[8:24])
@@ -99,8 +103,7 @@ func (i6frm Frame) DestinationAddr() *[16]byte {
 }
 
 func (i6frm Frame) CRCWritePseudo(crc *lneto.CRC791) {
-	crc.Write(i6frm.SourceAddr()[:])
-	crc.Write(i6frm.DestinationAddr()[:])
+	crc.WriteEven(i6frm.sourceAndDestinationAddr())
 	crc.AddUint32(uint32(i6frm.PayloadLength()))
 	crc.AddUint32(uint32(i6frm.NextHeader()))
 }

@@ -567,6 +567,5 @@ func addr4(addr [4]byte, ok bool) netip.Addr {
 
 func hash(b []byte) uint16 {
 	var csum lneto.CRC791
-	csum.Write(b)
-	return csum.Sum16()
+	return csum.PayloadSum16(b)
 }

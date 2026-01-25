@@ -50,11 +50,15 @@ func (ufrm Frame) SetDestinationPort(dst uint16) {
 	binary.BigEndian.PutUint16(ufrm.buf[2:4], dst)
 }
 
+func frameLength(buf []byte) uint16 {
+	return binary.BigEndian.Uint16(buf[4:])
+}
+
 // Length specifies length in bytes of UDP header and UDP payload. The minimum length
 // is 8 bytes (UDP header length). This field should match the result of the IP header
 // TotalLength field minus the IP header size: udp.Length == ip.TotalLength - 4*ip.IHL
 func (ufrm Frame) Length() uint16 {
-	return binary.BigEndian.Uint16(ufrm.buf[4:6])
+	return frameLength(ufrm.buf)
 }
 
 // SetLength sets the UDP header's length field. See [Frame.Length].
@@ -62,9 +66,24 @@ func (ufrm Frame) SetLength(length uint16) {
 	binary.BigEndian.PutUint16(ufrm.buf[4:6], length)
 }
 
+func frameChecksum(buf []byte) uint16 {
+	return binary.BigEndian.Uint16(buf[6:])
+}
+
 // CRC returns the checksum field in the UDP header.
 func (ufrm Frame) CRC() uint16 {
-	return binary.BigEndian.Uint16(ufrm.buf[6:8])
+	return frameChecksum(ufrm.buf)
+}
+
+// ChecksummedFrameData returns the UDP frame data which is subject to checksumming or an empty slice if checksumming is disabled.
+func ChecksummedFrameData(buf []byte) []byte {
+	if len(buf) >= sizeHeader && frameChecksum(buf) != 0 {
+		length := int(frameLength(buf))
+		if length <= len(buf) {
+			return buf[:length]
+		}
+	}
+	return nil
 }
 
 // SetCRC sets the UDP header's CRC field. See [Frame.CRC].
@@ -78,42 +97,6 @@ func (ufrm Frame) Payload() []byte {
 	l := ufrm.Length()
 	return ufrm.buf[sizeHeader:l]
 }
-
-func (ufrm Frame) CRCWriteIPv4(crc *lneto.CRC791) {
-	crc.AddUint16(ufrm.Length())
-	crc.AddUint16(ufrm.SourcePort())
-	crc.AddUint16(ufrm.DestinationPort())
-	crc.AddUint16(ufrm.Length()) // Length double tap for IPv4.
-	crc.Write(ufrm.Payload())
-}
-
-func (ufrm Frame) CRCWriteIPv6(crc *lneto.CRC791) {
-	crc.AddUint16(ufrm.SourcePort())
-	crc.AddUint16(ufrm.DestinationPort())
-	crc.AddUint16(ufrm.Length())
-	crc.Write(ufrm.Payload())
-}
-
-// func (ufrm Frame) CalculateIPv4Checksum(ifrm IPv4Frame) uint16 {
-// 	var crc lneto.CRC791
-// 	ifrm.crcWriteUDPPseudo(&crc)
-// 	crc.AddUint16(ufrm.Length())
-// 	crc.AddUint16(ufrm.SourcePort())
-// 	crc.AddUint16(ufrm.DestinationPort())
-// 	crc.AddUint16(ufrm.Length()) // Length double tap.
-// 	crc.Write(ufrm.Payload())
-// 	return crc.Sum16()
-// }
-
-// func (ufrm Frame) CalculateIPv6Checksum(ifrm IPv6Frame) uint16 {
-// 	var crc lneto.CRC791
-// 	ifrm.crcWritePseudo(&crc)
-// 	crc.AddUint16(ufrm.SourcePort())
-// 	crc.AddUint16(ufrm.DestinationPort())
-// 	crc.AddUint16(ufrm.Length()) // Length double tap.
-// 	crc.Write(ufrm.Payload())
-// 	return crc.Sum16()
-// }
 
 // ClearHeader zeros out the header contents.
 func (frm Frame) ClearHeader() {
