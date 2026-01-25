@@ -3,8 +3,6 @@ package icmpv4
 import (
 	"encoding/binary"
 	"errors"
-
-	"github.com/soypat/lneto"
 )
 
 type Type uint8
@@ -85,12 +83,6 @@ func (frm Frame) CRC() uint16 {
 // SetCRC sets the checksum field of the frame.
 func (frm Frame) SetCRC(crc uint16) {
 	binary.BigEndian.PutUint16(frm.buf[2:4], crc)
-}
-
-// CRCWrite calculates the checksum of the ICMP packet. Treats the checksum field as zero as per RFC 792.
-func (frm Frame) CRCWrite(crc *lneto.CRC791) {
-	crc.AddUint16(binary.BigEndian.Uint16(frm.buf[0:2]))
-	crc.Write(frm.buf[4:])
 }
 
 func (frm Frame) payload() []byte {
