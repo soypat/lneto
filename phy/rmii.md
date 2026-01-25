@@ -15,7 +15,7 @@ RMII (Reduced Media Independent Interface) reduces MII's 16 data/control pins do
 | **RX_ER** | Output | Receive error indicator (optional on some PHYs) |
 | **REF_CLK** | Input or Output | 50 MHz reference clock (direction depends on mode) |
 
-All RMII signals are synchronous to the 50 MHz REF_CLK rising edge.
+RMII signals that require sync are synchronous to the 50 MHz REF_CLK **rising edge.** PHY updates RXD[1:0], CRS_DV, RX_ER shortly after the rising edge. MAC should sample on the next rising edge (capturing the previous cycle's value)
 
 
 ## REF_CLK: Reference Clock
@@ -43,19 +43,19 @@ All RMII signals are synchronous to a continuous 50 MHz reference clock. Two mod
 
 ### Frame Transmission Sequence
 First 8 bytes in transmission are preamble and start of frame delimiter (SFD).
-The preamble is composed of 7 bytes, all dibits valued 0b01, so TX0=1, TX1=0.
-The SFD is composed of 3 0b01 dibits and a 0b11 dibit where both TX0 and TX1 are high for a single CLKREF cycle. After the final SFD(0b11) dibit the frame data is presented of the wire.
+The preamble is composed of 7 bytes, all dibits valued `0b01`, so TX0=1, TX1=0.
+The SFD is composed of 3 `0b01` dibits and a `0b11` dibit where both TX0 and TX1 are high for a single CLKREF cycle. After the final SFD(`0b11`) dibit the frame data is presented of the wire.
 
 TX_EN is asserted synchronously with the first dibit of preamble and remains HIGH throughout the entire frame (preamble, SFD, payload, CRC). 
 
 Example at 100M link mode:
 ```
 REF_CLK:   _|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_ ...
-TX_EN:     __|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾ ... (HIGH until end of frame)
-TX0:       __|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾...‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾|.D ...
-TX1:       _______________________________...____________|‾‾‾|.A ...
-TXD[1:0]:  00|01 |01 |01 |01 |01 |01 |01 |...|01 |01 |01 |11 |DA|TA|...
-              └───────────── Preamble (28 dibits) ─────────┘└SFD┘└─ Frame data ─...
+TX_EN:     __|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾  ... (HIGH until end of frame)
+TX0:       __|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾...‾‾‾‾‾‾‾‾‾‾‾‾|.D|.T| ...
+TX1:       _______________________________...________|‾‾‾|.A|.A| ...
+TXD[1:0]:  00|01 |01 |01 |01 |...|01 |01 |01 |01 |01 |11 |DA|TA| ...
+              └── Preamble (28 dibits)──┘└SFD (4 dibits)┘└─ Frame data ─...
 ```
 
 
@@ -235,7 +235,7 @@ The receive path uses RXD[1:0] for data and CRS_DV as a combined carrier sense a
 ### Frame Reception Sequence
 Example supposes 100M link mode:
 ```
-REF_CLK:   _|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_ ...
+REF_CLK:    |‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾| ...
 CRS|CRS_DV: __|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾ ... (stays HIGH until end of frame)
 DV:         __________|‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾ ...
 RXD[1:0]:  00|00|00|00|01|01|01|01|01|01|01|01|01|01|11|DA|TA|...
