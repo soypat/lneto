@@ -5,6 +5,12 @@ import (
 )
 
 const (
+	// MaxOverheadSize is the maximum overhead a packet can incur
+	// from transmitting an ethernet frame. Includes:
+	//  - 14 bytes of Ethernet header containing MAC addresses and ethernet type, always present
+	//  - 4 bytes of VLAN tag, if present.
+	//  - 4 bytes of the 32 bit trailing CRC, if required by PHY.
+	MaxOverheadSize  = 14 + 4 + 4
 	sizeHeaderNoVLAN = 14
 )
 
