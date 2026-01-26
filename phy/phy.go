@@ -56,6 +56,10 @@ func FindClause22PHYs(mdio MDIOBus, dst []uint8) (n int, err error) {
 	return n, err
 }
 
+var (
+	errInvalidPhyAddr = errors.New("invalid phy addr")
+)
+
 type Device struct {
 	mdio    MDIOBus
 	phyaddr uint8
@@ -64,13 +68,17 @@ type Device struct {
 }
 
 // ConfigureAs22 resets all state of device to be used as a Clause22 device. Does not do a software reset.
-func (phy *Device) ConfigureAs22(mdio MDIOBus, phyAddr uint8) {
-	if phyAddr > 31 || mdio == nil {
-		panic("invalid argument to phy.Device.Reset")
+func (phy *Device) ConfigureAs22(mdio MDIOBus, phyAddr uint8) error {
+	if phyAddr > 31 {
+		return errInvalidPhyAddr
+
+	} else if mdio == nil {
+		return errors.New("nil mdio bus")
 	}
 	phy.mdio = mdio
 	phy.phyaddr = phyAddr
 	phy.isClause45 = 0
+	return nil
 }
 
 // IsClause45 returns true if the device uses Clause 45 MDIO addressing (extended register access).
@@ -212,6 +220,57 @@ func (phy *Device) IsLinkUp() (bool, error) {
 		return false, err
 	}
 	return status&BMSRLinkStatus != 0, nil
+}
+
+// WaitForLinkWithDeadline waits for link to establish until the deadline.
+// If auto-negotiation is enabled (BMCR.ANEnable=1), waits for AN to complete first.
+// Returns true if link is up, false if deadline exceeded.
+//
+// Per IEEE 802.3:
+//   - BMSR.LinkStatus is latched-low, so first read clears any previous fault
+//   - BMSR.ANComplete must be set before link parameters are valid (when AN enabled)
+//   - link_fail_inhibit_timer (50-75ms) delays link indication after AN completes
+func (phy *Device) WaitForLinkWithDeadline(deadline time.Time) (bool, error) {
+	const pollInterval = 50 * time.Millisecond
+	// Check current PHY configuration.
+	// Early exit: link impossible if PHY isolated or powered down.
+	ctl, err := phy.BasicControl()
+	if err != nil {
+		return false, err
+	} else if ctl&BMCRIsolate != 0 {
+		return false, errors.New("PHY isolated from MII")
+	} else if ctl&BMCRPowerDown != 0 {
+		return false, errors.New("PHY powered down")
+	}
+
+	// First read clears latched-low bits (LinkStatus, ANComplete).
+	// This ensures we get fresh status on subsequent reads.
+	_, _ = phy.BasicStatus()
+	anEnabled := ctl&BMCRANEnable != 0
+	for time.Now().Before(deadline) {
+		status, err := phy.BasicStatus()
+		if err != nil {
+			return false, err
+		}
+		// If AN enabled, must wait for it to complete first.
+		// No point checking link status until AN is done.
+		if anEnabled && !status.AutoNegotiationComplete() {
+			time.Sleep(pollInterval)
+			continue
+		}
+		// AN complete (or disabled). Check link status.
+		if status.LinkUp() {
+			return true, nil
+		}
+		time.Sleep(pollInterval)
+	}
+
+	// Final check after deadline.
+	status, err := phy.BasicStatus()
+	if err != nil {
+		return false, err
+	}
+	return status.LinkUp(), nil
 }
 
 // NegotiatedLink returns the auto-negotiated link mode using standard MII registers.

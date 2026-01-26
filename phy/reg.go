@@ -11,7 +11,7 @@ const (
 
 	regAutoNegotiationAdvertisement      = 0x04
 	regAutoNegotiationLinkPartnerAbility = 0x05
-	regAutoNegotiationExpansion          = 0x05
+	regAutoNegotiationExpansion          = 0x06
 	regModeControlStatus                 = 0x11
 	regSpecialModes                      = 0x12
 	regSymbolErorCounter                 = 0x1a
@@ -115,22 +115,6 @@ const (
 	ANARPauseMask ANAR = ANARPause | ANARPauseAsym
 )
 
-func (l LinkMode) ANAR() (a ANAR) {
-	switch l {
-	case Link10HDX:
-		a = ANAR10Half
-	case Link10FDX:
-		a = ANAR10Full
-	case Link100HDX:
-		a = ANAR100Half
-	case Link100FDX:
-		a = ANAR100Full
-	case Link100T4:
-		a = ANAR100BaseT4
-	}
-	return a
-}
-
 // WithPause returns ANAR with pause bits set according to parameters.
 //
 // Flow control allows a receiver to signal the sender to pause transmission.
@@ -203,21 +187,22 @@ func (a ANAR) Without100M() ANAR {
 // LinkMode returns the highest priority LinkMode from the ANAR speed bits.
 // Priority order per IEEE 802.3 Annex 28B.3.
 // Returns LinkDown if no speed bits are set.
-func (a ANAR) LinkMode() LinkMode {
+func (a ANAR) LinkMode() (l LinkMode) {
 	switch {
 	case a&ANAR100Full != 0:
-		return Link100FDX
+		l = Link100FDX
 	case a&ANAR100BaseT4 != 0:
-		return Link100T4
+		l = Link100T4
 	case a&ANAR100Half != 0:
-		return Link100HDX
+		l = Link100HDX
 	case a&ANAR10Full != 0:
-		return Link10FDX
+		l = Link10FDX
 	case a&ANAR10Half != 0:
-		return Link10HDX
+		l = Link10HDX
 	default:
-		return LinkDown
+		l = LinkDown
 	}
+	return l
 }
 
 // LinkMode represents the negotiated/force-set Ethernet link speed and duplex mode.
@@ -249,30 +234,48 @@ const (
 	Link100GFDX // 100G-F
 )
 
+func (l LinkMode) ANAR() (a ANAR) {
+	a = NewANAR()
+	switch l {
+	case Link10HDX:
+		a |= ANAR10Half
+	case Link10FDX:
+		a |= ANAR10Full
+	case Link100HDX:
+		a |= ANAR100Half
+	case Link100FDX:
+		a |= ANAR100Full
+	case Link100T4:
+		a |= ANAR100BaseT4
+	}
+	return a
+}
+
 // SpeedMbps returns the link speed in megabits per second.
-func (lm LinkMode) SpeedMbps() int {
+func (lm LinkMode) SpeedMbps() (Mbps int) {
 	switch lm {
 	case Link10HDX, Link10FDX:
-		return 10
+		Mbps = 10
 	case Link100HDX, Link100FDX, Link100T4:
-		return 100
+		Mbps = 100
 	case Link1000HDX, Link1000FDX:
-		return 1000
+		Mbps = 1000
 	case Link2500FDX:
-		return 2500
+		Mbps = 2500
 	case Link5GFDX:
-		return 5000
+		Mbps = 5000
 	case Link10GFDX:
-		return 10_000
+		Mbps = 10_000
 	case Link25GFDX:
-		return 25_000
+		Mbps = 25_000
 	case Link40GFDX:
-		return 40_000
+		Mbps = 40_000
 	case Link100GFDX:
-		return 100_000
+		Mbps = 100_000
 	default:
-		return 0
+		Mbps = 0
 	}
+	return Mbps
 }
 
 // IsFullDuplex returns true if the link mode is full duplex.
