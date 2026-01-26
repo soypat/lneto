@@ -1046,7 +1046,14 @@ var baseDHCPv4Fields = [...]FrameField{
 		Name:           "Client Hardware Address",
 		Class:          FieldClassAddress,
 		FrameBitOffset: 28 * octet,
-		BitLength:      16 * octet,
+		BitLength:      6 * octet, // Ethernet MAC is 6 bytes, remaining 10 in chaddr are padding
+	},
+	{
+		Name:           "Padding",
+		Class:          FieldClassBinaryText,
+		FrameBitOffset: (28 + 6) * octet, // Part of Client Hardware Address(16 bytes) but unused.
+		BitLength:      10 * octet,
+		Legacy:         true,
 	},
 	{
 		Name:           "BOOTP",

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	_ "time"
 
 	"github.com/soypat/lneto"
@@ -28,6 +29,7 @@ type Formatter struct {
 	// may be very large in size but meaningless to the actual network functioning.
 	// Enabling DisableLegacyFilter means these fields will be printed as is.
 	DisableLegacyFilter bool
+	mubuf               sync.Mutex
 	buf                 []byte
 }
 
@@ -119,6 +121,8 @@ func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, p
 		dst = append(dst, ')')
 	}
 	dst = append(dst, '=')
+	f.mubuf.Lock()
+	defer f.mubuf.Unlock()
 	f.buf, err = appendField(f.buf[:0], pkt, field.FrameBitOffset+pktStartOff, field.BitLength, field.RightAligned)
 	if err != nil {
 		return dst, err

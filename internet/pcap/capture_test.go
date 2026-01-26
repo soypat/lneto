@@ -395,14 +395,13 @@ func TestFieldAsUintRightAligned(t *testing.T) {
 }
 
 func ExampleFormatter_dhcp() {
-	// Build an Ethernet + IPv4 + UDP + DHCPv4 packet.
+	// Build an Ethernet + IPv4 + UDP + DHCPv4 packet using dhcpv4.Client.
 	const (
 		ethSize  = 14
 		ipv4Size = 20
 		udpSize  = 8
 	)
-	pktSize := ethSize + ipv4Size + udpSize + dhcpv4.OptionsOffset + 32 // room for options
-	pkt := make([]byte, pktSize)
+	pkt := make([]byte, 600) // Need 240 (DHCP header) + 255 (min options) + 42 (Eth+IP+UDP)
 
 	// Ethernet frame.
 	efrm, _ := ethernet.NewFrame(pkt)
@@ -410,48 +409,51 @@ func ExampleFormatter_dhcp() {
 	*efrm.SourceHardwareAddr() = [6]byte{0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe}
 	efrm.SetEtherType(ethernet.TypeIPv4)
 
-	// IPv4 frame.
-	ifrm, _ := ipv4.NewFrame(efrm.Payload())
+	// IPv4 frame (will be filled by DHCP client).
+	ifrm, _ := ipv4.NewFrame(pkt[ethSize:])
 	ifrm.SetVersionAndIHL(4, 5)
-	ifrm.SetTotalLength(uint16(ipv4Size + udpSize + dhcpv4.OptionsOffset + 32))
 	ifrm.SetID(0x1234)
 	ifrm.SetFlags(0x4000) // Don't Fragment
 	ifrm.SetTTL(64)
 	ifrm.SetProtocol(lneto.IPProtoUDP)
-	*ifrm.SourceAddr() = [4]byte{0, 0, 0, 0}              // 0.0.0.0 (DHCP client)
-	*ifrm.DestinationAddr() = [4]byte{255, 255, 255, 255} // Broadcast
-	ifrm.SetCRC(ifrm.CalculateHeaderCRC())
 
-	// UDP frame.
-	ufrm, _ := udp.NewFrame(ifrm.Payload())
+	// UDP frame (ports set, length will be updated).
+	ufrm, _ := udp.NewFrame(pkt[ethSize+ipv4Size:])
 	ufrm.SetSourcePort(dhcpv4.DefaultClientPort)      // 68
 	ufrm.SetDestinationPort(dhcpv4.DefaultServerPort) // 67
-	ufrm.SetLength(uint16(udpSize + dhcpv4.OptionsOffset + 32))
 
-	// DHCPv4 frame (DHCP Discover).
-	dfrm, _ := dhcpv4.NewFrame(ufrm.Payload())
-	dfrm.ClearHeader()
-	dfrm.SetOp(dhcpv4.OpRequest)
-	dfrm.SetHardware(1, 6, 0) // Ethernet, 6 bytes, 0 hops
-	dfrm.SetXID(0xdeadbeef)
-	*dfrm.CHAddrAs6() = [6]byte{0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe}
-	dfrm.SetMagicCookie(dhcpv4.MagicCookie)
+	// Use dhcpv4.Client to generate DHCP Discover.
+	var cl dhcpv4.Client
+	err := cl.BeginRequest(0xdeadbeef, dhcpv4.RequestConfig{
+		RequestedAddr:      [4]byte{192, 168, 1, 100},
+		ClientHardwareAddr: [6]byte{0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe},
+		Hostname:           "myhost",
+		ClientID:           "lneto-test",
+	})
+	if err != nil {
+		fmt.Println("begin request error:", err)
+		return
+	}
 
-	// Add DHCP options.
-	opts := dfrm.OptionsPayload()
-	n := 0
-	n += writeOpt(opts[n:], dhcpv4.OptMessageType, byte(dhcpv4.MsgDiscover))
-	n += writeOpt(opts[n:], dhcpv4.OptHostName, []byte("myhost")...)
-	n += writeOpt(opts[n:], dhcpv4.OptParameterRequestList,
-		byte(dhcpv4.OptSubnetMask),
-		byte(dhcpv4.OptRouter),
-		byte(dhcpv4.OptDNSServers),
-	)
-	opts[n] = byte(dhcpv4.OptEnd)
+	// Encapsulate DHCP into the packet at correct offset.
+	// offsetToIP=14 (after Ethernet), offsetToFrame=42 (after Ethernet+IPv4+UDP)
+	dhcpLen, err := cl.Encapsulate(pkt, ethSize, ethSize+ipv4Size+udpSize)
+	if err != nil {
+		fmt.Println("encapsulate error:", err)
+		return
+	}
+
+	// Update lengths now that we know DHCP size.
+	totalLen := ipv4Size + udpSize + dhcpLen
+	ifrm.SetTotalLength(uint16(totalLen))
+	ufrm.SetLength(uint16(udpSize + dhcpLen))
+	ifrm.SetCRC(ifrm.CalculateHeaderCRC())
+
+	pkt = pkt[:ethSize+totalLen]
 
 	// Capture and format the packet.
 	var cap PacketBreakdown
-	cap.SubfieldLimit = 10 // Capture up to 10 DHCP options
+	cap.SubfieldLimit = 10
 	frames, err := cap.CaptureEthernet(nil, pkt, 0)
 	if err != nil {
 		fmt.Println("capture error:", err)
@@ -471,11 +473,15 @@ func ExampleFormatter_dhcp() {
 	fmt.Println(string(out))
 	// Output:
 	// Ethernet len=14; destination=ff:ff:ff:ff:ff:ff; source=de:ad:be:ef:ca:fe; protocol=0x0800
-	// IPv4 len=20; version=0x04; (Header Length)=5; (Type of Service)=0x00; (Total Length)=300; identification=0x1234; identification=0x1234; flags=0x4000; (Time to live)=0x40; protocol=0x11; checksum=0x278e; source=0.0.0.0; destination=255.255.255.255
-	// UDP [RFC768] len=8; (Source port)=68; (Destination port)=67; size=280; checksum=0x0000
-	// DHCPv4 len=240; op=1; (Hardware Address Type)=0x01; (Hardware Address Length)=6; Hops=0x00; (Transaction ID)=0xdeadbeef; (Start Time)=0x0000; Flags=0x0000; (Client Address)=0.0.0.0; (Offered Address)=0.0.0.0; (Server Next Address)=0.0.0.0; (Relay Agent Address)=0.0.0.0; (Client Hardware Address)=dead:beef:cafe::; options((DHCP message type.)=1
+	// IPv4 len=20; version=0x04; (Header Length)=5; (Type of Service)=0x00; (Total Length)=312; identification=0x6043; identification=0x6043; flags=0x4000; (Time to live)=0x40; protocol=0x11; checksum=0xd972; source=0.0.0.0; destination=255.255.255.255
+	// UDP [RFC768] len=8; (Source port)=68; (Destination port)=67; size=292; checksum=0x0000
+	// DHCPv4 len=240; op=1; (Hardware Address Type)=0x01; (Hardware Address Length)=6; Hops=0x00; (Transaction ID)=0xdeadbeef; (Start Time)=0x0001; Flags=0x0000; (Client Address)=0.0.0.0; (Offered Address)=0.0.0.0; (Server Next Address)=255.255.255.255; (Relay Agent Address)=0.0.0.0; (Client Hardware Address)=de:ad:be:ef:ca:fe; options
+	// 	(DHCP message type.)=1
+	// 	(Parameter request list)=0x0102031a1c060f2a
+	// 	(DHCP maximum message size)=558
+	// 	(Requested IP address)=192.168.1.100
+	// 	(Client identifier)="lneto-test"
 	// 	(Hostname string)="myhost"
-	// 	(Parameter request list)=0x010306)
 }
 func writeOpt(dst []byte, opt dhcpv4.OptNum, data ...byte) int {
 	dst[0] = byte(opt)
