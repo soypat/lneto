@@ -90,13 +90,13 @@ func (c *CRC791) Sum16() uint16 {
 }
 
 // VerifySum16 verifies that the given checksum matches the data written to c thus far.
-func (c *CRC791) VerifySum16(sum16 uint16) bool {
+func (c *CRC791) VerifySum16(expectedSum16 uint16) bool {
 	// as recommended by RFC 1624, this implementation supports both 0x0000 and 0xFFFF as zero value for the checksum
 	cc := *c
 	if cc.needPad {
 		cc.AddUint8(0)
 	}
-	cc.AddUint16(sum16)
+	cc.AddUint16(expectedSum16)
 	return cc.sum16() == 0
 }
 
