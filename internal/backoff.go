@@ -10,18 +10,24 @@ const (
 	BackoffTCPConn
 )
 
-func NewBackoff(priority BackoffFlags) Backoff {
-	if priority&BackoffCriticalPath != 0 {
-		return Backoff{
-			maxWait: uint32(1 * time.Millisecond),
-		}
-	} else if priority&BackoffTCPConn != 0 {
-		return Backoff{
-			maxWait: uint32(5 * time.Microsecond),
-		}
+const backoffMinWait = time.Microsecond
+
+func backoffMaxWait(priority BackoffFlags) time.Duration {
+	switch {
+	case priority&BackoffCriticalPath != 0:
+		return 1 * time.Millisecond
+	case priority&BackoffTCPConn != 0:
+		return 5 * time.Millisecond
+	default:
+		return time.Second >> (priority & BackoffHasPriority)
 	}
+}
+
+func NewBackoff(priority BackoffFlags) Backoff {
 	return Backoff{
-		maxWait: uint32(time.Second) >> (priority & BackoffHasPriority),
+		wait:      uint32(backoffMinWait),
+		maxWait:   uint32(backoffMaxWait(priority)),
+		startWait: uint32(backoffMinWait),
 	}
 }
 
@@ -31,10 +37,8 @@ type Backoff struct {
 	wait uint32
 	// Maximum allowable value for Wait.
 	maxWait uint32
-	// startWait is the value that Wait takes after a call to Hit.
+	// startWait is the intial Wait value, as well as the value that Wait takes after a call to Hit.
 	startWait uint32
-	// expMinusOne is the shift performed on Wait minus one, so the zero value performs a shift of 1.
-	expMinusOne uint32
 }
 
 // Hit sets eb.Wait to the StartWait value.
@@ -47,18 +51,12 @@ func (eb *Backoff) Hit() {
 
 // Miss sleeps for eb.Wait and increases eb.Wait exponentially.
 func (eb *Backoff) Miss() {
-	const k = 1
-	wait := eb.wait
-	maxWait := eb.maxWait
-	exp := eb.expMinusOne + 1
-	if maxWait == 0 {
+	if eb.maxWait == 0 {
 		panic("MaxWait cannot be zero")
 	}
-	time.Sleep(time.Duration(wait))
-	wait |= k
-	wait <<= exp
-	if wait > maxWait {
-		wait = maxWait
+	time.Sleep(time.Duration(eb.wait))
+	eb.wait *= 2
+	if eb.wait > eb.maxWait {
+		eb.wait = eb.maxWait
 	}
-	eb.wait = wait
 }
