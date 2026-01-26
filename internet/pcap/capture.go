@@ -36,6 +36,9 @@ type PacketBreakdown struct {
 	hdr  httpraw.Header
 	dmsg dns.Message
 	vld  lneto.Validator
+	// SubfieldLimit will limit the number of captured subfields to the value it has.
+	// Typically this means option fields of DHCP,IPv4,TCP.
+	SubfieldLimit int
 }
 
 func (pc *PacketBreakdown) CaptureEthernet(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
@@ -416,16 +419,63 @@ func (pc *PacketBreakdown) CaptureDHCPv4(dst []Frame, pkt []byte, bitOffset int)
 	}
 	finfo.Fields = append(finfo.Fields, baseDHCPv4Fields[:]...)
 	options := dfrm.OptionsPayload()
-	if len(options) > 0 {
-		err = dfrm.ForEachOption(func(optoff int, op dhcpv4.OptNum, data []byte) error {
-			finfo.Fields = append(finfo.Fields, FrameField{
-				Name:           op.String(),
-				Class:          FieldClassOptions,
-				FrameBitOffset: optoff * octet,
-				BitLength:      (2 + len(data)) * octet,
-			})
+
+	if len(options) > 0 && pc.SubfieldLimit > 0 {
+		var optfield FrameField
+		optfield.Class = FieldClassOptions
+		optfield.Name = "options"
+		err = dfrm.ForEachOption(func(optoff int, opt dhcpv4.OptNum, data []byte) error {
+			if len(optfield.SubFields) >= pc.SubfieldLimit {
+				return errors.New("option cap limit surpassed for DHCP")
+			}
+			// optoff points to start of length and num bytes, skip over them with FrameBitOffset.
+			field := FrameField{Name: opt.String(), FrameBitOffset: (optoff + 2) * octet, BitLength: len(data) * octet}
+			switch opt {
+			// Text options.
+			case dhcpv4.OptHostName, dhcpv4.OptDomainName, dhcpv4.OptMessage, dhcpv4.OptRootPath:
+				field.Class = FieldClassText
+
+			// Address options (single or multiple IP addresses).
+			case dhcpv4.OptSubnetMask, dhcpv4.OptRouter, dhcpv4.OptDNSServers,
+				dhcpv4.OptBroadcastAddress, dhcpv4.OptServerIdentification,
+				dhcpv4.OptRequestedIPaddress, dhcpv4.OptNTPServersAddresses,
+				dhcpv4.OptTimeServers, dhcpv4.OptNameServers, dhcpv4.OptLogServers:
+				field.Class = FieldClassAddress
+
+			// Size options.
+			case dhcpv4.OptMaximumMessageSize, dhcpv4.OptInterfaceMTUSize, dhcpv4.OptBootFileSize:
+				field.Class = FieldClassSize
+
+			// Time/duration options (seconds).
+			case dhcpv4.OptIPAddressLeaseTime, dhcpv4.OptRenewTimeValue, dhcpv4.OptRebindingTimeValue,
+				dhcpv4.OptTimeOffset, dhcpv4.OptARPCacheTimeout, dhcpv4.OptPathMTUAgingTimeout,
+				dhcpv4.OptTCPKeepaliveInterval, dhcpv4.OptDefaultIPTTL, dhcpv4.OptDefaultTCPTimetoLive:
+				field.Class = FieldClassTimestamp
+
+			// Operation/type options.
+			case dhcpv4.OptMessageType:
+				field.Class = FieldClassOperation
+
+			// Identifier options.
+			case dhcpv4.OptClientIdentifier, dhcpv4.OptClientIdentifier1:
+				field.Class = FieldClassText
+				for _, c := range data {
+					if c < 32 || c > 127 { // If clientID is ascii, print as is.
+						field.Class = FieldClassID
+						break
+					}
+				}
+			// Parameter list (list of option codes).
+			case dhcpv4.OptParameterRequestList:
+				field.Class = FieldClassOptions
+
+			default:
+				field.Class = FieldClassPayload
+			}
+			optfield.SubFields = append(optfield.SubFields, field)
 			return nil
 		})
+		finfo.Fields = append(finfo.Fields, optfield)
 		if err != nil {
 			finfo.Errors = append(finfo.Errors, err)
 		}
@@ -484,6 +534,7 @@ type FrameField struct {
 	BitLength      int
 	SubFields      []FrameField
 	RightAligned   bool
+	Legacy         bool
 }
 
 type Frame struct {
@@ -1002,6 +1053,7 @@ var baseDHCPv4Fields = [...]FrameField{
 		Class:          FieldClassBinaryText,
 		FrameBitOffset: (28 + 16) * octet,
 		BitLength:      (dhcpv4.OptionsOffset - (28 + 16)) * octet,
+		Legacy:         true,
 	},
 }
 

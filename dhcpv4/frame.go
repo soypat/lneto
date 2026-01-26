@@ -122,7 +122,7 @@ func (frm Frame) ClearHeader() {
 
 // ForEachOption iterates over all DHCPv4 options returning an error on a malformed option or when user provided callback returns an error.
 // If the user provided callback is nil then only option buffer validation is performed.
-func (frm Frame) ForEachOption(fn func(off int, op OptNum, data []byte) error) error {
+func (frm Frame) ForEachOption(fn func(off int, opt OptNum, data []byte) error) error {
 	// Parse DHCP options.
 	ptr := OptionsOffset
 	if ptr > len(frm.buf) {

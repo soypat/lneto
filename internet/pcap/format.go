@@ -18,19 +18,23 @@ import (
 )
 
 type Formatter struct {
-	FieldSep      string
 	FrameSep      string
+	FieldSep      string
+	SubfieldSep   string
 	FilterClasses []FieldClass
-	buf           []byte
+	// SubfieldLimit limits the amount of subfields formatted.
+	SubfieldLimit int
+	// Formatter by default filters out printing legacy fields such as DHCP BOOTP field which
+	// may be very large in size but meaningless to the actual network functioning.
+	// Enabling DisableLegacyFilter means these fields will be printed as is.
+	DisableLegacyFilter bool
+	buf                 []byte
 }
 
 // FormatFrames appends the formatted frame data to the destination buffer according the Formatter state.
 // Is equivalent to [Formatter.FormatFrame] called on each Frame with the FrameSep inserted between frames.
 func (f *Formatter) FormatFrames(dst []byte, frms []Frame, pkt []byte) (_ []byte, err error) {
-	sep := f.FrameSep
-	if sep == "" {
-		sep = " | "
-	}
+	sep := f.frameSep()
 	for ifrm := range frms {
 		if ifrm != 0 {
 			dst = append(dst, sep...)
@@ -45,10 +49,7 @@ func (f *Formatter) FormatFrames(dst []byte, frms []Frame, pkt []byte) (_ []byte
 
 // FormatFrame
 func (f *Formatter) FormatFrame(dst []byte, frm Frame, pkt []byte) (_ []byte, err error) {
-	sep := f.FieldSep
-	if sep == "" {
-		sep = "; " // default field separator
-	}
+	sep := f.fieldSep()
 	bitlen := frm.LenBits()
 	if bitlen%8 == 0 {
 		dst = fmt.Appendf(dst, "%s len=%d", frm.Protocol, bitlen/8)
@@ -72,7 +73,7 @@ func (f *Formatter) FormatFrame(dst []byte, frm Frame, pkt []byte) (_ []byte, er
 			dst = tcp.Flags(v).AppendFormat(dst)
 			continue
 		}
-		dst, err = f.formatField(dst, frm.PacketBitOffset, field, pkt)
+		dst, err = f.FormatField(dst, frm.PacketBitOffset, field, pkt)
 		if err != nil {
 			return dst, err
 		}
@@ -81,11 +82,27 @@ func (f *Formatter) FormatFrame(dst []byte, frm Frame, pkt []byte) (_ []byte, er
 }
 
 func (f *Formatter) filterField(field FrameField) bool {
-	return f.FilterClasses != nil && !slices.Contains(f.FilterClasses, field.Class)
+	return f.FilterClasses != nil && !slices.Contains(f.FilterClasses, field.Class) ||
+		(field.Legacy && !f.DisableLegacyFilter)
 }
 
 func (f *Formatter) FormatField(dst []byte, pktStartOff int, field FrameField, pkt []byte) (_ []byte, err error) {
-	return f.formatField(dst, pktStartOff, field, pkt)
+	printOnlySubfields := field.Class == FieldClassOptions && len(field.SubFields) > 0
+	if !printOnlySubfields {
+		dst, err = f.formatField(dst, pktStartOff, field, pkt)
+	} else {
+		dst = append(dst, field.Name...)
+	}
+	if f.SubfieldLimit > 0 && len(field.SubFields) > 0 {
+		sep := f.subfieldSep()
+		lim := min(len(field.SubFields), f.SubfieldLimit)
+		for i := 0; err == nil && i < lim && !f.filterField(field.SubFields[i]); i++ {
+			dst = append(dst, sep...)
+			// Notice we only format subfields one level low
+			dst, err = f.formatField(dst, pktStartOff, field.SubFields[i], pkt)
+		}
+	}
+	return dst, err
 }
 
 func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, pkt []byte) (_ []byte, err error) {
@@ -144,4 +161,26 @@ func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, p
 		}
 	}
 	return dst, err
+}
+
+func (f *Formatter) frameSep() string {
+	sep := f.FrameSep
+	if sep == "" {
+		sep = " | "
+	}
+	return sep
+}
+func (f *Formatter) fieldSep() string {
+	sep := f.FieldSep
+	if sep == "" {
+		sep = "; " // default field separator
+	}
+	return sep
+}
+func (f *Formatter) subfieldSep() string {
+	sep := f.SubfieldSep
+	if sep == "" {
+		sep = "_" // default sub-field separator
+	}
+	return sep
 }

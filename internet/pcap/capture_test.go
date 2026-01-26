@@ -2,18 +2,21 @@ package pcap
 
 import (
 	"encoding/binary"
+	"fmt"
 	"math"
 	"math/rand"
 	"strings"
 	"testing"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/dhcpv4"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/http/httpraw"
 	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/ipv6"
 	"github.com/soypat/lneto/tcp"
+	"github.com/soypat/lneto/udp"
 )
 
 const httpProtocol = "HTTP/1.1"
@@ -389,4 +392,94 @@ func TestFieldAsUintRightAligned(t *testing.T) {
 	if gotFlow != flowLabel {
 		t.Errorf("flow label: got 0x%05x, want 0x%05x", gotFlow, flowLabel)
 	}
+}
+
+func ExampleFormatter_dhcp() {
+	// Build an Ethernet + IPv4 + UDP + DHCPv4 packet.
+	const (
+		ethSize  = 14
+		ipv4Size = 20
+		udpSize  = 8
+	)
+	pktSize := ethSize + ipv4Size + udpSize + dhcpv4.OptionsOffset + 32 // room for options
+	pkt := make([]byte, pktSize)
+
+	// Ethernet frame.
+	efrm, _ := ethernet.NewFrame(pkt)
+	*efrm.DestinationHardwareAddr() = [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff} // Broadcast
+	*efrm.SourceHardwareAddr() = [6]byte{0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe}
+	efrm.SetEtherType(ethernet.TypeIPv4)
+
+	// IPv4 frame.
+	ifrm, _ := ipv4.NewFrame(efrm.Payload())
+	ifrm.SetVersionAndIHL(4, 5)
+	ifrm.SetTotalLength(uint16(ipv4Size + udpSize + dhcpv4.OptionsOffset + 32))
+	ifrm.SetID(0x1234)
+	ifrm.SetFlags(0x4000) // Don't Fragment
+	ifrm.SetTTL(64)
+	ifrm.SetProtocol(lneto.IPProtoUDP)
+	*ifrm.SourceAddr() = [4]byte{0, 0, 0, 0}              // 0.0.0.0 (DHCP client)
+	*ifrm.DestinationAddr() = [4]byte{255, 255, 255, 255} // Broadcast
+	ifrm.SetCRC(ifrm.CalculateHeaderCRC())
+
+	// UDP frame.
+	ufrm, _ := udp.NewFrame(ifrm.Payload())
+	ufrm.SetSourcePort(dhcpv4.DefaultClientPort)      // 68
+	ufrm.SetDestinationPort(dhcpv4.DefaultServerPort) // 67
+	ufrm.SetLength(uint16(udpSize + dhcpv4.OptionsOffset + 32))
+
+	// DHCPv4 frame (DHCP Discover).
+	dfrm, _ := dhcpv4.NewFrame(ufrm.Payload())
+	dfrm.ClearHeader()
+	dfrm.SetOp(dhcpv4.OpRequest)
+	dfrm.SetHardware(1, 6, 0) // Ethernet, 6 bytes, 0 hops
+	dfrm.SetXID(0xdeadbeef)
+	*dfrm.CHAddrAs6() = [6]byte{0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe}
+	dfrm.SetMagicCookie(dhcpv4.MagicCookie)
+
+	// Add DHCP options.
+	opts := dfrm.OptionsPayload()
+	n := 0
+	n += writeOpt(opts[n:], dhcpv4.OptMessageType, byte(dhcpv4.MsgDiscover))
+	n += writeOpt(opts[n:], dhcpv4.OptHostName, []byte("myhost")...)
+	n += writeOpt(opts[n:], dhcpv4.OptParameterRequestList,
+		byte(dhcpv4.OptSubnetMask),
+		byte(dhcpv4.OptRouter),
+		byte(dhcpv4.OptDNSServers),
+	)
+	opts[n] = byte(dhcpv4.OptEnd)
+
+	// Capture and format the packet.
+	var cap PacketBreakdown
+	cap.SubfieldLimit = 10 // Capture up to 10 DHCP options
+	frames, err := cap.CaptureEthernet(nil, pkt, 0)
+	if err != nil {
+		fmt.Println("capture error:", err)
+		return
+	}
+
+	var fmtr Formatter
+	fmtr.SubfieldLimit = cap.SubfieldLimit
+	fmtr.FrameSep = "\n"
+	fmtr.FieldSep = "; "
+	fmtr.SubfieldSep = "\n\t"
+	out, err := fmtr.FormatFrames(nil, frames, pkt)
+	if err != nil {
+		fmt.Println("format error:", err)
+		return
+	}
+	fmt.Println(string(out))
+	// Output:
+	// Ethernet len=14; destination=ff:ff:ff:ff:ff:ff; source=de:ad:be:ef:ca:fe; protocol=0x0800
+	// IPv4 len=20; version=0x04; (Header Length)=5; (Type of Service)=0x00; (Total Length)=300; identification=0x1234; identification=0x1234; flags=0x4000; (Time to live)=0x40; protocol=0x11; checksum=0x278e; source=0.0.0.0; destination=255.255.255.255
+	// UDP [RFC768] len=8; (Source port)=68; (Destination port)=67; size=280; checksum=0x0000
+	// DHCPv4 len=240; op=1; (Hardware Address Type)=0x01; (Hardware Address Length)=6; Hops=0x00; (Transaction ID)=0xdeadbeef; (Start Time)=0x0000; Flags=0x0000; (Client Address)=0.0.0.0; (Offered Address)=0.0.0.0; (Server Next Address)=0.0.0.0; (Relay Agent Address)=0.0.0.0; (Client Hardware Address)=dead:beef:cafe::; options((DHCP message type.)=1
+	// 	(Hostname string)="myhost"
+	// 	(Parameter request list)=0x010306)
+}
+func writeOpt(dst []byte, opt dhcpv4.OptNum, data ...byte) int {
+	dst[0] = byte(opt)
+	dst[1] = byte(len(data))
+	copy(dst[2:], data)
+	return 2 + len(data)
 }
