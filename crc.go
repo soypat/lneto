@@ -68,8 +68,7 @@ func (c *CRC791) AddUint8(value uint8) {
 	c.needPad = !c.needPad
 }
 
-// Sum16 calculates the checksum with the data written to c thus far.
-func (c *CRC791) Sum16() uint16 {
+func (c *CRC791) sum16() uint16 {
 	sum := c.sum
 	if c.needPad {
 		sum += uint32(c.excedent) << 8
@@ -78,6 +77,27 @@ func (c *CRC791) Sum16() uint16 {
 		sum = (sum & 0xffff) + (sum >> 16)
 	}
 	return uint16(^sum)
+}
+
+// Sum16 calculates the checksum with the data written to c thus far.
+func (c *CRC791) Sum16() uint16 {
+	sum16 := c.sum16()
+	if sum16 == 0 {
+		// The zero value is always transmitted as 0xFFFF, as required by UDP (RFC 768), and still valid for TCP and IP.
+		sum16 = 0xffff
+	}
+	return sum16
+}
+
+// VerifySum16 verifies that the given checksum matches the data written to c thus far.
+func (c *CRC791) VerifySum16(expectedSum16 uint16) bool {
+	// as recommended by RFC 1624, this implementation supports both 0x0000 and 0xFFFF as zero value for the checksum
+	cc := *c
+	if cc.needPad {
+		cc.AddUint8(0)
+	}
+	cc.AddUint16(expectedSum16)
+	return cc.sum16() == 0
 }
 
 // Reset zeros out the CRC791, resetting it to the initial state.
