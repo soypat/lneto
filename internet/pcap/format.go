@@ -110,6 +110,10 @@ func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, p
 	switch field.Class {
 	default:
 		fallthrough
+	case FieldClassChecksum, FieldClassID, FieldClassFlags, FieldClassOptions:
+		// Binary data to be printed as hexadecimal.
+		dst = append(dst, "0x"...)
+		dst = hex.AppendEncode(dst, f.buf)
 	case FieldClassTimestamp:
 		// inspired by [time.RFC3339]
 		const littlerfc3339 = "2006-01-02T15:04:05.9999"
@@ -118,10 +122,6 @@ func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, p
 		}
 		ts := ntp.TimestampFromUint64(binary.BigEndian.Uint64(f.buf))
 		dst = ts.Time().AppendFormat(dst, littlerfc3339)
-	case FieldClassChecksum, FieldClassID, FieldClassFlags, FieldClassOptions:
-		// Binary data to be printed as hexadecimal.
-		dst = append(dst, "0x"...)
-		dst = hex.AppendEncode(dst, f.buf)
 	case FieldClassText:
 		dst = strconv.AppendQuote(dst, string(f.buf))
 	case FieldClassDst, FieldClassSrc, FieldClassSize, FieldClassAddress, FieldClassOperation:
