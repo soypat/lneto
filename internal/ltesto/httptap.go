@@ -13,6 +13,8 @@ import (
 	"net/url"
 	"sync"
 	"time"
+
+	"github.com/soypat/lneto/ethernet"
 )
 
 const minMTU = 256
@@ -58,7 +60,7 @@ func (h *HTTPTapClient) IPMask() (netip.Prefix, error) {
 
 func (h *HTTPTapClient) MTU() (int, error) {
 	err := h.ensureMTU()
-	return len(h.buf), err
+	return len(h.buf) - ethernet.MaxOverheadSize, err // Return payload MTU, not buffer size
 }
 
 func (h *HTTPTapClient) HardwareAddress6() ([6]byte, error) {
@@ -85,7 +87,7 @@ func (h *HTTPTapClient) ensureMTU() (err error) {
 	if err != nil {
 		return err
 	}
-	h.buf = make([]byte, info.MTU)
+	h.buf = make([]byte, info.MTU+ethernet.MaxOverheadSize)
 	hw, err := net.ParseMAC(info.HardwareAddr)
 	if err == nil {
 		copy(h.hwaddr[:], hw)
@@ -215,7 +217,7 @@ func NewHTTPTapServer(iface Interface, minMTU, queueOut, queueIn int) (*HTTPTapS
 	if err != nil {
 		return nil, err
 	}
-	bufferSize := max(mtu, minMTU)
+	bufferSize := max(mtu, minMTU) + ethernet.MaxOverheadSize
 	netmask, err := iface.IPMask()
 	if err != nil {
 		return nil, err

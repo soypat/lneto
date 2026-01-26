@@ -47,7 +47,7 @@ func TestDNS_QueryReceivesAnswer(t *testing.T) {
 	}
 
 	// Client sends DNS query.
-	const carrierDataSize = MTU + 14
+	const carrierDataSize = MTU + ethernet.MaxOverheadSize
 	var buf [carrierDataSize]byte
 	n, err := client.Encapsulate(buf[:], -1, 0)
 	if err != nil {

@@ -11,15 +11,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/tcp"
 )
 
 func TestTCPListener_ConcurrentEcho(t *testing.T) {
 	const (
-		numClients = 10
-		serverPort = 8080
-		MTU        = 1500
-		seed       = 1
+		numClients  = 10
+		serverPort  = 8080
+		MTU         = 1500
+		carrierSize = MTU + ethernet.MaxOverheadSize
+		tcpBufSize  = MTU
+		seed        = 1
 	)
 
 	// 1. Setup server stack with tcp.Listener.
@@ -63,7 +66,7 @@ func TestTCPListener_ConcurrentEcho(t *testing.T) {
 	// 2. Setup client stacks (one per client).
 	clientStacks := make([]StackAsync, numClients)
 	clientConns := make([]tcp.Conn, numClients)
-	connBufs := make([]byte, numClients*MTU*2) // RX+TX buffer space for all clients
+	connBufs := make([]byte, numClients*tcpBufSize*2) // RX+TX buffer space for all clients
 
 	for i := range clientStacks {
 		clientMAC := [6]byte{0xaa, 0xbb, 0xcc, 0x00, 0x01, byte(i + 1)}
@@ -83,10 +86,10 @@ func TestTCPListener_ConcurrentEcho(t *testing.T) {
 		clientStacks[i].SetGateway6(serverMAC)
 
 		// Configure client connection buffers.
-		bufOff := i * MTU * 2
+		bufOff := i * tcpBufSize * 2
 		err = clientConns[i].Configure(tcp.ConnConfig{
-			RxBuf:             connBufs[bufOff : bufOff+MTU],
-			TxBuf:             connBufs[bufOff+MTU : bufOff+2*MTU],
+			RxBuf:             connBufs[bufOff : bufOff+tcpBufSize],
+			TxBuf:             connBufs[bufOff+tcpBufSize : bufOff+2*tcpBufSize],
 			TxPacketQueueSize: 4,
 		})
 		if err != nil {
@@ -140,7 +143,7 @@ func TestTCPListener_ConcurrentEcho(t *testing.T) {
 
 func kernelLoop(ctx context.Context, server *StackAsync, clients []StackAsync) {
 	const MTU = 1500
-	const carrierDataSize = MTU + 14
+	const carrierDataSize = MTU + ethernet.MaxOverheadSize
 	buf := make([]byte, carrierDataSize)
 	rng := rand.New(rand.NewSource(1)) // Seed 1 for deterministic but randomized order
 	order := make([]int, len(clients))
@@ -174,7 +177,7 @@ func kernelLoop(ctx context.Context, server *StackAsync, clients []StackAsync) {
 
 func routePacketToClient(pkt []byte, clients []StackAsync) {
 	// Extract destination IP from IPv4 header (offset 16-19 in IP header, after 14 byte Ethernet header).
-	if len(pkt) < 34 { // 14 ethernet + 20 min IP header
+	if len(pkt) < 20+ethernet.MaxOverheadSize { //  20 min IP header
 		return
 	}
 	dstIP := netip.AddrFrom4([4]byte{pkt[30], pkt[31], pkt[32], pkt[33]})

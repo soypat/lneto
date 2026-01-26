@@ -217,7 +217,7 @@ func newTCPStacks(t *testing.T, randSeed int64, mtu int) (s1, s2 *StackAsync, c1
 }
 
 func testerFrom(t *testing.T, mtu int) *tester {
-	carrierDataSize := mtu + 14
+	carrierDataSize := mtu + ethernet.MaxOverheadSize
 	return &tester{
 		t:   t,
 		buf: make([]byte, carrierDataSize),
