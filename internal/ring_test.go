@@ -329,8 +329,8 @@ func TestRingOverwrite(t *testing.T) {
 					panic("invalid test")
 				}
 				ngot, err := r.Write(auxbuf[:osz])
-				if err == nil {
-					t.Fatal("expected error")
+				if err != nil {
+					t.Fatal("expected no error")
 				} else if ngot > 0 {
 					t.Fatalf("expected no data written, got %d", ngot)
 				}
