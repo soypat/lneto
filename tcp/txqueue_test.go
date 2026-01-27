@@ -69,13 +69,9 @@ func TestRingTx_op(t *testing.T) {
 				case opWrite:
 					// oplen=number of bytes to write into unsent buffer.
 					nwgot, err := rtx.Write(opWriteData)
-					wantErr := oplen > free
 					if err != nil && oplen <= free {
 						t.Fatal(itest, iop, err)
 					} else if err == nil {
-						if wantErr {
-							panic("wanted write error")
-						}
 						nunsent += nwgot
 						dataWritten = append(dataWritten, opWriteData[:nwgot]...)
 					} else if log {

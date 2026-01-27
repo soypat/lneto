@@ -9,8 +9,7 @@ import (
 )
 
 var (
-	errRingBufferFull = errors.New("lneto/ring: buffer full")
-	errRingNoData     = errors.New("lneto/ring: empty write")
+	errRingNoData = errors.New("lneto/ring: empty write")
 )
 
 // Ring implements basic Ring buffer functionality.
@@ -39,7 +38,7 @@ func (r *Ring) WriteLimited(b []byte, limitOffset int) (int, error) {
 	}
 	limit := r.FreeLimited(limitOffset)
 	if len(b) > limit {
-		return 0, errRingBufferFull
+		return 0, nil
 	}
 	return r.Write(b)
 }
@@ -50,12 +49,12 @@ func (r *Ring) WriteString(s string) (int, error) {
 }
 
 // Write appends data to the ring buffer that can then be read back in order with [Ring.Read] methods.
-// An error is returned if length of data too large for buffer. Write is guaranteed to start at buffer index [Ring.Off].
+// 0,nil is returned if length of data too large for buffer. Write is guaranteed to start at buffer index [Ring.Off].
 func (r *Ring) Write(b []byte) (int, error) {
 	if len(b) == 0 {
 		return 0, errRingNoData
 	} else if r.IsFull() || r.Free() < len(b) {
-		return 0, errRingBufferFull
+		return 0, nil
 	}
 	midFree := r.midFree()
 	if midFree > 0 {
