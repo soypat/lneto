@@ -140,12 +140,6 @@ func (tfrm Frame) Segment(payloadSize int) Segment {
 	}
 }
 
-func (tfrm Frame) CRCWrite(crc *lneto.CRC791) {
-	// Write excluding CRC
-	crc.Write(tfrm.buf[:16])
-	crc.Write(tfrm.buf[18:])
-}
-
 // SetSegment sets the sequence, acknowledgment, offset, window and flag fields of the TCP header from the the [Segment].
 // Offset, like in [Frame.SetOffset], is expressed in words with minimum being 5.
 func (tfrm Frame) SetSegment(seg Segment, offset uint8) {
