@@ -53,14 +53,15 @@ type StackAsync struct {
 }
 
 type StackConfig struct {
-	StaticAddress   netip.Addr
-	DNSServer       netip.Addr
-	NTPServer       netip.Addr
-	Hostname        string
-	MaxTCPConns     int
-	RandSeed        int64
-	HardwareAddress [6]byte
-	MTU             uint16
+	StaticAddress         netip.Addr
+	DNSServer             netip.Addr
+	NTPServer             netip.Addr
+	Hostname              string
+	MaxTCPConns           int
+	RandSeed              int64
+	HardwareAddress       [6]byte
+	MTU                   uint16
+	EthernetTxCRC32Update func(crc uint32, b []byte) uint32
 }
 
 func (s *StackAsync) Hostname() string {
@@ -91,7 +92,6 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	mac := cfg.HardwareAddress
-	mtu := cfg.MTU
 	addr := cfg.StaticAddress
 	s.prng = uint32(cfg.RandSeed)
 	if s.prng == 0 {
@@ -104,7 +104,15 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 		return errors.New("IPv6 unsupported as of yet")
 	}
 	const linkNodes = 2 // ARP and IP nodes
-	err := s.link.Reset6(mac, ethernet.BroadcastAddr(), int(mtu), linkNodes)
+	ecfg := internet.StackEthernetConfig{
+		MTU:         int(cfg.MTU),
+		MaxNodes:    linkNodes,
+		MAC:         mac,
+		Gateway:     ethernet.BroadcastAddr(),
+		AppendCRC32: cfg.EthernetTxCRC32Update != nil,
+		CRC32Update: cfg.EthernetTxCRC32Update,
+	}
+	err := s.link.Configure(ecfg)
 	if err != nil {
 		return err
 	}
