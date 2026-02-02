@@ -170,6 +170,9 @@ func (listener *Listener) Encapsulate(carrierData []byte, offsetToIP, offsetToFr
 			err = nil
 		}
 	}
+	if n == 0 {
+		listener.maintainConns()
+	}
 	return n, err
 }
 
