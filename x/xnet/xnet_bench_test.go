@@ -4,11 +4,13 @@ import (
 	"net/netip"
 	"testing"
 
+	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/tcp"
 )
 
 func BenchmarkARPExchange(b *testing.B) {
 	const MTU = 1500
+	const frameSize = MTU + ethernet.MaxOverheadSize
 	c1, c2 := new(StackAsync), new(StackAsync)
 	queryAddr := netip.AddrFrom4([4]byte{192, 168, 1, 2})
 
@@ -36,7 +38,7 @@ func BenchmarkARPExchange(b *testing.B) {
 	c1.SetGateway6(c2.HardwareAddress())
 	c2.SetGateway6(c1.HardwareAddress())
 
-	var buf [MTU]byte
+	var buf [frameSize]byte
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -75,6 +77,7 @@ func BenchmarkARPExchange(b *testing.B) {
 
 func BenchmarkTCPHandshake(b *testing.B) {
 	const MTU = 1500
+	const frameSize = MTU + ethernet.MaxOverheadSize
 	const svPort = 8080
 	client, sv := new(StackAsync), new(StackAsync)
 	clconn, svconn := new(tcp.Conn), new(tcp.Conn)
@@ -122,7 +125,7 @@ func BenchmarkTCPHandshake(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	var pktbuf [MTU]byte
+	var pktbuf [frameSize]byte
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
