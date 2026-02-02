@@ -14,6 +14,7 @@ import (
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/http/httpraw"
 	"github.com/soypat/lneto/ipv4"
+	"github.com/soypat/lneto/ipv4/icmpv4"
 	"github.com/soypat/lneto/ipv6"
 	"github.com/soypat/lneto/ntp"
 	"github.com/soypat/lneto/tcp"
@@ -256,6 +257,16 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 				protoErrs = append(protoErrs, &crcError16{protocol: "ipv4+udp", want: wantSum, got: gotSum})
 			}
 		}
+	case lneto.IPProtoICMP:
+		ifrm, err := icmpv4.NewFrame(ifrm4.Payload())
+		if err == nil {
+			ifrm.CRCWrite(&crc)
+			wantSum := crc.Sum16()
+			gotSum := ifrm.CRC()
+			if wantSum != gotSum {
+				protoErrs = append(protoErrs, &crcError16{protocol: "icmpv4", want: wantSum, got: gotSum})
+			}
+		}
 	}
 	return pc.captureIPProto(proto, dst, pkt, end, protoErrs...)
 }
@@ -272,6 +283,8 @@ func (pc *PacketBreakdown) captureIPProto(proto lneto.IPProto, dst []Frame, pkt 
 		if len(dst) > nextFrame {
 			dst[nextFrame].Protocol = lneto.IPProtoUDPLite
 		}
+	case lneto.IPProtoICMP:
+		dst, err = pc.CaptureICMPv4(dst, pkt, bitOffset)
 	default:
 		dst = append(dst, remainingFrameInfo(proto, 0, bitOffset, octet*len(pkt)))
 	}
@@ -353,6 +366,71 @@ func (pc *PacketBreakdown) CaptureUDP(dst []Frame, pkt []byte, bitOffset int) ([
 	if err != nil {
 		dst = append(dst, remainingFrameInfo(unknownPayloadProto, FieldClassPayload, end, octet*len(pkt)))
 	}
+	return dst, nil
+}
+
+func (pc *PacketBreakdown) CaptureICMPv4(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
+	if bitOffset%8 != 0 {
+		return dst, errors.New("ICMPv4 must be parsed at byte boundary")
+	}
+	icmpData := pkt[bitOffset/8:]
+	ifrm, err := icmpv4.NewFrame(icmpData)
+	if err != nil {
+		return dst, err
+	}
+
+	finfo := Frame{
+		Protocol:        lneto.IPProtoICMP,
+		PacketBitOffset: bitOffset,
+	}
+	finfo.Fields = append(finfo.Fields, baseICMPv4Fields[:]...)
+
+	// Add type-specific fields.
+	switch ifrm.Type() {
+	case icmpv4.TypeEcho, icmpv4.TypeEchoReply:
+		finfo.Fields = append(finfo.Fields, icmpv4EchoFields[:]...)
+		if len(icmpData) > 8 {
+			finfo.Fields = append(finfo.Fields, FrameField{
+				Name:           "Data",
+				Class:          FieldClassPayload,
+				FrameBitOffset: 8 * octet,
+				BitLength:      (len(icmpData) - 8) * octet,
+			})
+		}
+	case icmpv4.TypeRedirect:
+		finfo.Fields = append(finfo.Fields, icmpv4RedirectFields[:]...)
+		if len(icmpData) > 8 {
+			finfo.Fields = append(finfo.Fields, FrameField{
+				Name:           "Original Datagram",
+				Class:          FieldClassPayload,
+				FrameBitOffset: 8 * octet,
+				BitLength:      (len(icmpData) - 8) * octet,
+			})
+		}
+	case icmpv4.TypeDestinationUnreachable, icmpv4.TypeTimeExceeded,
+		icmpv4.TypeSourceQuench, icmpv4.TypeParameterProblem:
+		// 4 bytes unused, then original datagram.
+		if len(icmpData) > 8 {
+			finfo.Fields = append(finfo.Fields, FrameField{
+				Name:           "Original Datagram",
+				Class:          FieldClassPayload,
+				FrameBitOffset: 8 * octet,
+				BitLength:      (len(icmpData) - 8) * octet,
+			})
+		}
+	case icmpv4.TypeTimestamp, icmpv4.TypeTimestampReply:
+		finfo.Fields = append(finfo.Fields, icmpv4TimestampFields[:]...)
+	default:
+		// Unknown type - add generic payload.
+		if len(icmpData) > 4 {
+			finfo.Fields = append(finfo.Fields, FrameField{
+				Class:          FieldClassPayload,
+				FrameBitOffset: 4 * octet,
+				BitLength:      (len(icmpData) - 4) * octet,
+			})
+		}
+	}
+	dst = append(dst, finfo)
 	return dst, nil
 }
 
@@ -973,6 +1051,82 @@ var baseUDPFields = [...]FrameField{
 		Class:          FieldClassChecksum,
 		FrameBitOffset: 6 * octet,
 		BitLength:      2 * octet,
+	},
+}
+
+var baseICMPv4Fields = [...]FrameField{
+	{
+		Class:          FieldClassType,
+		FrameBitOffset: 0,
+		BitLength:      1 * octet,
+	},
+	{
+		Name:           "Code",
+		Class:          fieldClassUndefined,
+		FrameBitOffset: 1 * octet,
+		BitLength:      1 * octet,
+	},
+	{
+		Class:          FieldClassChecksum,
+		FrameBitOffset: 2 * octet,
+		BitLength:      2 * octet,
+	},
+}
+
+var icmpv4EchoFields = [...]FrameField{
+	{
+		Name:           "Identifier",
+		Class:          FieldClassID,
+		FrameBitOffset: 4 * octet,
+		BitLength:      2 * octet,
+	},
+	{
+		Name:           "Sequence Number",
+		Class:          FieldClassID,
+		FrameBitOffset: 6 * octet,
+		BitLength:      2 * octet,
+	},
+}
+
+var icmpv4RedirectFields = [...]FrameField{
+	{
+		Name:           "Gateway Address",
+		Class:          FieldClassAddress,
+		FrameBitOffset: 4 * octet,
+		BitLength:      4 * octet,
+	},
+}
+
+var icmpv4TimestampFields = [...]FrameField{
+	{
+		Name:           "Identifier",
+		Class:          FieldClassID,
+		FrameBitOffset: 4 * octet,
+		BitLength:      2 * octet,
+	},
+	{
+		Name:           "Sequence Number",
+		Class:          FieldClassID,
+		FrameBitOffset: 6 * octet,
+		BitLength:      2 * octet,
+	},
+	{
+		Name:           "Originate Timestamp",
+		Class:          FieldClassTimestamp,
+		FrameBitOffset: 8 * octet,
+		BitLength:      4 * octet,
+	},
+	{
+		Name:           "Receive Timestamp",
+		Class:          FieldClassTimestamp,
+		FrameBitOffset: 12 * octet,
+		BitLength:      4 * octet,
+	},
+	{
+		Name:           "Transmit Timestamp",
+		Class:          FieldClassTimestamp,
+		FrameBitOffset: 16 * octet,
+		BitLength:      4 * octet,
 	},
 }
 
