@@ -141,6 +141,7 @@ func TestIPv4TCPChecksum(t *testing.T) {
 			t.Fatal(err)
 		}
 		wantCRC := ifrm.CRC()
+		// Zero the CRC field so its value does not add to the final result.
 		ifrm.SetCRC(0)
 		gotCRC := ifrm.CalculateHeaderCRC()
 		if wantCRC != gotCRC {
@@ -149,7 +150,7 @@ func TestIPv4TCPChecksum(t *testing.T) {
 		wantCRC = tfrm.CRC()
 		var crc lneto.CRC791
 		ifrm.CRCWriteTCPPseudo(&crc)
-		// set the frame checksum to zero before calculating the actual checksum
+		// Zero the CRC field so its value does not add to the final result.
 		tfrm.SetCRC(0)
 		gotCRC = crc.PayloadSum16(tfrm.RawData())
 		if wantCRC != gotCRC {

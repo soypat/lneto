@@ -164,9 +164,10 @@ func (sb *StackIP) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int
 	totalLen := n + headerlen
 	ifrm.SetTotalLength(uint16(totalLen))
 	ifrm.SetProtocol(proto)
-	// checksum calculation requires the frame checksum field to be set to zero
+	// Zero the CRC field so its value does not add to the final result.
 	ifrm.SetCRC(0)
-	ifrm.SetCRC(ifrm.CalculateHeaderCRC())
+	crcValue := ifrm.CalculateHeaderCRC()
+	ifrm.SetCRC(crcValue)
 	// Calculate CRC for our newly generated packet.
 	var crc lneto.CRC791
 	payload := ifrm.Payload()
@@ -174,16 +175,18 @@ func (sb *StackIP) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int
 	case lneto.IPProtoTCP:
 		ifrm.CRCWriteTCPPseudo(&crc)
 		tfrm, _ := tcp.NewFrame(payload)
-		// checksum calculation requires the frame checksum field to be set to zero
+		// Zero the CRC field so its value does not add to the final result.
 		tfrm.SetCRC(0)
-		tfrm.SetCRC(crc.PayloadSum16(payload))
+		crcValue = crc.PayloadSum16(payload)
+		tfrm.SetCRC(crcValue)
 	case lneto.IPProtoUDP:
 		ufrm, _ := udp.NewFrame(payload)
 		ifrm.CRCWriteUDPPseudo(&crc, uint16(n))
 		ufrm.SetLength(uint16(n))
-		// checksum calculation requires the frame checksum field to be set to zero
+		// Zero the CRC field so its value does not add to the final result.
 		ufrm.SetCRC(0)
-		ufrm.SetCRC(lneto.NeverZeroSum(crc.PayloadSum16(payload)))
+		crcValue = lneto.NeverZeroSum(crc.PayloadSum16(payload))
+		ufrm.SetCRC(crcValue)
 	}
 	return totalLen, err
 }

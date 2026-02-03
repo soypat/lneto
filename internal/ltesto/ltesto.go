@@ -94,7 +94,10 @@ func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand, seg 
 	ifrm.SetProtocol(lneto.IPProtoTCP)
 	*ifrm.SourceAddr() = gen.SrcIPv4
 	*ifrm.DestinationAddr() = gen.DstIPv4
-	ifrm.SetCRC(ifrm.CalculateHeaderCRC())
+	// Zero the CRC field so its value does not add to the final result.
+	ifrm.SetCRC(0)
+	crcValue := ifrm.CalculateHeaderCRC()
+	ifrm.SetCRC(crcValue)
 
 	ipPayload := ifrm.Payload()
 	tfrm, err := tcp.NewFrame(ipPayload)
@@ -124,7 +127,10 @@ func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand, seg 
 	copy(tfrm.Options(), tcpOpts)
 	var crc lneto.CRC791
 	ifrm.CRCWriteTCPPseudo(&crc)
-	tfrm.SetCRC(crc.PayloadSum16(tfrm.RawData()))
+	// Zero the CRC field so its value does not add to the final result.
+	tfrm.SetCRC(0)
+	crcValue = crc.PayloadSum16(tfrm.RawData())
+	tfrm.SetCRC(crcValue)
 	switch {
 	case gen.SrcTCP != tfrm.SourcePort():
 		panic("IP options overwrite TCP header")
