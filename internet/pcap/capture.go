@@ -244,13 +244,10 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 			}
 		}
 	case lneto.IPProtoICMP:
-		ifrm, err := icmpv4.NewFrame(ifrm4.Payload())
+		_, err := icmpv4.NewFrame(payload)
 		if err == nil {
-			ifrm.CRCWrite(&crc)
-			wantSum := crc.Sum16()
-			gotSum := ifrm.CRC()
-			if wantSum != gotSum {
-				protoErrs = append(protoErrs, &crcError16{protocol: "icmpv4", want: wantSum, got: gotSum})
+			if crc.PayloadSum16(payload) != 0 {
+				protoErrs = append(protoErrs, lneto.ErrBadCRC)
 			}
 		}
 	}
