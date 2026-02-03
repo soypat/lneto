@@ -226,7 +226,7 @@ func buildDNSResponsePacket(t *testing.T, txid uint16, dstPort uint16, hostname 
 
 	// Calculate UDP checksum using pseudo header.
 	var crc lneto.CRC791
-	ifrm.CRCWriteUDPPseudo(&crc, udpLen)
+	ifrm.CRCWriteUDPPseudo(&crc, uint16(udpLen))
 	udpFrame.SetCRC(0)
 	udpFrame.SetCRC(crc.PayloadSum16(udpFrame.RawData()))
 

@@ -145,9 +145,9 @@ func (ifrm Frame) CRCWriteTCPPseudo(crc *lneto.CRC791) {
 	crc.AddUint16(uint16(ifrm.Protocol()))
 }
 
-func (ifrm Frame) CRCWriteUDPPseudo(crc *lneto.CRC791, udpLength int) {
+func (ifrm Frame) CRCWriteUDPPseudo(crc *lneto.CRC791, udpLength uint16) {
 	crc.WriteEven(ifrm.sourceAndDestinationAddr())
-	crc.AddUint16(uint16(udpLength))
+	crc.AddUint16(udpLength)
 	crc.AddUint16(uint16(ifrm.Protocol()))
 }
 

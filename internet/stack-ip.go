@@ -117,13 +117,14 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 			return lneto.ErrBadCRC
 		}
 	case lneto.IPProtoUDP:
-		checksummedData := udp.ChecksummedFrameData(ifrm.Payload())
-		if len(checksummedData) > 0 {
-			ifrm.CRCWriteUDPPseudo(&crc, len(checksummedData))
-			if crc.PayloadSum16(checksummedData) != 0 {
-				sb.handlers.error("ip:demux.udpcrc")
-				return lneto.ErrBadCRC
-			}
+		ufrm, err := udp.NewBoundedFrame(ifrm.Payload())
+		if err != nil {
+			return err
+		}
+		ifrm.CRCWriteUDPPseudo(&crc, ufrm.Length())
+		if crc.PayloadSum16(ufrm.RawData()) != 0 {
+			sb.handlers.error("ip:demux.udpcrc")
+			return lneto.ErrBadCRC
 		}
 	}
 	sb.handlers.info("ipDemux", slog.String("ipproto", proto.String()), slog.Int("plen", int(totalLen)))
@@ -178,7 +179,7 @@ func (sb *StackIP) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int
 		tfrm.SetCRC(crc.PayloadSum16(payload))
 	case lneto.IPProtoUDP:
 		ufrm, _ := udp.NewFrame(payload)
-		ifrm.CRCWriteUDPPseudo(&crc, n)
+		ifrm.CRCWriteUDPPseudo(&crc, uint16(n))
 		ufrm.SetLength(uint16(n))
 		// checksum calculation requires the frame checksum field to be set to zero
 		ufrm.SetCRC(0)

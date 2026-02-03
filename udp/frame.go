@@ -7,7 +7,7 @@ import (
 	"github.com/soypat/lneto"
 )
 
-// NewUDPFrame returns a new UDPFrame with data set to buf.
+// NewFrame returns a new udp.Frame with data set to buf.
 // An error is returned if the buffer size is smaller than 8.
 // Users should still call [Frame.ValidateSize] before working
 // with payload/options of frames to avoid panics.
@@ -50,15 +50,11 @@ func (ufrm Frame) SetDestinationPort(dst uint16) {
 	binary.BigEndian.PutUint16(ufrm.buf[2:4], dst)
 }
 
-func frameLength(buf []byte) uint16 {
-	return binary.BigEndian.Uint16(buf[4:])
-}
-
 // Length specifies length in bytes of UDP header and UDP payload. The minimum length
 // is 8 bytes (UDP header length). This field should match the result of the IP header
 // TotalLength field minus the IP header size: udp.Length == ip.TotalLength - 4*ip.IHL
 func (ufrm Frame) Length() uint16 {
-	return frameLength(ufrm.buf)
+	return binary.BigEndian.Uint16(ufrm.buf[4:6])
 }
 
 // SetLength sets the UDP header's length field. See [Frame.Length].
@@ -66,24 +62,9 @@ func (ufrm Frame) SetLength(length uint16) {
 	binary.BigEndian.PutUint16(ufrm.buf[4:6], length)
 }
 
-func frameChecksum(buf []byte) uint16 {
-	return binary.BigEndian.Uint16(buf[6:])
-}
-
 // CRC returns the checksum field in the UDP header.
 func (ufrm Frame) CRC() uint16 {
-	return frameChecksum(ufrm.buf)
-}
-
-// ChecksummedFrameData returns the UDP frame data which is subject to checksumming or an empty slice if checksumming is disabled.
-func ChecksummedFrameData(buf []byte) []byte {
-	if len(buf) >= sizeHeader && frameChecksum(buf) != 0 {
-		length := int(frameLength(buf))
-		if length <= len(buf) {
-			return buf[:length]
-		}
-	}
-	return nil
+	return binary.BigEndian.Uint16(ufrm.buf[6:8])
 }
 
 // SetCRC sets the UDP header's CRC field. See [Frame.CRC].
@@ -124,4 +105,22 @@ func (ufrm Frame) ValidateSize(v *lneto.Validator) {
 	if int(ul) > len(ufrm.RawData()) {
 		v.AddError(errShort)
 	}
+}
+
+// NewBoundedFrame returns a new udp.Frame where the payload is bounded to
+// the length set in the header, thus removing any padding.
+func NewBoundedFrame(buf []byte) (Frame, error) {
+	ufrm, err := NewFrame(buf)
+	if err != nil {
+		return ufrm, err
+	}
+	ul := ufrm.Length()
+	if ul < sizeHeader {
+		return ufrm, errBadLen
+	}
+	if int(ul) > len(ufrm.RawData()) {
+		return ufrm, errShort
+	}
+	ufrm.buf = ufrm.buf[:ul]
+	return ufrm, nil
 }

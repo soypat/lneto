@@ -168,9 +168,11 @@ func (pc *PacketBreakdown) CaptureIPv6(dst []Frame, pkt []byte, bitOffset int) (
 			protoErrs = append(protoErrs, lneto.ErrBadCRC)
 		}
 	case lneto.IPProtoUDP, lneto.IPProtoUDPLite:
-		checksummedData := udp.ChecksummedFrameData(ifrm6.Payload())
-		if len(checksummedData) > 0 {
-			if crc.PayloadSum16(checksummedData) != 0 {
+		ufrm, err := udp.NewBoundedFrame(ifrm6.Payload())
+		if err != nil {
+			protoErrs = append(protoErrs, err)
+		} else {
+			if crc.PayloadSum16(ufrm.RawData()) != 0 {
 				protoErrs = append(protoErrs, lneto.ErrBadCRC)
 			}
 		}
@@ -229,19 +231,16 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 			}
 		}
 	case lneto.IPProtoUDP:
-		ufrm, err := udp.NewFrame(payload)
+		ufrm, err := udp.NewBoundedFrame(payload)
 		if err == nil {
 			ufrm.ValidateSize(pc.validator())
 			if pc.vld.HasError() {
 				println("BAD UDP")
 				return dst, pc.vld.ErrPop()
 			}
-			checksummedData := udp.ChecksummedFrameData(payload)
-			if len(checksummedData) > 0 {
-				ifrm4.CRCWriteUDPPseudo(&crc, len(checksummedData))
-				if crc.PayloadSum16(checksummedData) != 0 {
-					protoErrs = append(protoErrs, lneto.ErrBadCRC)
-				}
+			ifrm4.CRCWriteUDPPseudo(&crc, ufrm.Length())
+			if crc.PayloadSum16(ufrm.RawData()) != 0 {
+				protoErrs = append(protoErrs, lneto.ErrBadCRC)
 			}
 		}
 	case lneto.IPProtoICMP:
