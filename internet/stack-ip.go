@@ -183,7 +183,7 @@ func (sb *StackIP) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int
 		ufrm.SetLength(uint16(n))
 		// checksum calculation requires the frame checksum field to be set to zero
 		ufrm.SetCRC(0)
-		ufrm.SetCRC(lneto.NeverZeroChecksum(crc.PayloadSum16(payload)))
+		ufrm.SetCRC(lneto.NeverZeroSum(crc.PayloadSum16(payload)))
 	}
 	return totalLen, err
 }
