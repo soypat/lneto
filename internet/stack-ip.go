@@ -117,12 +117,18 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 			return lneto.ErrBadCRC
 		}
 	case lneto.IPProtoUDP:
-		ufrm, err := udp.NewBoundedFrame(ifrm.Payload())
+		ufrm, err := udp.NewFrame(ifrm.Payload())
 		if err != nil {
 			return err
 		}
-		ifrm.CRCWriteUDPPseudo(&crc, ufrm.Length())
-		if crc.PayloadSum16(ufrm.RawData()) != 0 {
+		ufrm.ValidateSize(&sb.validator)
+		if err = sb.validator.ErrPop(); err != nil {
+			sb.handlers.error("ip:demux.udpvalidatesize")
+			return err
+		}
+		frameLen := ufrm.Length()
+		ifrm.CRCWriteUDPPseudo(&crc, frameLen)
+		if crc.PayloadSum16(ufrm.RawData()[:frameLen]) != 0 {
 			sb.handlers.error("ip:demux.udpcrc")
 			return lneto.ErrBadCRC
 		}

@@ -106,21 +106,3 @@ func (ufrm Frame) ValidateSize(v *lneto.Validator) {
 		v.AddError(errShort)
 	}
 }
-
-// NewBoundedFrame returns a new udp.Frame where the payload is bounded to
-// the length set in the header, thus removing any padding.
-func NewBoundedFrame(buf []byte) (Frame, error) {
-	ufrm, err := NewFrame(buf)
-	if err != nil {
-		return ufrm, err
-	}
-	ul := ufrm.Length()
-	if ul < sizeHeader {
-		return ufrm, errBadLen
-	}
-	if int(ul) > len(ufrm.RawData()) {
-		return ufrm, errShort
-	}
-	ufrm.buf = ufrm.buf[:ul]
-	return ufrm, nil
-}
