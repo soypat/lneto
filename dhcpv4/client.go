@@ -11,6 +11,7 @@ import (
 	"net/netip"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/ipv4"
 )
 
@@ -90,7 +91,7 @@ func (c *Client) BeginRequest(xid uint32, cfg RequestConfig) error {
 	c.state = StateInit
 	c.currentXID = xid
 	c.reqHostname = cfg.Hostname
-	c.reqIP = addr4{addr: cfg.RequestedAddr, valid: true}
+	c.reqIP = addr4{addr: cfg.RequestedAddr, valid: !internal.IsZeroed(cfg.RequestedAddr[:]...)} // TODO(pato): what's lighter? Comparing the [4]byte or ...byte
 	c.clientMAC = cfg.ClientHardwareAddr
 	if cfg.ClientID != "" {
 		c.clientID = append(c.clientID[:0], cfg.ClientID...)

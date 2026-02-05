@@ -564,8 +564,3 @@ func addr4(addr [4]byte, ok bool) netip.Addr {
 	}
 	return netip.AddrFrom4(addr)
 }
-
-func hash(b []byte) uint16 {
-	var csum lneto.CRC791
-	return csum.PayloadSum16(b)
-}
