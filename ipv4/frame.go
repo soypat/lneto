@@ -136,21 +136,23 @@ func (ifrm Frame) CalculateHeaderCRC() uint16 {
 }
 
 func (ifrm Frame) CRCWriteHeader(crc *lneto.CRC791) {
-	crc.Write(ifrm.buf[0:10])
-	crc.Write(ifrm.buf[12:20])
+	crc.WriteEven(ifrm.buf[:20])
 }
 
 func (ifrm Frame) CRCWriteTCPPseudo(crc *lneto.CRC791) {
-	crc.Write(ifrm.SourceAddr()[:])
-	crc.Write(ifrm.DestinationAddr()[:])
-	crc.AddUint16(ifrm.TotalLength() - 4*uint16(ifrm.ihl()))
+	crc.WriteEven(ifrm.sourceAndDestinationAddr())
+	crc.AddUint16(ifrm.TotalLength() - uint16(ifrm.HeaderLength()))
 	crc.AddUint16(uint16(ifrm.Protocol()))
 }
 
-func (ifrm Frame) CRCWriteUDPPseudo(crc *lneto.CRC791) {
-	crc.Write(ifrm.SourceAddr()[:])
-	crc.Write(ifrm.DestinationAddr()[:])
+func (ifrm Frame) CRCWriteUDPPseudo(crc *lneto.CRC791, udpLength uint16) {
+	crc.WriteEven(ifrm.sourceAndDestinationAddr())
+	crc.AddUint16(udpLength)
 	crc.AddUint16(uint16(ifrm.Protocol()))
+}
+
+func (ifrm Frame) sourceAndDestinationAddr() []byte {
+	return ifrm.buf[12:20]
 }
 
 // SourceAddr returns pointer to the source IPv4 address in the IP header.

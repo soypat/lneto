@@ -447,6 +447,7 @@ func ExampleFormatter_dhcp() {
 	totalLen := ipv4Size + udpSize + dhcpLen
 	ifrm.SetTotalLength(uint16(totalLen))
 	ufrm.SetLength(uint16(udpSize + dhcpLen))
+	// The CRC field is already zero here.
 	ifrm.SetCRC(ifrm.CalculateHeaderCRC())
 
 	pkt = pkt[:ethSize+totalLen]

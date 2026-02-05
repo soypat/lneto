@@ -205,7 +205,10 @@ func buildDNSResponsePacket(t *testing.T, txid uint16, dstPort uint16, hostname 
 	ifrm.SetProtocol(lneto.IPProtoUDP)
 	*ifrm.SourceAddr() = srcIP.As4()
 	*ifrm.DestinationAddr() = dstIP.As4()
-	ifrm.SetCRC(ifrm.CalculateHeaderCRC())
+	// Zero the CRC field so its value does not add to the final result.
+	ifrm.SetCRC(0)
+	crcValue := ifrm.CalculateHeaderCRC()
+	ifrm.SetCRC(crcValue)
 
 	// UDP header.
 	udpStart := ipStart + ipHdrLen
@@ -215,7 +218,8 @@ func buildDNSResponsePacket(t *testing.T, txid uint16, dstPort uint16, hostname 
 	}
 	udpFrame.SetSourcePort(dns.ServerPort)
 	udpFrame.SetDestinationPort(dstPort)
-	udpFrame.SetLength(uint16(udpHdrLen + len(dnsPayload)))
+	udpLen := udpHdrLen + len(dnsPayload)
+	udpFrame.SetLength(uint16(udpLen))
 
 	// Copy DNS payload before calculating checksum.
 	dnsStart := udpStart + udpHdrLen
@@ -223,9 +227,11 @@ func buildDNSResponsePacket(t *testing.T, txid uint16, dstPort uint16, hostname 
 
 	// Calculate UDP checksum using pseudo header.
 	var crc lneto.CRC791
-	ifrm.CRCWriteUDPPseudo(&crc)
-	udpFrame.CRCWriteIPv4(&crc)
-	udpFrame.SetCRC(crc.Sum16())
+	ifrm.CRCWriteUDPPseudo(&crc, uint16(udpLen))
+	// Zero the CRC field so its value does not add to the final result.
+	udpFrame.SetCRC(0)
+	crcValue = crc.PayloadSum16(udpFrame.RawData())
+	udpFrame.SetCRC(crcValue)
 
 	return pkt, nil
 }

@@ -7,7 +7,7 @@ import (
 	"github.com/soypat/lneto"
 )
 
-// NewUDPFrame returns a new UDPFrame with data set to buf.
+// NewFrame returns a new udp.Frame with data set to buf.
 // An error is returned if the buffer size is smaller than 8.
 // Users should still call [Frame.ValidateSize] before working
 // with payload/options of frames to avoid panics.
@@ -78,42 +78,6 @@ func (ufrm Frame) Payload() []byte {
 	l := ufrm.Length()
 	return ufrm.buf[sizeHeader:l]
 }
-
-func (ufrm Frame) CRCWriteIPv4(crc *lneto.CRC791) {
-	crc.AddUint16(ufrm.Length())
-	crc.AddUint16(ufrm.SourcePort())
-	crc.AddUint16(ufrm.DestinationPort())
-	crc.AddUint16(ufrm.Length()) // Length double tap for IPv4.
-	crc.Write(ufrm.Payload())
-}
-
-func (ufrm Frame) CRCWriteIPv6(crc *lneto.CRC791) {
-	crc.AddUint16(ufrm.SourcePort())
-	crc.AddUint16(ufrm.DestinationPort())
-	crc.AddUint16(ufrm.Length())
-	crc.Write(ufrm.Payload())
-}
-
-// func (ufrm Frame) CalculateIPv4Checksum(ifrm IPv4Frame) uint16 {
-// 	var crc lneto.CRC791
-// 	ifrm.crcWriteUDPPseudo(&crc)
-// 	crc.AddUint16(ufrm.Length())
-// 	crc.AddUint16(ufrm.SourcePort())
-// 	crc.AddUint16(ufrm.DestinationPort())
-// 	crc.AddUint16(ufrm.Length()) // Length double tap.
-// 	crc.Write(ufrm.Payload())
-// 	return crc.Sum16()
-// }
-
-// func (ufrm Frame) CalculateIPv6Checksum(ifrm IPv6Frame) uint16 {
-// 	var crc lneto.CRC791
-// 	ifrm.crcWritePseudo(&crc)
-// 	crc.AddUint16(ufrm.SourcePort())
-// 	crc.AddUint16(ufrm.DestinationPort())
-// 	crc.AddUint16(ufrm.Length()) // Length double tap.
-// 	crc.Write(ufrm.Payload())
-// 	return crc.Sum16()
-// }
 
 // ClearHeader zeros out the header contents.
 func (frm Frame) ClearHeader() {

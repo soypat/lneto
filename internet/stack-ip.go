@@ -10,7 +10,6 @@ import (
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/ipv4"
-	"github.com/soypat/lneto/ipv4/icmpv4"
 	"github.com/soypat/lneto/tcp"
 	"github.com/soypat/lneto/udp"
 )
@@ -91,11 +90,9 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 		return err
 	}
 
-	// Incoming CRC Validation of common IP Protocols.
-	var crc lneto.CRC791
-	ifrm.CRCWriteHeader(&crc)
-	if !crc.VerifySum16(ifrm.CRC()) {
+	if ifrm.CalculateHeaderCRC() != 0 {
 		sb.handlers.error("ip:demux.crc")
+		return lneto.ErrBadCRC
 	}
 	off := ifrm.HeaderLength()
 	totalLen := ifrm.TotalLength()
@@ -111,28 +108,27 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 		return lneto.ErrPacketDrop
 	}
 	// Incoming CRC Validation of common IP Protocols.
-	crc.Reset()
+	var crc lneto.CRC791
 	switch proto {
 	case lneto.IPProtoTCP:
 		ifrm.CRCWriteTCPPseudo(&crc)
-		tfrm, err := tcp.NewFrame(ifrm.Payload())
-		if err != nil {
-			return err
-		}
-		tfrm.CRCWrite(&crc)
-		if !crc.VerifySum16(tfrm.CRC()) {
+		if crc.PayloadSum16(ifrm.Payload()) != 0 {
 			sb.handlers.error("ip:demux.tcpcrc")
 			return lneto.ErrBadCRC
 		}
 	case lneto.IPProtoUDP:
-		ifrm.CRCWriteUDPPseudo(&crc)
 		ufrm, err := udp.NewFrame(ifrm.Payload())
 		if err != nil {
 			return err
 		}
-		ufrm.CRCWriteIPv4(&crc)
-		// checksums are optional in UDP: the field is set to zero in this case
-		if gotCrc := ufrm.CRC(); gotCrc != 0 && !crc.VerifySum16(gotCrc) {
+		ufrm.ValidateSize(&sb.validator)
+		if err = sb.validator.ErrPop(); err != nil {
+			sb.handlers.error("ip:demux.udpvalidatesize")
+			return err
+		}
+		frameLen := ufrm.Length()
+		ifrm.CRCWriteUDPPseudo(&crc, frameLen)
+		if crc.PayloadSum16(ufrm.RawData()[:frameLen]) != 0 {
 			sb.handlers.error("ip:demux.udpcrc")
 			return lneto.ErrBadCRC
 		}
@@ -174,25 +170,29 @@ func (sb *StackIP) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int
 	totalLen := n + headerlen
 	ifrm.SetTotalLength(uint16(totalLen))
 	ifrm.SetProtocol(proto)
-	ifrm.SetCRC(ifrm.CalculateHeaderCRC())
+	// Zero the CRC field so its value does not add to the final result.
+	ifrm.SetCRC(0)
+	crcValue := ifrm.CalculateHeaderCRC()
+	ifrm.SetCRC(crcValue)
 	// Calculate CRC for our newly generated packet.
 	var crc lneto.CRC791
+	payload := ifrm.Payload()
 	switch proto {
 	case lneto.IPProtoTCP:
 		ifrm.CRCWriteTCPPseudo(&crc)
-		tfrm, _ := tcp.NewFrame(ifrm.Payload())
-		tfrm.CRCWrite(&crc)
-		tfrm.SetCRC(crc.Sum16())
+		tfrm, _ := tcp.NewFrame(payload)
+		// Zero the CRC field so its value does not add to the final result.
+		tfrm.SetCRC(0)
+		crcValue = crc.PayloadSum16(payload)
+		tfrm.SetCRC(crcValue)
 	case lneto.IPProtoUDP:
-		ifrm.CRCWriteUDPPseudo(&crc)
-		ufrm, _ := udp.NewFrame(ifrm.Payload())
+		ufrm, _ := udp.NewFrame(payload)
+		ifrm.CRCWriteUDPPseudo(&crc, uint16(n))
 		ufrm.SetLength(uint16(n))
-		ufrm.CRCWriteIPv4(&crc)
-		ufrm.SetCRC(crc.Sum16())
-		if n != int(ufrm.Length()) {
-			sb.handlers.error("StackIP:encaps", slog.Int("n", n), slog.Int("un", int(ufrm.Length())))
-			return 0, errors.New("invalid UDP length")
-		}
+		// Zero the CRC field so its value does not add to the final result.
+		ufrm.SetCRC(0)
+		crcValue = lneto.NeverZeroSum(crc.PayloadSum16(payload))
+		ufrm.SetCRC(crcValue)
 	}
 	return totalLen, err
 }
@@ -206,13 +206,9 @@ func (sb *StackIP) Register(h StackNode) error {
 }
 
 func (sb *StackIP) recvicmp(carrierData []byte, offset int) error {
+	frameData := carrierData[offset:]
 	var crc lneto.CRC791
-	cfrm, err := icmpv4.NewFrame(carrierData[offset:])
-	if err != nil {
-		return err
-	}
-	cfrm.CRCWrite(&crc)
-	if !crc.VerifySum16(cfrm.CRC()) {
+	if crc.PayloadSum16(frameData) != 0 {
 		return errors.New("ICMP CRC mismatch")
 	}
 	return nil
