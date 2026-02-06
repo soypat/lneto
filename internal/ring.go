@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	errRingBufferFull = errors.New("lneto/ring: buffer full")
+	ErrRingBufferFull = errors.New("lneto/ring: buffer full")
 	errRingNoData     = errors.New("lneto/ring: empty write")
 )
 
@@ -39,7 +39,7 @@ func (r *Ring) WriteLimited(b []byte, limitOffset int) (int, error) {
 	}
 	limit := r.FreeLimited(limitOffset)
 	if len(b) > limit {
-		return 0, errRingBufferFull
+		return 0, ErrRingBufferFull
 	}
 	return r.Write(b)
 }
@@ -55,7 +55,7 @@ func (r *Ring) Write(b []byte) (int, error) {
 	if len(b) == 0 {
 		return 0, errRingNoData
 	} else if r.IsFull() || r.Free() < len(b) {
-		return 0, errRingBufferFull
+		return 0, ErrRingBufferFull
 	}
 	midFree := r.midFree()
 	if midFree > 0 {
