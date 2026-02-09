@@ -255,6 +255,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 		var ok bool
 		available := min(buffered, len(b)-sizeHeaderTCP)
 		segment, ok = h.scb.PendingSegment(available)
+		segment.WND = Size(h.bufRx.Free())
 		if !ok {
 			// No pending control segment or data to send. Yield.
 			return 0, nil
