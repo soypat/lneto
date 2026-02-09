@@ -218,7 +218,7 @@ func (conn *Conn) Write(b []byte) (int, error) {
 		conn.mu.Unlock()
 		n += ngot
 		b = b[ngot:]
-		if err != nil || n == plen {
+		if (err != nil && err != internal.ErrRingBufferFull) || n == plen {
 			break
 		} else if ngot > 0 {
 			backoff.Hit()
