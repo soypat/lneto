@@ -166,7 +166,7 @@ func TestStackAsyncTCP_singlepacket(t *testing.T) {
 	tst.TestTCPClose(client, sv, clconn, svconn)
 }
 
-func newTCPStacks(t *testing.T, randSeed int64, mtu int) (s1, s2 *StackAsync, c1, c2 *tcp.Conn) {
+func newTCPStacks(t testing.TB, randSeed int64, mtu int) (s1, s2 *StackAsync, c1, c2 *tcp.Conn) {
 	s1, s2 = new(StackAsync), new(StackAsync)
 	c1, c2 = new(tcp.Conn), new(tcp.Conn)
 	byte1 := byte(randSeed)/4 - 1

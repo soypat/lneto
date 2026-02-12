@@ -210,7 +210,7 @@ func (ifrm Frame) ValidateSize(v *lneto.Validator) {
 	if int(tl) > len(ifrm.RawData()) {
 		v.AddError(errShort)
 	}
-	if ihl < 5 {
+	if ihl < 5 || uint16(ihl)*4 > tl {
 		v.AddError(errBadIHL)
 	}
 }
