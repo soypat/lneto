@@ -2,6 +2,7 @@ package dhcpv4
 
 import (
 	"bytes"
+	"net/netip"
 	"testing"
 )
 
@@ -25,7 +26,10 @@ func TestClientServer(t *testing.T) {
 			t.Errorf("want client state %s, got %s", state.String(), cl.State().String())
 		}
 	}
-	sv.Reset(svAddr, DefaultServerPort)
+	sv.Configure(ServerConfig{
+		ServerAddr: svAddr,
+		Subnet:     netip.PrefixFrom(netip.AddrFrom4(svAddr), 24),
+	})
 	// CLIENT DISCOVER.
 	assertClState(StateInit)
 	var buf [1024]byte
