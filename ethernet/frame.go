@@ -76,9 +76,6 @@ func (efrm Frame) SetEtherType(v Type) {
 	binary.BigEndian.PutUint16(efrm.buf[12:14], uint16(v))
 }
 
-// VLANTag returns the VLAN tag field following the TPID=0x8100. See [VLANTag]. Call [Frame.ValidateSize] to ensure this function does not panic.
-func (efrm Frame) VLANTag() VLANTag { return VLANTag(binary.BigEndian.Uint16(efrm.buf[14:16])) }
-
 // SetVLAN sets following 3 fields:
 //   - 12:14 ethernet frame type set to constant [TypeVLAN].
 //   - 14:16 set to VLANTag argument value vt
@@ -95,19 +92,6 @@ func (efrm Frame) VLAN() (VLANTag, Type) {
 	vt := binary.BigEndian.Uint16(efrm.buf[14:16])
 	et := binary.BigEndian.Uint16(efrm.buf[16:18])
 	return VLANTag(vt), Type(et)
-}
-
-// SetVLANTag sets the VLAN tag field of the Ethernet Header. See [VLANTag]. Call [Frame.ValidateSize] to ensure this function does not panic.
-func (efrm Frame) SetVLANTag(vt VLANTag) { binary.BigEndian.PutUint16(efrm.buf[14:16], uint16(vt)) }
-
-// VLANEtherType returns the [EtherType] for a VLAN ethernet frame (octet position 16). Call [Frame.ValidateSize] to ensure this function does not panic.
-func (efrm Frame) VLANEtherType() Type {
-	return Type(binary.BigEndian.Uint16(efrm.buf[16:18]))
-}
-
-// SetVLANEtherType sets the [EtherType] for a VLAN ethernet frame (octet position 16). Call [Frame.ValidateSize] to ensure this function does not panic.
-func (efrm Frame) SetVLANEtherType(vt Type) {
-	binary.BigEndian.PutUint16(efrm.buf[16:18], uint16(vt))
 }
 
 // IsVLAN returns true if the SizeOrEtherType is set to the VLAN tag 0x8100. This

@@ -58,11 +58,9 @@ func testMoveTCPPacket(t *testing.T, src, dst []byte) {
 	*efrm2.DestinationHardwareAddr() = *efrm.DestinationHardwareAddr()
 	*efrm2.SourceHardwareAddr() = *efrm.SourceHardwareAddr()
 	efrm2.SetEtherType(efrm.EtherTypeOrSize())
-	if efrm.EtherTypeOrSize() == ethernet.TypeVLAN {
-		efrm2.SetVLANTag(efrm.VLANTag())
-		efrm2.SetVLANEtherType(efrm.VLANEtherType())
+	if efrm.IsVLAN() {
+		efrm2.SetVLAN(efrm.VLAN())
 	}
-
 	ifrm2, _ := ipv4.NewFrame(efrm2.Payload())
 	ifrm2.SetVersionAndIHL(ifrm.VersionAndIHL())
 	ifrm2.SetToS(ifrm.ToS())

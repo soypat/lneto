@@ -45,7 +45,7 @@ func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand, seg 
 	}
 	ri := rng.Int()
 	var (
-		isVLAN    = ri&(1<<0) != 0
+		isVLAN    = gen.EnableVLAN && ri&(1<<0) != 0
 		hasIPOpt  = ri&(1<<1) != 0
 		hasTCPOpt = ri&(1<<2) != 0
 	)
@@ -55,8 +55,7 @@ func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand, seg 
 		ipOpts = []byte{1, 2, 3, 4}
 	}
 	ethsize := 14
-	if gen.EnableVLAN && isVLAN {
-		etherType = ethernet.TypeVLAN
+	if isVLAN {
 		ethsize = 18
 	}
 	var tcpOpts []byte
@@ -75,10 +74,10 @@ func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand, seg 
 	*efrm.DestinationHardwareAddr() = gen.DstMAC
 	*efrm.SourceHardwareAddr() = gen.SrcMAC
 
-	efrm.SetEtherType(etherType)
 	if isVLAN {
-		efrm.SetVLANEtherType(ethernet.TypeIPv4)
-		efrm.SetVLANTag(1 << 4)
+		efrm.SetVLAN(1<<4, ethernet.TypeIPv4)
+	} else {
+		efrm.SetEtherType(etherType)
 	}
 	ethernetPayload := efrm.Payload()
 	ifrm, err := ipv4.NewFrame(ethernetPayload)
