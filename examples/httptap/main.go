@@ -62,6 +62,21 @@ func run() error {
 		iface = br
 	}
 
+	// Wrap interface with DHCP server interceptor.
+	hwaddr, err := iface.HardwareAddress6()
+	if err != nil {
+		return err
+	}
+	ipMask, err := iface.IPMask()
+	if err != nil {
+		return err
+	}
+	svIP := ipMask.Addr().As4()
+	iface, err = newDHCPInterceptor(iface, svIP, hwaddr, ipMask.Masked())
+	if err != nil {
+		return fmt.Errorf("DHCP interceptor: %w", err)
+	}
+
 	sv, err := ltesto.NewHTTPTapServer(iface, flagMinMTU, flagPacketQueueSize, flagPacketQueueSize)
 	if err != nil {
 		return err
@@ -92,7 +107,7 @@ func run() error {
 			fmt.Printf("%-2s %s %s %v %s\n", channelstr, captime.Format("15:04:05.000"), "cap ERR", frames, err.Error())
 		}
 	})
-	hwaddr, err := sv.HardwareAddress6()
+	hwaddr, err = sv.HardwareAddress6()
 	if err != nil {
 		return err
 	}

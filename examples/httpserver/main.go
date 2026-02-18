@@ -105,7 +105,7 @@ func run() (err error) {
 		RandSeed:        softRand,
 		HardwareAddress: nicHW,
 		MTU:             uint16(mtu),
-		MaxTCPConns:     1,
+		MaxTCPConns:     1000,
 	})
 	if err != nil {
 		return err
@@ -251,11 +251,12 @@ func run() (err error) {
 			continue
 		}
 		fmt.Println("connection established from", net.IP(conn.RemoteAddr()).String())
-
-		err = handleConnection(&conn)
-		if err != nil {
-			fmt.Println("handle error:", err)
-		}
+		go func() {
+			err = handleConnection(&conn)
+			if err != nil {
+				fmt.Println("handle error:", err)
+			}
+		}()
 	}
 }
 

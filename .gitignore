@@ -25,6 +25,8 @@ vendor/
 /xcurl
 /xnet
 /httpclient
+/httpserver
+**/local*
 /stack
 **__debug_bin*
 # `__debug_bin` Debug binary generated in VSCode when using the built-in debugger.
@@ -33,6 +35,7 @@ vendor/
 /bridge
 # IDE
 .vscode/
+agents.md
 
 # For local development and testing create `local` directories.
 local
