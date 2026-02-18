@@ -80,6 +80,16 @@ func (f *Formatter) FormatFrame(dst []byte, frm Frame, pkt []byte) (_ []byte, er
 			return dst, err
 		}
 	}
+	if len(frm.Errors) > 0 {
+		dst = append(dst, " errs=("...)
+		for i, err := range frm.Errors {
+			if i != 0 {
+				dst = append(dst, ';')
+			}
+			dst = append(dst, err.Error()...)
+		}
+		dst = append(dst, ')')
+	}
 	return dst, nil
 }
 
