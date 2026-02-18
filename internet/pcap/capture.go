@@ -244,10 +244,12 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 				println("BAD UDP")
 				return dst, pc.vld.ErrPop()
 			}
-			frameLen := ufrm.Length()
-			ifrm4.CRCWriteUDPPseudo(&crc, frameLen)
-			if crc.PayloadSum16(ufrm.RawData()[:frameLen]) != 0 {
-				protoErrs = append(protoErrs, lneto.ErrBadCRC)
+			if ufrm.CRC() != 0 {
+				frameLen := ufrm.Length()
+				ifrm4.CRCWriteUDPPseudo(&crc, frameLen)
+				if crc.PayloadSum16(ufrm.RawData()[:frameLen]) != 0 {
+					protoErrs = append(protoErrs, lneto.ErrBadCRC)
+				}
 			}
 		}
 	case lneto.IPProtoICMP:

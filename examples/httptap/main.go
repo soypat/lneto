@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,6 +62,21 @@ func run() error {
 		iface = br
 	}
 
+	// Wrap interface with DHCP server interceptor.
+	hwaddr, err := iface.HardwareAddress6()
+	if err != nil {
+		return err
+	}
+	ipMask, err := iface.IPMask()
+	if err != nil {
+		return err
+	}
+	svIP := ipMask.Addr().As4()
+	iface, err = newDHCPInterceptor(iface, svIP, hwaddr, ipMask.Masked())
+	if err != nil {
+		return fmt.Errorf("DHCP interceptor: %w", err)
+	}
+
 	sv, err := ltesto.NewHTTPTapServer(iface, flagMinMTU, flagPacketQueueSize, flagPacketQueueSize)
 	if err != nil {
 		return err
@@ -72,6 +88,10 @@ func run() error {
 	}
 	var pfbuf []byte
 	sv.OnTransfer(func(channel int, pkt []byte) {
+		channelstr := "OS"
+		if channel != 0 {
+			channelstr = strconv.Itoa(channel) // Will not allocate for values 99 and under (stdlib).
+		}
 		captime := time.Now()
 		frames, err := cap.CaptureEthernet(nil, pkt, 0)
 		if err == nil {
@@ -79,15 +99,15 @@ func run() error {
 			pfbuf, err = pf.FormatFrames(pfbuf, frames, pkt)
 			pfbuf = append(pfbuf, ']')
 			if err != nil {
-				fmt.Printf("%d %s !err:%s\n", channel, captime.Format("15:04:05.000"), err)
+				fmt.Printf("%-2s %s !err:%s\n", channelstr, captime.Format("15:04:05.000"), err)
 			} else {
-				fmt.Printf("%d %s %s\n", channel, captime.Format("15:04:05.000"), pfbuf)
+				fmt.Printf("%-2s %s %s\n", channelstr, captime.Format("15:04:05.000"), pfbuf)
 			}
 		} else {
-			fmt.Println(channel, captime.Format("15:04:05.000"), "cap ERR", frames, err.Error())
+			fmt.Printf("%-2s %s %s %v %s\n", channelstr, captime.Format("15:04:05.000"), "cap ERR", frames, err.Error())
 		}
 	})
-	hwaddr, err := sv.HardwareAddress6()
+	hwaddr, err = sv.HardwareAddress6()
 	if err != nil {
 		return err
 	}

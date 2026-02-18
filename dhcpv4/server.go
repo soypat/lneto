@@ -11,15 +11,33 @@ import (
 )
 
 type Server struct {
-	connID   uint64
-	nextAddr netip.Addr
-	prefix   netip.Prefix
-	hosts    map[[36]byte]serverEntry
-	vld      lneto.Validator
-	pending  int
-	port     uint16
-	siaddr   [4]byte
-	gwaddr   [4]byte
+	connID       uint64
+	nextAddr     netip.Addr
+	prefix       netip.Prefix
+	hosts        map[[36]byte]serverEntry
+	vld          lneto.Validator
+	pending      int
+	leaseSeconds uint32
+	port         uint16
+	siaddr       [4]byte
+	gwaddr       [4]byte
+	dns          [4]byte
+}
+
+// ServerConfig contains configuration parameters for [Server.Configure].
+type ServerConfig struct {
+	// ServerAddr is the DHCP server's own IPv4 address.
+	ServerAddr [4]byte
+	// Gateway advertised to clients as default router. Zero value omits the option.
+	Gateway [4]byte
+	// DNS server address advertised to clients. Zero value omits the option.
+	DNS [4]byte
+	// Subnet defines the network prefix for address allocation and subnet mask responses.
+	Subnet netip.Prefix
+	// LeaseSeconds is the lease duration. Zero defaults to 3600.
+	LeaseSeconds uint32
+	// Port is the server listening port. Zero defaults to DefaultServerPort.
+	Port uint16
 }
 
 type serverEntry struct {
@@ -35,30 +53,53 @@ type serverEntry struct {
 	//  - Init: Server received discover, pending Offer sent out.
 	//  - Selecting: Server sent out offer, request not received.
 	//  - Requesting: Request received, pending Ack sent out.
-	//  - Bound: Request sent out, no more pending data to be sent.
+	//  - Bound: Ack sent out, no more pending data to be sent.
 	state ClientState
 }
 
-func (sv *Server) Reset(serverAddr [4]byte, port uint16) {
-	*sv = Server{
-		connID:   sv.connID + 1,
-		siaddr:   serverAddr,
-		port:     port,
-		hosts:    sv.hosts,
-		nextAddr: netip.AddrFrom4(serverAddr),
+// Configure resets and configures the server with the given configuration.
+// The connection ID is incremented on each call to invalidate existing connections.
+// The hosts map is reused across calls to avoid reallocation.
+func (sv *Server) Configure(cfg ServerConfig) error {
+	svAddr := netip.AddrFrom4(cfg.ServerAddr)
+	if !cfg.Subnet.IsValid() {
+		return errors.New("dhcpv4 server: invalid subnet")
+	} else if !cfg.Subnet.Contains(svAddr) {
+		return errors.New("dhcpv4 server: server address outside subnet")
 	}
-	if sv.hosts == nil {
-		sv.hosts = make(map[[36]byte]serverEntry)
+	port := cfg.Port
+	if port == 0 {
+		port = DefaultServerPort
+	}
+	lease := cfg.LeaseSeconds
+	if lease == 0 {
+		lease = 3600
+	}
+	hosts := sv.hosts
+	if hosts == nil {
+		hosts = make(map[[36]byte]serverEntry)
 	} else {
-		for k := range sv.hosts {
-			delete(sv.hosts, k)
+		for k := range hosts {
+			delete(hosts, k)
 		}
 	}
+	*sv = Server{
+		connID:       sv.connID + 1,
+		siaddr:       cfg.ServerAddr,
+		gwaddr:       cfg.Gateway,
+		dns:          cfg.DNS,
+		prefix:       cfg.Subnet,
+		port:         port,
+		leaseSeconds: lease,
+		nextAddr:     svAddr,
+		hosts:        hosts,
+	}
+	return nil
 }
 
 func (sv *Server) ConnectionID() *uint64 { return &sv.connID }
 func (sv *Server) Protocol() uint64      { return uint64(lneto.IPProtoUDP) }
-func (sv *Server) Port() uint16          { return sv.port }
+func (sv *Server) LocalPort() uint16     { return sv.port }
 
 func (sv *Server) Demux(carrierData []byte, frameOffset int) error {
 	isIPLayer := frameOffset >= 28
@@ -103,6 +144,9 @@ func (sv *Server) Demux(carrierData []byte, frameOffset int) error {
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
 	var clientIDRaw [36]byte
 	var client serverEntry
 	var clientExists bool
@@ -115,16 +159,17 @@ func (sv *Server) Demux(carrierData []byte, frameOffset int) error {
 
 	switch msgType {
 	case MsgDiscover:
-		if clientExists {
-			err = errors.New("DHCP Discover on initialized client")
-			break
+		if clientExists && (client.state == StateInit || client.state == StateRequesting) {
+			sv.pending-- // Cancel unfulfilled pending response.
 		}
-		if len(reqAddr) == 4 {
-			println("requested", reqAddr[0], reqAddr[1], reqAddr[2], reqAddr[3])
+		if !clientExists {
+			addr, ok := sv.allocAddr(reqAddr)
+			if !ok {
+				return errors.New("dhcpv4 server: address pool exhausted")
+			}
+			client.addr = addr
 		}
-		sv.nextAddr = sv.nextAddr.Next()
 		copy(client.requestlist[:], reqlist)
-		client.addr = sv.nextAddr.As4()
 		client.state = StateInit
 		client.hostname = string(hostname)
 		client.xid = dfrm.XID()
@@ -137,7 +182,7 @@ func (sv *Server) Demux(carrierData []byte, frameOffset int) error {
 
 	case MsgRequest:
 		if !clientExists {
-			err = errors.New("request for non existing client?")
+			err = errors.New("request for non existing client")
 		} else if dfrm.XID() != client.xid {
 			err = errors.New("unexpected XID for client")
 		} else if client.state != StateSelecting && client.state != StateRequesting {
@@ -146,11 +191,22 @@ func (sv *Server) Demux(carrierData []byte, frameOffset int) error {
 		if err != nil {
 			break
 		}
-		client.state = StateRequesting
-		sv.pending++
+		if client.state == StateSelecting {
+			client.state = StateRequesting
+			sv.pending++
+		}
+
+	case MsgRelease:
+		if clientExists {
+			if client.state == StateInit || client.state == StateRequesting {
+				sv.pending--
+			}
+			delete(sv.hosts, clientIDRaw)
+			return nil
+		}
 
 	default:
-		err = errors.New("unhandled message type")
+		err = fmt.Errorf("unhandled message type %s", msgType.String())
 	}
 	if err != nil {
 		return fmt.Errorf("msgtype=%s client=%+v: %w", msgType.String(), client, err)
@@ -169,7 +225,7 @@ func (sv *Server) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 		return 0, errOptionNotFit
 	}
 	if sv.pending == 0 {
-		return 0, nil // No pending outgoing frames.a
+		return 0, nil // No pending outgoing frames.
 	}
 
 	var client serverEntry
@@ -205,6 +261,26 @@ func (sv *Server) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 		n, _ = EncodeOption(optBuf[nopt:], OptRouter, sv.gwaddr[:]...)
 		nopt += n
 	}
+	if sv.prefix.IsValid() {
+		bits := uint(sv.prefix.Bits())
+		mask := ^uint32(0) << (32 - bits)
+		var maskBuf [4]byte
+		binary.BigEndian.PutUint32(maskBuf[:], mask)
+		n, _ = EncodeOption(optBuf[nopt:], OptSubnetMask, maskBuf[:]...)
+		nopt += n
+	}
+	if sv.dns != [4]byte{} {
+		n, _ = EncodeOption(optBuf[nopt:], OptDNSServers, sv.dns[:]...)
+		nopt += n
+	}
+	if sv.leaseSeconds > 0 {
+		n, _ = EncodeOption32(optBuf[nopt:], OptIPAddressLeaseTime, sv.leaseSeconds)
+		nopt += n
+		n, _ = EncodeOption32(optBuf[nopt:], OptRenewTimeValue, sv.leaseSeconds/2)
+		nopt += n
+		n, _ = EncodeOption32(optBuf[nopt:], OptRebindingTimeValue, sv.leaseSeconds*7/8)
+		nopt += n
+	}
 	optBuf[nopt] = byte(OptEnd)
 	nopt++
 
@@ -232,6 +308,40 @@ func (sv *Server) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 	sv.hosts[clientID] = client
 	sv.pending--
 	return OptionsOffset + nopt, nil
+}
+
+// allocAddr allocates the next available address from the pool.
+// If reqAddr is a valid 4-byte address within the subnet and not already assigned,
+// it is preferred. Returns false if the pool is exhausted.
+func (sv *Server) allocAddr(reqAddr []byte) ([4]byte, bool) {
+	if len(reqAddr) == 4 {
+		candidate := netip.AddrFrom4([4]byte(reqAddr))
+		if sv.prefix.Contains(candidate) && candidate.As4() != sv.siaddr && !sv.isAddrAssigned(candidate) {
+			return candidate.As4(), true
+		}
+	}
+	sv.nextAddr = sv.nextAddr.Next()
+	if !sv.prefix.Contains(sv.nextAddr) {
+		return [4]byte{}, false
+	}
+	// Reject broadcast address (all host bits set).
+	a := sv.nextAddr.As4()
+	hostBits := uint(32 - sv.prefix.Bits())
+	hostMask := ^uint32(0) >> (32 - hostBits)
+	if binary.BigEndian.Uint32(a[:])&hostMask == hostMask {
+		return [4]byte{}, false
+	}
+	return a, true
+}
+
+func (sv *Server) isAddrAssigned(addr netip.Addr) bool {
+	a4 := addr.As4()
+	for _, v := range sv.hosts {
+		if v.addr == a4 {
+			return true
+		}
+	}
+	return false
 }
 
 func (sv *Server) getClient(clientID [36]byte) (serverEntry, bool) {
