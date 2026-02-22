@@ -267,6 +267,207 @@ func TestTxBufferFreedOnACK(t *testing.T) {
 	}
 }
 
+// TestWindowUpdateAfterRead verifies that after the application reads data from
+// a full receive buffer (Window=0), the TCP stack queues a window update ACK
+// so the remote peer can resume sending. This is a regression test for a
+// zero-window deadlock: without proactive window updates, the remote peer stays
+// stuck at Window=0 indefinitely after the app frees buffer space via Read().
+func TestWindowUpdateAfterRead(t *testing.T) {
+	const rxBufSize = 256
+	const mtu = 1500
+	const maxpackets = 4
+	rng := rand.New(rand.NewSource(99))
+
+	client := new(Handler)
+	server := new(Handler)
+	// Server gets a small RX buffer so we can fill it easily.
+	err := client.SetBuffers(make([]byte, mtu), make([]byte, mtu), maxpackets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = server.SetBuffers(make([]byte, mtu), make([]byte, rxBufSize), maxpackets)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = server.OpenListen(uint16(rng.Uint32()), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.OpenActive(uint16(rng.Uint32()), server.LocalPort(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var rawbuf [mtu]byte
+	establish(t, client, server, rawbuf[:])
+
+	// Fill the server's RX buffer completely (without reading).
+	fillData := make([]byte, server.FreeRx())
+	n, err := client.Write(fillData)
+	if err != nil {
+		t.Fatal("client write:", err)
+	} else if n != len(fillData) {
+		t.Fatal("short write")
+	}
+	clear(rawbuf[:])
+	n, err = client.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("client send:", err)
+	}
+	err = server.Recv(rawbuf[:n])
+	if err != nil {
+		t.Fatal("server recv:", err)
+	}
+	if server.FreeRx() != 0 {
+		t.Fatalf("expected server RX buffer full, got %d free", server.FreeRx())
+	}
+
+	// Server sends ACK — should advertise Window=0.
+	clear(rawbuf[:])
+	n, err = server.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("server send ACK:", err)
+	}
+	if n == 0 {
+		t.Fatal("expected server to send ACK for received data")
+	}
+	zeroWndFrm, _ := NewFrame(rawbuf[:n])
+	if wnd := zeroWndFrm.WindowSize(); wnd != 0 {
+		t.Fatalf("expected Window=0 in ACK, got %d", wnd)
+	}
+
+	// Verify no pending segment before Read (nothing to send).
+	clear(rawbuf[:])
+	n, err = server.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatal("expected no pending segment before Read")
+	}
+
+	// App reads ALL data from server, freeing the entire buffer.
+	readBuf := make([]byte, rxBufSize)
+	n, err = server.Read(readBuf)
+	if err != nil {
+		t.Fatal("server read:", err)
+	}
+	if n != len(fillData) {
+		t.Fatalf("read %d, expected %d", n, len(fillData))
+	}
+
+	// Server should now have a pending window update ACK.
+	clear(rawbuf[:])
+	n, err = server.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("server send window update:", err)
+	}
+	if n == 0 {
+		t.Fatal("BUG: no window update sent after Read() freed buffer space from Window=0")
+	}
+	wndFrm, _ := NewFrame(rawbuf[:n])
+	if wnd := wndFrm.WindowSize(); wnd == 0 {
+		t.Fatal("BUG: window update ACK still has Window=0")
+	}
+	t.Logf("window update sent: Window=%d (buffer free=%d)", wndFrm.WindowSize(), server.FreeRx())
+}
+
+// TestWindowUpdateSWSAvoidance verifies that small reads that free less than
+// half the buffer do NOT trigger a window update (Silly Window Syndrome avoidance).
+func TestWindowUpdateSWSAvoidance(t *testing.T) {
+	const rxBufSize = 256
+	const mtu = 1500
+	const maxpackets = 4
+	rng := rand.New(rand.NewSource(77))
+
+	client := new(Handler)
+	server := new(Handler)
+	err := client.SetBuffers(make([]byte, mtu), make([]byte, mtu), maxpackets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = server.SetBuffers(make([]byte, mtu), make([]byte, rxBufSize), maxpackets)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = server.OpenListen(uint16(rng.Uint32()), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.OpenActive(uint16(rng.Uint32()), server.LocalPort(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var rawbuf [mtu]byte
+	establish(t, client, server, rawbuf[:])
+
+	// Fill most of the server's RX buffer (leave a tiny amount free).
+	fillSize := server.FreeRx() - 10
+	fillData := make([]byte, fillSize)
+	for i := range fillData {
+		fillData[i] = byte(i)
+	}
+	n, err := client.Write(fillData)
+	if err != nil {
+		t.Fatal("client write:", err)
+	} else if n != len(fillData) {
+		t.Fatal("short write")
+	}
+	clear(rawbuf[:])
+	n, err = client.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("client send:", err)
+	}
+	err = server.Recv(rawbuf[:n])
+	if err != nil {
+		t.Fatal("server recv:", err)
+	}
+
+	// Server sends ACK with small window.
+	clear(rawbuf[:])
+	n, err = server.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n == 0 {
+		t.Fatal("expected ACK")
+	}
+	// Client receives the ACK so its send window is updated.
+	err = client.Recv(rawbuf[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// App reads a small amount (less than half the buffer).
+	smallRead := make([]byte, rxBufSize/4)
+	n, err = server.Read(smallRead)
+	if err != nil {
+		t.Fatal("server read:", err)
+	}
+	if n == 0 {
+		t.Fatal("expected to read data")
+	}
+
+	// Because freed space < bufSize/2, no window update should be queued.
+	clear(rawbuf[:])
+	n, err = server.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Logf("NOTE: window update sent after small read (freed %d of %d buffer)", len(smallRead), rxBufSize)
+		// This is acceptable if the threshold is met, but for SWS avoidance
+		// we expect no update when the freed increment is < bufSize/2.
+		freeAfterRead := Size(server.FreeRx())
+		if freeAfterRead < Size(rxBufSize/2) {
+			t.Fatalf("SWS violation: window update sent when free=%d < bufSize/2=%d", freeAfterRead, rxBufSize/2)
+		}
+	}
+}
+
 // TestBufferNotClearedOnPassiveClose tests that data remains readable after
 // the TCP connection is closed by the remote peer. This is a regression test
 // for a bug where the receive buffer was cleared when the connection transitioned

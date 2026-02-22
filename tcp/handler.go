@@ -323,6 +323,9 @@ func (h *Handler) Read(b []byte) (n int, err error) {
 	if h.bufRx.Buffered() > 0 {
 		n, err = h.bufRx.Read(b)
 	}
+	if n > 0 {
+		h.maybeQueueWindowUpdate()
+	}
 	if n == 0 && err == nil {
 		state := h.State()
 		if state.IsClosed() {
@@ -332,6 +335,26 @@ func (h *Handler) Read(b []byte) (n int, err error) {
 		}
 	}
 	return n, err
+}
+
+// maybeQueueWindowUpdate queues a window update ACK if the receive window has
+// opened significantly since it was last advertised. This prevents zero-window
+// deadlocks where the remote peer cannot send data because it thinks our window
+// is still 0 after we've Read() data from the buffer.
+//
+// Per RFC 9293 §3.8.6.2.2 (SWS avoidance), the window is updated when freed
+// space >= min(bufferSize/2, MSS). Since we don't track MSS, we use bufferSize/2.
+// Zero-window openings always trigger an update.
+func (h *Handler) maybeQueueWindowUpdate() {
+	currentFree := Size(h.bufRx.Free())
+	lastAdvertised := h.scb.RecvWindow()
+	if currentFree <= lastAdvertised {
+		return // Window hasn't grown.
+	}
+	bufSize := Size(h.bufRx.Size())
+	if lastAdvertised == 0 || currentFree-lastAdvertised >= bufSize/2 {
+		h.scb.pending[0] |= FlagACK
+	}
 }
 
 // BufferedInput returns amount of bytes buffered in receive(input) buffer and ready to read
