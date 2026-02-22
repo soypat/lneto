@@ -12,6 +12,7 @@ import (
 	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internet/pcap"
+	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -589,7 +590,23 @@ func (tst *tester) ARPExchangeOnly(querying, target *StackAsync) {
 }
 
 func (tst *tester) getTCPFrame() tcp.Frame {
-	data := tst.getPayload(ethernet.TypeIPv4)
+	tst.t.Helper()
+	// Find the IP frame's position in the captured packet buffer.
+	ipFrm := getProtoFrame(tst.frmbuf, ethernet.TypeIPv4)
+	if ipFrm == nil {
+		tst.t.Fatal("no IP frame in capture")
+	}
+	ipStart := ipFrm.PacketBitOffset / 8
+	// Use IP TotalLength to correctly bound the frame, stripping any
+	// Ethernet runt-frame padding (802.3 §3.2.7). This mirrors what
+	// StackIP.Demux does before passing data to TCP.
+	ifrm, err := ipv4.NewFrame(tst.buf[ipStart:])
+	if err != nil {
+		tst.t.Fatal("parsing IP frame:", err)
+	}
+	totalLen := int(ifrm.TotalLength())
+	ihl := ifrm.HeaderLength()
+	data := tst.buf[ipStart+ihl : ipStart+totalLen]
 	frame, err := tcp.NewFrame(data)
 	if err != nil {
 		panic(err)
