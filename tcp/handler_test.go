@@ -468,6 +468,78 @@ func TestWindowUpdateSWSAvoidance(t *testing.T) {
 	}
 }
 
+// TestRSTinSynReceived verifies that a RST received during the SYN-RECEIVED
+// state correctly reverts the connection to LISTEN per RFC 9293 §3.5.3.
+// This is a regression test for a bug where RST segments in non-synchronized
+// states were blocked by errRequireSequential, causing connection pool leaks.
+func TestRSTinSynReceived(t *testing.T) {
+	const mtu = 1500
+	const maxpackets = 3
+	rng := rand.New(rand.NewSource(2))
+	client, server := newHandler(t, mtu, maxpackets), newHandler(t, mtu, maxpackets)
+	setupClientServer(t, rng, client, server)
+	var rawbuf [mtu]byte
+
+	// Client sends SYN.
+	clear(rawbuf[:])
+	n, err := client.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("client sending SYN:", err)
+	}
+	if client.State() != StateSynSent {
+		t.Fatal("client not in SynSent:", client.State())
+	}
+
+	// Server receives SYN → transitions to SYN-RECEIVED.
+	err = server.Recv(rawbuf[:n])
+	if err != nil {
+		t.Fatal("server receiving SYN:", err)
+	}
+	if server.State() != StateSynRcvd {
+		t.Fatal("server not in SynRcvd:", server.State())
+	}
+
+	// Server sends SYN,ACK.
+	clear(rawbuf[:])
+	n, err = server.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("server sending SYN,ACK:", err)
+	}
+	if n < sizeHeaderTCP {
+		t.Fatal("expected SYN,ACK packet")
+	}
+	synackFrm, _ := NewFrame(rawbuf[:n])
+	synackSeg := synackFrm.Segment(0)
+
+	// Construct RST packet from client perspective (as if the remote peer
+	// rejected the connection). SEQ = ACK from SYN,ACK, no ACK flag, no payload.
+	clear(rawbuf[:])
+	rstFrm, err := NewFrame(rawbuf[:])
+	if err != nil {
+		t.Fatal("new frame:", err)
+	}
+	rstSeg := Segment{
+		SEQ:   synackSeg.ACK, // SEQ = server's ACK value = in window.
+		Flags: FlagRST,
+	}
+	rstFrm.SetSourcePort(client.localPort)
+	rstFrm.SetDestinationPort(server.localPort)
+	rstFrm.SetSegment(rstSeg, 5)
+	rstFrm.SetUrgentPtr(0)
+
+	// Server receives RST → should revert to LISTEN per RFC 9293 §3.5.3.
+	err = server.Recv(rawbuf[:sizeHeaderTCP])
+	if !IsDroppedErr(err) {
+		t.Fatal("expected drop segment error from RST recv, got:", err)
+	}
+	if server.State() != StateListen {
+		t.Fatalf("expected server LISTEN after RST in SYN-RECEIVED, got %s", server.State())
+	}
+	if server.scb.HasPending() {
+		t.Fatal("server should have no pending segments after RST")
+	}
+}
+
 // TestBufferNotClearedOnPassiveClose tests that data remains readable after
 // the TCP connection is closed by the remote peer. This is a regression test
 // for a bug where the receive buffer was cleared when the connection transitioned
