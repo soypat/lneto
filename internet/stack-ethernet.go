@@ -166,6 +166,14 @@ func (ls *StackEthernet) Encapsulate(carrierData []byte, offsetToIP, offsetToFra
 	*efrm.SourceHardwareAddr() = ls.mac
 	efrm.SetEtherType(ethernet.Type(h.proto))
 	n += 14
+	// Pad to minimum Ethernet frame size (60 bytes without CRC, 64 with).
+	// Frames shorter than this are "runt frames" and may be dropped by switches/routers
+	// according to 802.3 minimum length of 64 octets.
+	const minFrameSize = 60
+	for n < minFrameSize {
+		dst[n] = 0
+		n++
+	}
 	if ls.crcupdate != nil {
 		crc := ls.crcupdate(0, carrierData[offsetToFrame:offsetToFrame+n])
 		binary.LittleEndian.PutUint32(carrierData[offsetToFrame+n:], crc)
