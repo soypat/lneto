@@ -309,6 +309,87 @@ func TestListener_MultiConn(t *testing.T) {
 	}
 }
 
+func TestListener_RSTOnPoolExhaustion(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	var client1Stack, client2Stack, serverStack StackIP
+	var client1Conn, client2Conn, serverConn tcp.Conn
+	var listener tcp.Listener
+
+	pool := newMockTCPPool(1, 3, 2048) // Pool size 1: will exhaust after first connection.
+
+	setupClientServer(t, rng, &client1Stack, &serverStack, &client1Conn, &serverConn)
+	serverConn.Abort()
+	serverPort := uint16(80)
+	if err := listener.Reset(serverPort, pool); err != nil {
+		t.Fatal(err)
+	}
+	if err := serverStack.Register(&listener); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf [2048]byte
+
+	// Complete full handshake for client1, exhausting the pool.
+	expectExchange(t, &client1Stack, &serverStack, buf[:]) // SYN
+	expectExchange(t, &serverStack, &client1Stack, buf[:]) // SYN-ACK
+	expectExchange(t, &client1Stack, &serverStack, buf[:]) // ACK
+	if pool.NumberOfAcquired() != 1 {
+		t.Fatalf("pool should have 1 acquired, got %d", pool.NumberOfAcquired())
+	}
+
+	// Setup client2 and send its SYN — pool is full, server should queue RST.
+	const client2Port = uint16(1338)
+	setupClient(t, &client2Stack, &client2Conn, serverStack.Addr(), serverPort, client2Port)
+
+	// Client2 sends SYN.
+	n, err := client2Stack.Encapsulate(buf[:], -1, 0)
+	if err != nil {
+		t.Fatal("client2 encapsulate:", err)
+	} else if n == 0 {
+		t.Fatal("client2 produced no SYN")
+	}
+	// Server receives SYN — pool full, should return ErrPacketDrop but queue RST.
+	err = serverStack.Demux(buf[:n], 0)
+	if err == nil {
+		t.Fatal("expected error from server demux of rejected SYN")
+	}
+
+	// Server encapsulates — should produce RST (no connection data pending).
+	n, err = serverStack.Encapsulate(buf[:], -1, 0)
+	if err != nil {
+		t.Fatal("server encapsulate RST:", err)
+	} else if n == 0 {
+		t.Fatal("server produced no RST response")
+	}
+
+	// Parse the IPv4+TCP frame to verify RST fields.
+	// IPv4 header is 20 bytes at offset 0, TCP starts at offset 20.
+	tfrm, err := tcp.NewFrame(buf[20:n])
+	if err != nil {
+		t.Fatal("parse RST frame:", err)
+	}
+	_, flags := tfrm.OffsetAndFlags()
+	wantFlags := tcp.FlagRST | tcp.FlagACK
+	if flags != wantFlags {
+		t.Errorf("RST flags: got %s, want %s", flags, wantFlags)
+	}
+	if tfrm.SourcePort() != serverPort {
+		t.Errorf("RST source port: got %d, want %d", tfrm.SourcePort(), serverPort)
+	}
+	if tfrm.DestinationPort() != client2Port {
+		t.Errorf("RST dest port: got %d, want %d", tfrm.DestinationPort(), client2Port)
+	}
+	if tfrm.Seq() != 0 {
+		t.Errorf("RST SEQ: got %d, want 0", tfrm.Seq())
+	}
+	// ACK should be client2's ISS + 1 (SYN occupies 1 sequence number).
+	// client2 was opened with ISS=100 (setupClient uses 100).
+	gotACK := tfrm.Ack()
+	if gotACK != 101 {
+		t.Errorf("RST ACK: got %d, want %d (client ISS+1)", gotACK, 101)
+	}
+}
+
 // tryExchange attempts an exchange but doesn't fail if no data to send.
 func tryExchange(t *testing.T, from, to *StackIP, buf []byte) {
 	t.Helper()
