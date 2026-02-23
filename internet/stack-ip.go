@@ -98,7 +98,7 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 	totalLen := ifrm.TotalLength()
 	proto := ifrm.Protocol()
 	if proto == lneto.IPProtoICMP {
-		return sb.recvicmp(ifrm.RawData(), ifrm.HeaderLength())
+		return sb.recvicmp(ifrm.Payload())
 	}
 	node := sb.handlers.nodeByProto(uint16(proto))
 	// nodeIdx := getNodeByProto(sb.handlers, uint16(proto))
@@ -205,10 +205,9 @@ func (sb *StackIP) Register(h StackNode) error {
 	return sb.handlers.registerByPortProto(nodeFromStackNode(h, h.LocalPort(), proto, nil))
 }
 
-func (sb *StackIP) recvicmp(carrierData []byte, offset int) error {
-	frameData := carrierData[offset:]
+func (sb *StackIP) recvicmp(icmpData []byte) error {
 	var crc lneto.CRC791
-	if crc.PayloadSum16(frameData) != 0 {
+	if crc.PayloadSum16(icmpData) != 0 {
 		return errors.New("ICMP CRC mismatch")
 	}
 	return nil
