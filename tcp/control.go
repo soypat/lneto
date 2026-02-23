@@ -183,8 +183,9 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	}
 	pending := tcb.pending[0]
 	established := tcb._state == StateEstablished
-	if !established && tcb._state != StateCloseWait {
-		payloadLen = 0 // Can't send data if not established.
+	canSendData := established || tcb._state == StateCloseWait
+	if !canSendData {
+		payloadLen = 0 // Can't send data if not established or close-wait.
 	}
 	if pending == 0 && payloadLen == 0 {
 		return Segment{}, false // No pending segment.
@@ -206,7 +207,7 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 		pending |= FlagPSH // By default ensure all data flushed to destination application immediately on receive.
 	}
 
-	if established {
+	if canSendData {
 		pending |= FlagACK // ACK is always set in established state. Not in RFC9293 but somehow expected?
 	} else {
 		payloadLen = 0 // Can't send data if not established.
@@ -420,7 +421,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	case checkSEQ && !seg.Last().InWindow(tcb.rcv.NXT, tcb.rcv.WND) && !zeroWindowOK:
 		err = errLastNotInWindow
 
-	case checkSEQ && seg.SEQ != tcb.rcv.NXT:
+	case checkSEQ && !flags.HasAny(FlagRST) && seg.SEQ != tcb.rcv.NXT:
 		// This part diverts from TCB as described in RFC 9293. We want to support
 		// only sequential segments to keep implementation simple and maintainable. See SHLD-31.
 		err = errRequireSequential
@@ -485,22 +486,23 @@ func (tcb *ControlBlock) resetRcv(localWND Size, remoteISS Value) {
 
 func (tcb *ControlBlock) handleRST(seq Value) error {
 	tcb.debug("rcv:RST", slog.String("state", tcb._state.String()))
-	if seq != tcb.rcv.NXT {
-		// See RFC9293: If the RST bit is set and the sequence number does not exactly match the next expected sequence value, yet is within the current receive window, TCP endpoints MUST send an acknowledgment (challenge ACK).
-		tcb.challengeAck = true
-		tcb.pending[0] |= FlagACK
-		return errDropSegment
-	}
 	if tcb._state.IsPreestablished() {
+		// RFC 9293 §3.5.3: non-synchronized states accept RST if SEQ is in window.
+		// No challenge ACK for non-synchronized states. Return to LISTEN.
 		tcb.pending[0] = 0
 		tcb._state = StateListen
 		tcb.resetSnd(tcb.snd.ISS+tcb.rstJump(), tcb.snd.WND)
 		tcb.resetRcv(tcb.rcv.WND, 3_14159_2653^tcb.rcv.IRS)
-	} else {
-		tcb.Abort() // Enter closed state and return.
-		return net.ErrClosed
+		return errDropSegment
 	}
-	return errDropSegment
+	// Synchronized states: exact match required, challenge ACK for in-window non-exact.
+	if seq != tcb.rcv.NXT {
+		tcb.challengeAck = true
+		tcb.pending[0] |= FlagACK
+		return errDropSegment
+	}
+	tcb.Abort()
+	return net.ErrClosed
 }
 
 func (tcb *ControlBlock) rstJump() Value {

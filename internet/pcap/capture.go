@@ -603,9 +603,20 @@ type FrameField struct {
 	FrameBitOffset int
 	BitLength      int
 	SubFields      []FrameField
-	RightAligned   bool
-	Legacy         bool
+
+	Flags Flags
 }
+
+// Flags stores frame field interpretation bits.
+type Flags uint32
+
+const (
+	FlagRightAligned Flags = 1 << iota
+	FlagLegacy
+)
+
+func (ff Flags) IsLegacy() bool       { return ff&FlagLegacy != 0 }
+func (ff Flags) IsRightAligned() bool { return ff&FlagRightAligned != 0 }
 
 type Frame struct {
 	Protocol        any
@@ -653,7 +664,7 @@ func (frm Frame) FieldAsUint(fieldIdx int, pkt []byte) (uint64, error) {
 		return badUint64, errors.New("invalid field index")
 	}
 	field := frm.Fields[fieldIdx]
-	return fieldAsUint(pkt, frm.PacketBitOffset+field.FrameBitOffset, field.BitLength, field.RightAligned)
+	return fieldAsUint(pkt, frm.PacketBitOffset+field.FrameBitOffset, field.BitLength, field.Flags.IsRightAligned())
 }
 
 // AppendField appends the binary on-the-wire representation of the field and aligns the field so it starts at the first bit of appended data.
@@ -662,7 +673,7 @@ func (frm Frame) AppendField(dst []byte, fieldIdx int, pkt []byte) ([]byte, erro
 		return dst, errors.New("invalid field index")
 	}
 	field := frm.Fields[fieldIdx]
-	return appendField(dst, pkt, frm.PacketBitOffset+field.FrameBitOffset, field.BitLength, field.RightAligned)
+	return appendField(dst, pkt, frm.PacketBitOffset+field.FrameBitOffset, field.BitLength, field.Flags.IsRightAligned())
 }
 
 func fieldAsUint(pkt []byte, fieldBitStart, bitlen int, rightAligned bool) (uint64, error) {
@@ -860,14 +871,14 @@ var baseIPv6Fields = [...]FrameField{
 		Class:          FieldClassFlags,
 		FrameBitOffset: 4,
 		BitLength:      1 * octet,
-		RightAligned:   true,
+		Flags:          FlagRightAligned,
 	},
 	{
 		Name:           "Flow Label",
 		Class:          FieldClassID,
 		FrameBitOffset: 12,
 		BitLength:      20,
-		RightAligned:   true,
+		Flags:          FlagRightAligned,
 	},
 	{
 		Name:           "Total Length",
@@ -921,11 +932,6 @@ var baseIPv4Fields = [...]FrameField{
 		Name:           "Total Length",
 		Class:          FieldClassSize,
 		FrameBitOffset: 2 * octet,
-		BitLength:      2 * octet,
-	},
-	{
-		Class:          FieldClassID,
-		FrameBitOffset: 4 * octet,
 		BitLength:      2 * octet,
 	},
 	{
@@ -1000,7 +1006,7 @@ var baseTCPFields = [...]FrameField{
 		Class:          FieldClassFlags,
 		FrameBitOffset: 12*octet + 4,
 		BitLength:      12,
-		RightAligned:   true,
+		Flags:          FlagRightAligned,
 	},
 	{
 		Name:           "Window",
@@ -1018,6 +1024,7 @@ var baseTCPFields = [...]FrameField{
 		Class:          0,
 		FrameBitOffset: 18 * octet,
 		BitLength:      2 * octet,
+		Flags:          FlagLegacy,
 	},
 }
 
@@ -1199,14 +1206,14 @@ var baseDHCPv4Fields = [...]FrameField{
 		Class:          FieldClassBinaryText,
 		FrameBitOffset: (28 + 6) * octet, // Part of Client Hardware Address(16 bytes) but unused.
 		BitLength:      10 * octet,
-		Legacy:         true,
+		Flags:          FlagLegacy,
 	},
 	{
 		Name:           "BOOTP",
 		Class:          FieldClassBinaryText,
 		FrameBitOffset: (28 + 16) * octet,
 		BitLength:      (dhcpv4.OptionsOffset - (28 + 16)) * octet,
-		Legacy:         true,
+		Flags:          FlagLegacy,
 	},
 }
 

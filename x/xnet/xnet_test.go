@@ -11,6 +11,7 @@ import (
 
 	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/internet/pcap"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
@@ -908,4 +909,83 @@ func TestTCPConn_BufferNotClearedOnPassiveClose(t *testing.T) {
 	if !bytes.Equal(readBuf[:n], sendData) {
 		t.Fatalf("read wrong data: got %q, want %q", readBuf[:n], sendData)
 	}
+}
+
+func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
+	const MTU = 1500
+	stackAddr := netip.AddrFrom4([4]byte{192, 168, 1, 99})
+	stackMAC := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
+	routerAddr := [4]byte{192, 168, 1, 1}
+	routerMAC := [6]byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}
+
+	stack := new(StackAsync)
+	err := stack.Reset(StackConfig{
+		Hostname:        "ICMPTest",
+		RandSeed:        42,
+		StaticAddress:   stackAddr,
+		HardwareAddress: stackMAC,
+		MTU:             MTU,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gen := ltesto.PacketGen{
+		SrcMAC:  routerMAC,
+		DstMAC:  stackMAC,
+		SrcIPv4: routerAddr,
+		DstIPv4: stackAddr.As4(),
+	}
+	icmpPayload := []byte("abcdefghijklmnopqrstuvwxyz012345") // 32 bytes, typical ping payload.
+
+	// Test 1: Valid ICMP echo request should be accepted.
+	pkt := gen.AppendIPv4ICMPEcho(nil, ltesto.ICMPEchoConfig{
+		Identifier:     0x1234,
+		SequenceNumber: 1,
+		Payload:        icmpPayload,
+	})
+	err = stack.Demux(pkt, 0)
+	if err != nil {
+		t.Fatalf("valid ICMP echo rejected: %v", err)
+	}
+
+	// Test 2: Valid ICMP with trailing FCS bytes (simulates real PIO hardware capture).
+	// This is a regression test for the bug where recvicmp checksummed ifrm.RawData()
+	// instead of ifrm.Payload(), causing the 4 trailing FCS bytes to corrupt the checksum.
+	pkt = gen.AppendIPv4ICMPEcho(nil, ltesto.ICMPEchoConfig{
+		Identifier:     0x1234,
+		SequenceNumber: 2,
+		Payload:        icmpPayload,
+	})
+	pkt = append(pkt, 0xDE, 0xAD, 0xBE, 0xEF) // Simulate Ethernet FCS.
+	err = stack.Demux(pkt, 0)
+	if err != nil {
+		t.Fatalf("valid ICMP with trailing FCS rejected: %v", err)
+	}
+
+	// Test 3: Corrupted ICMP checksum should be rejected.
+	pkt = gen.AppendIPv4ICMPEcho(nil, ltesto.ICMPEchoConfig{
+		Identifier:     0x1234,
+		SequenceNumber: 3,
+		Payload:        icmpPayload,
+	})
+	pkt[len(pkt)-1] ^= 0xFF // Flip bits in last payload byte to corrupt ICMP checksum.
+	err = stack.Demux(pkt, 0)
+	if err == nil {
+		t.Fatal("corrupted ICMP accepted, expected CRC error")
+	}
+
+	// Test 4: Corrupted ICMP with trailing FCS should also be rejected.
+	pkt = gen.AppendIPv4ICMPEcho(nil, ltesto.ICMPEchoConfig{
+		Identifier:     0x1234,
+		SequenceNumber: 4,
+		Payload:        icmpPayload,
+	})
+	pkt[len(pkt)-1] ^= 0xFF // Corrupt ICMP payload.
+	pkt = append(pkt, 0xDE, 0xAD, 0xBE, 0xEF) // Simulate Ethernet FCS.
+	err = stack.Demux(pkt, 0)
+	if err == nil {
+		t.Fatal("corrupted ICMP with FCS accepted, expected CRC error")
+	}
+
 }

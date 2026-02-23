@@ -264,8 +264,9 @@ func (listener *Listener) maintainConns() {
 			continue
 		}
 		state := conn.State()
-		if state > StateEstablished || state.IsClosed() {
-			// Something went wrong in handshake or pool aborted/closed the connection.
+		if state > StateEstablished || state.IsClosed() || state == StateListen {
+			// Something went wrong in handshake, pool aborted/closed the connection,
+			// or RST reverted the connection to LISTEN (RFC 9293 §3.5.3).
 			listener.returnIncoming(i)
 		}
 	}
@@ -289,7 +290,8 @@ func getConn(conns []handler, remotePort uint16, remoteAddr []byte) int {
 
 func (listener *Listener) maintainConn(conns []handler, idx int, err error) error {
 	if err == net.ErrClosed {
-		listener.returnAccepted(idx)
+		listener.poolReturn(conns[idx].conn)
+		conns[idx] = handler{}
 		return nil // avoid closing listener entirely.
 	}
 	return err

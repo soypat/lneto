@@ -8,6 +8,7 @@ import (
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/ipv4"
+	"github.com/soypat/lneto/ipv4/icmpv4"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -157,6 +158,73 @@ func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand, seg 
 	if err = vld.ErrPop(); err != nil {
 		panic(err)
 	}
+	return dst
+}
+
+// ICMPEchoConfig configures an ICMP echo request packet.
+type ICMPEchoConfig struct {
+	Identifier     uint16
+	SequenceNumber uint16
+	Payload        []byte
+}
+
+// AppendIPv4ICMPEcho builds and appends a complete Ethernet+IPv4+ICMP echo request packet to dst.
+// The packet has valid Ethernet, IPv4, and ICMP checksums.
+func (gen *PacketGen) AppendIPv4ICMPEcho(dst []byte, cfg ICMPEchoConfig) []byte {
+	const icmpHdrLen = 8
+	ethsize := sizeHeaderEthNoVLAN
+	if gen.EnableVLAN {
+		ethsize += 4
+	}
+	totalPayload := icmpHdrLen + len(cfg.Payload)
+	off := len(dst)
+	dst = append(dst, make([]byte, ethsize+sizeHeaderIPv4+totalPayload)...)
+	pkt := dst[off:]
+
+	// Ethernet header.
+	efrm, err := ethernet.NewFrame(pkt)
+	if err != nil {
+		panic(err)
+	}
+	*efrm.DestinationHardwareAddr() = gen.DstMAC
+	*efrm.SourceHardwareAddr() = gen.SrcMAC
+	efrm.SetEtherType(ethernet.TypeIPv4)
+
+	// IPv4 header.
+	ethernetPayload := efrm.Payload()
+	ifrm, err := ipv4.NewFrame(ethernetPayload)
+	if err != nil {
+		panic(err)
+	}
+	ifrm.SetVersionAndIHL(4, 5)
+	ifrm.SetTotalLength(uint16(sizeHeaderIPv4 + totalPayload))
+	ifrm.SetID(0)
+	ifrm.SetFlags(0)
+	ifrm.SetTTL(64)
+	ifrm.SetProtocol(lneto.IPProtoICMP)
+	*ifrm.SourceAddr() = gen.SrcIPv4
+	*ifrm.DestinationAddr() = gen.DstIPv4
+	ifrm.SetCRC(0)
+	ifrm.SetCRC(ifrm.CalculateHeaderCRC())
+
+	// ICMP echo request.
+	icmpData := ifrm.Payload()
+	icmpFrm, err := icmpv4.NewFrame(icmpData)
+	if err != nil {
+		panic(err)
+	}
+	icmpFrm.SetType(icmpv4.TypeEcho)
+	icmpFrm.SetCode(0)
+	echo := icmpv4.FrameEcho{Frame: icmpFrm}
+	echo.SetIdentifier(cfg.Identifier)
+	echo.SetSequenceNumber(cfg.SequenceNumber)
+	copy(echo.Data(), cfg.Payload)
+
+	// ICMP checksum covers the entire ICMP message (no pseudo header).
+	icmpFrm.SetCRC(0)
+	var crc lneto.CRC791
+	icmpFrm.SetCRC(crc.PayloadSum16(icmpData[:totalPayload]))
+
 	return dst
 }
 
