@@ -68,7 +68,7 @@ func (f *Formatter) FormatFrame(dst []byte, frm Frame, pkt []byte) (_ []byte, er
 		if field.Class == FieldClassFlags && frm.Protocol == lneto.IPProtoTCP {
 			// TCP flags pretty print special case.
 			dst = append(dst, "flags="...)
-			v, err := fieldAsUint(pkt, frm.PacketBitOffset+field.FrameBitOffset, field.BitLength, field.RightAligned)
+			v, err := fieldAsUint(pkt, frm.PacketBitOffset+field.FrameBitOffset, field.BitLength, field.Flags.IsRightAligned())
 			if err != nil {
 				return dst, err
 			}
@@ -95,7 +95,7 @@ func (f *Formatter) FormatFrame(dst []byte, frm Frame, pkt []byte) (_ []byte, er
 
 func (f *Formatter) filterField(field FrameField) bool {
 	return f.FilterClasses != nil && !slices.Contains(f.FilterClasses, field.Class) ||
-		(field.Legacy && !f.DisableLegacyFilter)
+		(field.Flags.IsLegacy() && !f.DisableLegacyFilter)
 }
 
 func (f *Formatter) FormatField(dst []byte, pktStartOff int, field FrameField, pkt []byte) (_ []byte, err error) {
@@ -133,7 +133,7 @@ func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, p
 	dst = append(dst, '=')
 	f.mubuf.Lock()
 	defer f.mubuf.Unlock()
-	f.buf, err = appendField(f.buf[:0], pkt, field.FrameBitOffset+pktStartOff, field.BitLength, field.RightAligned)
+	f.buf, err = appendField(f.buf[:0], pkt, field.FrameBitOffset+pktStartOff, field.BitLength, field.Flags.IsRightAligned())
 	if err != nil {
 		return dst, err
 	}
@@ -158,7 +158,7 @@ func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, p
 	case FieldClassDst, FieldClassSrc, FieldClassSize, FieldClassAddress, FieldClassOperation:
 		// IP, MAC addresses and ports.
 		if field.BitLength <= 16 {
-			v, err := fieldAsUint(pkt, fieldBitStart, field.BitLength, field.RightAligned)
+			v, err := fieldAsUint(pkt, fieldBitStart, field.BitLength, field.Flags.IsRightAligned())
 			if err != nil {
 				return dst, err
 			}
