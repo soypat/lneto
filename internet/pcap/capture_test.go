@@ -85,13 +85,14 @@ func TestCap(t *testing.T) {
 		}
 		return math.MaxUint64
 	}
-	getClassData := func(frame Frame, class FieldClass) []byte {
-		idx, err := frame.FieldByClass(class)
-		if err != nil {
-			return nil
+	getNameData := func(frame Frame, name string) []byte {
+		for i := range frame.Fields {
+			if frame.Fields[i].Name == name {
+				v, _ := frame.AppendField(nil, i, pkt)
+				return v
+			}
 		}
-		v, _ := frame.AppendField(nil, idx, pkt)
-		return v
+		return nil
 	}
 	efrm, _ := ethernet.NewFrame(pkt)
 	pefrm := frames[0]
@@ -143,11 +144,11 @@ func TestCap(t *testing.T) {
 	if gotHeaderLen != uint64(wantHeaderLen) {
 		t.Errorf("want %d TCP header length, got %d", wantHeaderLen, gotHeaderLen)
 	}
-	gotHttpHeader := string(getClassData(phfrm, FieldClassText))
+	gotHttpHeader := string(getNameData(phfrm, "HTTP Header"))
 	if !strings.HasPrefix(gotHttpHeader, httpProtocol) {
 		t.Errorf("want HTTP header starting with %q, got %q", httpProtocol, gotHttpHeader)
 	}
-	gotBody := getClassData(phfrm, FieldClassPayload)
+	gotBody := getNameData(phfrm, "HTTP Body")
 	if string(gotBody) != httpBody {
 		t.Errorf("want %q HTTP body, got %q", httpBody, gotBody)
 	}

@@ -2,6 +2,7 @@ package pcap
 
 //go:generate stringer -type=FieldClass -linecomment -output stringers.go .
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -554,6 +555,39 @@ func (pc *PacketBreakdown) CaptureDHCPv4(dst []Frame, pkt []byte, bitOffset int)
 	return dst, nil
 }
 
+// httpBodyClass returns FieldClassText if the HTTP body appears to be human-readable text
+// based on the Content-Type header, falling back to byte inspection when Content-Type is absent.
+func httpBodyClass(contentType, body []byte) FieldClass {
+	if len(contentType) > 0 {
+		// Strip parameters (e.g. "; charset=utf-8") for media type matching.
+		mediaType := contentType
+		if i := bytes.IndexByte(contentType, ';'); i >= 0 {
+			mediaType = contentType[:i]
+		}
+		mediaType = bytes.TrimSpace(mediaType)
+		switch {
+		case bytes.HasPrefix(mediaType, []byte("text/")):
+			return FieldClassText
+		case bytes.Equal(mediaType, []byte("application/json")),
+			bytes.Equal(mediaType, []byte("application/javascript")),
+			bytes.Equal(mediaType, []byte("application/xml")):
+			return FieldClassText
+		case bytes.HasSuffix(mediaType, []byte("+json")),
+			bytes.HasSuffix(mediaType, []byte("+xml")):
+			return FieldClassText
+		}
+		return FieldClassPayload
+	}
+	// No Content-Type: inspect bytes for printable ASCII.
+	for _, c := range body {
+		if c >= 32 && c <= 126 || c == '\t' || c == '\n' || c == '\r' {
+			continue
+		}
+		return FieldClassPayload
+	}
+	return FieldClassText
+}
+
 func (pc *PacketBreakdown) CaptureHTTP(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
 	const httpProtocol = "HTTP"
 	if bitOffset%8 != 0 {
@@ -573,6 +607,7 @@ func (pc *PacketBreakdown) CaptureHTTP(dst []Frame, pkt []byte, bitOffset int) (
 	}
 	hdrLen := pc.hdr.BufferParsed()
 	body, _ := pc.hdr.Body()
+	bodyClass := httpBodyClass(pc.hdr.Get("Content-Type"), body)
 	dst = append(dst, Frame{
 		Protocol:        httpProtocol,
 		PacketBitOffset: bitOffset,
@@ -584,7 +619,8 @@ func (pc *PacketBreakdown) CaptureHTTP(dst []Frame, pkt []byte, bitOffset int) (
 				BitLength:      hdrLen * octet,
 			},
 			{
-				Class:          FieldClassPayload,
+				Name:           "HTTP Body",
+				Class:          bodyClass,
 				FrameBitOffset: hdrLen * octet,
 				BitLength:      len(body) * octet,
 			},
