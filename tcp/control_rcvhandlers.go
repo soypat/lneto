@@ -99,9 +99,14 @@ func (tcb *ControlBlock) rcvFinWait1(seg Segment) (pending Flags, err error) {
 }
 
 func (tcb *ControlBlock) rcvFinWait2(seg Segment) (pending Flags, err error) {
-	if !seg.Flags.HasAll(finack) {
-		return pending, errFinwaitExpectedFinack
+	if seg.Flags.HasAny(FlagFIN) {
+		tcb._state = StateTimeWait
+		return FlagACK, nil
 	}
-	tcb._state = StateTimeWait
-	return FlagACK, nil
+	// Bare ACKs and data are valid in FIN-WAIT-2 per RFC 9293 §3.10.7.4.
+	// The remote side hasn't closed yet; it may still send data.
+	if seg.DATALEN > 0 {
+		return FlagACK, nil
+	}
+	return 0, nil
 }

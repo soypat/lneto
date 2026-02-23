@@ -590,6 +590,114 @@ func TestIssue19(t *testing.T) {
 	}
 }
 
+// TestRcvFinWait2_BareACK reproduces the bug where rcvFinWait2 rejects any segment
+// without both FIN and ACK flags. Per RFC 9293 §3.10.7.4, FIN-WAIT-2 should:
+//   - Silently accept bare ACKs (duplicate ACKs, window updates)
+//   - Accept incoming data (remote hasn't sent FIN yet)
+//   - Transition to TIME-WAIT only when FIN is received
+//
+// The overly strict check causes connections to get stuck in FIN-WAIT-2 until timeout,
+// exhausting the connection pool when multiple clients are affected.
+func TestRcvFinWait2_BareACK(t *testing.T) {
+	var tcb tcp.ControlBlock
+	const windowA, windowB = 1000, 1000
+	const issA, issB = 100, 300
+	tcb.HelperInitState(tcp.StateEstablished, issA, issA, windowA)
+	tcb.HelperInitRcv(issB, issB, windowB)
+	assertState := func(want tcp.State) {
+		t.Helper()
+		if tcb.State() != want {
+			t.Fatalf("want state %s; got %s", want, tcb.State())
+		}
+	}
+
+	// A initiates close → sends FIN|ACK.
+	err := tcb.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seg, ok := tcb.PendingSegment(0)
+	if !ok || !seg.Flags.HasAll(FINACK) {
+		t.Fatalf("expected FIN|ACK pending; got %+v (ok=%v)", seg, ok)
+	}
+	err = tcb.Send(seg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertState(tcp.StateFinWait1)
+
+	// A receives ACK for its FIN → FIN-WAIT-2.
+	err = tcb.Recv(tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: tcp.FlagACK, WND: windowB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertState(tcp.StateFinWait2)
+
+	// A receives bare ACK (duplicate/window update) in FIN-WAIT-2.
+	// RFC 9293: this should be silently accepted, NOT rejected.
+	err = tcb.Recv(tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: tcp.FlagACK, WND: windowB})
+	if err != nil {
+		t.Fatalf("bare ACK in FIN-WAIT-2 rejected: %v", err)
+	}
+	assertState(tcp.StateFinWait2)
+
+	// A receives FIN|ACK → TIME-WAIT.
+	err = tcb.Recv(tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: FINACK, WND: windowB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertState(tcp.StateTimeWait)
+}
+
+// TestRcvFinWait2_DataFromRemote tests that data segments are accepted in FIN-WAIT-2.
+// The remote side has not sent FIN yet and may still send data per RFC 9293 §3.10.7.4.
+func TestRcvFinWait2_DataFromRemote(t *testing.T) {
+	var tcb tcp.ControlBlock
+	const windowA, windowB = 1000, 1000
+	const issA, issB = 100, 300
+	tcb.HelperInitState(tcp.StateEstablished, issA, issA, windowA)
+	tcb.HelperInitRcv(issB, issB, windowB)
+
+	// A sends FIN|ACK → FIN-WAIT-1.
+	err := tcb.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seg, _ := tcb.PendingSegment(0)
+	err = tcb.Send(seg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A receives ACK → FIN-WAIT-2.
+	err = tcb.Recv(tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: tcp.FlagACK, WND: windowB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tcb.State() != tcp.StateFinWait2 {
+		t.Fatalf("want FIN-WAIT-2; got %s", tcb.State())
+	}
+
+	// A receives data from remote (remote hasn't closed yet).
+	const dataLen = 50
+	err = tcb.Recv(tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: PSHACK, WND: windowB, DATALEN: dataLen})
+	if err != nil {
+		t.Fatalf("data in FIN-WAIT-2 rejected: %v", err)
+	}
+	if tcb.State() != tcp.StateFinWait2 {
+		t.Fatalf("want FIN-WAIT-2 after data; got %s", tcb.State())
+	}
+
+	// A receives FIN|ACK → TIME-WAIT.
+	err = tcb.Recv(tcp.Segment{SEQ: issB + dataLen, ACK: issA + 1, Flags: FINACK, WND: windowB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tcb.State() != tcp.StateTimeWait {
+		t.Fatalf("want TIME-WAIT; got %s", tcb.State())
+	}
+}
+
 func FuzzTCBActions(f *testing.F) {
 	const mtu = 2048
 	const (
