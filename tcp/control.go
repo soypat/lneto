@@ -183,8 +183,9 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	}
 	pending := tcb.pending[0]
 	established := tcb._state == StateEstablished
-	if !established && tcb._state != StateCloseWait {
-		payloadLen = 0 // Can't send data if not established.
+	canSendData := established || tcb._state == StateCloseWait
+	if !canSendData {
+		payloadLen = 0 // Can't send data if not established or close-wait.
 	}
 	if pending == 0 && payloadLen == 0 {
 		return Segment{}, false // No pending segment.
@@ -206,7 +207,7 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 		pending |= FlagPSH // By default ensure all data flushed to destination application immediately on receive.
 	}
 
-	if established {
+	if canSendData {
 		pending |= FlagACK // ACK is always set in established state. Not in RFC9293 but somehow expected?
 	} else {
 		payloadLen = 0 // Can't send data if not established.

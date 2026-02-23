@@ -468,6 +468,86 @@ func TestWindowUpdateSWSAvoidance(t *testing.T) {
 	}
 }
 
+// TestWriteAfterRemoteFIN verifies that when a remote peer sends FIN (entering
+// CLOSE_WAIT on our side), we can still write and send data before closing.
+// This is a regression test for a panic in sentlist.AddPacket caused by
+// PendingSegment returning DATALEN=0 while Handler.Send calls MakePacket with
+// available > 0, creating degenerate zero-data packets in the sent queue.
+//
+// The sequence that triggers the panic:
+//  1. Connection established
+//  2. Remote sends FIN,ACK → local enters CLOSE_WAIT
+//  3. Application writes data to TX buffer
+//  4. Handler.Send() is called: PendingSegment sets PSH because payloadLen>0,
+//     then zeroes payloadLen because !established → DATALEN=0 but ok=true
+//  5. MakePacket called with zero-length buffer → creates {off:0,end:0} entry
+//  6. Handler.Send() called again → same thing → AddPacket panics because
+//     off=0 but lastPkt.end=0 != bufsize
+func TestWriteAfterRemoteFIN(t *testing.T) {
+	const mtu = 1500
+	const maxpackets = 3
+	rng := rand.New(rand.NewSource(11))
+	client, server := newHandler(t, mtu, maxpackets), newHandler(t, mtu, maxpackets)
+	setupClientServer(t, rng, client, server)
+	var rawbuf [mtu]byte
+	establish(t, client, server, rawbuf[:])
+
+	if server.State() != StateEstablished {
+		t.Fatal("server not established:", server.State())
+	}
+
+	// Client initiates close (sends FIN).
+	err := client.Close()
+	if err != nil {
+		t.Fatal("client close:", err)
+	}
+	clear(rawbuf[:])
+	n, err := client.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("client sending FIN:", err)
+	}
+	if n < sizeHeaderTCP {
+		t.Fatal("expected FIN packet")
+	}
+	if client.State() != StateFinWait1 {
+		t.Fatal("client not in FIN_WAIT_1:", client.State())
+	}
+
+	// Server receives FIN → enters CLOSE_WAIT.
+	err = server.Recv(rawbuf[:n])
+	if err != nil {
+		t.Fatal("server receiving FIN:", err)
+	}
+	if server.State() != StateCloseWait {
+		t.Fatal("server not in CLOSE_WAIT:", server.State())
+	}
+
+	// Application writes data (like an HTTP 404 response).
+	responseData := []byte("HTTP/1.1 404 Not Found\r\n\r\n")
+	nw, err := server.Write(responseData)
+	if err != nil {
+		t.Fatal("server write:", err)
+	}
+	if nw != len(responseData) {
+		t.Fatal("short write:", nw)
+	}
+
+	// Server sends response — this should include the data, not panic.
+	// The bug causes a panic on the second Send() call because the first
+	// creates a degenerate zero-data packet in the sentlist.
+	clear(rawbuf[:])
+	n, err = server.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("server send 1:", err)
+	}
+
+	clear(rawbuf[:])
+	n, err = server.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("server send 2:", err)
+	}
+}
+
 // TestRSTinSynReceived verifies that a RST received during the SYN-RECEIVED
 // state correctly reverts the connection to LISTEN per RFC 9293 §3.5.3.
 // This is a regression test for a bug where RST segments in non-synchronized
