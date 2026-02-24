@@ -437,12 +437,13 @@ func (op OptionCodec) ForEachOption(opts []byte, fn func(OptionKind, []byte) err
 		if kind == OptNop {
 			continue
 		}
-		if len(opts[off:]) < 2 {
+		if len(opts[off:]) < 1 {
 			return errors.New("short TCP options")
 		}
-		size := int(opts[off])
+		size := int(opts[off]) // Total option length including kind and length bytes.
 		off++
-		if len(opts[off:]) < size {
+		dataLen := size - 2 // Data bytes after kind and length.
+		if dataLen < 0 || len(opts[off:]) < dataLen {
 			return fmt.Errorf("option %q length %d exceeds buffer size %d", kind.String(), size, len(opts[off:]))
 		}
 
@@ -459,16 +460,16 @@ func (op OptionCodec) ForEachOption(opts []byte, fn func(OptionKind, []byte) err
 				expectSize = 2
 			}
 			if expectSize != -1 && size != expectSize {
-				return fmt.Errorf("bad TCP option %q size want %d got %d", kind.String(), expectSize, opts[off])
+				return fmt.Errorf("bad TCP option %q size want %d got %d", kind.String(), expectSize, size)
 			}
 		}
-		if skipObsolete && kind.IsObsolete() {
-			err := fn(kind, opts[off:off+size])
+		if !(skipObsolete && kind.IsObsolete()) {
+			err := fn(kind, opts[off:off+dataLen])
 			if err != nil {
 				return err
 			}
 		}
-		off += size
+		off += dataLen
 	}
 	return nil
 }

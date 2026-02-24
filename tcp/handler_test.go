@@ -141,6 +141,87 @@ func establish(t *testing.T, client, server *Handler, packetBuf []byte) {
 	}
 }
 
+// TestHandler_MSSHonored verifies that the server respects the MSS option from
+// the client's SYN when sending data segments. The client uses a small packet
+// buffer for its SYN (advertising MSS=100), and the server should not send
+// segments with more than 100 bytes of payload.
+func TestHandler_MSSHonored(t *testing.T) {
+	const mtu = 1500
+	rng := rand.New(rand.NewSource(0))
+	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
+	setupClientServer(t, rng, client, server)
+
+	// Use a 120-byte buffer for client SYN so MSS option = 120 - 20 = 100.
+	var smallBuf [120]byte
+	var largeBuf [mtu]byte
+
+	// Client sends SYN (MSS=100 in TCP options).
+	n, err := client.Send(smallBuf[:])
+	if err != nil {
+		t.Fatal("client SYN:", err)
+	}
+	err = server.Recv(smallBuf[:n])
+	if err != nil {
+		t.Fatal("server recv SYN:", err)
+	}
+
+	// Server sends SYN-ACK.
+	clear(largeBuf[:])
+	n, err = server.Send(largeBuf[:])
+	if err != nil {
+		t.Fatal("server SYN-ACK:", err)
+	}
+	err = client.Recv(largeBuf[:n])
+	if err != nil {
+		t.Fatal("client recv SYN-ACK:", err)
+	}
+
+	// Client sends ACK.
+	clear(largeBuf[:])
+	n, err = client.Send(largeBuf[:])
+	if err != nil {
+		t.Fatal("client ACK:", err)
+	}
+	err = server.Recv(largeBuf[:n])
+	if err != nil {
+		t.Fatal("server recv ACK:", err)
+	}
+	if server.State() != StateEstablished {
+		t.Fatal("server not established:", server.State())
+	}
+
+	// Write 200 bytes to server's TX buffer.
+	data := make([]byte, 200)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	nw, err := server.Write(data)
+	if err != nil {
+		t.Fatal("server write:", err)
+	} else if nw != 200 {
+		t.Fatal("server write short:", nw)
+	}
+
+	// Server sends data — should be capped at client's MSS (100).
+	clear(largeBuf[:])
+	n, err = server.Send(largeBuf[:])
+	if err != nil {
+		t.Fatal("server send data:", err)
+	} else if n == 0 {
+		t.Fatal("server sent nothing")
+	}
+
+	tfrm, err := NewFrame(largeBuf[:n])
+	if err != nil {
+		t.Fatal("parse server frame:", err)
+	}
+	payload := tfrm.Payload()
+	const clientMSS = 100
+	if len(payload) > clientMSS {
+		t.Errorf("server sent %d bytes payload, want <= %d (client MSS)", len(payload), clientMSS)
+	}
+}
+
 func clear[E any, T []E](s T) {
 	var zero E
 	for i := range s {

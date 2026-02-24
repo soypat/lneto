@@ -122,6 +122,7 @@ type sendSpace struct {
 	UNA Value // send unacknowledged. Seqs equal to UNA and above have NOT been acked by remote. Corresponds to local data.
 	NXT Value // send next. This seq and up to UNA+WND-1 are allowed to be sent. Corresponds to local data.
 	WND Size  // send window defined by remote. Permitted number of local unacked octets in flight.
+	MSS Size  // maximum segment size advertised by remote peer. 0 means not set.
 	// WL1 Value // segment sequence number used for last window update
 	// WL2 Value // segment acknowledgment number used for last window update
 }
@@ -202,6 +203,10 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 			panic("seqs: bad calculation")
 		}
 		payloadLen = int(maxPayload)
+	}
+	// Cap by remote MSS.
+	if tcb.snd.MSS > 0 && payloadLen > int(tcb.snd.MSS) {
+		payloadLen = int(tcb.snd.MSS)
 	}
 	if payloadLen > 0 {
 		pending |= FlagPSH // By default ensure all data flushed to destination application immediately on receive.

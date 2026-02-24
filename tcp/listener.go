@@ -28,17 +28,9 @@ type Listener struct {
 	poolGet    func() (*Conn, any, Value)
 	poolReturn func(*Conn)
 	logger
-	// rstQueue stores pending RST responses for SYNs rejected due to pool exhaustion.
-	// Per RFC 9293 §3.5.3: RST.SEQ=0, RST.ACK=SEG.SEQ+1, flags=RST|ACK.
-	rstQueue    [4]rstEntry
-	rstQueueLen uint8
-}
-
-// rstEntry holds the minimum state needed to construct a stateless RST response.
-type rstEntry struct {
-	remoteAddr [4]byte // IPv4 remote address.
-	remotePort uint16
-	ackNum     Value // SEG.SEQ + 1.
+	// rstQueue stores pending RST responses for rejected segments.
+	// Per RFC 9293 §3.10.7.1 (CLOSED state processing).
+	rstQueue RSTQueue
 }
 
 type handler struct {
@@ -182,24 +174,8 @@ func (listener *Listener) Encapsulate(carrierData []byte, offsetToIP, offsetToFr
 		}
 	}
 	// Drain one RST entry if no connection data was sent. Lower priority than connection traffic.
-	if n == 0 && listener.rstQueueLen > 0 && offsetToIP >= 0 {
-		listener.rstQueueLen--
-		entry := &listener.rstQueue[listener.rstQueueLen]
-		tfrm, err := NewFrame(carrierData[offsetToFrame:])
-		if err == nil {
-			tfrm.SetSourcePort(listener.port)
-			tfrm.SetDestinationPort(entry.remotePort)
-			tfrm.SetSegment(Segment{
-				SEQ:   0,
-				ACK:   entry.ackNum,
-				Flags: FlagRST | FlagACK,
-			}, 5)
-			tfrm.SetUrgentPtr(0)
-			err = internal.SetIPAddrs(carrierData[offsetToIP:offsetToFrame], 0, nil, entry.remoteAddr[:])
-			if err == nil {
-				return sizeHeaderTCP, nil
-			}
-		}
+	if n == 0 {
+		n, _ = listener.rstQueue.Drain(carrierData, offsetToIP, offsetToFrame)
 	}
 	if n == 0 {
 		listener.maintainConns()
@@ -242,19 +218,17 @@ func (listener *Listener) Demux(carrierData []byte, tcpFrameOffset int) error {
 
 	// Connection not in ready nor accepted.
 	_, flags := tfrm.OffsetAndFlags()
-	if flags != FlagSYN {
-		return lneto.ErrPacketDrop // Not a synchronizing packet, drop it.
+	if !flags.HasAll(FlagSYN) || flags.HasAny(FlagACK) {
+		// RFC 9293 §3.10.7.1: CLOSED state — send RST for non-RST segments.
+		if !flags.HasAny(FlagRST) && flags.HasAny(FlagACK) {
+			listener.rstQueue.Queue(srcaddr, src, listener.port, tfrm.Ack(), 0, FlagRST)
+		}
+		return lneto.ErrPacketDrop
 	}
 	conn, userData, iss := listener.poolGet()
 	if conn == nil {
 		slog.Error("tcpListener:no-free-conn")
-		if len(srcaddr) == 4 && listener.rstQueueLen < uint8(len(listener.rstQueue)) {
-			entry := &listener.rstQueue[listener.rstQueueLen]
-			entry.remotePort = src
-			entry.ackNum = tfrm.Seq() + 1
-			copy(entry.remoteAddr[:], srcaddr)
-			listener.rstQueueLen++
-		}
+		listener.rstQueue.Queue(srcaddr, src, listener.port, 0, tfrm.Seq()+1, FlagRST|FlagACK)
 		return lneto.ErrPacketDrop
 	}
 	err = conn.OpenListen(dst, iss)

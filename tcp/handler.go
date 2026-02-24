@@ -198,10 +198,22 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		// Update TX ring buffer to free up acked data.
 		h.bufTx.RecvACK(segIncoming.ACK)
 	}
-	if segIncoming.Flags.HasAny(FlagSYN) && h.remotePort == 0 {
-		// Remote reached out and has given us their port, set it on our side.
-		h.debug("tcp.Handler:rx-remoteport-set", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("remoteport", uint64(remotePort)))
-		h.remotePort = remotePort
+	if segIncoming.Flags.HasAny(FlagSYN) {
+		// Parse remote MSS from TCP options.
+		h.optcodec.ForEachOption(tfrm.Options(), func(kind OptionKind, data []byte) error {
+			if kind == OptMaxSegmentSize && len(data) == 2 {
+				mss := uint16(data[0])<<8 | uint16(data[1])
+				if mss > 0 {
+					h.scb.snd.MSS = Size(mss)
+				}
+			}
+			return nil
+		})
+		if h.remotePort == 0 {
+			// Remote reached out and has given us their port, set it on our side.
+			h.debug("tcp.Handler:rx-remoteport-set", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("remoteport", uint64(remotePort)))
+			h.remotePort = remotePort
+		}
 	}
 	if h.logenabled(internal.LevelTrace) {
 		h.trace("tcp.Handler:rx-done", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("remoteport", uint64(remotePort)), slog.String("seg", segIncoming.String()))
