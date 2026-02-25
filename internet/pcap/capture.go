@@ -229,7 +229,6 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 		if err == nil {
 			tfrm.ValidateSize(pc.validator())
 			if pc.vld.HasError() {
-				println("BAD TCP")
 				return dst, pc.vld.ErrPop()
 			}
 			ifrm4.CRCWriteTCPPseudo(&crc)
@@ -242,7 +241,6 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 		if err == nil {
 			ufrm.ValidateSize(pc.validator())
 			if pc.vld.HasError() {
-				println("BAD UDP")
 				return dst, pc.vld.ErrPop()
 			}
 			if ufrm.CRC() != 0 {
