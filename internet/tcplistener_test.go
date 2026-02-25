@@ -1,6 +1,7 @@
 package internet
 
 import (
+	"encoding/binary"
 	"math/rand"
 	"net/netip"
 	"testing"
@@ -387,6 +388,220 @@ func TestListener_RSTOnPoolExhaustion(t *testing.T) {
 	gotACK := tfrm.Ack()
 	if gotACK != 101 {
 		t.Errorf("RST ACK: got %d, want %d (client ISS+1)", gotACK, 101)
+	}
+}
+
+func TestListener_RSTOnStalePacket(t *testing.T) {
+	// Test Scenario C: stale FIN,ACK to a port with a listener but no matching connection.
+	// Test at Listener level directly to avoid StackIP CRC validation.
+	var listener tcp.Listener
+	pool := newMockTCPPool(1, 3, 2048)
+	serverPort := uint16(80)
+	if err := listener.Reset(serverPort, pool); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build a raw stale FIN,ACK targeting port 80 from an unknown source.
+	// IP header (20 bytes) + TCP header (20 bytes).
+	clientIP := [4]byte{10, 0, 0, 1}
+	serverIP := [4]byte{10, 0, 0, 2}
+	rawBuf := make([]byte, 256)
+	rawBuf[0] = 0x45 // version=4, IHL=5
+	rawBuf[9] = 6    // protocol=TCP
+	copy(rawBuf[12:16], clientIP[:])
+	copy(rawBuf[16:20], serverIP[:])
+	// TCP header at offset 20.
+	binary.BigEndian.PutUint16(rawBuf[20:], 1337)     // src port
+	binary.BigEndian.PutUint16(rawBuf[22:], serverPort) // dst port
+	binary.BigEndian.PutUint32(rawBuf[24:], 500)       // SEQ
+	binary.BigEndian.PutUint32(rawBuf[28:], 200)       // ACK
+	rawBuf[32] = 0x50                                   // offset=5
+	rawBuf[33] = 0x11                                   // flags = FIN|ACK (0x01|0x10)
+
+	// Demux directly on Listener — no matching connection, should queue RST.
+	err := listener.Demux(rawBuf[:40], 20)
+	if err == nil {
+		t.Fatal("expected error from stale FIN,ACK demux")
+	}
+
+	// Encapsulate should produce RST.
+	// Pre-fill IP version (StackIP normally does this before calling children).
+	var outBuf [256]byte
+	outBuf[0] = 0x45
+	n, err := listener.Encapsulate(outBuf[:], 0, 20)
+	if err != nil {
+		t.Fatal("encapsulate RST:", err)
+	} else if n == 0 {
+		t.Fatal("no RST produced for stale packet")
+	}
+
+	tfrm, err := tcp.NewFrame(outBuf[20 : 20+n])
+	if err != nil {
+		t.Fatal("parse RST frame:", err)
+	}
+	_, flags := tfrm.OffsetAndFlags()
+	if flags != tcp.FlagRST {
+		t.Errorf("RST flags: got %s, want [RST]", flags)
+	}
+	if tfrm.Seq() != 200 {
+		t.Errorf("RST SEQ: got %d, want 200 (stale packet's ACK)", tfrm.Seq())
+	}
+	if tfrm.SourcePort() != serverPort {
+		t.Errorf("RST source port: got %d, want %d", tfrm.SourcePort(), serverPort)
+	}
+	if tfrm.DestinationPort() != 1337 {
+		t.Errorf("RST dest port: got %d, want 1337", tfrm.DestinationPort())
+	}
+}
+
+func TestStackPorts_RSTOnUnknownPort(t *testing.T) {
+	// Test Scenario A: SYN to a port with no listener (e.g. HTTPS port 443).
+	// Test at StackPorts level directly to avoid StackIP CRC validation.
+	var sp StackPorts
+	var listener tcp.Listener
+	pool := newMockTCPPool(1, 3, 2048)
+	if err := sp.ResetTCP(4); err != nil {
+		t.Fatal(err)
+	}
+	if err := listener.Reset(80, pool); err != nil {
+		t.Fatal(err)
+	}
+	if err := sp.Register(&listener); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build a SYN to port 443 (no listener).
+	// StackPorts.Demux expects carrier data starting at IP header with TCP at offset.
+	clientIP := [4]byte{10, 0, 0, 1}
+	serverIP := [4]byte{10, 0, 0, 2}
+	rawBuf := make([]byte, 256)
+	rawBuf[0] = 0x45 // version=4, IHL=5
+	rawBuf[9] = 6    // protocol=TCP
+	copy(rawBuf[12:16], clientIP[:])
+	copy(rawBuf[16:20], serverIP[:])
+	// TCP header at offset 20.
+	binary.BigEndian.PutUint16(rawBuf[20:], 5000) // src port
+	binary.BigEndian.PutUint16(rawBuf[22:], 443)  // dst port (no listener!)
+	binary.BigEndian.PutUint32(rawBuf[24:], 700)  // SEQ = 700
+	binary.BigEndian.PutUint32(rawBuf[28:], 0)    // ACK = 0
+	rawBuf[32] = 0x50                              // offset=5
+	rawBuf[33] = 0x02                              // flags = SYN
+
+	err := sp.Demux(rawBuf[:40], 20)
+	if err == nil {
+		t.Fatal("expected error for SYN to unknown port")
+	}
+
+	// Pre-fill IP version (StackIP normally does this before calling children).
+	var outBuf [256]byte
+	outBuf[0] = 0x45
+	n, err := sp.Encapsulate(outBuf[:], 0, 20)
+	if err != nil {
+		t.Fatal("encapsulate RST:", err)
+	} else if n == 0 {
+		t.Fatal("no RST produced for SYN to unknown port")
+	}
+
+	tfrm, err := tcp.NewFrame(outBuf[20 : 20+n])
+	if err != nil {
+		t.Fatal("parse RST frame:", err)
+	}
+	_, flags := tfrm.OffsetAndFlags()
+	wantFlags := tcp.FlagRST | tcp.FlagACK
+	if flags != wantFlags {
+		t.Errorf("RST flags: got %s, want %s", flags, wantFlags)
+	}
+	if tfrm.SourcePort() != 443 {
+		t.Errorf("RST source port: got %d, want 443", tfrm.SourcePort())
+	}
+	if tfrm.DestinationPort() != 5000 {
+		t.Errorf("RST dest port: got %d, want 5000", tfrm.DestinationPort())
+	}
+	if tfrm.Seq() != 0 {
+		t.Errorf("RST SEQ: got %d, want 0", tfrm.Seq())
+	}
+	if tfrm.Ack() != 701 {
+		t.Errorf("RST ACK: got %d, want 701 (SEG.SEQ+1)", tfrm.Ack())
+	}
+}
+
+func TestListener_ECN_SYN(t *testing.T) {
+	// Test that Listener.Demux accepts SYN+ECE+CWR (ECN negotiation per RFC 3168).
+	// Currently fails: strict flags != FlagSYN check rejects ECN SYNs.
+	var listener tcp.Listener
+	pool := newMockTCPPool(1, 3, 2048)
+	serverPort := uint16(80)
+	if err := listener.Reset(serverPort, pool); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build SYN+ECE+CWR packet targeting port 80.
+	clientIP := [4]byte{10, 0, 0, 1}
+	serverIP := [4]byte{10, 0, 0, 2}
+	rawBuf := make([]byte, 256)
+	rawBuf[0] = 0x45 // version=4, IHL=5
+	rawBuf[9] = 6    // protocol=TCP
+	copy(rawBuf[12:16], clientIP[:])
+	copy(rawBuf[16:20], serverIP[:])
+	// TCP header at offset 20.
+	binary.BigEndian.PutUint16(rawBuf[20:], 5000) // src port
+	binary.BigEndian.PutUint16(rawBuf[22:], serverPort)
+	binary.BigEndian.PutUint32(rawBuf[24:], 300)  // SEQ
+	binary.BigEndian.PutUint32(rawBuf[28:], 0)    // ACK
+	rawBuf[32] = 0x50                              // offset=5
+	rawBuf[33] = byte(tcp.FlagSYN | tcp.FlagECE | tcp.FlagCWR) // SYN+ECE+CWR
+
+	// Should be accepted (create connection), not dropped.
+	err := listener.Demux(rawBuf[:40], 20)
+	if err != nil {
+		t.Errorf("SYN+ECE+CWR was rejected: %v (want accepted as valid SYN)", err)
+	}
+}
+
+func TestStackPorts_ECN_SYN_RST(t *testing.T) {
+	// Test that StackPorts queues RST for SYN+ECE+CWR to an unknown port.
+	// Currently fails: strict flags == flagSYN check doesn't recognize ECN SYN.
+	var sp StackPorts
+	var listener tcp.Listener
+	pool := newMockTCPPool(1, 3, 2048)
+	if err := sp.ResetTCP(4); err != nil {
+		t.Fatal(err)
+	}
+	if err := listener.Reset(80, pool); err != nil {
+		t.Fatal(err)
+	}
+	if err := sp.Register(&listener); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build SYN+ECE+CWR to port 443 (no listener).
+	clientIP := [4]byte{10, 0, 0, 1}
+	serverIP := [4]byte{10, 0, 0, 2}
+	rawBuf := make([]byte, 256)
+	rawBuf[0] = 0x45
+	rawBuf[9] = 6
+	copy(rawBuf[12:16], clientIP[:])
+	copy(rawBuf[16:20], serverIP[:])
+	binary.BigEndian.PutUint16(rawBuf[20:], 5000) // src port
+	binary.BigEndian.PutUint16(rawBuf[22:], 443)  // dst port (no listener)
+	binary.BigEndian.PutUint32(rawBuf[24:], 700)  // SEQ
+	binary.BigEndian.PutUint32(rawBuf[28:], 0)    // ACK
+	rawBuf[32] = 0x50
+	rawBuf[33] = byte(tcp.FlagSYN | tcp.FlagECE | tcp.FlagCWR)
+
+	err := sp.Demux(rawBuf[:40], 20)
+	if err == nil {
+		t.Fatal("expected error for SYN to unknown port")
+	}
+
+	// Should have queued RST (same as bare SYN to unknown port).
+	var outBuf [256]byte
+	outBuf[0] = 0x45
+	n, err := sp.Encapsulate(outBuf[:], 0, 20)
+	if err != nil {
+		t.Fatal("encapsulate RST:", err)
+	} else if n == 0 {
+		t.Error("no RST produced for SYN+ECE+CWR to unknown port (want RST,ACK)")
 	}
 }
 

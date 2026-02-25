@@ -11,6 +11,7 @@ import (
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
+	"github.com/soypat/lneto/tcp"
 )
 
 type StackPorts struct {
@@ -18,7 +19,8 @@ type StackPorts struct {
 	handlers   handlers
 	dstPortOff uint16
 	protocol   uint16
-	// stores last node to demux/encapsulate.
+	// rstQueue stores pending RST responses for TCP SYNs to unregistered ports.
+	rstQueue tcp.RSTQueue
 }
 
 func (ps *StackPorts) ResetUDP(maxNodes int) error {
@@ -56,6 +58,9 @@ func (ps *StackPorts) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame 
 		return 0, io.ErrShortBuffer
 	}
 	_, n, err = ps.handlers.encapsulateAny(carrierData, offsetToIP, offsetToFrame)
+	if n == 0 {
+		n, _ = ps.rstQueue.Drain(carrierData, offsetToIP, offsetToFrame)
+	}
 	return n, err
 }
 
@@ -65,6 +70,19 @@ func (ps *StackPorts) Demux(b []byte, offset int) (err error) {
 	}
 	port := binary.BigEndian.Uint16(b[int(ps.dstPortOff)+offset:])
 	_, err = ps.handlers.demuxByPort(b, offset, port)
+	if err == lneto.ErrPacketDrop && ps.protocol == uint16(lneto.IPProtoTCP) && offset+14 <= len(b) {
+		// RFC 9293 §3.10.7.1: RST for SYN to port with no listener.
+		flags := binary.BigEndian.Uint16(b[offset+12:]) & 0x01ff
+		const flagSYN, flagRST, flagACK = 0x02, 0x04, 0x10
+		if flags&flagSYN != 0 && flags&(flagRST|flagACK) == 0 {
+			srcaddr, _, _, _, iperr := internal.GetIPAddr(b)
+			if iperr == nil {
+				remotePort := binary.BigEndian.Uint16(b[offset:])
+				segSeq := tcp.Value(binary.BigEndian.Uint32(b[offset+4:]))
+				ps.rstQueue.Queue(srcaddr, remotePort, port, 0, segSeq+1, tcp.FlagRST|tcp.FlagACK)
+			}
+		}
+	}
 	return err
 }
 
@@ -148,6 +166,9 @@ func (ps *StackPortsMACFiltered) Encapsulate(carrierData []byte, offsetToIP, off
 			// Make sure not to hang on one handler that keeps returning an error.
 			h.error("handlers:encapsulate", slog.String("func", "encapsulateAny"), slog.String("ctx", h.context), slog.String("err", err.Error()))
 		}
+	}
+	if n, _ := ps.sp.rstQueue.Drain(carrierData, offsetToIP, offsetToFrame); n > 0 {
+		return n, nil
 	}
 	return 0, err // Return last written error.
 }

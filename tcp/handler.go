@@ -176,7 +176,7 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 	if err != nil {
 		if h.scb.State() == StateClosed {
 			// TODO(soypat): Should return EOF/ErrClosed?
-			err = err // Connection closed by reset.
+			err = net.ErrClosed //err // Connection closed by reset.
 		}
 		return err
 	}
@@ -198,10 +198,22 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		// Update TX ring buffer to free up acked data.
 		h.bufTx.RecvACK(segIncoming.ACK)
 	}
-	if segIncoming.Flags.HasAny(FlagSYN) && h.remotePort == 0 {
-		// Remote reached out and has given us their port, set it on our side.
-		h.debug("tcp.Handler:rx-remoteport-set", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("remoteport", uint64(remotePort)))
-		h.remotePort = remotePort
+	if segIncoming.Flags.HasAny(FlagSYN) {
+		// Parse remote MSS from TCP options.
+		h.optcodec.ForEachOption(tfrm.Options(), func(kind OptionKind, data []byte) error {
+			if kind == OptMaxSegmentSize && len(data) == 2 {
+				mss := uint16(data[0])<<8 | uint16(data[1])
+				if mss > 0 {
+					h.scb.snd.MSS = Size(mss)
+				}
+			}
+			return nil
+		})
+		if h.remotePort == 0 {
+			// Remote reached out and has given us their port, set it on our side.
+			h.debug("tcp.Handler:rx-remoteport-set", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("remoteport", uint64(remotePort)))
+			h.remotePort = remotePort
+		}
 	}
 	if h.logenabled(internal.LevelTrace) {
 		h.trace("tcp.Handler:rx-done", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("remoteport", uint64(remotePort)), slog.String("seg", segIncoming.String()))
@@ -343,16 +355,19 @@ func (h *Handler) Read(b []byte) (n int, err error) {
 // is still 0 after we've Read() data from the buffer.
 //
 // Per RFC 9293 §3.8.6.2.2 (SWS avoidance), the window is updated when freed
-// space >= min(bufferSize/2, MSS). Since we don't track MSS, we use bufferSize/2.
-// Zero-window openings always trigger an update.
+// space >= min(bufferSize/2, MSS). This applies uniformly including zero-window
+// recovery — the remote uses zero-window probes until enough space opens.
 func (h *Handler) maybeQueueWindowUpdate() {
 	currentFree := Size(h.bufRx.Free())
 	lastAdvertised := h.scb.RecvWindow()
 	if currentFree <= lastAdvertised {
 		return // Window hasn't grown.
 	}
-	bufSize := Size(h.bufRx.Size())
-	if lastAdvertised == 0 || currentFree-lastAdvertised >= bufSize/2 {
+	thresh := Size(h.bufRx.Size()) / 2
+	if mss := h.scb.snd.MSS; mss > 0 && mss < thresh {
+		thresh = mss
+	}
+	if currentFree-lastAdvertised >= thresh {
 		h.scb.pending[0] |= FlagACK
 	}
 }
