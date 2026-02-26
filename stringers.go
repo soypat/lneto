@@ -194,15 +194,16 @@ func _() {
 	// An "invalid array index" compiler error signifies that the constant values have changed.
 	// Re-run the stringer command to generate them again.
 	var x [1]struct{}
-	_ = x[ErrPacketDrop-1]
-	_ = x[ErrBadCRC-2]
-	_ = x[ErrZeroSource-3]
-	_ = x[ErrZeroDestination-4]
+	_ = x[ErrBug-1]
+	_ = x[ErrPacketDrop-2]
+	_ = x[ErrBadCRC-3]
+	_ = x[ErrZeroSource-4]
+	_ = x[ErrZeroDestination-5]
 }
 
-const _errGeneric_name = "packet droppedincorrect checksumzero source(port/addr)zero destination(port/addr)"
+const _errGeneric_name = "lneto-bug(use build tag \"debugheaplog\")packet droppedincorrect checksumzero source(port/addr)zero destination(port/addr)"
 
-var _errGeneric_index = [...]uint8{0, 14, 32, 54, 81}
+var _errGeneric_index = [...]uint8{0, 39, 53, 71, 93, 120}
 
 func (i errGeneric) String() string {
 	i -= 1

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"math/bits"
 	"net"
@@ -220,7 +221,8 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 
 	msgOK := msgType == MsgOffer || msgType == MsgAck
 	if !msgOK {
-		return fmt.Errorf("invalid DHCP message received or none got=%d", msgType)
+		internal.LogAttrs(nil, slog.LevelError, "invalid DHCP message", slog.Uint64("type", uint64(msgType)))
+		return lneto.ErrBug
 	}
 	err = c.setOptions(frm)
 	if err != nil {
