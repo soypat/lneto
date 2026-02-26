@@ -104,7 +104,7 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 	// nodeIdx := getNodeByProto(sb.handlers, uint16(proto))
 	if node == nil {
 		// Drop packet.
-		sb.handlers.info("ip:demux.drop", slog.String("dstaddr", netip.AddrFrom4(*ifrm.DestinationAddr()).String()), slog.String("proto", ifrm.Protocol().String()))
+		sb.handlers.info("ip:demux.drop", internal.SlogAddr4("dstaddr", ifrm.DestinationAddr()), slog.String("proto", ifrm.Protocol().String()))
 		return lneto.ErrPacketDrop
 	}
 	// Incoming CRC Validation of common IP Protocols.

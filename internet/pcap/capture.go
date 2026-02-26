@@ -10,11 +10,11 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/arp"
-	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/dhcpv4"
 	"github.com/soypat/lneto/dns"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/http/httpraw"
+	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/ipv4/icmpv4"
 	"github.com/soypat/lneto/ipv6"
@@ -505,9 +505,14 @@ func (pc *PacketBreakdown) CaptureDHCPv4(dst []Frame, pkt []byte, bitOffset int)
 	options := dfrm.OptionsPayload()
 
 	if len(options) > 0 && pc.SubfieldLimit > 0 {
-		var optfield FrameField
-		optfield.Class = FieldClassOptions
-		optfield.Name = "options"
+		// Reclaim FrameField from Fields backing array to reuse its SubFields backing array.
+		optfield := internal.SliceReclaim(&finfo.Fields)
+		*optfield = FrameField{ // Ensure consistent zeroing of memory, but keep slice reference for reuse.
+			Class:     FieldClassOptions,
+			SubFields: optfield.SubFields[:0],
+			Name:      "options",
+		}
+		optfield.SubFields = optfield.SubFields[:0]
 		err = dfrm.ForEachOption(func(optoff int, opt dhcpv4.OptNum, data []byte) error {
 			if len(optfield.SubFields) >= pc.SubfieldLimit {
 				return errors.New("option cap limit surpassed for DHCP")
@@ -559,7 +564,7 @@ func (pc *PacketBreakdown) CaptureDHCPv4(dst []Frame, pkt []byte, bitOffset int)
 			optfield.SubFields = append(optfield.SubFields, field)
 			return nil
 		})
-		finfo.Fields = append(finfo.Fields, optfield)
+		// optfield already in finfo.Fields via SliceReclaim, no append needed.
 		if err != nil {
 			finfo.Errors = append(finfo.Errors, err)
 		}
