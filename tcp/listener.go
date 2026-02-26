@@ -227,20 +227,20 @@ func (listener *Listener) Demux(carrierData []byte, tcpFrameOffset int) error {
 	}
 	conn, userData, iss := listener.poolGet()
 	if conn == nil {
-		slog.Error("tcpListener:no-free-conn")
+		listener.logerr("tcpListener:no-free-conn")
 		listener.rstQueue.Queue(srcaddr, src, listener.port, 0, tfrm.Seq()+1, FlagRST|FlagACK)
 		return lneto.ErrPacketDrop
 	}
 	err = conn.OpenListen(dst, iss)
 	if err != nil {
 		listener.poolReturn(conn)
-		slog.Error("Listener:open", slog.String("err", err.Error()))
+		listener.logerr("Listener:open", slog.String("err", err.Error()))
 		return err // This should not happend
 	}
 	err = conn.Demux(carrierData, tcpFrameOffset)
 	if err != nil {
 		listener.poolReturn(conn)
-		slog.Error("Listener:demux", slog.String("err", err.Error()))
+		listener.logerr("Listener:demux", slog.String("err", err.Error()))
 		return lneto.ErrPacketDrop
 	}
 	listener.incoming = append(listener.incoming, handler{

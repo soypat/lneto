@@ -255,7 +255,7 @@ func (h *Handler) Demux(ethFrame []byte, frameOffset int) error {
 				q.hwaddr = append(q.hwaddr, hwaddr...)
 				if q.dstHw != nil {
 					if !internal.IsZeroed(q.dstHw...) {
-						slog.Error("race-condition:ARP-reused-buffer")
+						internal.LogAttrs(nil, slog.LevelError, "race-condition:ARP-reused-buffer")
 					}
 					copy(q.dstHw, hwaddr) // External write to user buffer.
 				}
