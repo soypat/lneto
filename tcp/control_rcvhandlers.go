@@ -62,7 +62,6 @@ func (tcb *ControlBlock) rcvSynRcvd(seg Segment) (pending Flags, err error) {
 
 func (tcb *ControlBlock) rcvEstablished(seg Segment) (pending Flags, err error) {
 	flags := seg.Flags
-
 	dataToAck := seg.DATALEN > 0
 	hasFin := flags.HasAny(FlagFIN)
 	if dataToAck || hasFin {
