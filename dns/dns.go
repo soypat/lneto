@@ -209,8 +209,9 @@ func (m *Message) AppendTo(buf []byte, txid uint16, flags HeaderFlags) (_ []byte
 	nans := uint16(len(m.Answers))
 	nauth := uint16(len(m.Authorities))
 	nadd := uint16(len(m.Additionals))
-	var hdr [SizeHeader]byte
-	f, err := NewFrame(hdr[:])
+	buf = slices.Grow(buf, int(m.Len()))
+	// Set the buffer directly with header fields.
+	f, err := NewFrame(buf[len(buf) : len(buf)+SizeHeader])
 	if err != nil {
 		return buf, err
 	}
@@ -220,9 +221,7 @@ func (m *Message) AppendTo(buf []byte, txid uint16, flags HeaderFlags) (_ []byte
 	f.SetANCount(nans)
 	f.SetNSCount(nauth)
 	f.SetARCount(nadd)
-
-	buf = slices.Grow(buf, int(m.Len()))
-	buf = append(buf, hdr[:]...)
+	buf = buf[:len(buf)+SizeHeader]
 	for _, q := range m.Questions {
 		buf, err = q.appendTo(buf)
 		if err != nil {

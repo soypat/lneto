@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"net/netip"
 	"slices"
 	"strconv"
@@ -31,6 +32,7 @@ type Formatter struct {
 	DisableLegacyFilter bool
 	mubuf               sync.Mutex
 	buf                 []byte
+	uintBuf             [8]byte // scratch buffer for fieldAsUint to avoid TinyGo heap escape.
 }
 
 // FormatFrames appends the formatted frame data to the destination buffer according the Formatter state.
@@ -49,14 +51,17 @@ func (f *Formatter) FormatFrames(dst []byte, frms []Frame, pkt []byte) (_ []byte
 	return dst, nil
 }
 
-// FormatFrame
+// FormatFrame formats a single frame's protocol, fields, and errors into dst.
 func (f *Formatter) FormatFrame(dst []byte, frm Frame, pkt []byte) (_ []byte, err error) {
 	sep := f.fieldSep()
 	bitlen := frm.LenBits()
+	dst = appendProtocol(dst, frm.Protocol)
 	if bitlen%8 == 0 {
-		dst = fmt.Appendf(dst, "%s len=%d", frm.Protocol, bitlen/8)
+		dst = append(dst, " len="...)
+		dst = strconv.AppendInt(dst, int64(bitlen/8), 10)
 	} else {
-		dst = fmt.Appendf(dst, "%s bitlen=%d", frm.Protocol, bitlen)
+		dst = append(dst, " bitlen="...)
+		dst = strconv.AppendInt(dst, int64(bitlen), 10)
 	}
 
 	for ifield := range frm.Fields {
@@ -68,7 +73,7 @@ func (f *Formatter) FormatFrame(dst []byte, frm Frame, pkt []byte) (_ []byte, er
 		if field.Class == FieldClassFlags && frm.Protocol == lneto.IPProtoTCP {
 			// TCP flags pretty print special case.
 			dst = append(dst, "flags="...)
-			v, err := fieldAsUint(pkt, frm.PacketBitOffset+field.FrameBitOffset, field.BitLength, field.Flags.IsRightAligned())
+			v, err := f.fieldAsUint(pkt, frm.PacketBitOffset+field.FrameBitOffset, field.BitLength, field.Flags.IsRightAligned())
 			if err != nil {
 				return dst, err
 			}
@@ -158,7 +163,7 @@ func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, p
 	case FieldClassDst, FieldClassSrc, FieldClassSize, FieldClassAddress, FieldClassOperation:
 		// IP, MAC addresses and ports.
 		if field.BitLength <= 16 {
-			v, err := fieldAsUint(pkt, fieldBitStart, field.BitLength, field.Flags.IsRightAligned())
+			v, err := f.fieldAsUint(pkt, fieldBitStart, field.BitLength, field.Flags.IsRightAligned())
 			if err != nil {
 				return dst, err
 			}
@@ -197,4 +202,37 @@ func (f *Formatter) subfieldSep() string {
 		sep = "_" // default sub-field separator
 	}
 	return sep
+}
+
+// fieldAsUint evaluates a packet field as a uint64 using the Formatter's
+// scratch buffer to avoid a TinyGo heap escape from a local [8]byte.
+func (f *Formatter) fieldAsUint(pkt []byte, fieldBitStart, bitlen int, rightAligned bool) (uint64, error) {
+	const badUint64 = math.MaxUint64
+	octets := (bitlen + 7) / 8
+	if octets > 8 {
+		return badUint64, errors.New("field too long to be represented by uint64")
+	}
+	f.uintBuf = [8]byte{}
+	_, err := appendField(f.uintBuf[8-octets:8-octets], pkt, fieldBitStart, bitlen, rightAligned)
+	if err != nil {
+		return badUint64, err
+	}
+	return binary.BigEndian.Uint64(f.uintBuf[:]), nil
+}
+
+// appendProtocol appends the string representation of a Frame.Protocol value
+// to dst without going through fmt.Appendf reflect machinery.
+func appendProtocol(dst []byte, p any) []byte {
+	switch p := p.(type) {
+	case proto:
+		return append(dst, string(p)...)
+	case string:
+		return append(dst, p...)
+	case ethernet.Type:
+		return append(dst, p.String()...)
+	case lneto.IPProto:
+		return append(dst, p.String()...)
+	default:
+		return fmt.Appendf(dst, "%v", p)
+	}
 }

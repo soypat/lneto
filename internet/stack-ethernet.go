@@ -6,10 +6,10 @@ import (
 	"io"
 	"log/slog"
 	"math"
-	"net"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/internal"
 )
 
 // StackEthernetConfig contains configuration parameters for [StackEthernet].
@@ -132,7 +132,7 @@ func (ls *StackEthernet) Demux(carrierData []byte, frameOffset int) (err error) 
 		return err
 	}
 DROP:
-	ls.handlers.info("LinkStack:drop-packet", slog.String("dsthw", net.HardwareAddr(dstaddr[:]).String()), slog.String("ethertype", efrm.EtherTypeOrSize().String()))
+	ls.handlers.info("LinkStack:drop-packet", internal.SlogAddr6("dsthw", dstaddr), slog.String("ethertype", efrm.EtherTypeOrSize().String()))
 	return lneto.ErrPacketDrop
 }
 

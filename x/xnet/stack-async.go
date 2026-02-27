@@ -48,6 +48,8 @@ type StackAsync struct {
 
 	prng uint32
 
+	addrBuf [6]byte // Temporary buffer for As4()/HardwareAddr6() results to avoid heap escapes.
+
 	totalsent uint64
 	totalrecv uint64
 }
@@ -353,8 +355,8 @@ func (s *StackAsync) StartLookupIP(host string) error {
 	if err != nil {
 		return err
 	}
-	dns4 := s.dnssv.As4()
-	s.dnsUDP.SetStackNode(&s.dns, dns4[:], dns.ServerPort)
+	*(*[4]byte)(s.addrBuf[:4]) = s.dnssv.As4()
+	s.dnsUDP.SetStackNode(&s.dns, s.addrBuf[:4], dns.ServerPort)
 	err = s.udps.Register(&s.dnsUDP)
 	return err
 }
@@ -417,8 +419,8 @@ func (s *StackAsync) StartNTP(addr netip.Addr) error {
 	defer s.mu.Unlock()
 	s.ntp.Reset(s.sysprec, time.Now)
 
-	addr4 := addr.As4()
-	s.ntpUDP.SetStackNode(&s.ntp, addr4[:], ntp.ServerPort)
+	*(*[4]byte)(s.addrBuf[:4]) = addr.As4()
+	s.ntpUDP.SetStackNode(&s.ntp, s.addrBuf[:4], ntp.ServerPort)
 	err := s.udps.Register(&s.ntpUDP)
 	return err
 }
