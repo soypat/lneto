@@ -2,7 +2,6 @@ package ipv4
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"net/netip"
 
@@ -15,7 +14,7 @@ import (
 // with payload/options of frames to avoid panics.
 func NewFrame(buf []byte) (Frame, error) {
 	if len(buf) < sizeHeader {
-		return Frame{buf: nil}, errors.New("ipv4: short buffer")
+		return Frame{buf: nil}, lneto.ErrShortBuffer
 	}
 	return Frame{buf: buf}, nil
 }
@@ -191,27 +190,19 @@ func (ifrm Frame) ClearHeader() {
 // Validation API.
 //
 
-var (
-	errBadTL      = errors.New("ipv4: bad total length")
-	errShort      = errors.New("ipv4: short data")
-	errBadIHL     = errors.New("ipv4: bad IHL")
-	errBadVersion = errors.New("ipv4: bad version")
-	errEvil       = errors.New("ipv4: evil packet")
-)
-
 // ValidateSize checks the frame's size fields and compares with the actual buffer
 // the frame. It returns a non-nil error on finding an inconsistency.
 func (ifrm Frame) ValidateSize(v *lneto.Validator) {
 	ihl := ifrm.ihl()
 	tl := ifrm.TotalLength()
 	if tl < sizeHeader {
-		v.AddError(errBadTL)
+		v.AddError(lneto.ErrInvalidLengthField)
 	}
 	if int(tl) > len(ifrm.RawData()) {
-		v.AddError(errShort)
+		v.AddError(lneto.ErrShortBuffer)
 	}
 	if ihl < 5 || uint16(ihl)*4 > tl {
-		v.AddError(errBadIHL)
+		v.AddError(lneto.ErrInvalidLengthField)
 	}
 }
 
@@ -220,10 +211,10 @@ func (ifrm Frame) ValidateExceptCRC(v *lneto.Validator) {
 	ifrm.ValidateSize(v)
 	flags := ifrm.Flags()
 	if ifrm.version() != 4 {
-		v.AddError(errBadVersion)
+		v.AddError(lneto.ErrInvalidField)
 	}
 	if v.Flags()&lneto.ValidateEvilBit != 0 && flags.IsEvil() {
-		v.AddError(errEvil)
+		v.AddError(lneto.ErrPacketDrop)
 	}
 }
 

@@ -6,10 +6,12 @@ import (
 	"io"
 	"math"
 	"unsafe"
+
+	"github.com/soypat/lneto"
 )
 
 var (
-	ErrRingBufferFull = errors.New("lneto/ring: buffer full")
+	ErrRingBufferFull = lneto.ErrBufferFull
 	errRingNoData     = errors.New("lneto/ring: empty write")
 )
 

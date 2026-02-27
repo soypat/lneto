@@ -1,20 +1,5 @@
 package lneto
 
-// type ErrorPacketDrop struct {
-// 	Message string
-// }
-
-// var genericErrPacketDrop = &ErrorPacketDrop{Message: ErrPacketDrop.Error()}
-
-// // ErrGenericPacketDrop returns the generic packet drop error. It performs no allocations.
-// func ErrGenericPacketDrop() error {
-// 	return genericErrPacketDrop
-// }
-
-// func (err *ErrorPacketDrop) Error() string {
-// 	return err.Message
-// }
-
 type errGeneric uint8
 
 // Generic errors common to internet functioning.
@@ -25,6 +10,15 @@ const (
 	ErrBadCRC                            // incorrect checksum
 	ErrZeroSource                        // zero source(port/addr)
 	ErrZeroDestination                   // zero destination(port/addr)
+	ErrShortBuffer                       // short buffer
+	ErrBufferFull                        // buffer full
+	ErrInvalidAddr                       // invalid address
+	ErrUnsupported                       // unsupported
+	ErrMismatch                          // mismatch
+	ErrMismatchLen                       // mismatched length
+	ErrInvalidConfig                     // invalid configuration
+	ErrInvalidField                      // invalid field
+	ErrInvalidLengthField                // invalid length field
 )
 
 func (err errGeneric) Error() string {

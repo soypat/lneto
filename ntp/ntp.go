@@ -8,6 +8,8 @@ import (
 	"math/bits"
 	"sync"
 	"time"
+
+	"github.com/soypat/lneto"
 )
 
 // NTP Global Parameters.
@@ -26,7 +28,7 @@ const (
 
 func NewFrame(buf []byte) (Frame, error) {
 	if len(buf) < SizeHeader {
-		return Frame{buf: nil}, errors.New("NTP frame too short")
+		return Frame{buf: nil}, lneto.ErrShortBuffer
 	}
 	return Frame{buf: buf}, nil
 }

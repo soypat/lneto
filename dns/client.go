@@ -1,12 +1,12 @@
 package dns
 
 import (
-	"errors"
-	"fmt"
+	"log/slog"
 	"math"
 	"net"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/internal"
 )
 
 type Client struct {
@@ -34,7 +34,7 @@ func (sudp *Client) ConnectionID() *uint64 { return &sudp.connID }
 func (c *Client) StartResolve(localPort, txid uint16, cfg ResolveConfig) error {
 	nd := len(cfg.Questions)
 	if nd > math.MaxUint16 {
-		return errors.New("overflow uint16 in DNS questions")
+		return lneto.ErrBufferFull
 	}
 	c.reset(localPort, txid, dnsSendQuery, cfg.EnableRecursion)
 	c.msg.LimitResourceDecoding(uint16(nd), uint16(nd), 0, 0)
@@ -61,7 +61,8 @@ func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) 
 	if err != nil {
 		return 0, err
 	} else if len(data) > int(msglen) {
-		return 0, fmt.Errorf("unexpected write %d v %d", len(data), msglen)
+		internal.LogAttrs(nil, slog.LevelError, "dns:unexpected-write", slog.Int("got", len(data)), slog.Int("want", int(msglen)))
+		return 0, lneto.ErrBug
 	}
 	c.state = dnsAwaitResponse
 	// Unset don't frag since DNS requests go through LOTS of nodes.

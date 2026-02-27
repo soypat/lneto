@@ -2,7 +2,6 @@ package udp
 
 import (
 	"encoding/binary"
-	"errors"
 
 	"github.com/soypat/lneto"
 )
@@ -13,7 +12,7 @@ import (
 // with payload/options of frames to avoid panics.
 func NewFrame(buf []byte) (Frame, error) {
 	if len(buf) < sizeHeader {
-		return Frame{buf: buf}, errors.New("UDP packet too short")
+		return Frame{buf: buf}, lneto.ErrShortBuffer
 	}
 	return Frame{buf: buf}, nil
 }
@@ -90,19 +89,14 @@ func (frm Frame) ClearHeader() {
 // Validation API.
 //
 
-var (
-	errBadLen = errors.New("udp: bad UDP length")
-	errShort  = errors.New("udp: short buffer")
-)
-
 // ValidateSize checks the frame's size fields and compares with the actual buffer
 // the frame. It returns a non-nil error on finding an inconsistency.
 func (ufrm Frame) ValidateSize(v *lneto.Validator) {
 	ul := ufrm.Length()
 	if ul < sizeHeader {
-		v.AddError(errBadLen)
+		v.AddError(lneto.ErrInvalidLengthField)
 	}
 	if int(ul) > len(ufrm.RawData()) {
-		v.AddError(errShort)
+		v.AddError(lneto.ErrShortBuffer)
 	}
 }

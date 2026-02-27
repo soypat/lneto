@@ -2,7 +2,6 @@ package ethernet
 
 import (
 	"encoding/binary"
-	"errors"
 
 	"github.com/soypat/lneto"
 )
@@ -13,7 +12,7 @@ import (
 // with payload/options of frames to avoid panics.
 func NewFrame(buf []byte) (Frame, error) {
 	if len(buf) < sizeHeaderNoVLAN {
-		return Frame{buf: nil}, errShort
+		return Frame{buf: nil}, lneto.ErrShortBuffer
 	}
 	return Frame{buf: buf}, nil
 }
@@ -115,19 +114,14 @@ func (frm Frame) ClearHeader() {
 // Validation API.
 //
 
-var (
-	errShort     = errors.New("ethernet: too short")
-	errShortVLAN = errors.New("ethernet: short VLAN")
-)
-
 // ValidateSize checks the frame's size fields and compares with the actual buffer
 // the frame. It returns a non-nil error on finding an inconsistency.
 func (efrm Frame) ValidateSize(v *lneto.Validator) {
 	sz := efrm.EtherTypeOrSize()
 	if sz.IsSize() && len(efrm.buf) < int(sz) {
-		v.AddError(errShort)
+		v.AddError(lneto.ErrInvalidLengthField)
 	}
 	if sz == TypeVLAN && len(efrm.buf) < 18 {
-		v.AddError(errShortVLAN)
+		v.AddError(lneto.ErrShortBuffer)
 	}
 }

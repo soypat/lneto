@@ -2,7 +2,6 @@ package arp
 
 import (
 	"bytes"
-	"errors"
 	"log/slog"
 
 	"github.com/soypat/lneto"
@@ -37,7 +36,7 @@ func (h *Handler) ConnectionID() *uint64 { return &h.connID }
 
 func (h *Handler) UpdateProtoAddr(protoAddr []byte) error {
 	if len(protoAddr) != len(h.ourProtoAddr) {
-		return errors.New("mismatch ARP proto size")
+		return lneto.ErrMismatchLen
 	}
 	copy(h.ourProtoAddr, protoAddr)
 	return nil
@@ -46,9 +45,9 @@ func (h *Handler) UpdateProtoAddr(protoAddr []byte) error {
 func (h *Handler) Reset(cfg HandlerConfig) error {
 	if len(cfg.HardwareAddr) == 0 || len(cfg.HardwareAddr) > 255 ||
 		len(cfg.ProtocolAddr) == 0 || len(cfg.ProtocolAddr) > 255 {
-		return errors.New("invalid Handler address config")
+		return lneto.ErrInvalidConfig
 	} else if cfg.MaxQueries <= 0 || cfg.MaxPending <= 0 {
-		return errors.New("invalid Handler query or pending config")
+		return lneto.ErrInvalidConfig
 	}
 	*h = Handler{
 		connID:          h.connID + 1,
@@ -103,16 +102,16 @@ func (h *Handler) QueryResult(protoAddr []byte) (hwAddr []byte, err error) {
 	for i := range h.queries {
 		if bytes.Equal(protoAddr, h.queries[i].protoaddr) {
 			if !h.queries[i].querysent {
-				return nil, errors.New("query not yet sent")
+				return nil, errQueryPending
 			}
 			mac := h.queries[i].response()
 			if mac == nil {
-				return nil, errors.New("no response yet")
+				return nil, errQueryPending
 			}
 			return mac, nil
 		}
 	}
-	return nil, errors.New("query not exist or dropped")
+	return nil, errQueryNotFound
 }
 
 func (h *Handler) DiscardQuery(protoAddr []byte) error {
@@ -123,7 +122,7 @@ func (h *Handler) DiscardQuery(protoAddr []byte) error {
 			return nil
 		}
 	}
-	return errors.New("query not found")
+	return errQueryNotFound
 }
 
 func (h *Handler) compactQueries() {
@@ -151,15 +150,15 @@ func (h *Handler) StartQuery(dstHWAddr, proto []byte) error {
 	if len(h.queries) == cap(h.queries) {
 		h.compactQueries()
 		if len(h.queries) == cap(h.queries) {
-			return errors.New("too many ongoing queries")
+			return lneto.ErrBufferFull
 		}
 	}
 	if len(proto) != len(h.ourProtoAddr) {
-		return errors.New("bad protocol address length")
+		return lneto.ErrMismatchLen
 	} else if dstHWAddr != nil && len(dstHWAddr) != len(h.ourHWAddr) {
-		return errors.New("mismatch hardware size")
+		return lneto.ErrMismatchLen
 	} else if dstHWAddr != nil && !internal.IsZeroed(dstHWAddr...) {
-		return errors.New("write-to buffer must be zeroed out")
+		return lneto.ErrInvalidConfig
 	}
 	h.queries = h.queries[:len(h.queries)+1]
 	q := &h.queries[len(h.queries)-1]
@@ -231,11 +230,11 @@ func (h *Handler) Demux(ethFrame []byte, frameOffset int) error {
 	}
 	htype, hlen := afrm.Hardware()
 	if htype != h.htype || int(hlen) != len(h.ourHWAddr) {
-		return errors.New("bad ARP hardware")
+		return lneto.ErrMismatch
 	}
 	protoType, protoLen := afrm.Protocol()
 	if protoType != h.protoType || int(protoLen) != len(h.ourProtoAddr) {
-		return errors.New("bad ARP proto")
+		return lneto.ErrMismatch
 	}
 	switch afrm.Operation() {
 	case OpRequest:
