@@ -171,7 +171,7 @@ func (conn *Conn) OpenListen(localPort uint16, iss Value) error {
 func (conn *Conn) Close() error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	conn.trace("TCPConn.Close", slog.Uint64("lport", uint64(conn.h.localPort)))
+	conn.trace("TCPConn.Close", slog.Uint64("lport", uint64(conn.h.localPort)), slog.Uint64("rport", uint64(conn.h.remotePort)))
 	return conn.h.Close()
 }
 
@@ -179,7 +179,7 @@ func (conn *Conn) Close() error {
 func (conn *Conn) Abort() {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	conn.trace("TCPConn.Abort", slog.Uint64("lport", uint64(conn.h.localPort)))
+	conn.trace("TCPConn.Abort", slog.Uint64("lport", uint64(conn.h.localPort)), slog.Uint64("rport", uint64(conn.h.remotePort)))
 	conn.h.Abort()
 	conn.reset(conn.h)
 }
