@@ -81,11 +81,7 @@ func (pc *PacketBreakdown) CaptureEthernet(dst []Frame, pkt []byte, bitOffset in
 		return dst, pc.validator().ErrPop()
 	}
 
-	finfo := internal.SliceReclaim(&dst)
-	finfo.Protocol = ProtoEthernet
-	finfo.PacketBitOffset = bitOffset
-	finfo.Errors = finfo.Errors[:0]
-	finfo.Fields = append(finfo.Fields[:0], baseEthernetFields[:]...)
+	finfo := reclaimFrame(&dst, ProtoEthernet, bitOffset, baseEthernetFields[:])
 	etype := efrm.EtherTypeOrSize()
 	end := 14*octet + bitOffset
 	if etype.IsSize() {
@@ -124,13 +120,8 @@ func (pc *PacketBreakdown) CaptureARP(dst []Frame, pkt []byte, bitOffset int) ([
 		return dst, pc.validator().ErrPop()
 	}
 
-	finfo := internal.SliceReclaim(&dst)
-	finfo.Protocol = ethernet.TypeARP
-	finfo.PacketBitOffset = bitOffset
-	finfo.Errors = finfo.Errors[:0]
-
+	finfo := reclaimFrame(&dst, ethernet.TypeARP, bitOffset, baseARPFields[:])
 	const varstart = 8 * octet
-	finfo.Fields = append(finfo.Fields[:0], baseARPFields[:]...)
 	_, hlen := afrm.Hardware()
 	_, plen := afrm.Protocol()
 	finfo.Fields = append(finfo.Fields,
@@ -174,11 +165,7 @@ func (pc *PacketBreakdown) CaptureIPv6(dst []Frame, pkt []byte, bitOffset int) (
 	if pc.validator().HasError() {
 		return dst, pc.validator().ErrPop()
 	}
-	finfo := internal.SliceReclaim(&dst)
-	finfo.Protocol = ethernet.TypeIPv6
-	finfo.PacketBitOffset = bitOffset
-	finfo.Errors = finfo.Errors[:0]
-	finfo.Fields = append(finfo.Fields[:0], baseIPv6Fields[:]...)
+	reclaimFrame(&dst, ethernet.TypeIPv6, bitOffset, baseIPv6Fields[:])
 	proto := ifrm6.NextHeader()
 	end := bitOffset + 40*octet
 	var protoErrs []error
@@ -222,11 +209,7 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 	}
 	// limit packet to the actual IPv4 frame size
 	pkt = pkt[:bitOffset/8+int(ifrm4.TotalLength())]
-	finfo := internal.SliceReclaim(&dst)
-	finfo.Protocol = ethernet.TypeIPv4
-	finfo.PacketBitOffset = bitOffset
-	finfo.Errors = finfo.Errors[:0]
-	finfo.Fields = append(finfo.Fields[:0], baseIPv4Fields[:]...)
+	finfo := reclaimFrame(&dst, ethernet.TypeIPv4, bitOffset, baseIPv4Fields[:])
 	options := ifrm4.Options()
 	if len(options) > 0 {
 		finfo.Fields = append(finfo.Fields, FrameField{
@@ -318,11 +301,7 @@ func (pc *PacketBreakdown) CaptureTCP(dst []Frame, pkt []byte, bitOffset int) ([
 		return dst, pc.validator().ErrPop()
 	}
 	end := bitOffset + octet*tfrm.HeaderLength()
-	finfo := internal.SliceReclaim(&dst)
-	finfo.Protocol = lneto.IPProtoTCP
-	finfo.PacketBitOffset = bitOffset
-	finfo.Errors = finfo.Errors[:0]
-	finfo.Fields = append(finfo.Fields[:0], baseTCPFields[:]...)
+	finfo := reclaimFrame(&dst, lneto.IPProtoTCP, bitOffset, baseTCPFields[:])
 	options := tfrm.Options()
 	if len(options) > 0 {
 		finfo.Fields = append(finfo.Fields, FrameField{
@@ -356,11 +335,7 @@ func (pc *PacketBreakdown) CaptureUDP(dst []Frame, pkt []byte, bitOffset int) ([
 	if pc.validator().HasError() {
 		return dst, pc.validator().ErrPop()
 	}
-	finfo := internal.SliceReclaim(&dst)
-	finfo.Protocol = lneto.IPProtoUDP
-	finfo.PacketBitOffset = bitOffset
-	finfo.Errors = finfo.Errors[:0]
-	finfo.Fields = append(finfo.Fields[:0], baseUDPFields[:]...)
+	reclaimFrame(&dst, lneto.IPProtoUDP, bitOffset, baseUDPFields[:])
 	end := bitOffset + 8*octet
 	payload := ufrm.Payload()
 	dstport := ufrm.DestinationPort()
@@ -388,11 +363,7 @@ func (pc *PacketBreakdown) CaptureICMPv4(dst []Frame, pkt []byte, bitOffset int)
 		return dst, err
 	}
 
-	finfo := internal.SliceReclaim(&dst)
-	finfo.Protocol = lneto.IPProtoICMP
-	finfo.PacketBitOffset = bitOffset
-	finfo.Errors = finfo.Errors[:0]
-	finfo.Fields = append(finfo.Fields[:0], baseICMPv4Fields[:]...)
+	finfo := reclaimFrame(&dst, lneto.IPProtoICMP, bitOffset, baseICMPv4Fields[:])
 
 	// Add type-specific fields.
 	switch ifrm.Type() {
@@ -452,14 +423,11 @@ func (pc *PacketBreakdown) CaptureDNS(dst []Frame, pkt []byte, bitOffset int) ([
 	if err != nil && !incomplete {
 		return dst, err
 	}
-	finfo := internal.SliceReclaim(&dst)
-	finfo.Protocol = "DNS"
-	finfo.PacketBitOffset = bitOffset
-	finfo.Errors = finfo.Errors[:0]
+	finfo := reclaimFrame(&dst, "DNS", bitOffset, nil)
 	if incomplete {
 		finfo.Errors = append(finfo.Errors, errors.New("pcap: could not parse all DNS resources; add higher limit"))
 	}
-	finfo.Fields = append(finfo.Fields[:0], FrameField{
+	finfo.Fields = append(finfo.Fields, FrameField{
 		Name:           "Data",
 		FrameBitOffset: 0,
 		BitLength:      int(off) * octet,
@@ -476,11 +444,7 @@ func (pc *PacketBreakdown) CaptureNTP(dst []Frame, pkt []byte, bitOffset int) ([
 	if err != nil {
 		return dst, err
 	}
-	finfo := internal.SliceReclaim(&dst)
-	finfo.Protocol = "NTP"
-	finfo.PacketBitOffset = bitOffset
-	finfo.Errors = finfo.Errors[:0]
-	finfo.Fields = append(finfo.Fields[:0], baseNTPFields[:]...)
+	reclaimFrame(&dst, "NTP", bitOffset, baseNTPFields[:])
 	return dst, nil
 }
 
@@ -493,15 +457,11 @@ func (pc *PacketBreakdown) CaptureDHCPv4(dst []Frame, pkt []byte, bitOffset int)
 	if err != nil {
 		return dst, err
 	}
-	finfo := internal.SliceReclaim(&dst)
-	finfo.Protocol = "DHCPv4"
-	finfo.PacketBitOffset = bitOffset
-	finfo.Errors = finfo.Errors[:0]
+	finfo := reclaimFrame(&dst, "DHCPv4", bitOffset, baseDHCPv4Fields[:])
 	magic := dfrm.MagicCookie()
 	if magic != dhcpv4.MagicCookie {
 		finfo.Errors = append(finfo.Errors, errors.New("incorrect DHCPv4 magic cookie"))
 	}
-	finfo.Fields = append(finfo.Fields[:0], baseDHCPv4Fields[:]...)
 	options := dfrm.OptionsPayload()
 
 	if len(options) > 0 && pc.SubfieldLimit > 0 {
@@ -512,7 +472,6 @@ func (pc *PacketBreakdown) CaptureDHCPv4(dst []Frame, pkt []byte, bitOffset int)
 			SubFields: optfield.SubFields[:0],
 			Name:      "options",
 		}
-		optfield.SubFields = optfield.SubFields[:0]
 		err = dfrm.ForEachOption(func(optoff int, opt dhcpv4.OptNum, data []byte) error {
 			if len(optfield.SubFields) >= pc.SubfieldLimit {
 				return errors.New("option cap limit surpassed for DHCP")
@@ -625,11 +584,8 @@ func (pc *PacketBreakdown) CaptureHTTP(dst []Frame, pkt []byte, bitOffset int) (
 	hdrLen := pc.hdr.BufferParsed()
 	body, _ := pc.hdr.Body()
 	bodyClass := httpBodyClass(pc.hdr.Get("Content-Type"), body)
-	finfo := internal.SliceReclaim(&dst)
-	finfo.Protocol = httpProtocol
-	finfo.PacketBitOffset = bitOffset
-	finfo.Errors = finfo.Errors[:0]
-	finfo.Fields = append(finfo.Fields[:0],
+	finfo := reclaimFrame(&dst, httpProtocol, bitOffset, nil)
+	finfo.Fields = append(finfo.Fields,
 		FrameField{
 			Name:           "HTTP Header",
 			Class:          FieldClassText,
@@ -672,9 +628,9 @@ func (ff Flags) IsLegacy() bool       { return ff&FlagLegacy != 0 }
 func (ff Flags) IsRightAligned() bool { return ff&FlagRightAligned != 0 }
 
 type Frame struct {
+	PacketBitOffset int
 	Protocol        any
 	Fields          []FrameField
-	PacketBitOffset int
 	Errors          []error
 }
 
@@ -1350,14 +1306,26 @@ var baseNTPFields = [...]FrameField{
 	},
 }
 
+// reclaimFrame extends dst via SliceReclaim, resets the reclaimed Frame
+// with the given protocol and bit offset while preserving Fields and Errors
+// backing arrays, and appends baseFields. Returns the Frame for further modification.
+func reclaimFrame(dst *[]Frame, proto any, bitOffset int, baseFields []FrameField) *Frame {
+	finfo := internal.SliceReclaim(dst)
+	*finfo = Frame{
+		PacketBitOffset: bitOffset,
+		Protocol:        proto,
+		Fields:          finfo.Fields[:0],
+		Errors:          finfo.Errors[:0],
+	}
+	finfo.Fields = append(finfo.Fields, baseFields...)
+	return finfo
+}
+
 // reclaimRemainingFrame extends dst via SliceReclaim and populates the reclaimed
 // Frame as a single-field "remaining payload" frame, reusing the old Fields backing array.
 func reclaimRemainingFrame(dst *[]Frame, proto any, class FieldClass, pktBitOffset, pktBitLen int) {
-	finfo := internal.SliceReclaim(dst)
-	finfo.Protocol = proto
-	finfo.PacketBitOffset = pktBitOffset
-	finfo.Errors = finfo.Errors[:0]
-	finfo.Fields = append(finfo.Fields[:0], FrameField{
+	finfo := reclaimFrame(dst, proto, pktBitOffset, nil)
+	finfo.Fields = append(finfo.Fields, FrameField{
 		Class:     class,
 		BitLength: pktBitLen - pktBitOffset,
 	})
