@@ -1,7 +1,6 @@
 package tcp
 
 import (
-	"errors"
 	"io"
 	"net"
 
@@ -9,11 +8,6 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
-)
-
-var (
-	errMismatchedSrcPort = errors.New("source port mismatch")
-	errMismatchedDstPort = errors.New("destination port mismatch")
 )
 
 // Handler is a low level TCP handling data structure. It implements logic
@@ -56,10 +50,10 @@ func (h *Handler) State() State { return h.scb.State() }
 // If the argument buffer is nil then the respective currently set buffer will be reused.
 func (h *Handler) SetBuffers(txbuf, rxbuf []byte, packets int) error {
 	if h.bufRx.Buf == nil && (len(rxbuf) < minBufferSize || len(txbuf) < minBufferSize) {
-		return errors.New("tcp: short buffer")
+		return lneto.ErrShortBuffer
 	}
 	if !h.scb.State().IsClosed() {
-		return errors.New("tcp.Handler must be closed before setting buffers")
+		return lneto.ErrInvalidConfig
 	}
 	if rxbuf != nil {
 		h.bufRx.Buf = rxbuf
@@ -156,15 +150,15 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 
 	remotePort := tfrm.SourcePort()
 	if h.remotePort != 0 && remotePort != h.remotePort {
-		return errMismatchedSrcPort
+		return lneto.ErrMismatch
 	}
 	dstPort := tfrm.DestinationPort()
 	if h.localPort != dstPort {
-		return errMismatchedDstPort
+		return lneto.ErrMismatch
 	}
 	payload := tfrm.Payload()
 	if len(payload) > h.bufRx.Free() {
-		return errors.New("rx buffer full")
+		return lneto.ErrBufferFull
 	}
 	segIncoming := tfrm.Segment(len(payload))
 	if h.scb.IncomingIsKeepalive(segIncoming) {

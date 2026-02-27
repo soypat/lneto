@@ -10,6 +10,8 @@ import (
 	"github.com/soypat/lneto/internal"
 )
 
+var errOptionNotFit = errors.New("DHCPv4: options dont fit")
+
 type Server struct {
 	connID       uint64
 	nextAddr     netip.Addr

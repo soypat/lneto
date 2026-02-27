@@ -93,7 +93,7 @@ func (h *handlers) prepAdd() error {
 	if h.full() {
 		h.compact()
 		if h.full() {
-			return errNodesFull
+			return lneto.ErrBufferFull
 		}
 	}
 	return nil
@@ -200,11 +200,7 @@ func (h *handlers) encapsulateAny(buf []byte, offsetIP, offsetThisFrame int) (_ 
 }
 
 var (
-	errZeroMaxNodesArg = errors.New("zero max nodes arg")
-	errZeroPort        = errors.New("port must be greater than zero")
-	errInvalidProto    = errors.New("invalid protocol")
 	errProtoRegistered = errors.New("protocol already registered")
-	errNodesFull       = errors.New("no more room for new nodes")
 	_                  = net.ErrClosed
 )
 

@@ -2,7 +2,6 @@ package tcp
 
 import (
 	"bytes"
-	"errors"
 	"log/slog"
 	"net"
 	"sync"
@@ -71,7 +70,7 @@ func (listener *Listener) Close() error {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
 	if listener.isClosed() {
-		return errors.New("already closed")
+		return net.ErrClosed
 	}
 	listener.debug("listener:reset", slog.Uint64("port", uint64(listener.port)))
 	listener.connID++
@@ -81,9 +80,9 @@ func (listener *Listener) Close() error {
 
 func (listener *Listener) Reset(port uint16, pool pool) error {
 	if port == 0 {
-		return errZeroDstPort
+		return lneto.ErrZeroSource
 	} else if pool == nil {
-		return errors.New("nil TCP pool")
+		return lneto.ErrInvalidConfig
 	}
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
@@ -127,7 +126,7 @@ func (listener *Listener) TryAccept() (*Conn, any, error) {
 		listener.incoming[i] = handler{} // discard from ready.
 		return conn, userData, nil
 	}
-	return nil, nil, errors.New("no conns available")
+	return nil, nil, lneto.ErrExhausted
 }
 
 // Encapsulate implements [StackNode].
@@ -200,7 +199,7 @@ func (listener *Listener) Demux(carrierData []byte, tcpFrameOffset int) error {
 	}
 	dst := tfrm.DestinationPort()
 	if dst != listener.port {
-		return errors.New("not our port")
+		return lneto.ErrMismatch
 	}
 	src := tfrm.SourcePort()
 

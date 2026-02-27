@@ -1,9 +1,9 @@
 package tcp
 
 import (
-	"errors"
-	"fmt"
 	"strings"
+
+	"github.com/soypat/lneto"
 )
 
 type OptionKind uint8
@@ -88,11 +88,11 @@ func (op OptionCodec) PutOption32(dst []byte, kind OptionKind, v uint32) (int, e
 func (op OptionCodec) PutOption(dst []byte, kind OptionKind, data ...byte) (int, error) {
 	putSize := 2 + len(data)
 	if len(dst) < putSize {
-		return -1, errBufferTooSmall
+		return -1, lneto.ErrShortBuffer
 	} else if putSize > 255 {
-		return -1, errors.New("option data too large")
+		return -1, lneto.ErrInvalidLengthField
 	} else if kind == OptNop || kind == OptEnd {
-		return -1, errors.New("cant put Nop or End option type")
+		return -1, lneto.ErrInvalidField
 	}
 	dst[0] = byte(kind)
 	dst[1] = byte(putSize)
@@ -111,13 +111,13 @@ func (op OptionCodec) ForEachOption(opts []byte, fn func(OptionKind, []byte) err
 			continue
 		}
 		if len(opts[off:]) < 1 {
-			return errors.New("short TCP options")
+			return lneto.ErrShortBuffer
 		}
 		size := int(opts[off]) // Total option length including kind and length bytes.
 		off++
 		dataLen := size - 2 // Data bytes after kind and length.
 		if dataLen < 0 || len(opts[off:]) < dataLen {
-			return fmt.Errorf("option %q length %d exceeds buffer size %d", kind.String(), size, len(opts[off:]))
+			return lneto.ErrShortBuffer
 		}
 
 		if !skipSizeValidation {
@@ -133,7 +133,7 @@ func (op OptionCodec) ForEachOption(opts []byte, fn func(OptionKind, []byte) err
 				expectSize = 2
 			}
 			if expectSize != -1 && size != expectSize {
-				return fmt.Errorf("bad TCP option %q size want %d got %d", kind.String(), expectSize, size)
+				return lneto.ErrInvalidLengthField
 			}
 		}
 		if !(skipObsolete && kind.IsObsolete()) {

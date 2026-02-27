@@ -19,6 +19,7 @@ const (
 	ErrInvalidConfig                     // invalid configuration
 	ErrInvalidField                      // invalid field
 	ErrInvalidLengthField                // invalid length field
+	ErrExhausted                         // resource exhausted
 )
 
 func (err errGeneric) Error() string {

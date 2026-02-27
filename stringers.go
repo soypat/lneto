@@ -208,11 +208,12 @@ func _() {
 	_ = x[ErrInvalidConfig-12]
 	_ = x[ErrInvalidField-13]
 	_ = x[ErrInvalidLengthField-14]
+	_ = x[ErrExhausted-15]
 }
 
-const _errGeneric_name = "lneto-bug(use build tag \"debugheaplog\")packet droppedincorrect checksumzero source(port/addr)zero destination(port/addr)short bufferbuffer fullinvalid addressunsupportedmismatchmismatched lengthinvalid configurationinvalid fieldinvalid length field"
+const _errGeneric_name = "lneto-bug(use build tag \"debugheaplog\")packet droppedincorrect checksumzero source(port/addr)zero destination(port/addr)short bufferbuffer fullinvalid addressunsupportedmismatchmismatched lengthinvalid configurationinvalid fieldinvalid length fieldresource exhausted"
 
-var _errGeneric_index = [...]uint8{0, 39, 53, 71, 93, 120, 132, 143, 158, 169, 177, 194, 215, 228, 248}
+var _errGeneric_index = [...]uint16{0, 39, 53, 71, 93, 120, 132, 143, 158, 169, 177, 194, 215, 228, 248, 266}
 
 func (i errGeneric) String() string {
 	i -= 1

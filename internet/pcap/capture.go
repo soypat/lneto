@@ -27,6 +27,9 @@ const unknownPayloadProto = "payload?"
 
 var (
 	ErrFieldByClassNotFound = errors.New("pcap: field by class not found")
+	ErrLimitExceeded        = errors.New("pcap: limit exceeded")
+	errNotByteAligned       = errors.New("must be parsed at byte boundary")
+	errInvalidFieldIdx      = errors.New("invalid field index")
 )
 
 type proto string
@@ -70,7 +73,7 @@ func (pc *PacketBreakdown) CaptureEthernet(dst []Frame, pkt []byte, bitOffset in
 		dst = pc.initFrames()
 	}
 	if bitOffset%8 != 0 {
-		return dst, errors.New("ethernet must be parsed at byte boundary")
+		return dst, errNotByteAligned
 	}
 	efrm, err := ethernet.NewFrame(pkt[bitOffset/8:])
 	if err != nil {
@@ -113,7 +116,7 @@ func (pc *PacketBreakdown) CaptureEthernet(dst []Frame, pkt []byte, bitOffset in
 
 func (pc *PacketBreakdown) CaptureARP(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
 	if bitOffset%8 != 0 {
-		return dst, errors.New("ARP must be parsed at byte boundary")
+		return dst, errNotByteAligned
 	}
 	afrm, err := arp.NewFrame(pkt[bitOffset/8:])
 	if err != nil {
@@ -164,7 +167,7 @@ func (pc *PacketBreakdown) CaptureARP(dst []Frame, pkt []byte, bitOffset int) ([
 
 func (pc *PacketBreakdown) CaptureIPv6(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
 	if bitOffset%8 != 0 {
-		return dst, errors.New("IPv6 must be parsed at byte boundary")
+		return dst, errNotByteAligned
 	}
 	ifrm6, err := ipv6.NewFrame(pkt[bitOffset/8:])
 	if err != nil {
@@ -210,7 +213,7 @@ func (pc *PacketBreakdown) CaptureIPv6(dst []Frame, pkt []byte, bitOffset int) (
 
 func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
 	if bitOffset%8 != 0 {
-		return dst, errors.New("IPv4 must be parsed at byte boundary")
+		return dst, errNotByteAligned
 	}
 	ifrm4, err := ipv4.NewFrame(pkt[bitOffset/8:])
 	if err != nil {
@@ -307,7 +310,7 @@ func (pc *PacketBreakdown) captureIPProto(proto lneto.IPProto, dst []Frame, pkt 
 
 func (pc *PacketBreakdown) CaptureTCP(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
 	if bitOffset%8 != 0 {
-		return dst, errors.New("TCP must be parsed at byte boundary")
+		return dst, errNotByteAligned
 	}
 	tfrm, err := tcp.NewFrame(pkt[bitOffset/8:])
 	if err != nil {
@@ -346,7 +349,7 @@ func (pc *PacketBreakdown) CaptureTCP(dst []Frame, pkt []byte, bitOffset int) ([
 
 func (pc *PacketBreakdown) CaptureUDP(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
 	if bitOffset%8 != 0 {
-		return dst, errors.New("UDP must be parsed at byte boundary")
+		return dst, errNotByteAligned
 	}
 	ufrm, err := udp.NewFrame(pkt[bitOffset/8:])
 	if err != nil {
@@ -380,7 +383,7 @@ func (pc *PacketBreakdown) CaptureUDP(dst []Frame, pkt []byte, bitOffset int) ([
 
 func (pc *PacketBreakdown) CaptureICMPv4(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
 	if bitOffset%8 != 0 {
-		return dst, errors.New("ICMPv4 must be parsed at byte boundary")
+		return dst, errNotByteAligned
 	}
 	icmpData := pkt[bitOffset/8:]
 	ifrm, err := icmpv4.NewFrame(icmpData)
@@ -444,7 +447,7 @@ func (pc *PacketBreakdown) CaptureICMPv4(dst []Frame, pkt []byte, bitOffset int)
 
 func (pc *PacketBreakdown) CaptureDNS(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
 	if bitOffset%8 != 0 {
-		return dst, errors.New("DNS must be parsed at byte boundary")
+		return dst, errNotByteAligned
 	}
 	dnsData := pkt[bitOffset/8:]
 	pc.dmsg.LimitResourceDecoding(20, 20, 20, 20)
@@ -457,7 +460,7 @@ func (pc *PacketBreakdown) CaptureDNS(dst []Frame, pkt []byte, bitOffset int) ([
 	finfo.PacketBitOffset = bitOffset
 	finfo.Errors = finfo.Errors[:0]
 	if incomplete {
-		finfo.Errors = append(finfo.Errors, errors.New("pcap: could not parse all DNS resources; add higher limit"))
+		finfo.Errors = append(finfo.Errors, ErrLimitExceeded)
 	}
 	finfo.Fields = append(finfo.Fields[:0], FrameField{
 		Name:           "Data",
@@ -469,7 +472,7 @@ func (pc *PacketBreakdown) CaptureDNS(dst []Frame, pkt []byte, bitOffset int) ([
 
 func (pc *PacketBreakdown) CaptureNTP(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
 	if bitOffset%8 != 0 {
-		return dst, errors.New("NTP must be parsed at byte boundary")
+		return dst, errNotByteAligned
 	}
 	ntpData := pkt[bitOffset/8:]
 	_, err := ntp.NewFrame(ntpData)
@@ -486,7 +489,7 @@ func (pc *PacketBreakdown) CaptureNTP(dst []Frame, pkt []byte, bitOffset int) ([
 
 func (pc *PacketBreakdown) CaptureDHCPv4(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
 	if bitOffset%8 != 0 {
-		return dst, errors.New("DHCP must be parsed at byte boundary")
+		return dst, errNotByteAligned
 	}
 	dhcpData := pkt[bitOffset/8:]
 	dfrm, err := dhcpv4.NewFrame(dhcpData)
@@ -499,7 +502,7 @@ func (pc *PacketBreakdown) CaptureDHCPv4(dst []Frame, pkt []byte, bitOffset int)
 	finfo.Errors = finfo.Errors[:0]
 	magic := dfrm.MagicCookie()
 	if magic != dhcpv4.MagicCookie {
-		finfo.Errors = append(finfo.Errors, errors.New("incorrect DHCPv4 magic cookie"))
+		finfo.Errors = append(finfo.Errors, lneto.ErrInvalidField)
 	}
 	finfo.Fields = append(finfo.Fields[:0], baseDHCPv4Fields[:]...)
 	options := dfrm.OptionsPayload()
@@ -515,7 +518,7 @@ func (pc *PacketBreakdown) CaptureDHCPv4(dst []Frame, pkt []byte, bitOffset int)
 		optfield.SubFields = optfield.SubFields[:0]
 		err = dfrm.ForEachOption(func(optoff int, opt dhcpv4.OptNum, data []byte) error {
 			if len(optfield.SubFields) >= pc.SubfieldLimit {
-				return errors.New("option cap limit surpassed for DHCP")
+				return ErrLimitExceeded
 			}
 			// optoff points to start of length and num bytes, skip over them with FrameBitOffset.
 			field := FrameField{Name: opt.String(), FrameBitOffset: (optoff + 2) * octet, BitLength: len(data) * octet}
@@ -608,7 +611,7 @@ func httpBodyClass(contentType, body []byte) FieldClass {
 func (pc *PacketBreakdown) CaptureHTTP(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
 	const httpProtocol = "HTTP"
 	if bitOffset%8 != 0 {
-		return dst, errors.New("HTTP must be parsed at byte boundary")
+		return dst, errNotByteAligned
 	}
 	const asResponse = true
 	const asRequest = false
@@ -692,7 +695,7 @@ func (frm Frame) FieldByClass(c FieldClass) (int, error) {
 		}
 		if field.Name == "" { // Prioritize "canonical" fields with no name.
 			if selected >= 0 && frm.Fields[selected].Name == "" {
-				return -1, errors.New("multiple class fields with no name")
+				return -1, lneto.ErrMismatch
 			}
 			selected = i
 		} else if selected >= 0 {
@@ -705,7 +708,7 @@ func (frm Frame) FieldByClass(c FieldClass) (int, error) {
 		return -1, ErrFieldByClassNotFound
 	}
 	if multiple && frm.Fields[selected].Name != "" {
-		return -1, errors.New("multiple classes found and none have empty name")
+		return -1, lneto.ErrMismatch
 	}
 	return selected, nil
 }
@@ -714,7 +717,7 @@ func (frm Frame) FieldByClass(c FieldClass) (int, error) {
 func (frm Frame) FieldAsUint(fieldIdx int, pkt []byte) (uint64, error) {
 	const badUint64 = math.MaxUint64
 	if fieldIdx < 0 || fieldIdx >= len(frm.Fields) {
-		return badUint64, errors.New("invalid field index")
+		return badUint64, errInvalidFieldIdx
 	}
 	field := frm.Fields[fieldIdx]
 	return fieldAsUint(pkt, frm.PacketBitOffset+field.FrameBitOffset, field.BitLength, field.Flags.IsRightAligned())
@@ -723,7 +726,7 @@ func (frm Frame) FieldAsUint(fieldIdx int, pkt []byte) (uint64, error) {
 // AppendField appends the binary on-the-wire representation of the field and aligns the field so it starts at the first bit of appended data.
 func (frm Frame) AppendField(dst []byte, fieldIdx int, pkt []byte) ([]byte, error) {
 	if fieldIdx < 0 || fieldIdx >= len(frm.Fields) {
-		return dst, errors.New("invalid field index")
+		return dst, errInvalidFieldIdx
 	}
 	field := frm.Fields[fieldIdx]
 	return appendField(dst, pkt, frm.PacketBitOffset+field.FrameBitOffset, field.BitLength, field.Flags.IsRightAligned())
@@ -733,7 +736,7 @@ func fieldAsUint(pkt []byte, fieldBitStart, bitlen int, rightAligned bool) (uint
 	const badUint64 = math.MaxUint64
 	octets := (bitlen + 7) / 8
 	if octets > 8 {
-		return badUint64, errors.New("field too long to be represented by uint64")
+		return badUint64, lneto.ErrUnsupported
 	}
 	var buf [8]byte
 	_, err := appendField(buf[8-octets:8-octets], pkt, fieldBitStart, bitlen, rightAligned)
@@ -749,13 +752,13 @@ func appendField(dst, pkt []byte, fieldBitStart, bitlen int, rightAligned bool) 
 	octets := (bitlen + 7) / 8 // total octets needed to represent field.
 	octetsStart := fieldBitStart / 8
 	if octets+octetsStart > len(pkt) {
-		return dst, errors.New("buffer overflow")
+		return dst, lneto.ErrShortBuffer
 	}
 	firstBitOffset := fieldBitStart % 8
 	lastOctetExcessBits := fieldBitEnd % 8
 	if firstBitOffset == 0 {
 		if rightAligned {
-			return dst, errors.New("invalid right aligned set for fully aligned field")
+			return dst, lneto.ErrBug
 		}
 		// Optimized path: field starts at byte boundary.
 		dst = append(dst, pkt[octetsStart:octetsStart+octets]...)
@@ -776,7 +779,7 @@ func appendField(dst, pkt []byte, fieldBitStart, bitlen int, rightAligned bool) 
 		// Right aligned with trailing bits. i.e: IPv6 Traffic Class.
 		// Field spans an extra byte, so need octets+1 bytes from packet.
 		if octets+octetsStart+1 > len(pkt) {
-			return dst, errors.New("buffer overflow")
+			return dst, lneto.ErrShortBuffer
 		}
 		for i := 0; i < octets; i++ {
 			b := (pkt[octetsStart+i] & mask) << (8 - firstBitOffset)

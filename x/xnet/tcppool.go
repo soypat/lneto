@@ -2,11 +2,11 @@ package xnet
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -52,7 +52,7 @@ type TCPPoolConfig struct {
 
 func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
 	if cfg.EstablishedTimeout <= 0 || cfg.ClosingTimeout <= 0 {
-		return nil, errors.New("invalid timeout")
+		return nil, lneto.ErrInvalidConfig
 	}
 	n := cfg.PoolSize
 	pool := &TCPPool{

@@ -1,13 +1,10 @@
 package tcp
 
 import (
-	"errors"
+	"log/slog"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
-)
-
-var (
-	errPacketQueueFull = errors.New("packet queue full")
 )
 
 const (
@@ -55,9 +52,9 @@ type ringidx struct {
 func (rtx *ringTx) Reset(buf []byte, maxqueuedPackets int, iss Value) error {
 	buf = buf[:len(buf):len(buf)] // safely omit capacity section.
 	if maxqueuedPackets <= 0 {
-		return errors.New("queued packets <=0")
+		return lneto.ErrInvalidConfig
 	} else if len(buf) < minBufferSize || len(buf) < maxqueuedPackets {
-		return errors.New("invalid buffer size")
+		return lneto.ErrShortBuffer
 	}
 
 	*rtx = ringTx{
@@ -122,11 +119,12 @@ func (rtx *ringTx) Write(b []byte) (n int, err error) {
 func (rtx *ringTx) MakePacket(b []byte, currentSeq Value) (int, error) {
 	free := rtx.slist.Free()
 	if free == 0 {
-		return 0, errPacketQueueFull
+		return 0, lneto.ErrBufferFull
 	}
 	endSeq, ok := rtx.sentEndSeq()
 	if ok && currentSeq.LessThan(endSeq) {
-		return 0, errors.New("sequence number less than last sequence number")
+		internal.LogAttrs(nil, slog.LevelError, "txqueue:seq<endseq", slog.Uint64("seq", uint64(currentSeq)), slog.Uint64("endseq", uint64(endSeq)))
+		return 0, lneto.ErrBug
 	}
 	// Reading unsent ring consumes unsent and converts it to "sent".
 	unsent, _ := rtx.unsentRing()
@@ -316,11 +314,11 @@ func (sl *sentlist) AddPacket(datalen, off, bufsize int, seq Value) *ringidx {
 func (sl *sentlist) RecvAck(ack Value, bufsize int) error {
 	newest := sl.Newest()
 	if newest == nil {
-		return errors.New("no packet to ack")
+		return lneto.ErrPacketDrop
 	}
 	endseq := newest.endSeq()
 	if endseq.LessThan(ack) {
-		return errors.New("ack of unsent packet")
+		return lneto.ErrPacketDrop
 	}
 	// Mark fully acked.
 	for i := 0; i < len(sl.pkts); i++ {
