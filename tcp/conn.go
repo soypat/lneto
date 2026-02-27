@@ -366,11 +366,11 @@ func (conn *Conn) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 	} else if len(raddr) != len(conn.remoteAddr) {
 		return 0, errMismatchedIPVersion
 	}
-	conn.trace("TCPConn.encaps", slog.Uint64("lport", uint64(conn.h.LocalPort())), slog.Uint64("rport", uint64(conn.h.remotePort)))
 	n, err = conn.h.Send(carrierData[offsetToFrame:])
-	if err != nil {
+	if err != nil || n == 0 {
 		return 0, err
 	}
+	conn.trace("TCPConn.encaps", slog.Uint64("lport", uint64(conn.h.LocalPort())), slog.Uint64("rport", uint64(conn.h.remotePort)))
 	err = internal.SetIPAddrs(ipFrame, conn.ipID, nil, conn.remoteAddr)
 	if err != nil {
 		return 0, err
