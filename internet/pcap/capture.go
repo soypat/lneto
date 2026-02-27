@@ -320,9 +320,6 @@ func (pc *PacketBreakdown) CaptureTCP(dst []Frame, pkt []byte, bitOffset int) ([
 	return dst, nil
 }
 
-// func (pc *PacketBreakdown) CaptureDHCPv4(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
-// }
-
 func (pc *PacketBreakdown) CaptureUDP(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
 	if bitOffset%8 != 0 {
 		return dst, errors.New("UDP must be parsed at byte boundary")
@@ -1306,7 +1303,7 @@ var baseNTPFields = [...]FrameField{
 	},
 }
 
-// reclaimFrame extends dst via SliceReclaim, resets the reclaimed Frame
+// reclaimFrame extends dst via [internal.SliceReclaim], resets the reclaimed Frame
 // with the given protocol and bit offset while preserving Fields and Errors
 // backing arrays, and appends baseFields. Returns the Frame for further modification.
 func reclaimFrame(dst *[]Frame, proto any, bitOffset int, baseFields []FrameField) *Frame {
@@ -1314,10 +1311,9 @@ func reclaimFrame(dst *[]Frame, proto any, bitOffset int, baseFields []FrameFiel
 	*finfo = Frame{
 		PacketBitOffset: bitOffset,
 		Protocol:        proto,
-		Fields:          finfo.Fields[:0],
+		Fields:          append(finfo.Fields[:0], baseFields...),
 		Errors:          finfo.Errors[:0],
 	}
-	finfo.Fields = append(finfo.Fields, baseFields...)
 	return finfo
 }
 
