@@ -15,8 +15,9 @@ const (
 )
 
 var (
-	memstats   runtime.MemStats
-	lastAllocs uint64
+	memstats    runtime.MemStats
+	lastAllocs  uint64
+	lastMallocs uint64
 
 	timebuf [len(timefmt) * 2]byte
 )
@@ -30,8 +31,10 @@ func LogAttrs(_ *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) 
 	n := len(now.AppendFormat(timebuf[:0], timefmt))
 	runtime.ReadMemStats(&memstats)
 	if memstats.TotalAlloc != lastAllocs {
-		print("[ALLOC] inc=", int64(memstats.TotalAlloc)-int64(lastAllocs))
-		print(" tot=", memstats.TotalAlloc, " seqs")
+		print("[ALLOC] seqs inc=", int64(memstats.TotalAlloc)-int64(lastAllocs))
+		print(" n=", int64(memstats.Mallocs)-int64(lastMallocs))
+		print(" heap=", memstats.HeapAlloc)
+		print(" tot=", memstats.TotalAlloc)
 		println()
 	}
 	print("time=", unsafe.String(&timebuf[0], n), " ")
@@ -60,5 +63,6 @@ func LogAttrs(_ *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) 
 	runtime.ReadMemStats(&memstats)
 	if memstats.TotalAlloc != lastAllocs {
 		lastAllocs = memstats.TotalAlloc
+		lastMallocs = memstats.Mallocs
 	}
 }
