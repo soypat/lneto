@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 
 	"github.com/soypat/lneto"
@@ -60,8 +61,10 @@ func (pc *PacketBreakdown) initFrames() []Frame {
 }
 
 func (pc *PacketBreakdown) CaptureEthernet(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
+	debuglog("pcap:eth:start")
 	if dst == nil {
 		dst = pc.initFrames()
+		debuglog("pcap:eth:initframes")
 	}
 	if bitOffset%8 != 0 {
 		return dst, errors.New("ethernet must be parsed at byte boundary")
@@ -74,8 +77,10 @@ func (pc *PacketBreakdown) CaptureEthernet(dst []Frame, pkt []byte, bitOffset in
 	if pc.validator().HasError() {
 		return dst, pc.validator().ErrPop()
 	}
+	debuglog("pcap:eth:validated")
 
 	finfo := reclaimFrame(&dst, "Ethernet", bitOffset, baseEthernetFields[:])
+	debuglog("pcap:eth:reclaimed")
 	etype := efrm.EtherTypeOrSize()
 	end := 14*octet + bitOffset
 	if etype.IsSize() {
@@ -98,10 +103,12 @@ func (pc *PacketBreakdown) CaptureEthernet(dst []Frame, pkt []byte, bitOffset in
 	default:
 		reclaimRemainingFrame(&dst, "Unknown Ethertype", FieldClassPayload, end, octet*len(pkt))
 	}
+	debuglog("pcap:eth:done")
 	return dst, err
 }
 
 func (pc *PacketBreakdown) CaptureARP(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
+	debuglog("pcap:arp:start")
 	if bitOffset%8 != 0 {
 		return dst, errors.New("ARP must be parsed at byte boundary")
 	}
@@ -148,6 +155,7 @@ func (pc *PacketBreakdown) CaptureARP(dst []Frame, pkt []byte, bitOffset int) ([
 }
 
 func (pc *PacketBreakdown) CaptureIPv6(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
+	debuglog("pcap:ipv6:start")
 	if bitOffset%8 != 0 {
 		return dst, errors.New("IPv6 must be parsed at byte boundary")
 	}
@@ -160,6 +168,7 @@ func (pc *PacketBreakdown) CaptureIPv6(dst []Frame, pkt []byte, bitOffset int) (
 		return dst, pc.validator().ErrPop()
 	}
 	reclaimFrame(&dst, "IPv6", bitOffset, baseIPv6Fields[:])
+	debuglog("pcap:ipv6:reclaimed")
 	proto := ifrm6.NextHeader()
 	end := bitOffset + 40*octet
 	var protoErrs []error
@@ -190,6 +199,7 @@ func (pc *PacketBreakdown) CaptureIPv6(dst []Frame, pkt []byte, bitOffset int) (
 }
 
 func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
+	debuglog("pcap:ipv4:start")
 	if bitOffset%8 != 0 {
 		return dst, errors.New("IPv4 must be parsed at byte boundary")
 	}
@@ -201,9 +211,11 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 	if pc.validator().HasError() {
 		return dst, pc.validator().ErrPop()
 	}
+	debuglog("pcap:ipv4:validated")
 	// limit packet to the actual IPv4 frame size
 	pkt = pkt[:bitOffset/8+int(ifrm4.TotalLength())]
 	finfo := reclaimFrame(&dst, "IPv4", bitOffset, baseIPv4Fields[:])
+	debuglog("pcap:ipv4:reclaimed")
 	options := ifrm4.Options()
 	if len(options) > 0 {
 		finfo.Fields = append(finfo.Fields, FrameField{
@@ -215,6 +227,7 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 	if ifrm4.CalculateHeaderCRC() != 0 {
 		finfo.Errors = append(finfo.Errors, lneto.ErrBadCRC)
 	}
+	debuglog("pcap:ipv4:crc-done")
 	proto := ifrm4.Protocol()
 	end := bitOffset + octet*ifrm4.HeaderLength()
 	var protoErrs []error
@@ -256,10 +269,12 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 			}
 		}
 	}
+	debuglog("pcap:ipv4:proto-crc-done")
 	return pc.captureIPProto(proto, dst, pkt, end, protoErrs...)
 }
 
 func (pc *PacketBreakdown) captureIPProto(proto lneto.IPProto, dst []Frame, pkt []byte, bitOffset int, ipProtoErrs ...error) (_ []Frame, err error) {
+	debuglog("pcap:ipproto:start")
 	nextFrame := len(dst)
 	switch proto {
 	case lneto.IPProtoTCP:
@@ -279,10 +294,12 @@ func (pc *PacketBreakdown) captureIPProto(proto lneto.IPProto, dst []Frame, pkt 
 	if len(ipProtoErrs) > 0 && len(dst) > nextFrame {
 		dst[nextFrame].Errors = append(dst[nextFrame].Errors, ipProtoErrs...)
 	}
+	debuglog("pcap:ipproto:done")
 	return dst, err
 }
 
 func (pc *PacketBreakdown) CaptureTCP(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
+	debuglog("pcap:tcp:start")
 	if bitOffset%8 != 0 {
 		return dst, errors.New("TCP must be parsed at byte boundary")
 	}
@@ -294,8 +311,10 @@ func (pc *PacketBreakdown) CaptureTCP(dst []Frame, pkt []byte, bitOffset int) ([
 	if pc.validator().HasError() {
 		return dst, pc.validator().ErrPop()
 	}
+	debuglog("pcap:tcp:validated")
 	end := bitOffset + octet*tfrm.HeaderLength()
 	finfo := reclaimFrame(&dst, "TCP", bitOffset, baseTCPFields[:])
+	debuglog("pcap:tcp:reclaimed")
 	options := tfrm.Options()
 	if len(options) > 0 {
 		finfo.Fields = append(finfo.Fields, FrameField{
@@ -306,15 +325,19 @@ func (pc *PacketBreakdown) CaptureTCP(dst []Frame, pkt []byte, bitOffset int) ([
 	}
 	payload := tfrm.Payload()
 	if len(payload) > 0 {
+		debuglog("pcap:tcp:http-start")
 		dst, err = pc.CaptureHTTP(dst, pkt, end)
+		debuglog("pcap:tcp:http-done")
 		if err != nil {
 			reclaimRemainingFrame(&dst, unknownPayloadProto, FieldClassPayload, end, octet*len(pkt))
 		}
 	}
+	debuglog("pcap:tcp:done")
 	return dst, nil
 }
 
 func (pc *PacketBreakdown) CaptureUDP(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
+	debuglog("pcap:udp:start")
 	if bitOffset%8 != 0 {
 		return dst, errors.New("UDP must be parsed at byte boundary")
 	}
@@ -327,6 +350,7 @@ func (pc *PacketBreakdown) CaptureUDP(dst []Frame, pkt []byte, bitOffset int) ([
 		return dst, pc.validator().ErrPop()
 	}
 	reclaimFrame(&dst, "UDP", bitOffset, baseUDPFields[:])
+	debuglog("pcap:udp:reclaimed")
 	end := bitOffset + 8*octet
 	payload := ufrm.Payload()
 	dstport := ufrm.DestinationPort()
@@ -341,10 +365,12 @@ func (pc *PacketBreakdown) CaptureUDP(dst []Frame, pkt []byte, bitOffset int) ([
 	if err != nil {
 		reclaimRemainingFrame(&dst, unknownPayloadProto, FieldClassPayload, end, octet*len(pkt))
 	}
+	debuglog("pcap:udp:done")
 	return dst, nil
 }
 
 func (pc *PacketBreakdown) CaptureICMPv4(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
+	debuglog("pcap:icmp:start")
 	if bitOffset%8 != 0 {
 		return dst, errors.New("ICMPv4 must be parsed at byte boundary")
 	}
@@ -535,9 +561,9 @@ func httpBodyClass(contentType, body []byte) FieldClass {
 		switch {
 		case bytes.HasPrefix(mediaType, []byte("text/")):
 			return FieldClassText
-		case bytes.Equal(mediaType, []byte("application/json")),
-			bytes.Equal(mediaType, []byte("application/javascript")),
-			bytes.Equal(mediaType, []byte("application/xml")):
+		case internal.BytesEqual(mediaType, []byte("application/json")),
+			internal.BytesEqual(mediaType, []byte("application/javascript")),
+			internal.BytesEqual(mediaType, []byte("application/xml")):
 			return FieldClassText
 		case bytes.HasSuffix(mediaType, []byte("+json")),
 			bytes.HasSuffix(mediaType, []byte("+xml")):
@@ -556,6 +582,7 @@ func httpBodyClass(contentType, body []byte) FieldClass {
 }
 
 func (pc *PacketBreakdown) CaptureHTTP(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
+	debuglog("pcap:http:start")
 	const httpProtocol = "HTTP"
 	if bitOffset%8 != 0 {
 		return dst, errors.New("HTTP must be parsed at byte boundary")
@@ -572,6 +599,7 @@ func (pc *PacketBreakdown) CaptureHTTP(dst []Frame, pkt []byte, bitOffset int) (
 	if err != nil {
 		return dst, err
 	}
+	debuglog("pcap:http:parsed")
 	hdrLen := pc.hdr.BufferParsed()
 	body, _ := pc.hdr.Body()
 	bodyClass := httpBodyClass(pc.hdr.Get("Content-Type"), body)
@@ -590,6 +618,7 @@ func (pc *PacketBreakdown) CaptureHTTP(dst []Frame, pkt []byte, bitOffset int) (
 			BitLength:      len(body) * octet,
 		},
 	)
+	debuglog("pcap:http:done")
 	return dst, nil
 }
 
@@ -1319,4 +1348,12 @@ func reclaimRemainingFrame(dst *[]Frame, proto string, class FieldClass, pktBitO
 		Class:     class,
 		BitLength: pktBitLen - pktBitOffset,
 	})
+}
+
+const enableDebug = false
+
+func debuglog(msg string) {
+	if enableDebug {
+		internal.LogAttrs(nil, slog.LevelDebug, msg)
+	}
 }

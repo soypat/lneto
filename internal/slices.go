@@ -1,5 +1,7 @@
 package internal
 
+import "unsafe"
+
 // IsZeroed returns true if all arguments are set to their zero value.
 func IsZeroed[T comparable](a ...T) bool {
 	var z T
@@ -64,4 +66,16 @@ func SliceReclaim[T any](ptr *[]T) *T {
 		*ptr = b[:n+1]
 	}
 	return &(*ptr)[n]
+}
+
+// BytesEqual is heapless replacement of [bytes.Equal] since it allocates in tinygo.
+// https://github.com/tinygo-org/tinygo/issues/4045
+func BytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	if len(a) == 0 {
+		return true
+	}
+	return unsafe.String(&a[0], len(a)) == unsafe.String(&b[0], len(b))
 }

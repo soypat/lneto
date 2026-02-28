@@ -203,6 +203,8 @@ func (flags Flags) String() string {
 		return "[FIN,ACK]"
 	case pshack:
 		return "[PSH,ACK]"
+	case FlagFIN | FlagPSH | FlagACK:
+		return "[FIN,PSH,ACK]"
 	case FlagACK:
 		return "[ACK]"
 	case FlagSYN:

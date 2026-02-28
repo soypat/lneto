@@ -15,10 +15,6 @@ const (
 )
 
 var (
-	memstats    runtime.MemStats
-	lastAllocs  uint64
-	lastMallocs uint64
-
 	timebuf [len(timefmt) * 2]byte
 )
 
@@ -29,14 +25,7 @@ func LogEnabled(l *slog.Logger, lvl slog.Level) bool {
 func LogAttrs(_ *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) {
 	now := time.Now()
 	n := len(now.AppendFormat(timebuf[:0], timefmt))
-	runtime.ReadMemStats(&memstats)
-	if memstats.TotalAlloc != lastAllocs {
-		print("[ALLOC] seqs inc=", int64(memstats.TotalAlloc)-int64(lastAllocs))
-		print(" n=", int64(memstats.Mallocs)-int64(lastMallocs))
-		print(" heap=", memstats.HeapAlloc)
-		print(" tot=", memstats.TotalAlloc)
-		println()
-	}
+	LogAllocs(msg)
 	print("time=", unsafe.String(&timebuf[0], n), " ")
 	if level == LevelTrace {
 		print("TRACE ")
@@ -60,9 +49,12 @@ func LogAttrs(_ *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) 
 		}
 	}
 	println()
+	allocmu.Lock()
 	runtime.ReadMemStats(&memstats)
-	if memstats.TotalAlloc != lastAllocs {
-		lastAllocs = memstats.TotalAlloc
-		lastMallocs = memstats.Mallocs
+	if lastAllocs != memstats.TotalAlloc {
+		print("alloc increase in heaplog")
 	}
+	lastAllocs = memstats.TotalAlloc
+	lastMallocs = memstats.Mallocs
+	allocmu.Unlock()
 }

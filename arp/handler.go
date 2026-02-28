@@ -1,7 +1,6 @@
 package arp
 
 import (
-	"bytes"
 	"errors"
 	"log/slog"
 
@@ -101,7 +100,7 @@ func (h *Handler) expectSize() int {
 
 func (h *Handler) QueryResult(protoAddr []byte) (hwAddr []byte, err error) {
 	for i := range h.queries {
-		if bytes.Equal(protoAddr, h.queries[i].protoaddr) {
+		if internal.BytesEqual(protoAddr, h.queries[i].protoaddr) {
 			if !h.queries[i].querysent {
 				return nil, errors.New("query not yet sent")
 			}
@@ -118,7 +117,7 @@ func (h *Handler) QueryResult(protoAddr []byte) (hwAddr []byte, err error) {
 func (h *Handler) DiscardQuery(protoAddr []byte) error {
 	for i := range h.queries {
 		q := &h.queries[i]
-		if bytes.Equal(protoAddr, q.protoaddr) {
+		if internal.BytesEqual(protoAddr, q.protoaddr) {
 			q.destroy()
 			return nil
 		}
@@ -240,7 +239,7 @@ func (h *Handler) Demux(ethFrame []byte, frameOffset int) error {
 	switch afrm.Operation() {
 	case OpRequest:
 		_, protoaddr := afrm.Target()
-		if !bytes.Equal(protoaddr, h.ourProtoAddr) {
+		if !internal.BytesEqual(protoaddr, h.ourProtoAddr) {
 			return nil // Not for us.
 		}
 		h.pendingResponse = h.pendingResponse[:len(h.pendingResponse)+1] // Extend pending buffer.
@@ -251,7 +250,7 @@ func (h *Handler) Demux(ethFrame []byte, frameOffset int) error {
 		for i := range h.queries {
 			q := &h.queries[i]
 			mac := q.response()
-			if mac == nil && bytes.Equal(q.protoaddr, protoaddr) {
+			if mac == nil && internal.BytesEqual(q.protoaddr, protoaddr) {
 				q.hwaddr = append(q.hwaddr, hwaddr...)
 				if q.dstHw != nil {
 					if !internal.IsZeroed(q.dstHw...) {

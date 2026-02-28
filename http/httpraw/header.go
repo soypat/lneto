@@ -2,7 +2,6 @@ package httpraw
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"slices"
 	"unsafe"
@@ -76,7 +75,9 @@ func (h *Header) ParseBytes(asResponse bool, b []byte) error {
 // Parse parses accumulated data in-place with no copying. One can set HTTP header data buffer with [Header.Reset].
 // It fails if HTTP data is incomplete.
 func (h *Header) Parse(asResponse bool) error {
+	debuglog("http:parse:reset")
 	h.Reset(h.hbuf.buf)
+	debuglog("http:parse:start")
 	return h.parse(asResponse)
 }
 
@@ -98,7 +99,7 @@ func (h *Header) Parse(asResponse bool) error {
 //	}
 func (h *Header) TryParse(asResponse bool) (needMoreData bool, err error) {
 	if h.flags.hasAny(flagDoneParsingHeader) {
-		return false, errors.New("TryParse called after header parsed")
+		return false, errAlreadyParsed
 	} else if h.flags.hasAny(flagMangledBuffer) {
 		return false, errMangledBuffer
 	}
@@ -226,15 +227,18 @@ func (h *Header) Reset(buf []byte) {
 		panic("small buffer and flagNoBufferGrow set")
 	}
 	const persistentFlags = flagNoBufferGrow
+	debuglog("http:reset:hbuf")
 	h.hbuf.reset(buf)
 	*h = Header{
 		hbuf:  h.hbuf,
 		flags: h.flags & persistentFlags,
 	}
+	debuglog("http:reset:done")
 }
 
 // Body returns the surplus data following headers. It is only valid as long as Parse* or Reset methods are not called.
 func (h *Header) Body() ([]byte, error) {
+	debuglog("http:body")
 	if h.flags.hasAny(flagMangledBuffer) {
 		return nil, errMangledBuffer
 	} else if h.flags.hasAny(flagDoneParsingHeader) {
@@ -243,12 +247,14 @@ func (h *Header) Body() ([]byte, error) {
 	return nil, errUnparsed
 }
 
-// SetBytes is equivalent to [Header.Set] but with a []byte value. Calling SetBytes Mangles the buffer.
+// SetBytes is equivalent to [Header.Set] but with a []byte value. Does not keep reference to value slice.
+// Calling SetBytes Mangles the buffer.
 func (h *Header) SetBytes(key string, value []byte) {
 	h.Set(key, unsafe.String(&value[0], len(value)))
 }
 
-// Set sets a key-value pair in the HTTP header. Calling Set mangles the buffer.
+// Set sets a key-value pair in the HTTP header.
+// Calling Set mangles the buffer.
 func (h *Header) Set(key, value string) {
 	hb := &h.hbuf
 	var useKv *argsKV
@@ -275,10 +281,13 @@ func (h *Header) Set(key, value string) {
 
 // Get gets the first value of a key found in the headers. Use [Header.ForEach] to find multiple values corresponding to same key.
 func (h *Header) Get(key string) []byte {
+	debuglog("http:get:start")
 	kv := h.peekHeader(key)
 	if kv.isValid() {
+		debuglog("http:get:found")
 		return h.hbuf.musttoken(kv.value)
 	}
+	debuglog("http:get:notfound")
 	return nil
 }
 
@@ -344,7 +353,7 @@ func (h *Header) AppendRequest(dst []byte) ([]byte, error) {
 	if h.flags.hasAny(flagOOMReached) {
 		return dst, errOOM
 	} else if h.requestURI.len == 0 || h.method.len == 0 {
-		return dst, errors.New("need method/request URI to create request header")
+		return dst, errNeedMethodURI
 	} else if len(proto) == 0 {
 		return dst, errNoProto
 	}
@@ -374,7 +383,7 @@ func (h *Header) AppendResponse(dst []byte) ([]byte, error) {
 	if h.flags.hasAny(flagOOMReached) {
 		return dst, errOOM
 	} else if h.statusCode.len == 0 || h.statusText.len == 0 {
-		return dst, errors.New("invalid status code or text")
+		return dst, errBadStatusCodeTxt
 	} else if len(proto) == 0 {
 		return dst, errNoProto
 	}
