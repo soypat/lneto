@@ -3,8 +3,6 @@ package pcap
 import (
 	"encoding/binary"
 	"encoding/hex"
-	"fmt"
-	"errors"
 	"math"
 	"net/netip"
 	"slices"
@@ -14,6 +12,7 @@ import (
 	_ "time"
 	"unsafe"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/ntp"
 	"github.com/soypat/lneto/tcp"

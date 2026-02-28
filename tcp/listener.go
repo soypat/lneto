@@ -1,8 +1,6 @@
 package tcp
 
 import (
-	"bytes"
-	"errors"
 	"log/slog"
 	"net"
 	"sync"

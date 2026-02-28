@@ -1,8 +1,6 @@
 package arp
 
 import (
-	"bytes"
-	"errors"
 	"log/slog"
 
 	"github.com/soypat/lneto"

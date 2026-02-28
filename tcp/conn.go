@@ -15,12 +15,8 @@ import (
 )
 
 var (
-	errDeadlineExceeded    = os.ErrDeadlineExceeded
-	errNoRemoteAddr        = errors.New("tcp: no remote address established")
-	errInvalidIP           = errors.New("tcp: invalid IP")
-	errMismatchedIPVersion = errors.New("mismatched IP version")
-	errBadDemuxOffset      = errors.New("bad offset in TCPConn.Recv")
-	errIPAddrMismatch      = errors.New("IP addr mismatch on TCPConn")
+	errDeadlineExceeded = os.ErrDeadlineExceeded
+	errNoRemoteAddr     = errors.New("tcp: no remote address established")
 )
 
 // Conn builds on the [Handler] abstraction and adds IP header knowledge, time management, and familiar user facing API
@@ -336,7 +332,7 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 	if err != nil {
 		return err
 	}
-	if conn.isRaddrSet() && !bytes.Equal(conn.remoteAddr, raddr) {
+	if conn.isRaddrSet() && !internal.BytesEqual(conn.remoteAddr, raddr) {
 		return lneto.ErrMismatch
 	}
 	conn.trace("tcpconn.Recv", slog.Uint64("lport", uint64(conn.h.LocalPort())), slog.Uint64("rport", uint64(conn.h.remotePort)))

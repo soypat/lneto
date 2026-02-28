@@ -171,13 +171,11 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	return nil
 }
 
-var errInvalidIPAddr error = lneto.ErrInvalidAddr
-
 func (s *StackAsync) resetARP() error {
 	mac := s.link.HardwareAddr6()
 	addr := s.ip.Addr()
 	if !addr.IsValid() {
-		return errInvalidIPAddr
+		return lneto.ErrInvalidAddr
 	}
 	proto := ethernet.TypeIPv4
 	if addr.Is6() {
