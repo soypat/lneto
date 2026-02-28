@@ -210,7 +210,13 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		}
 	}
 	if h.logenabled(internal.LevelTrace) {
-		h.trace("tcp.Handler:rx-done", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("remoteport", uint64(remotePort)), slog.String("seg", segIncoming.String()))
+		h.trace("tcp.Handler:rx-done",
+			slog.Uint64("lport", uint64(h.localPort)),
+			slog.Uint64("rport", uint64(remotePort)),
+			slog.Uint64("seg.seq", uint64(segIncoming.SEQ)),
+			slog.Uint64("seg.ack", uint64(segIncoming.ACK)),
+			slog.Uint64("seg.datalen", uint64(segIncoming.DATALEN)),
+		)
 	}
 	return nil
 }
@@ -230,15 +236,19 @@ func (h *Handler) Close() error {
 // It does no IP interfacing or CRC calculation of packet, which is left to the caller to perform.
 // The returned integer is the length written to the argument buffer.
 func (h *Handler) Send(b []byte) (int, error) {
-	h.trace("tcp.Handler:start", slog.Uint64("port", uint64(h.localPort)))
 	if h.IsTxOver() {
 		return 0, net.ErrClosed
+	}
+	awaitingSyn := h.AwaitingSynSend()
+	buffered := h.bufTx.BufferedUnsent()
+	if !awaitingSyn && buffered == 0 && !h.closing && !h.scb.HasPending() {
+		// Early nop short circuit.
+		return 0, nil
 	}
 	tfrm, err := NewFrame(b)
 	if err != nil {
 		return 0, err
 	}
-	buffered := h.bufTx.BufferedUnsent()
 	if buffered == 0 && h.closing {
 		// If Close called and no more data to be sent, terminate connection!
 		h.closing = false
@@ -252,7 +262,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 	offset := uint8(5)
 	mss := uint16(len(b) - sizeHeaderTCP)
 	var segment Segment
-	if h.AwaitingSynSend() {
+	if awaitingSyn {
 		// Handling init syn segment.
 		segment = ClientSynSegment(h.bufTx.iss, Size(h.bufRx.Size()))
 		h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)

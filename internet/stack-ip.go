@@ -231,3 +231,11 @@ func (l logger) debug(msg string, attrs ...slog.Attr) {
 func (l logger) trace(msg string, attrs ...slog.Attr) {
 	internal.LogAttrs(l.log, internal.LevelTrace, msg, attrs...)
 }
+
+const enableAllocLog = false
+
+func debugLog(msg string) {
+	if enableAllocLog {
+		internal.LogAllocs(msg)
+	}
+}

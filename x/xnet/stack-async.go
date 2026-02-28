@@ -2,6 +2,7 @@ package xnet
 
 import (
 	"errors"
+	"log/slog"
 	"net/netip"
 	"sync"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/soypat/lneto/dhcpv4"
 	"github.com/soypat/lneto/dns"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internet"
 	"github.com/soypat/lneto/ntp"
 	"github.com/soypat/lneto/tcp"
@@ -565,4 +567,29 @@ func addr4(addr [4]byte, ok bool) netip.Addr {
 		return netip.Addr{}
 	}
 	return netip.AddrFrom4(addr)
+}
+
+// Debug prints debugging information. Very useful for users when coupled with
+// the debugheaplog build tag. See [internal.LogAttrs] debugheaplog version.
+//
+//	go build -tags=debugheaplog ./yourprogram
+func (s *StackAsync) Debug(msg string) {
+	internal.LogAttrs(slog.Default(), slog.LevelDebug, "stackasync",
+		slog.String("umsg", msg),
+		slog.Uint64("sent", s.totalsent),
+		slog.Uint64("recv", s.totalrecv),
+	)
+}
+
+// DebugErr prints debugging and error info. Very useful for users when coupled with
+// the debugheaplog build tag. See [internal.LogAttrs] debugheaplog version.
+//
+//	go build -tags=debugheaplog ./yourprogram
+func (s *StackAsync) DebugErr(msg, err string) {
+	internal.LogAttrs(slog.Default(), slog.LevelError, "stackasync",
+		slog.String("umsg", msg),
+		slog.String("err", err),
+		slog.Uint64("sent", s.totalsent),
+		slog.Uint64("recv", s.totalrecv),
+	)
 }

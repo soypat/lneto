@@ -7,6 +7,15 @@ import (
 	"github.com/soypat/lneto/internal"
 )
 
+var (
+	errPacketQueueFull  = errors.New("packet queue full")
+	errQueuedPacketsLEZ = errors.New("queued packets <=0")
+	errInvalidBufSize   = errors.New("invalid buffer size")
+	errSeqLessThanLast  = errors.New("sequence number less than last sequence number")
+	errNoPacketToAck    = errors.New("no packet to ack")
+	errAckUnsent        = errors.New("ack of unsent packet")
+)
+
 const (
 	// this must be at least 2 for buffer to work.
 	minBufferSize = 2

@@ -2,6 +2,7 @@ package tcp
 
 import (
 	"bytes"
+	"errors"
 	"log/slog"
 	"net"
 	"sync"
@@ -292,7 +293,7 @@ func getConn(conns []handler, remotePort uint16, remoteAddr []byte) int {
 		}
 		gotPort := conn.RemotePort()
 		gotaddr := conn.RemoteAddr()
-		if remotePort == gotPort && bytes.Equal(remoteAddr, gotaddr) {
+		if remotePort == gotPort && internal.BytesEqual(remoteAddr, gotaddr) {
 			return i
 		}
 	}

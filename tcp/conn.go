@@ -1,7 +1,6 @@
 package tcp
 
 import (
-	"bytes"
 	"errors"
 	"log/slog"
 	"net"
@@ -16,8 +15,12 @@ import (
 )
 
 var (
-	errDeadlineExceeded = os.ErrDeadlineExceeded
-	errNoRemoteAddr     = errors.New("tcp: no remote address established")
+	errDeadlineExceeded    = os.ErrDeadlineExceeded
+	errNoRemoteAddr        = errors.New("tcp: no remote address established")
+	errInvalidIP           = errors.New("tcp: invalid IP")
+	errMismatchedIPVersion = errors.New("mismatched IP version")
+	errBadDemuxOffset      = errors.New("bad offset in TCPConn.Recv")
+	errIPAddrMismatch      = errors.New("IP addr mismatch on TCPConn")
 )
 
 // Conn builds on the [Handler] abstraction and adds IP header knowledge, time management, and familiar user facing API
@@ -169,7 +172,7 @@ func (conn *Conn) OpenListen(localPort uint16, iss Value) error {
 func (conn *Conn) Close() error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	conn.trace("TCPConn.Close", slog.Uint64("lport", uint64(conn.h.localPort)))
+	conn.trace("TCPConn.Close", slog.Uint64("lport", uint64(conn.h.localPort)), slog.Uint64("rport", uint64(conn.h.remotePort)))
 	return conn.h.Close()
 }
 
@@ -177,7 +180,7 @@ func (conn *Conn) Close() error {
 func (conn *Conn) Abort() {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	conn.trace("TCPConn.Abort", slog.Uint64("lport", uint64(conn.h.localPort)))
+	conn.trace("TCPConn.Abort", slog.Uint64("lport", uint64(conn.h.localPort)), slog.Uint64("rport", uint64(conn.h.remotePort)))
 	conn.h.Abort()
 	conn.reset(conn.h)
 }
@@ -364,11 +367,11 @@ func (conn *Conn) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 	} else if len(raddr) != len(conn.remoteAddr) {
 		return 0, lneto.ErrMismatchLen
 	}
-	conn.trace("TCPConn.encaps", slog.Uint64("lport", uint64(conn.h.LocalPort())), slog.Uint64("rport", uint64(conn.h.remotePort)))
 	n, err = conn.h.Send(carrierData[offsetToFrame:])
-	if err != nil {
+	if err != nil || n == 0 {
 		return 0, err
 	}
+	conn.trace("TCPConn.encaps", slog.Uint64("lport", uint64(conn.h.LocalPort())), slog.Uint64("rport", uint64(conn.h.remotePort)))
 	err = internal.SetIPAddrs(ipFrame, conn.ipID, nil, conn.remoteAddr)
 	if err != nil {
 		return 0, err

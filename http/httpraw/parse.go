@@ -3,8 +3,11 @@ package httpraw
 import (
 	"bytes"
 	"errors"
+	"log/slog"
 	"slices"
 	"unsafe"
+
+	"github.com/soypat/lneto/internal"
 )
 
 var (
@@ -16,8 +19,15 @@ var (
 	errOOM         = errors.New("httpraw: buffer out of memory")
 	// Header.Set and Header.Add mangles the buffer.
 	// Call them after retrieving the Body. Do not call them before parsing the header (why would you even do that?).
-	errMangledBuffer = errors.New("httpraw: mangled buffer")
-	errNoCookies     = errors.New("no cookie found")
+	errMangledBuffer    = errors.New("httpraw: mangled buffer")
+	errNoCookies        = errors.New("no cookie found")
+	errEmptyURI         = errors.New("empty URI")
+	errLongStatusCode   = errors.New("long status code")
+	errBadStatusCode    = errors.New("invalid status code")
+	errAlreadyParsed    = errors.New("TryParse called after header parsed")
+	errNeedMethodURI    = errors.New("need method/request URI to create request header")
+	errBadStatusCodeTxt = errors.New("invalid status code or text")
+	errCookiesParsed    = errors.New("cookies already parsed, reset before parsing again")
 )
 
 type headerBuf struct {
@@ -27,6 +37,20 @@ type headerBuf struct {
 	off int
 	// args contains key-value store.
 	headers []argsKV
+}
+
+// reset sets the buffer data and discards all parsed data.
+func (h *headerBuf) reset(buf []byte) {
+	if buf == nil {
+		buf = h.buf[:0] // Reuse buffer but discard raw data on nil input.
+	}
+	if cap(h.headers) == 0 {
+		h.headers = make([]argsKV, 16)
+	}
+	*h = headerBuf{
+		buf:     buf,
+		headers: h.headers[:0],
+	}
 }
 
 type tokint = uint16
@@ -56,11 +80,16 @@ type scannerState struct {
 }
 
 func (h *Header) parse(asResponse bool) (err error) {
+	debuglog("http:firstline:start")
 	err = h.parseFirstLine(asResponse)
 	if err != nil {
+		debuglog("http:firstline:err")
 		return err
 	}
-	return h.parseNextHeaders()
+	debuglog("http:firstline:done")
+	err = h.parseNextHeaders()
+	debuglog("http:headers:done")
+	return err
 }
 
 func (h *Header) parseFirstLine(asResponse bool) (err error) {
@@ -90,9 +119,11 @@ func (hb *headerBuf) readFromBytes(b []byte) {
 func (hb *headerBuf) free() int { return cap(hb.buf) - len(hb.buf) }
 
 func (hb *headerBuf) parseNextHeaders(ss *scannerState) {
+	debuglog("http:nexthdr:loop")
 	for kv := hb.next(ss); kv.isValid(); kv = hb.next(ss) {
-		hb.headers = append(hb.headers, kv)
+		hb.headers = append(hb.headers, kv) // TODO(HEAP): inc=16B slice growth when capacity exceeded
 	}
+	debuglog("http:nexthdr:done")
 }
 
 func (hb *headerBuf) offBuf() []byte {
@@ -127,6 +158,7 @@ func (hb *headerBuf) scanUntilByte(c byte) []byte {
 }
 
 func (hb *headerBuf) parseFirstLineRequest(initFlags flags) (method, uri, proto headerSlice, flags flags, err error) {
+	debuglog("http:req:scan")
 	hb.off = 0 // Parsing first line resets offset.
 	var b []byte
 	hb.skipLeadingCRLF()
@@ -135,6 +167,7 @@ func (hb *headerBuf) parseFirstLineRequest(initFlags flags) (method, uri, proto 
 	if len(b) < 5 {
 		return method, uri, proto, flags, errNeedMore
 	}
+	debuglog("http:req:parse")
 
 	methodEnd := max(0, bytes.IndexByte(b, ' '))
 	reqURIEnd := bytes.IndexByte(b[methodEnd+1:], ' ')
@@ -145,7 +178,7 @@ func (hb *headerBuf) parseFirstLineRequest(initFlags flags) (method, uri, proto 
 			flags |= flagNoHTTP11
 		}
 	} else if reqURIEnd == 0 {
-		return method, uri, proto, flags, errors.New("empty URI")
+		return method, uri, proto, flags, errEmptyURI
 	} else {
 		// No version provided.
 		reqURIEnd = methodEnd + 1
@@ -158,6 +191,7 @@ func (hb *headerBuf) parseFirstLineRequest(initFlags flags) (method, uri, proto 
 }
 
 func (hb *headerBuf) parseFirstLineResponse(initFlags flags) (statusCode, statusText headerSlice, flags flags, err error) {
+	debuglog("http:resp:scan")
 	hb.off = 0 // Parsing first line resets offset.
 	var b []byte
 	hb.skipLeadingCRLF()
@@ -166,23 +200,23 @@ func (hb *headerBuf) parseFirstLineResponse(initFlags flags) (statusCode, status
 	if len(b) < 5 {
 		return statusCode, statusText, flags, errNeedMore
 	}
+	debuglog("http:resp:parse")
 
 	statusCodeEnd := max(0, bytes.IndexByte(b, ' '))
-	if statusCodeEnd < 0 {
-		return statusCode, statusText, flags, errors.New("missing status code")
-	}
 	code := b[:statusCodeEnd]
 	text := b[statusCodeEnd:]
 	if len(code) > 3 {
-		return statusCode, statusText, flags, errors.New("long status code")
+		return statusCode, statusText, flags, errLongStatusCode
 	}
 	for i := range code {
 		if code[i] > '9' || code[i] < '0' {
-			return statusCode, statusText, flags, errors.New("invalid status code")
+			debuglog("http:resp:invalid-code")
+			return statusCode, statusText, flags, errBadStatusCode
 		}
 	}
 	statusCode = hb.slice(code)
 	statusText = hb.slice(text)
+	debuglog("http:resp:done")
 	return statusCode, statusText, flags, nil
 }
 
@@ -360,17 +394,6 @@ func (hb *headerBuf) next(ss *scannerState) argsKV {
 	return resultKV
 }
 
-// reset sets the buffer data and discards all parsed data.
-func (h *headerBuf) reset(buf []byte) {
-	if buf == nil {
-		buf = h.buf[:0] // Reuse buffer but discard raw data on nil input.
-	}
-	*h = headerBuf{
-		buf:     buf,
-		headers: h.headers[:0],
-	}
-}
-
 // ConnectionClose returns true if 'Connection: close' header is set or if a invalid header was found.
 func (h *Header) ConnectionClose() bool {
 	closed := h.flags.hasAny(flagConnClose) ||
@@ -400,5 +423,13 @@ func bytes2tok(buf, value []byte) headerSlice {
 	return headerSlice{
 		start: tokint(off - base),
 		len:   tokint(len(value)),
+	}
+}
+
+const enableDebug = false
+
+func debuglog(msg string) {
+	if enableDebug {
+		internal.LogAttrs(nil, slog.LevelDebug, msg)
 	}
 }

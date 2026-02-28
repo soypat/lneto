@@ -21,6 +21,7 @@ func (s *cbnode) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) 
 }
 
 func (s *cbnode) Demux(carrierData []byte, frameOffset int) error {
+	debugLog("cbnode:pre-demux")
 	return s._demux(carrierData, frameOffset)
 }
 

@@ -134,7 +134,12 @@ func (snd *sendSpace) inFlight() Size {
 
 // maxSend returns maximum segment datalength receivable by remote peer.
 func (snd *sendSpace) maxSend() Size {
-	return snd.WND - snd.inFlight()
+	if inf := snd.inFlight(); inf >= snd.WND {
+		// Guard uint32 underflow when window shrinks below inflight.
+		return 0
+	} else {
+		return snd.WND - inf
+	}
 }
 
 // recvSpace contains Receive Sequence Space data. Its sequence numbers correspond to remote data.
@@ -250,6 +255,13 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 		tcb.traceSeg("tcb:rcv.reject", seg)
 		tcb.logerr("tcb:rcv.reject", slog.String("err", err.Error()))
 		return err
+	}
+
+	// RFC 9293 §3.10.7.4: SYN on synchronized connection → challenge ACK.
+	if seg.Flags.HasAny(FlagSYN) && !tcb._state.IsPreestablished() {
+		tcb.challengeAck = true
+		tcb.pending[0] |= FlagACK
+		return errDropSegment
 	}
 
 	prevNxt := tcb.snd.NXT
@@ -402,10 +414,11 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	flags := seg.Flags
 	hasAck := flags.HasAll(FlagACK)
-	// Short circuit SEQ checks if SYN present since the incoming segment initialize1s connection.
-	checkSEQ := !flags.HasAny(FlagSYN)
-	established := tcb._state == StateEstablished
+	// Short circuit SEQ checks if SYN present in pre-established states only.
+	// In synchronized states SYN must pass normal SEQ validation (RFC 9293 §3.10.7.4).
 	preestablished := tcb._state.IsPreestablished()
+	checkSEQ := !flags.HasAny(FlagSYN) || !preestablished
+	established := tcb._state == StateEstablished
 	acksOld := hasAck && !tcb.snd.UNA.LessThan(seg.ACK)
 	acksUnsentData := hasAck && !seg.ACK.LessThanEq(tcb.snd.NXT)
 	ctlOrDataSegment := established && (seg.DATALEN > 0 || flags.HasAny(FlagFIN|FlagRST))
@@ -432,6 +445,14 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 		err = errRequireSequential
 	}
 	if err != nil {
+		// RFC 9293 §3.4: If segment not acceptable, send ACK (unless RST).
+		switch err {
+		case errSeqNotInWindow, errLastNotInWindow, errRequireSequential, errZeroWindow:
+			if !flags.HasAny(FlagRST) {
+				tcb.challengeAck = true
+				tcb.pending[0] |= FlagACK
+			}
+		}
 		return err
 	}
 	if flags.HasAny(FlagRST) {

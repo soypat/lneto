@@ -2,7 +2,6 @@ package httpraw
 
 import (
 	"bytes"
-	"errors"
 )
 
 // Cookie implements cookie key-value parsing. Methods function similarly to eponymous [Header] methods.
@@ -55,7 +54,7 @@ func (dst *Cookie) CopyFrom(c Cookie) {
 // Parse parses the cookie's buffer in place.
 func (c *Cookie) Parse() error {
 	if len(c.kvs) > 0 {
-		return errors.New("cookies already parsed, reset before parsing again")
+		return errCookiesParsed
 	}
 	off := 0
 	for {
