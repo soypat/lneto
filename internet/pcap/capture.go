@@ -29,12 +29,6 @@ var (
 	ErrFieldByClassNotFound = errors.New("pcap: field by class not found")
 )
 
-type proto string
-
-const (
-	ProtoEthernet proto = "Ethernet"
-)
-
 type PacketBreakdown struct {
 	hdr  httpraw.Header
 	dmsg dns.Message
@@ -81,7 +75,7 @@ func (pc *PacketBreakdown) CaptureEthernet(dst []Frame, pkt []byte, bitOffset in
 		return dst, pc.validator().ErrPop()
 	}
 
-	finfo := reclaimFrame(&dst, ProtoEthernet, bitOffset, baseEthernetFields[:])
+	finfo := reclaimFrame(&dst, "Ethernet", bitOffset, baseEthernetFields[:])
 	etype := efrm.EtherTypeOrSize()
 	end := 14*octet + bitOffset
 	if etype.IsSize() {
@@ -102,7 +96,7 @@ func (pc *PacketBreakdown) CaptureEthernet(dst []Frame, pkt []byte, bitOffset in
 	case ethernet.TypeIPv6:
 		dst, err = pc.CaptureIPv6(dst, pkt, end)
 	default:
-		reclaimRemainingFrame(&dst, etype, FieldClassPayload, end, octet*len(pkt))
+		reclaimRemainingFrame(&dst, "Unknown Ethertype", FieldClassPayload, end, octet*len(pkt))
 	}
 	return dst, err
 }
@@ -120,7 +114,7 @@ func (pc *PacketBreakdown) CaptureARP(dst []Frame, pkt []byte, bitOffset int) ([
 		return dst, pc.validator().ErrPop()
 	}
 
-	finfo := reclaimFrame(&dst, ethernet.TypeARP, bitOffset, baseARPFields[:])
+	finfo := reclaimFrame(&dst, "ARP", bitOffset, baseARPFields[:])
 	const varstart = 8 * octet
 	_, hlen := afrm.Hardware()
 	_, plen := afrm.Protocol()
@@ -165,7 +159,7 @@ func (pc *PacketBreakdown) CaptureIPv6(dst []Frame, pkt []byte, bitOffset int) (
 	if pc.validator().HasError() {
 		return dst, pc.validator().ErrPop()
 	}
-	reclaimFrame(&dst, ethernet.TypeIPv6, bitOffset, baseIPv6Fields[:])
+	reclaimFrame(&dst, "IPv6", bitOffset, baseIPv6Fields[:])
 	proto := ifrm6.NextHeader()
 	end := bitOffset + 40*octet
 	var protoErrs []error
@@ -209,7 +203,7 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 	}
 	// limit packet to the actual IPv4 frame size
 	pkt = pkt[:bitOffset/8+int(ifrm4.TotalLength())]
-	finfo := reclaimFrame(&dst, ethernet.TypeIPv4, bitOffset, baseIPv4Fields[:])
+	finfo := reclaimFrame(&dst, "IPv4", bitOffset, baseIPv4Fields[:])
 	options := ifrm4.Options()
 	if len(options) > 0 {
 		finfo.Fields = append(finfo.Fields, FrameField{
@@ -275,12 +269,12 @@ func (pc *PacketBreakdown) captureIPProto(proto lneto.IPProto, dst []Frame, pkt 
 	case lneto.IPProtoUDPLite:
 		dst, err = pc.CaptureUDP(dst, pkt, bitOffset)
 		if len(dst) > nextFrame {
-			dst[nextFrame].Protocol = lneto.IPProtoUDPLite
+			dst[nextFrame].Protocol = "UDPLite"
 		}
 	case lneto.IPProtoICMP:
 		dst, err = pc.CaptureICMPv4(dst, pkt, bitOffset)
 	default:
-		reclaimRemainingFrame(&dst, proto, 0, bitOffset, octet*len(pkt))
+		reclaimRemainingFrame(&dst, "unknown proto", 0, bitOffset, octet*len(pkt))
 	}
 	if len(ipProtoErrs) > 0 && len(dst) > nextFrame {
 		dst[nextFrame].Errors = append(dst[nextFrame].Errors, ipProtoErrs...)
@@ -301,7 +295,7 @@ func (pc *PacketBreakdown) CaptureTCP(dst []Frame, pkt []byte, bitOffset int) ([
 		return dst, pc.validator().ErrPop()
 	}
 	end := bitOffset + octet*tfrm.HeaderLength()
-	finfo := reclaimFrame(&dst, lneto.IPProtoTCP, bitOffset, baseTCPFields[:])
+	finfo := reclaimFrame(&dst, "TCP", bitOffset, baseTCPFields[:])
 	options := tfrm.Options()
 	if len(options) > 0 {
 		finfo.Fields = append(finfo.Fields, FrameField{
@@ -332,7 +326,7 @@ func (pc *PacketBreakdown) CaptureUDP(dst []Frame, pkt []byte, bitOffset int) ([
 	if pc.validator().HasError() {
 		return dst, pc.validator().ErrPop()
 	}
-	reclaimFrame(&dst, lneto.IPProtoUDP, bitOffset, baseUDPFields[:])
+	reclaimFrame(&dst, "UDP", bitOffset, baseUDPFields[:])
 	end := bitOffset + 8*octet
 	payload := ufrm.Payload()
 	dstport := ufrm.DestinationPort()
@@ -360,7 +354,7 @@ func (pc *PacketBreakdown) CaptureICMPv4(dst []Frame, pkt []byte, bitOffset int)
 		return dst, err
 	}
 
-	finfo := reclaimFrame(&dst, lneto.IPProtoICMP, bitOffset, baseICMPv4Fields[:])
+	finfo := reclaimFrame(&dst, "ICMP", bitOffset, baseICMPv4Fields[:])
 
 	// Add type-specific fields.
 	switch ifrm.Type() {
@@ -626,7 +620,7 @@ func (ff Flags) IsRightAligned() bool { return ff&FlagRightAligned != 0 }
 
 type Frame struct {
 	PacketBitOffset int
-	Protocol        any
+	Protocol        string
 	Fields          []FrameField
 	Errors          []error
 }
@@ -1306,7 +1300,7 @@ var baseNTPFields = [...]FrameField{
 // reclaimFrame extends dst via [internal.SliceReclaim], resets the reclaimed Frame
 // with the given protocol and bit offset while preserving Fields and Errors
 // backing arrays, and appends baseFields. Returns the Frame for further modification.
-func reclaimFrame(dst *[]Frame, proto any, bitOffset int, baseFields []FrameField) *Frame {
+func reclaimFrame(dst *[]Frame, proto string, bitOffset int, baseFields []FrameField) *Frame {
 	finfo := internal.SliceReclaim(dst)
 	*finfo = Frame{
 		PacketBitOffset: bitOffset,
@@ -1319,7 +1313,7 @@ func reclaimFrame(dst *[]Frame, proto any, bitOffset int, baseFields []FrameFiel
 
 // reclaimRemainingFrame extends dst via SliceReclaim and populates the reclaimed
 // Frame as a single-field "remaining payload" frame, reusing the old Fields backing array.
-func reclaimRemainingFrame(dst *[]Frame, proto any, class FieldClass, pktBitOffset, pktBitLen int) {
+func reclaimRemainingFrame(dst *[]Frame, proto string, class FieldClass, pktBitOffset, pktBitLen int) {
 	finfo := reclaimFrame(dst, proto, pktBitOffset, nil)
 	finfo.Fields = append(finfo.Fields, FrameField{
 		Class:     class,

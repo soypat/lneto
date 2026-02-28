@@ -439,22 +439,22 @@ func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAs
 	}
 	srcEth := src.HardwareAddress()
 	dstEth := dst.HardwareAddress()
-	if !bytes.Equal(srcEth[:], tst.getData(pcap.ProtoEthernet, pcap.FieldClassSrc)) {
-		t.Errorf("mismatched ethernet src addr %x", tst.getData(pcap.ProtoEthernet, pcap.FieldClassSrc))
+	if !bytes.Equal(srcEth[:], tst.getData(protoEthernet, pcap.FieldClassSrc)) {
+		t.Errorf("mismatched ethernet src addr %x", tst.getData(protoEthernet, pcap.FieldClassSrc))
 	}
-	if !bytes.Equal(dstEth[:], tst.getData(pcap.ProtoEthernet, pcap.FieldClassDst)) {
-		t.Errorf("mismatched ethernet dst addr %x", tst.getData(pcap.ProtoEthernet, pcap.FieldClassDst))
+	if !bytes.Equal(dstEth[:], tst.getData(protoEthernet, pcap.FieldClassDst)) {
+		t.Errorf("mismatched ethernet dst addr %x", tst.getData(protoEthernet, pcap.FieldClassDst))
 	}
-	if tst.getInt(ethernet.TypeIPv4, pcap.FieldClassVersion) != 4 {
-		t.Errorf("did not get IP version=4, got=%d", tst.getInt(ethernet.TypeIPv4, pcap.FieldClassVersion))
+	if tst.getInt(protoIPv4, pcap.FieldClassVersion) != 4 {
+		t.Errorf("did not get IP version=4, got=%d", tst.getInt(protoIPv4, pcap.FieldClassVersion))
 	}
 	srcAddr := src.Addr()
 	dstAddr := dst.Addr()
-	if !bytes.Equal(srcAddr.AsSlice(), tst.getData(ethernet.TypeIPv4, pcap.FieldClassSrc)) {
-		t.Errorf("mismatched ip src addr %d", tst.getData(ethernet.TypeIPv4, pcap.FieldClassSrc))
+	if !bytes.Equal(srcAddr.AsSlice(), tst.getData(protoIPv4, pcap.FieldClassSrc)) {
+		t.Errorf("mismatched ip src addr %d", tst.getData(protoIPv4, pcap.FieldClassSrc))
 	}
-	if !bytes.Equal(dstAddr.AsSlice(), tst.getData(ethernet.TypeIPv4, pcap.FieldClassDst)) {
-		t.Errorf("mismatched ip dst addr %d", tst.getData(ethernet.TypeIPv4, pcap.FieldClassDst))
+	if !bytes.Equal(dstAddr.AsSlice(), tst.getData(protoIPv4, pcap.FieldClassDst)) {
+		t.Errorf("mismatched ip dst addr %d", tst.getData(protoIPv4, pcap.FieldClassDst))
 	}
 	tfrm := tst.getTCPFrame()
 
@@ -502,11 +502,11 @@ func (tst *tester) ARPExchangeOnly(querying, target *StackAsync) {
 	tgtIP := target.Addr()
 
 	// Validate Ethernet layer (request is broadcast)
-	if !bytes.Equal(qHw[:], tst.getData(pcap.ProtoEthernet, pcap.FieldClassSrc)) {
-		t.Errorf("request: mismatched ethernet src addr %x", tst.getData(pcap.ProtoEthernet, pcap.FieldClassSrc))
+	if !bytes.Equal(qHw[:], tst.getData(protoEthernet, pcap.FieldClassSrc)) {
+		t.Errorf("request: mismatched ethernet src addr %x", tst.getData(protoEthernet, pcap.FieldClassSrc))
 	}
-	if !bytes.Equal(broadcast[:], tst.getData(pcap.ProtoEthernet, pcap.FieldClassDst)) {
-		t.Errorf("request: expected broadcast ethernet dst addr, got %x", tst.getData(pcap.ProtoEthernet, pcap.FieldClassDst))
+	if !bytes.Equal(broadcast[:], tst.getData(protoEthernet, pcap.FieldClassDst)) {
+		t.Errorf("request: expected broadcast ethernet dst addr, got %x", tst.getData(protoEthernet, pcap.FieldClassDst))
 	}
 
 	// Validate ARP request fields
@@ -515,13 +515,13 @@ func (tst *tester) ARPExchangeOnly(querying, target *StackAsync) {
 	if tst.getARPOperation() != arp.OpRequest {
 		t.Errorf("request: expected ARP OpRequest, got %d", tst.getARPOperation())
 	}
-	if !bytes.Equal(qHw[:], tst.getFieldByClassLen(ethernet.TypeARP, pcap.FieldClassSrc, 6, 0)) {
+	if !bytes.Equal(qHw[:], tst.getFieldByClassLen(protoARP, pcap.FieldClassSrc, 6, 0)) {
 		t.Errorf("request: mismatched ARP sender HW")
 	}
-	if !bytes.Equal(qIP.AsSlice(), tst.getFieldByClassLen(ethernet.TypeARP, pcap.FieldClassSrc, 4, 0)) {
+	if !bytes.Equal(qIP.AsSlice(), tst.getFieldByClassLen(protoARP, pcap.FieldClassSrc, 4, 0)) {
 		t.Errorf("request: mismatched ARP sender proto")
 	}
-	if !bytes.Equal(tgtIP.AsSlice(), tst.getFieldByClassLen(ethernet.TypeARP, pcap.FieldClassSrc, 4, 1)) {
+	if !bytes.Equal(tgtIP.AsSlice(), tst.getFieldByClassLen(protoARP, pcap.FieldClassSrc, 4, 1)) {
 		t.Errorf("request: mismatched ARP target proto")
 	}
 
@@ -549,27 +549,27 @@ func (tst *tester) ARPExchangeOnly(querying, target *StackAsync) {
 	tst.buf = tst.buf[:n]
 
 	// Validate Ethernet layer (reply is unicast to querying)
-	if !bytes.Equal(tgtHw[:], tst.getData(pcap.ProtoEthernet, pcap.FieldClassSrc)) {
-		t.Errorf("reply: mismatched ethernet src addr %x", tst.getData(pcap.ProtoEthernet, pcap.FieldClassSrc))
+	if !bytes.Equal(tgtHw[:], tst.getData(protoEthernet, pcap.FieldClassSrc)) {
+		t.Errorf("reply: mismatched ethernet src addr %x", tst.getData(protoEthernet, pcap.FieldClassSrc))
 	}
-	if !bytes.Equal(qHw[:], tst.getData(pcap.ProtoEthernet, pcap.FieldClassDst)) {
-		t.Errorf("reply: expected unicast to querying, got %x", tst.getData(pcap.ProtoEthernet, pcap.FieldClassDst))
+	if !bytes.Equal(qHw[:], tst.getData(protoEthernet, pcap.FieldClassDst)) {
+		t.Errorf("reply: expected unicast to querying, got %x", tst.getData(protoEthernet, pcap.FieldClassDst))
 	}
 
 	// Validate ARP reply fields
 	if tst.getARPOperation() != arp.OpReply {
 		t.Errorf("reply: expected ARP OpReply, got %d", tst.getARPOperation())
 	}
-	if !bytes.Equal(tgtHw[:], tst.getFieldByClassLen(ethernet.TypeARP, pcap.FieldClassSrc, 6, 0)) {
+	if !bytes.Equal(tgtHw[:], tst.getFieldByClassLen(protoARP, pcap.FieldClassSrc, 6, 0)) {
 		t.Errorf("reply: mismatched ARP sender HW (should be target's MAC)")
 	}
-	if !bytes.Equal(tgtIP.AsSlice(), tst.getFieldByClassLen(ethernet.TypeARP, pcap.FieldClassSrc, 4, 0)) {
+	if !bytes.Equal(tgtIP.AsSlice(), tst.getFieldByClassLen(protoARP, pcap.FieldClassSrc, 4, 0)) {
 		t.Errorf("reply: mismatched ARP sender proto (should be target's IP)")
 	}
-	if !bytes.Equal(qHw[:], tst.getFieldByClassLen(ethernet.TypeARP, pcap.FieldClassSrc, 6, 1)) {
+	if !bytes.Equal(qHw[:], tst.getFieldByClassLen(protoARP, pcap.FieldClassSrc, 6, 1)) {
 		t.Errorf("reply: mismatched ARP target HW (should be querying's MAC)")
 	}
-	if !bytes.Equal(qIP.AsSlice(), tst.getFieldByClassLen(ethernet.TypeARP, pcap.FieldClassSrc, 4, 1)) {
+	if !bytes.Equal(qIP.AsSlice(), tst.getFieldByClassLen(protoARP, pcap.FieldClassSrc, 4, 1)) {
 		t.Errorf("reply: mismatched ARP target proto (should be querying's IP)")
 	}
 
@@ -593,7 +593,7 @@ func (tst *tester) ARPExchangeOnly(querying, target *StackAsync) {
 func (tst *tester) getTCPFrame() tcp.Frame {
 	tst.t.Helper()
 	// Find the IP frame's position in the captured packet buffer.
-	ipFrm := getProtoFrame(tst.frmbuf, ethernet.TypeIPv4)
+	ipFrm := getProtoFrame(tst.frmbuf, protoIPv4)
 	if ipFrm == nil {
 		tst.t.Fatal("no IP frame in capture")
 	}
@@ -615,7 +615,7 @@ func (tst *tester) getTCPFrame() tcp.Frame {
 	return frame
 }
 
-func (tst *tester) getPayload(proto any) []byte {
+func (tst *tester) getPayload(proto string) []byte {
 	tst.t.Helper()
 	i := 0
 	for i = 0; i < len(tst.frmbuf); i++ {
@@ -633,7 +633,7 @@ func (tst *tester) getPayload(proto any) []byte {
 	return tst.getData(proto, pcap.FieldClassPayload)
 }
 
-func (tst *tester) getData(proto any, field pcap.FieldClass) []byte {
+func (tst *tester) getData(proto string, field pcap.FieldClass) []byte {
 	tst.t.Helper()
 	frm := getProtoFrame(tst.frmbuf, proto)
 	if frm == nil {
@@ -654,7 +654,7 @@ func (tst *tester) getData(proto any, field pcap.FieldClass) []byte {
 	return tst.buf[bitoff/8 : bitoff/8+bitlen/8]
 }
 
-func (tst *tester) getInt(proto any, field pcap.FieldClass) uint64 {
+func (tst *tester) getInt(proto string, field pcap.FieldClass) uint64 {
 	tst.t.Helper()
 	frm := getProtoFrame(tst.frmbuf, proto)
 	if frm == nil {
@@ -671,7 +671,7 @@ func (tst *tester) getInt(proto any, field pcap.FieldClass) uint64 {
 	return v
 }
 
-func getProtoFrame(frms []pcap.Frame, proto any) *pcap.Frame {
+func getProtoFrame(frms []pcap.Frame, proto string) *pcap.Frame {
 	for i := range frms {
 		if frms[i].Protocol == proto {
 			return &frms[i]
@@ -690,7 +690,7 @@ func setzero[T ~[]E, E any](s T) {
 // getFieldByClassLen finds a field by protocol, class, and octet length.
 // occurrence specifies which match to return (0 = first, 1 = second, etc.)
 // This is needed for ARP where sender and target fields share the same class.
-func (tst *tester) getFieldByClassLen(proto any, class pcap.FieldClass, octetLen, occurrence int) []byte {
+func (tst *tester) getFieldByClassLen(proto string, class pcap.FieldClass, octetLen, occurrence int) []byte {
 	tst.t.Helper()
 	frm := getProtoFrame(tst.frmbuf, proto)
 	if frm == nil {
@@ -712,7 +712,7 @@ func (tst *tester) getFieldByClassLen(proto any, class pcap.FieldClass, octetLen
 
 func (tst *tester) getARPOperation() arp.Operation {
 	tst.t.Helper()
-	return arp.Operation(tst.getInt(ethernet.TypeARP, pcap.FieldClassOperation))
+	return arp.Operation(tst.getInt(protoARP, pcap.FieldClassOperation))
 }
 
 // TestTCPConn_BufferNotClearedOnPassiveClose tests that data remains readable after
@@ -981,7 +981,7 @@ func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
 		SequenceNumber: 4,
 		Payload:        icmpPayload,
 	})
-	pkt[len(pkt)-1] ^= 0xFF // Corrupt ICMP payload.
+	pkt[len(pkt)-1] ^= 0xFF                   // Corrupt ICMP payload.
 	pkt = append(pkt, 0xDE, 0xAD, 0xBE, 0xEF) // Simulate Ethernet FCS.
 	err = stack.Demux(pkt, 0)
 	if err == nil {
@@ -989,3 +989,10 @@ func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
 	}
 
 }
+
+const (
+	protoEthernet = "Ethernet"
+	protoARP      = "ARP"
+	protoIPv4     = "IPv4"
+	protoTCP      = "TCP"
+)

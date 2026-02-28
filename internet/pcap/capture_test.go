@@ -209,7 +209,7 @@ func TestRightAlignedFields(t *testing.T) {
 	// Find IPv6 frame.
 	var ipv6Frame *Frame
 	for i := range frames {
-		if frames[i].Protocol == ethernet.TypeIPv6 {
+		if frames[i].Protocol == "IPv6" {
 			ipv6Frame = &frames[i]
 			break
 		}
@@ -476,15 +476,16 @@ func ExampleFormatter_dhcp() {
 	// Output:
 	// Ethernet len=14; destination=ff:ff:ff:ff:ff:ff; source=de:ad:be:ef:ca:fe; protocol=0x0800
 	// IPv4 len=20; version=0x04; (Header Length)=5; (Type of Service)=0x00; (Total Length)=312; identification=0x6043; flags=0x4000; (Time to live)=0x40; protocol=0x11; checksum=0xd972; source=0.0.0.0; destination=255.255.255.255
-	// UDP [RFC768] len=8; (Source port)=68; (Destination port)=67; size=292; checksum=0x0000
+	// UDP len=8; (Source port)=68; (Destination port)=67; size=292; checksum=0x0000
 	// DHCPv4 len=240; op=1; (Hardware Address Type)=0x01; (Hardware Address Length)=6; Hops=0x00; (Transaction ID)=0xdeadbeef; (Start Time)=0x0001; Flags=0x0000; (Client Address)=0.0.0.0; (Offered Address)=0.0.0.0; (Server Next Address)=255.255.255.255; (Relay Agent Address)=0.0.0.0; (Client Hardware Address)=de:ad:be:ef:ca:fe; options
-	//	(DHCP message type.)=1
-	//	(Parameter request list)=0x0102031a1c060f2a
-	//	(DHCP maximum message size)=558
-	//	(Requested IP address)=192.168.1.100
-	//	(Client identifier)="lneto-test"
-	//	(Hostname string)="myhost"
+	// 	(DHCP message type.)=1
+	// 	(Parameter request list)=0x0102031a1c060f2a
+	// 	(DHCP maximum message size)=558
+	// 	(Requested IP address)=192.168.1.100
+	// 	(Client identifier)="lneto-test"
+	// 	(Hostname string)="myhost"
 }
+
 func writeOpt(dst []byte, opt dhcpv4.OptNum, data ...byte) int {
 	dst[0] = byte(opt)
 	dst[1] = byte(len(data))

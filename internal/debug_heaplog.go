@@ -26,6 +26,7 @@ func LogEnabled(l *slog.Logger, lvl slog.Level) bool {
 	return true
 }
 
+// TODO(HEAP): ~13kB/stress — time.Now() Location escape + AppendFormat + variadic ...slog.Attr = 4 mallocs, 16 bytes per call.
 func LogAttrs(_ *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) {
 	now := time.Now()
 	n := len(now.AppendFormat(timebuf[:0], timefmt))

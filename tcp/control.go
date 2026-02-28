@@ -253,7 +253,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	if err != nil {
 		tcb.traceRcv("tcb:rcv.reject")
 		tcb.traceSeg("tcb:rcv.reject", seg)
-		tcb.logerr("tcb:rcv.reject", slog.String("err", err.Error()))
+		tcb.logerr("tcb:rcv.reject", slog.String("err", err.Error())) // TODO(HEAP): err.Error() string alloc
 		return err
 	}
 
@@ -325,7 +325,7 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 	if err != nil {
 		tcb.traceSnd("tcb:snd.reject")
 		tcb.traceSeg("tcb:snd.reject", seg)
-		tcb.logerr("tcb:snd.reject", slog.String("err", err.Error()))
+		tcb.logerr("tcb:snd.reject", slog.String("err", err.Error())) // TODO(HEAP): err.Error() string alloc
 		return err
 	}
 
@@ -571,7 +571,7 @@ func (tcb *ControlBlock) Close() (err error) {
 	if err == nil {
 		tcb.trace("tcb:close", slog.String("state", tcb._state.String()))
 	} else {
-		tcb.logerr("tcb:close", slog.String("err", err.Error()))
+		tcb.logerr("tcb:close", slog.String("err", err.Error())) // TODO(HEAP): err.Error() string alloc
 	}
 	return err
 }
