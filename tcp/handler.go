@@ -216,7 +216,13 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		}
 	}
 	if h.logenabled(internal.LevelTrace) {
-		h.trace("tcp.Handler:rx-done", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("remoteport", uint64(remotePort)), slog.String("seg", segIncoming.String()))
+		h.trace("tcp.Handler:rx-done",
+			slog.Uint64("lport", uint64(h.localPort)),
+			slog.Uint64("rport", uint64(remotePort)),
+			slog.Uint64("seg.seq", uint64(segIncoming.SEQ)),
+			slog.Uint64("seg.ack", uint64(segIncoming.ACK)),
+			slog.Uint64("seg.datalen", uint64(segIncoming.DATALEN)),
+		)
 	}
 	return nil
 }
