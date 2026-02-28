@@ -9,6 +9,8 @@ package phy
 import (
 	"errors"
 	"time"
+
+	"github.com/soypat/lneto"
 )
 
 // MDIOBus is a HAL for MDIO bus access supporting both Clause 22 and Clause 45 devices.
@@ -33,7 +35,7 @@ func FindClause22PHYs(mdio MDIOBus, dst []uint8) (n int, err error) {
 	const maxAddr = 31
 	const regBasicStatus = 0x01
 	if len(dst) < 32 {
-		return -1, errors.New("require buffer length 32 for FindPHYs")
+		return -1, lneto.ErrShortBuffer
 	}
 	n = 0
 	for addr := uint8(0); addr <= maxAddr; addr++ {
@@ -56,9 +58,7 @@ func FindClause22PHYs(mdio MDIOBus, dst []uint8) (n int, err error) {
 	return n, err
 }
 
-var (
-	errInvalidPhyAddr = errors.New("invalid phy addr")
-)
+var errInvalidPhyAddr error = lneto.ErrInvalidAddr
 
 type Device struct {
 	mdio    MDIOBus
@@ -73,7 +73,7 @@ func (phy *Device) ConfigureAs22(mdio MDIOBus, phyAddr uint8) error {
 		return errInvalidPhyAddr
 
 	} else if mdio == nil {
-		return errors.New("nil mdio bus")
+		return lneto.ErrInvalidConfig
 	}
 	phy.mdio = mdio
 	phy.phyaddr = phyAddr
@@ -176,7 +176,7 @@ func (phy *Device) SetupForced(mode LinkMode) error {
 	case 10:
 		// No speed bits = 10Mbps
 	default:
-		return errors.New("unsupported forced link mode")
+		return lneto.ErrUnsupported
 	}
 	if mode.IsFullDuplex() {
 		ctl |= BMCRFullDuplex

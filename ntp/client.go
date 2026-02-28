@@ -1,8 +1,9 @@
 package ntp
 
 import (
-	"errors"
 	"time"
+
+	"github.com/soypat/lneto"
 )
 
 type state uint8
@@ -100,7 +101,7 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 		xmt := frm.TransmitTime()
 		orig := frm.OriginTime()
 		if xmt == orig || orig != c.t[0] {
-			return errors.New("bogus NTP packet")
+			return lneto.ErrPacketDrop
 		}
 
 		txelapsed := c.now().Sub(c.start)

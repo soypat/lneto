@@ -11,8 +11,11 @@ import (
 )
 
 var (
-	ErrRingBufferFull = lneto.ErrBufferFull
-	errRingNoData     = errors.New("lneto/ring: empty write")
+	ErrRingBufferFull  = lneto.ErrBufferFull
+	errRingNoData      = errors.New("lneto/ring: empty write")
+	errInvalidDiscard  = errors.New("lneto/ring: invalid discard amount")
+	errDiscardExceeds  = errors.New("lneto/ring: discard exceeds length")
+	errOffsetOverflow  = errors.New("lneto/ring: offset too large (32 bit overflow)")
 )
 
 // Ring implements basic Ring buffer functionality.
@@ -94,12 +97,12 @@ func (r *Ring) Write(b []byte) (int, error) {
 // This method panics if amount of bytes is more than buffered (see [Ring.Buffered]).
 func (r *Ring) ReadDiscard(n int) error {
 	if n <= 0 {
-		return errors.New("invalid discard amount")
+		return errInvalidDiscard
 	}
 	buffered := r.Buffered()
 	switch {
 	case n > buffered:
-		return errors.New("discard exceeds length")
+		return errDiscardExceeds
 	case n == buffered:
 		r.Reset()
 	case n+r.Off > len(r.Buf):
@@ -113,7 +116,7 @@ func (r *Ring) ReadDiscard(n int) error {
 // ReadAt reads data at an offset from start of readable data but does not advance read pointer. [io.EOF] returned when no data available.
 func (r *Ring) ReadAt(p []byte, off64 int64) (int, error) {
 	if math.MaxInt != math.MaxInt64 && off64+int64(len(p)) > math.MaxInt32 {
-		return 0, errors.New("offset too large (32 bit overflow)") // Check only compiles for 32-bit platforms.
+		return 0, errOffsetOverflow // Check only compiles for 32-bit platforms.
 	}
 	off := int(off64)
 	if off+len(p) > r.Buffered() {
