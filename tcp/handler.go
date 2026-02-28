@@ -276,7 +276,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 			// No pending control segment or data to send. Yield.
 			return 0, nil
 		}
-		if available > 0 {
+		if segment.DATALEN > 0 {
 			n, err := h.bufTx.MakePacket(b[sizeHeaderTCP:sizeHeaderTCP+segment.DATALEN], segment.SEQ)
 			if err != nil {
 				return 0, err

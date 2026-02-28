@@ -861,3 +861,104 @@ func TestBufferNotClearedOnPassiveClose(t *testing.T) {
 		t.Fatalf("read wrong data: got %q, want %q", readBuf[:n], data)
 	}
 }
+
+// TestChallengeACKWithBufferedData verifies that a challenge ACK triggered by
+// an out-of-order segment does not corrupt the TX sentlist when there is
+// buffered data waiting to be sent.
+//
+// This is a regression test for a panic in sentlist.AddPacket:
+//
+//	"new sent packet offset must match last sent packet end"
+//
+// The sequence that triggers the panic:
+//  1. Connection established, both sides ESTABLISHED
+//  2. Application writes data to TX buffer
+//  3. Out-of-order segment arrives → challengeAck flag set
+//  4. Handler.Send() called: PendingSegment returns challenge ACK (DATALEN=0)
+//     but available > 0, so MakePacket is called with zero-length buffer →
+//     creates degenerate {off:0,end:0,size:0} entry in sentlist
+//  5. Handler.Send() called again → AddPacket panics because off=0 but
+//     lastPkt.end=0 != bufsize
+func TestChallengeACKWithBufferedData(t *testing.T) {
+	const mtu = 1500
+	const maxpackets = 3
+	rng := rand.New(rand.NewSource(42))
+	client, server := newHandler(t, mtu, maxpackets), newHandler(t, mtu, maxpackets)
+	setupClientServer(t, rng, client, server)
+	var rawbuf [mtu]byte
+	establish(t, client, server, rawbuf[:])
+
+	if server.State() != StateEstablished {
+		t.Fatal("server not established:", server.State())
+	}
+
+	// Buffer data on the server side for transmission.
+	responseData := []byte("HTTP/1.1 200 OK\r\n\r\nhello")
+	nw, err := server.Write(responseData)
+	if err != nil {
+		t.Fatal("server write:", err)
+	}
+	if nw != len(responseData) {
+		t.Fatal("short write:", nw)
+	}
+
+	// Craft an out-of-order segment from the client to trigger a challenge ACK.
+	// Use a real client packet as template: client sends a normal ACK, then we
+	// corrupt the SEQ field to be 3 bytes ahead of what the server expects.
+	clear(rawbuf[:])
+	n, err := client.Send(rawbuf[:])
+	if n >= sizeHeaderTCP {
+		// There was a pending ACK from establishment. Deliver it first so server
+		// state is clean, then craft the bad segment.
+		_ = server.Recv(rawbuf[:n])
+	}
+
+	// Build an out-of-order segment: valid ports, valid ACK, but SEQ is wrong.
+	clear(rawbuf[:])
+	oooFrame, _ := NewFrame(rawbuf[:sizeHeaderTCP])
+	oooFrame.SetSourcePort(client.LocalPort())
+	oooFrame.SetDestinationPort(server.LocalPort())
+	oooFrame.SetSeq(server.scb.rcv.NXT + 3) // 3 bytes ahead of expected.
+	oooFrame.SetAck(server.scb.snd.UNA)
+	oooFrame.SetSegment(Segment{
+		SEQ:   server.scb.rcv.NXT + 3,
+		ACK:   server.scb.snd.UNA,
+		Flags: FlagACK,
+		WND:   1024,
+	}, 5)
+
+	// Server receives the out-of-order segment. This sets challengeAck=true
+	// and returns an error (errRequireSequential), which is expected.
+	err = server.Recv(rawbuf[:sizeHeaderTCP])
+	if err == nil {
+		t.Fatal("expected error from out-of-order segment")
+	}
+	if !server.scb.challengeAck {
+		t.Fatal("challengeAck flag not set after out-of-order segment")
+	}
+	if server.State() != StateEstablished {
+		t.Fatal("server should remain ESTABLISHED, got:", server.State())
+	}
+
+	// First Send: should emit the challenge ACK without panicking.
+	// The bug causes MakePacket to be called with zero-length buffer here.
+	clear(rawbuf[:])
+	n, err = server.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("server send 1 (challenge ACK):", err)
+	}
+	if n < sizeHeaderTCP {
+		t.Fatal("expected challenge ACK packet")
+	}
+
+	// Second Send: should send the buffered data without panicking.
+	// The bug panics here in AddPacket due to the degenerate sentlist entry.
+	clear(rawbuf[:])
+	n, err = server.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("server send 2 (data):", err)
+	}
+	if n <= sizeHeaderTCP {
+		t.Fatal("expected data packet, got header-only")
+	}
+}
