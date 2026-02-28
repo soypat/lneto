@@ -1,8 +1,9 @@
 package dhcpv4
 
 import (
-	"errors"
 	"unsafe"
+
+	"github.com/soypat/lneto"
 )
 
 //go:generate stringer -type=OptNum,Op,MessageType,ClientState -linecomment -output stringers.go
@@ -52,9 +53,9 @@ func EncodeOption32(dst []byte, opt OptNum, v uint32) (int, error) {
 
 func EncodeOption(dst []byte, opt OptNum, data ...byte) (int, error) {
 	if len(data) > 255 {
-		return 0, errors.New("DHCPv4 option data too long (>255)")
+		return 0, lneto.ErrInvalidLengthField
 	} else if len(dst) < 2+len(data) {
-		return 0, errors.New("DHCP option buffer too short")
+		return 0, lneto.ErrShortBuffer
 	}
 	_ = dst[2+len(data)]
 	dst[0] = byte(opt)

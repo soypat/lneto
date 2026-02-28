@@ -2,12 +2,12 @@ package xnet
 
 import (
 	"context"
-	"errors"
 	"net"
 	"net/netip"
 	"syscall"
 	"time"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -36,7 +36,7 @@ func (s StackBerkeley) Socket(ctx context.Context, network string, family, sotyp
 	switch family {
 	case syscall.AF_INET:
 	default:
-		return nil, errors.New("unsupported address family")
+		return nil, lneto.ErrUnsupported
 	}
 	var local, remote netip.AddrPort
 	if laddr != nil {
@@ -54,10 +54,10 @@ func (s StackBerkeley) Socket(ctx context.Context, network string, family, sotyp
 
 	switch network {
 	case "udp", "udp4":
-		return nil, errors.New("udp not yet supported")
+		return nil, lneto.ErrUnsupported
 	case "tcp", "tcp4":
 		if sotype != sockSTREAM {
-			return nil, errors.New("unsupported socket type")
+			return nil, lneto.ErrUnsupported
 		}
 
 		if raddr != nil {
@@ -106,7 +106,7 @@ func (s StackBerkeley) Socket(ctx context.Context, network string, family, sotyp
 			return &l, nil
 		}
 	}
-	return nil, errors.New("unsupported network")
+	return nil, lneto.ErrUnsupported
 }
 
 type tcplistener struct {

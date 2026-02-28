@@ -2,7 +2,6 @@ package dhcpv4
 
 import (
 	"encoding/binary"
-	"errors"
 
 	"github.com/soypat/lneto"
 )
@@ -27,7 +26,7 @@ const (
 // An error is returned if the buffer size is smaller than 240.
 func NewFrame(buf []byte) (Frame, error) {
 	if len(buf) < OptionsOffset {
-		return Frame{}, errSmallFrame
+		return Frame{}, lneto.ErrShortBuffer
 	}
 	return Frame{buf: buf}, nil
 }
@@ -126,9 +125,9 @@ func (frm Frame) ForEachOption(fn func(off int, opt OptNum, data []byte) error) 
 	// Parse DHCP options.
 	ptr := OptionsOffset
 	if ptr > len(frm.buf) {
-		return errSmallFrame
+		return lneto.ErrShortBuffer
 	} else if len(frm.buf[ptr:]) == 0 {
-		return errNoOptions
+		return lneto.ErrInvalidField
 	}
 	callback := fn != nil
 	for ptr+1 < len(frm.buf) {
@@ -141,7 +140,7 @@ func (frm Frame) ForEachOption(fn func(off int, opt OptNum, data []byte) error) 
 		}
 		optlen := int(frm.buf[ptr+1])
 		if ptr+2+optlen > len(frm.buf) {
-			return errDHCPBadOption
+			return lneto.ErrInvalidLengthField
 		}
 		if callback {
 			optionData := frm.buf[ptr+2 : ptr+2+optlen]
@@ -158,16 +157,9 @@ func (frm Frame) ForEachOption(fn func(off int, opt OptNum, data []byte) error) 
 // Validation API.
 //
 
-var (
-	errSmallFrame    = errors.New("DHCPv4: frame size <240")
-	errDHCPBadOption = errors.New("DHCPv4: opt length exceeds payload")
-	errNoOptions     = errors.New("DHCPv4: no options")
-	errOptionNotFit  = errors.New("DHCPv4: options dont fit")
-)
-
 func (frm Frame) ValidateSize(vld *lneto.Validator) {
 	err := frm.ForEachOption(nil) // Does all necessary validation.
 	if err != nil {
-		vld.AddError(errDHCPBadOption)
+		vld.AddError(lneto.ErrInvalidLengthField)
 	}
 }

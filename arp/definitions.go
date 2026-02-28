@@ -1,6 +1,10 @@
 package arp
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/soypat/lneto"
+)
 
 //go:generate stringer -type=Operation -linecomment -output stringers.go .
 
@@ -11,10 +15,14 @@ const (
 )
 
 var (
-	errARPBufferFull  = errors.New("ARP client need handling:too many ops pending")
-	errShortARP       = errors.New("packet too short to be ARP")
-	errARPUnsupported = errors.New("ARP not supported")
-	errLargeSizes     = errors.New("size of ARP protocol+hardware is unusually large")
+	errQueryPending  = errors.New("arp: query pending")
+	errQueryNotFound = errors.New("arp: query not found")
+
+	// errGeneric aliases for common ARP errors.
+	errARPBufferFull  = lneto.ErrBufferFull
+	errShortARP       = lneto.ErrShortBuffer
+	errARPUnsupported = lneto.ErrUnsupported
+	errLargeSizes     = lneto.ErrPacketDrop
 )
 
 // Operation represents the type of ARP packet, either request or reply/response.

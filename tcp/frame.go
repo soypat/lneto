@@ -2,7 +2,6 @@ package tcp
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"math"
 
@@ -19,7 +18,7 @@ const (
 // with payload/options of frames to avoid panics.
 func NewFrame(buf []byte) (Frame, error) {
 	if len(buf) < sizeHeaderTCP {
-		return Frame{buf: nil}, errors.New("TCP packet too short")
+		return Frame{buf: nil}, lneto.ErrShortBuffer
 	}
 	return Frame{buf: buf}, nil
 }
@@ -178,13 +177,6 @@ func (tfrm Frame) String() string {
 // Validation API
 //
 
-var (
-	errShortTCP    = errors.New("TCP offset exceeds frame")
-	errBadTCPOff   = errors.New("TCP offset invalid")
-	errEvilPacket  = errors.New("evil packet")
-	errZeroDstPort = errors.New("TCP zero destination port")
-	errZeroSrcPort = errors.New("TCP zero source port")
-)
 
 // func (tfrm Frame) Validate(v *lneto.Validator) {
 // tfrm.ValidateSize(v)
@@ -196,19 +188,19 @@ var (
 func (tfrm Frame) ValidateSize(v *lneto.Validator) {
 	off := tfrm.HeaderLength()
 	if off < sizeHeaderTCP {
-		v.AddBitPosErr(12*8, 4, errBadTCPOff)
+		v.AddBitPosErr(12*8, 4, lneto.ErrInvalidLengthField)
 	}
 	if off > len(tfrm.RawData()) {
-		v.AddBitPosErr(12*8, 4, errShortTCP)
+		v.AddBitPosErr(12*8, 4, lneto.ErrInvalidLengthField)
 	}
 }
 
 func (tfrm Frame) ValidateExceptCRC(v *lneto.Validator) {
 	tfrm.ValidateSize(v)
 	if tfrm.DestinationPort() == 0 {
-		v.AddBitPosErr(2*8, 16, errZeroDstPort)
+		v.AddBitPosErr(2*8, 16, lneto.ErrZeroDestination)
 	}
 	if tfrm.SourcePort() == 0 {
-		v.AddBitPosErr(0, 16, errZeroSrcPort)
+		v.AddBitPosErr(0, 16, lneto.ErrZeroSource)
 	}
 }

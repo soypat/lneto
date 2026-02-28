@@ -3,35 +3,39 @@ package dns
 import (
 	"encoding/binary"
 	"errors"
+
+	"github.com/soypat/lneto"
 )
 
 //go:generate stringer -type=Type,Class,RCode,OpCode -linecomment -output stringers.go .
 
 // common errors. Taken from golang.org/x/net/dns/dnsmessage module.
 var (
-	errNoResponse         = errors.New("no DNS response")
-	errNameTooLong        = errors.New("DNS name exceeds maximum length")
-	errNoNullTerm         = errors.New("DNS name missing null terminator")
-	errCalcLen            = errors.New("DNS calculated name label length exceeds remaining buffer length")
-	errCantAddLabel       = errors.New("long/empty/zterm/escape DNS label or not enough space")
-	errBaseLen            = errors.New("DNS frame length too short")
-	errReserved           = errors.New("segment prefix is reserved")
-	errTooManyPtr         = errors.New("too many pointers (>10)")
-	errInvalidPtr         = errors.New("invalid pointer")
-	errInvalidName        = errors.New("invalid dns name")
-	errNilResouceBody     = errors.New("nil resource body")
-	errResourceLen        = errors.New("insufficient data for resource body length")
-	errSegTooLong         = errors.New("segment length too long")
-	errZeroSegLen         = errors.New("zero length segment")
-	errResTooLong         = errors.New("resource length too long")
-	errTooManyQuestions   = errors.New("too many Questions")
-	errTooManyAnswers     = errors.New("too many Answers")
-	errTooManyAuthorities = errors.New("too many Authorities")
-	errTooManyAdditionals = errors.New("too many Additionals")
-	errNonCanonicalName   = errors.New("name is not in canonical format (it must end with a .)")
-	errStringTooLong      = errors.New("character string exceeds maximum length (255)")
-	errCompressedSRV      = errors.New("compressed name in SRV resource data")
-	errEmptyDomainName    = errors.New("empty domain name")
+	errNoResponse     = errors.New("no DNS response")
+	errNameTooLong    = errors.New("DNS name exceeds maximum length")
+	errNoNullTerm     = errors.New("DNS name missing null terminator")
+	errCalcLen        = errors.New("DNS calculated name label length exceeds remaining buffer length")
+	errCantAddLabel   = errors.New("long/empty/zterm/escape DNS label or not enough space")
+	errBaseLen        = lneto.ErrShortBuffer
+	errReserved       = errors.New("segment prefix is reserved")
+	errTooManyPtr     = errors.New("too many pointers (>10)")
+	errInvalidPtr     = errors.New("invalid pointer")
+	errInvalidName    = errors.New("invalid dns name")
+	errNilResouceBody = errors.New("nil resource body")
+	errResourceLen    = errors.New("insufficient data for resource body length")
+	errSegTooLong     = errors.New("segment length too long")
+	errZeroSegLen     = errors.New("zero length segment")
+	errResTooLong     = errors.New("resource length too long")
+
+	errTooManyQuestions   = lneto.ErrBufferFull
+	errTooManyAnswers     = lneto.ErrBufferFull
+	errTooManyAuthorities = lneto.ErrBufferFull
+	errTooManyAdditionals = lneto.ErrBufferFull
+
+	errNonCanonicalName = errors.New("name is not in canonical format (it must end with a .)")
+	errStringTooLong    = errors.New("character string exceeds maximum length (255)")
+	errCompressedSRV    = errors.New("compressed name in SRV resource data")
+	errEmptyDomainName  = errors.New("empty domain name")
 )
 
 // Frame encapsulates the raw data of a DNS packet

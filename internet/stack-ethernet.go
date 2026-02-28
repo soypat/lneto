@@ -2,7 +2,6 @@ package internet
 
 import (
 	"encoding/binary"
-	"errors"
 	"io"
 	"log/slog"
 	"math"
@@ -76,11 +75,11 @@ func (ls *StackEthernet) Reset6(mac, gateway [6]byte, mtu, maxNodes int) error {
 // The connection ID is incremented on each call to invalidate existing connections.
 func (ls *StackEthernet) Configure(cfg StackEthernetConfig) error {
 	if cfg.MTU > (math.MaxUint16-ethernet.MaxOverheadSize) || cfg.MTU < 256 {
-		return errors.New("invalid MTU")
+		return lneto.ErrInvalidConfig
 	} else if cfg.MaxNodes <= 0 {
-		return errZeroMaxNodesArg
+		return lneto.ErrInvalidConfig
 	} else if cfg.AppendCRC32 && cfg.CRC32Update == nil {
-		return errors.New("need CRC32Update to append ethernet CRC")
+		return lneto.ErrInvalidConfig
 	}
 	ls.handlers.reset("StackEthernet", cfg.MaxNodes)
 	*ls = StackEthernet{
@@ -107,7 +106,7 @@ func (ls *StackEthernet) Protocol() uint64 { return 1 }
 func (ls *StackEthernet) Register(h StackNode) error {
 	proto := h.Protocol()
 	if proto > math.MaxUint16 || proto <= 1500 {
-		return errInvalidProto
+		return lneto.ErrInvalidConfig
 	}
 	return ls.handlers.registerByProto(nodeFromStackNode(h, 0, proto, nil))
 }

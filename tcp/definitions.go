@@ -6,24 +6,24 @@ import (
 	"math/bits"
 	"strconv"
 	"unsafe"
+
+	"github.com/soypat/lneto"
 )
 
 //go:generate stringer -type=State,OptionKind -linecomment -output stringers.go .
 
 var (
-	// errDropSegment is a flag that signals to drop a segment silently.
-	errDropSegment    = errors.New("drop segment")
-	errWindowTooLarge = errors.New("invalid window size > 2**16")
+	errDropSegment    error = lneto.ErrPacketDrop
+	errWindowTooLarge       = errors.New("invalid window size > 2**16")
 
-	errBufferTooSmall        = errors.New("tcp buffer too small")
-	errNeedClosedTCBToOpen   = errors.New("need closed TCB to call open")
-	errInvalidState          = errors.New("invalid state")
-	errConnNotExist          = errors.New("connection does not exist")
-	errConnectionClosing     = errors.New("connection closing")
-	errExpectedSYN           = errors.New("seqs:expected SYN")
-	errBadSegack             = errors.New("seqs:bad segack")
-	errFinwaitExpectedACK    = errors.New("seqs:finwait1 expected ACK")
-	errFinwaitExpectedFinack = errors.New("seqs:finwait2 expected FINACK")
+	errBufferTooSmall        error = lneto.ErrShortBuffer
+	errNeedClosedTCBToOpen         = errors.New("need closed TCB to call open")
+	errInvalidState                = errors.New("invalid state")
+	errConnNotExist                = errors.New("connection does not exist")
+	errConnectionClosing           = errors.New("connection closing")
+	errExpectedSYN                 = errors.New("seqs:expected SYN")
+	errBadSegack                   = errors.New("seqs:bad segack")
+	errFinwaitExpectedACK          = errors.New("seqs:finwait1 expected ACK")
 
 	errWindowOverflow    = newRejectErr("wnd > 2**16")
 	errSeqNotInWindow    = newRejectErr("seq not in snd/rcv.wnd")

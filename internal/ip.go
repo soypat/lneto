@@ -2,12 +2,8 @@ package internal
 
 import (
 	"encoding/binary"
-	"errors"
-)
 
-var (
-	errUnsupportedIP             = errors.New("unsupported IP version")
-	errInvalidIPVersionToSetAddr = errors.New("invalid ip version to setDstAddr")
+	"github.com/soypat/lneto"
 )
 
 func GetIPAddr(buf []byte) (src, dst []byte, id, ipEndOff uint16, err error) {
@@ -25,7 +21,7 @@ func GetIPAddr(buf []byte) (src, dst []byte, id, ipEndOff uint16, err error) {
 		dst = buf[24:40]
 		ipEndOff = 40
 	default:
-		err = errUnsupportedIP
+		err = lneto.ErrUnsupported
 	}
 	return src, dst, id, ipEndOff, err
 }
@@ -44,13 +40,13 @@ func SetIPAddrs(buf []byte, id uint16, src, dst []byte) (err error) {
 		srcaddr = buf[8:24]
 		dstaddr = buf[24:40]
 	default:
-		return errUnsupportedIP
+		return lneto.ErrUnsupported
 	}
 	if src != nil && len(srcaddr) != len(src) {
-		return errors.New("mismatched length of ip src addr")
+		return lneto.ErrMismatchLen
 	}
 	if dst != nil && len(dstaddr) != len(dst) {
-		return errors.New("mismatched length of ip dst addr")
+		return lneto.ErrMismatchLen
 	}
 	copy(srcaddr, src)
 	copy(dstaddr, dst)

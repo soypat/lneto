@@ -2,7 +2,6 @@ package arp
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -17,7 +16,7 @@ import (
 // with payload/options of frames to avoid panics.
 func NewFrame(buf []byte) (Frame, error) {
 	if len(buf) < sizeHeaderv4 {
-		return Frame{buf: nil}, errors.New("ARP packet too short")
+		return Frame{buf: nil}, lneto.ErrShortBuffer
 	}
 	return Frame{buf: buf}, nil
 }

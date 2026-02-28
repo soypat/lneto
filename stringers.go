@@ -199,11 +199,21 @@ func _() {
 	_ = x[ErrBadCRC-3]
 	_ = x[ErrZeroSource-4]
 	_ = x[ErrZeroDestination-5]
+	_ = x[ErrShortBuffer-6]
+	_ = x[ErrBufferFull-7]
+	_ = x[ErrInvalidAddr-8]
+	_ = x[ErrUnsupported-9]
+	_ = x[ErrMismatch-10]
+	_ = x[ErrMismatchLen-11]
+	_ = x[ErrInvalidConfig-12]
+	_ = x[ErrInvalidField-13]
+	_ = x[ErrInvalidLengthField-14]
+	_ = x[ErrExhausted-15]
 }
 
-const _errGeneric_name = "lneto-bug(use build tag \"debugheaplog\")packet droppedincorrect checksumzero source(port/addr)zero destination(port/addr)"
+const _errGeneric_name = "lneto-bug(use build tag \"debugheaplog\")packet droppedincorrect checksumzero source(port/addr)zero destination(port/addr)short bufferbuffer fullinvalid addressunsupportedmismatchmismatched lengthinvalid configurationinvalid fieldinvalid length fieldresource exhausted"
 
-var _errGeneric_index = [...]uint8{0, 39, 53, 71, 93, 120}
+var _errGeneric_index = [...]uint16{0, 39, 53, 71, 93, 120, 132, 143, 158, 169, 177, 194, 215, 228, 248, 266}
 
 func (i errGeneric) String() string {
 	i -= 1

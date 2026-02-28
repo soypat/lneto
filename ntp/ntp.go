@@ -3,11 +3,12 @@ package ntp
 
 import (
 	"encoding/binary"
-	"errors"
 	"math"
 	"math/bits"
 	"sync"
 	"time"
+
+	"github.com/soypat/lneto"
 )
 
 // NTP Global Parameters.
@@ -26,7 +27,7 @@ const (
 
 func NewFrame(buf []byte) (Frame, error) {
 	if len(buf) < SizeHeader {
-		return Frame{buf: nil}, errors.New("NTP frame too short")
+		return Frame{buf: nil}, lneto.ErrShortBuffer
 	}
 	return Frame{buf: buf}, nil
 }
@@ -189,12 +190,12 @@ func TimestampFromUint64(ts uint64) Timestamp {
 func TimestampFromTime(t time.Time) (Timestamp, error) {
 	t = t.UTC()
 	if t.Before(baseTime) {
-		return Timestamp{}, errors.New("ntp.TimestampFromTime: time is before baseTime")
+		return Timestamp{}, lneto.ErrUnsupported
 	}
 	off := t.Sub(baseTime)
 	sec := uint64(off / time.Second)
 	if sec > math.MaxUint32 {
-		return Timestamp{}, errors.New("ntp.TimestampFromTime: time is too large")
+		return Timestamp{}, lneto.ErrUnsupported
 	}
 	fra := uint64(off%time.Second) * math.MaxUint32 / uint64(time.Second)
 	return Timestamp{
@@ -254,7 +255,7 @@ func (d Date) Time() (time.Time, error) {
 	}
 	hi, seclo := bits.Mul64(uint64(sec), uint64(time.Second))
 	if hi != 0 || seclo > math.MaxInt64-uint64(time.Second)-1 {
-		return time.Time{}, errors.New("ntp.Date.Time overflow")
+		return time.Time{}, lneto.ErrUnsupported
 	}
 	off := time.Duration(seclo)
 	off += time.Second * time.Duration(d.frac>>32) / math.MaxUint32

@@ -2,7 +2,8 @@ package icmpv4
 
 import (
 	"encoding/binary"
-	"errors"
+
+	"github.com/soypat/lneto"
 )
 
 type Type uint8
@@ -52,13 +53,9 @@ const (
 	CodeRedirectToSAndHost                           // redirect for ToS+host
 )
 
-var (
-	errShortFrame = errors.New("icmpv4: short frame")
-)
-
 func NewFrame(buf []byte) (Frame, error) {
 	if len(buf) < 8 {
-		return Frame{}, errShortFrame
+		return Frame{}, lneto.ErrShortBuffer
 	}
 	return Frame{buf: buf}, nil
 }

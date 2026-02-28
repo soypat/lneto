@@ -2,8 +2,9 @@ package tcp
 
 import (
 	"encoding/binary"
-	"errors"
 	"io"
+
+	"github.com/soypat/lneto"
 )
 
 // Embed low 5 bits of counter into cookie for efficient validation.
@@ -45,15 +46,13 @@ type SYNCookieConfig struct {
 	MaxCounterDelta uint32
 }
 
-var (
-	errInvalidCookie = errors.New("tcp: invalid SYN cookie")
-)
+var errInvalidCookie error = lneto.ErrMismatch
 
 // Reset initializes or reinitializes the SYNCookie with the given configuration.
 // The counter is preserved across resets to maintain cookie validity during secret rotation.
 func (sc *SYNCookieJar) Reset(config SYNCookieConfig) error {
 	if config.Rand == nil {
-		return errors.New("need rand function")
+		return lneto.ErrInvalidConfig
 	}
 	_, err := io.ReadFull(config.Rand, sc.secret[:])
 	if err != nil {

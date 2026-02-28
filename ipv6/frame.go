@@ -2,7 +2,6 @@ package ipv6
 
 import (
 	"encoding/binary"
-	"errors"
 
 	"github.com/soypat/lneto"
 )
@@ -13,7 +12,7 @@ import (
 // with payload/options of frames to avoid panics.
 func NewFrame(buf []byte) (Frame, error) {
 	if len(buf) < sizeHeader {
-		return Frame{buf: nil}, errShortBuf
+		return Frame{buf: nil}, lneto.ErrShortBuffer
 	}
 	return Frame{buf: buf}, nil
 }
@@ -119,16 +118,12 @@ func (i6frm Frame) ClearHeader() {
 // Validate API.
 //
 
-var (
-	errShortFrame = errors.New("ipv6: short frame")
-	errShortBuf   = errors.New("ipv6: short buffer for frame")
-)
 
 // ValidateSize checks the frame's size fields and compares with the actual buffer
 // the frame. It returns a non-nil error on finding an inconsistency.
 func (i6frm Frame) ValidateSize(v *lneto.Validator) {
 	tl := i6frm.PayloadLength()
 	if int(tl)+sizeHeader > len(i6frm.RawData()) {
-		v.AddError(errShortFrame)
+		v.AddError(lneto.ErrInvalidLengthField)
 	}
 }

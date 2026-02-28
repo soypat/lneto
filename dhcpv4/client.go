@@ -2,8 +2,6 @@ package dhcpv4
 
 import (
 	"encoding/binary"
-	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"math"
@@ -80,13 +78,13 @@ func (c *Client) Reset() {
 
 func (c *Client) BeginRequest(xid uint32, cfg RequestConfig) error {
 	if len(cfg.Hostname) > 36 {
-		return errors.New("requested hostname too long")
+		return lneto.ErrInvalidConfig
 	} else if c.state != StateInit && c.state != 0 {
-		return errors.New("dhcp client must be closed/Init before new request")
+		return lneto.ErrInvalidConfig
 	} else if xid == 0 {
-		return errors.New("zero xid")
+		return lneto.ErrInvalidConfig
 	} else if len(cfg.ClientID) > 32 {
-		return errors.New("client ID too long")
+		return lneto.ErrInvalidConfig
 	}
 	c.reset(xid)
 	c.state = StateInit
@@ -143,7 +141,7 @@ func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) 
 	}
 	opts := frm.OptionsPayload()
 	if len(opts) < 255 {
-		return 0, errors.New("too short packet for options")
+		return 0, lneto.ErrShortBuffer
 	}
 
 	var nextState ClientState
@@ -181,7 +179,8 @@ func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) 
 		nextState = StateRequesting
 
 	default:
-		return 0, errors.New("unhandled state" + c.state.String())
+		internal.LogAttrs(nil, slog.LevelError, "dhcpv4:unhandled-state", slog.String("state", c.state.String()))
+		return 0, lneto.ErrBug
 	}
 	n, _ := EncodeOption(opts[numOpts:], OptClientIdentifier, c.clientID...)
 	numOpts += n
@@ -210,13 +209,13 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 	if err != nil {
 		return err
 	} else if frm.XID() != c.currentXID {
-		return errors.New("dhcpv4 unexpected transaction ID")
+		return lneto.ErrMismatch
 	} else if frm.MagicCookie() != MagicCookie {
-		return errors.New("dhcpv4 bad magic cookie")
+		return lneto.ErrInvalidField
 	}
 	msgType := c.getMessageType(frm)
 	if msgType == MsgNack {
-		return errors.New("dhcp nack received")
+		return lneto.ErrPacketDrop
 	}
 
 	msgOK := msgType == MsgOffer || msgType == MsgAck
@@ -243,7 +242,8 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 			c.state = StateBound
 		}
 	default:
-		return fmt.Errorf("dhcpv4 unexpected state in recv %s", c.state.String())
+		internal.LogAttrs(nil, slog.LevelError, "dhcpv4:unexpected-recv-state", slog.String("state", c.state.String()))
+		return lneto.ErrBug
 	}
 	if frameOffset > 28 && c.svIPtos == 0 {
 		ifrm, _ := ipv4.NewFrame(carrierData)

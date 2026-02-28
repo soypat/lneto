@@ -3,7 +3,6 @@ package pcap
 import (
 	"encoding/binary"
 	"encoding/hex"
-	"errors"
 	"math"
 	"net/netip"
 	"slices"
@@ -13,6 +12,7 @@ import (
 	_ "time"
 	"unsafe"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/ntp"
 	"github.com/soypat/lneto/tcp"
@@ -162,7 +162,7 @@ func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, p
 		// inspired by [time.RFC3339]
 		const littlerfc3339 = "2006-01-02T15:04:05.9999"
 		if len(f.buf) != 8 {
-			return dst, errors.New("only timestamp8 supported")
+			return dst, lneto.ErrUnsupported
 		}
 		ts := ntp.TimestampFromUint64(binary.BigEndian.Uint64(f.buf))
 		dst = ts.Time().AppendFormat(dst, littlerfc3339)
@@ -223,7 +223,7 @@ func (f *Formatter) fieldAsUint(pkt []byte, fieldBitStart, bitlen int, rightAlig
 	const badUint64 = math.MaxUint64
 	octets := (bitlen + 7) / 8
 	if octets > 8 {
-		return badUint64, errors.New("field too long to be represented by uint64")
+		return badUint64, lneto.ErrUnsupported
 	}
 	f.uintBuf = [8]byte{}
 	_, err := appendField(f.uintBuf[8-octets:8-octets], pkt, fieldBitStart, bitlen, rightAligned)

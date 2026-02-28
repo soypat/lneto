@@ -1,7 +1,6 @@
 package internet
 
 import (
-	"errors"
 	"io"
 	"log/slog"
 	"net/netip"
@@ -26,7 +25,7 @@ type StackIP struct {
 
 func (sb *StackIP) Reset(addr netip.Addr, maxNodes int) error {
 	if maxNodes <= 0 {
-		return errZeroMaxNodesArg
+		return lneto.ErrInvalidConfig
 	}
 	err := sb.SetAddr(addr)
 	if err != nil {
@@ -44,9 +43,9 @@ func (sb *StackIP) Reset(addr netip.Addr, maxNodes int) error {
 
 func (sb *StackIP) SetAddr(addr netip.Addr) error {
 	if !addr.IsValid() {
-		return errors.New("invalid IP")
+		return lneto.ErrInvalidAddr
 	} else if !addr.Is4() {
-		return errors.New("require IPv4")
+		return lneto.ErrUnsupported
 	}
 	sb.ip = addr.As4()
 	return nil
@@ -200,7 +199,7 @@ func (sb *StackIP) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int
 func (sb *StackIP) Register(h StackNode) error {
 	proto := h.Protocol()
 	if proto > 255 {
-		return errInvalidProto
+		return lneto.ErrInvalidConfig
 	}
 	return sb.handlers.registerByPortProto(nodeFromStackNode(h, h.LocalPort(), proto, nil))
 }
@@ -208,7 +207,7 @@ func (sb *StackIP) Register(h StackNode) error {
 func (sb *StackIP) recvicmp(icmpData []byte) error {
 	var crc lneto.CRC791
 	if crc.PayloadSum16(icmpData) != 0 {
-		return errors.New("ICMP CRC mismatch")
+		return lneto.ErrBadCRC
 	}
 	return nil
 }

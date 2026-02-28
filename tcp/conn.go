@@ -15,12 +15,8 @@ import (
 )
 
 var (
-	errDeadlineExceeded    = os.ErrDeadlineExceeded
-	errNoRemoteAddr        = errors.New("tcp: no remote address established")
-	errInvalidIP           = errors.New("tcp: invalid IP")
-	errMismatchedIPVersion = errors.New("mismatched IP version")
-	errBadDemuxOffset      = errors.New("bad offset in TCPConn.Recv")
-	errIPAddrMismatch      = errors.New("IP addr mismatch on TCPConn")
+	errDeadlineExceeded = os.ErrDeadlineExceeded
+	errNoRemoteAddr     = errors.New("tcp: no remote address established")
 )
 
 // Conn builds on the [Handler] abstraction and adds IP header knowledge, time management, and familiar user facing API
@@ -135,7 +131,7 @@ func (conn *Conn) OpenActive(localPort uint16, remote netip.AddrPort, iss Value)
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	if !remote.IsValid() {
-		return errInvalidIP
+		return lneto.ErrInvalidAddr
 	}
 	rport := remote.Port()
 	err := conn.h.OpenActive(localPort, rport, iss)
@@ -330,14 +326,14 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	if off >= len(buf) {
-		return errBadDemuxOffset
+		return lneto.ErrShortBuffer
 	}
 	raddr, _, id, _, err := internal.GetIPAddr(buf[:off])
 	if err != nil {
 		return err
 	}
 	if conn.isRaddrSet() && !internal.BytesEqual(conn.remoteAddr, raddr) {
-		return errIPAddrMismatch
+		return lneto.ErrMismatch
 	}
 	conn.trace("tcpconn.Recv", slog.Uint64("lport", uint64(conn.h.LocalPort())), slog.Uint64("rport", uint64(conn.h.remotePort)))
 	err = conn.h.Recv(buf[off:])
@@ -365,7 +361,7 @@ func (conn *Conn) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 	if err != nil {
 		return 0, err
 	} else if len(raddr) != len(conn.remoteAddr) {
-		return 0, errMismatchedIPVersion
+		return 0, lneto.ErrMismatchLen
 	}
 	n, err = conn.h.Send(carrierData[offsetToFrame:])
 	if err != nil || n == 0 {

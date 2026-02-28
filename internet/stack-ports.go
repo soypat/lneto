@@ -2,7 +2,6 @@ package internet
 
 import (
 	"encoding/binary"
-	"errors"
 	"io"
 	"log/slog"
 	"math"
@@ -33,9 +32,9 @@ func (ps *StackPorts) ResetTCP(maxNodes int) error {
 
 func (ps *StackPorts) Reset(protocol uint64, dstPortOffset uint16, maxNodes int) error {
 	if protocol > math.MaxUint16 {
-		return errInvalidProto
+		return lneto.ErrInvalidConfig
 	} else if maxNodes <= 0 {
-		return errZeroMaxNodesArg
+		return lneto.ErrInvalidConfig
 	}
 	ps.handlers.reset("StackPorts(proto="+strconv.Itoa(int(protocol))+")", maxNodes)
 	*ps = StackPorts{
@@ -92,9 +91,9 @@ func (ps *StackPorts) Register(h StackNode) error {
 	port := h.LocalPort()
 	proto := h.Protocol()
 	if port <= 0 {
-		return errZeroPort
+		return lneto.ErrZeroSource
 	} else if proto != uint64(ps.protocol) {
-		return errInvalidProto
+		return lneto.ErrInvalidConfig
 	}
 	return ps.handlers.registerByPortProto(nodeFromStackNode(h, port, proto, nil))
 }
@@ -110,11 +109,11 @@ func (mfsp *StackPortsMACFiltered) Register(h StackNode, addr []byte) error {
 	port := h.LocalPort()
 	proto := h.Protocol()
 	if port <= 0 {
-		return errZeroPort
+		return lneto.ErrZeroSource
 	} else if proto != uint64(mfsp.sp.protocol) {
-		return errInvalidProto
+		return lneto.ErrInvalidConfig
 	} else if addr != nil && len(addr) != 6 {
-		return errors.New("invalid MAC")
+		return lneto.ErrInvalidAddr
 	}
 	return mfsp.sp.handlers.registerByPortProto(nodeFromStackNode(h, port, proto, addr))
 }

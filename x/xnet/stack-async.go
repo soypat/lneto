@@ -99,13 +99,13 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	addr := cfg.StaticAddress
 	s.prng = uint32(cfg.RandSeed)
 	if s.prng == 0 {
-		return errors.New("zero random seed")
+		return lneto.ErrInvalidConfig
 	}
 	s.hostname = cfg.Hostname
 	if !addr.IsValid() {
 		addr = netip.AddrFrom4([4]byte{}) // If static not set DHCP will be performed and address will be zero.
 	} else if addr.Is6() {
-		return errors.New("IPv6 unsupported as of yet")
+		return lneto.ErrUnsupported
 	}
 	const linkNodes = 2 // ARP and IP nodes
 	ecfg := internet.StackEthernetConfig{
@@ -171,13 +171,11 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	return nil
 }
 
-var errInvalidIPAddr = errors.New("invaldi IP address")
-
 func (s *StackAsync) resetARP() error {
 	mac := s.link.HardwareAddr6()
 	addr := s.ip.Addr()
 	if !addr.IsValid() {
-		return errInvalidIPAddr
+		return lneto.ErrInvalidAddr
 	}
 	proto := ethernet.TypeIPv4
 	if addr.Is6() {
@@ -384,7 +382,7 @@ func (s *StackAsync) ResultLookupIP(host string) ([]netip.Addr, bool, error) {
 		} else if len(data) == 16 {
 			addrs = append(addrs, netip.AddrFrom16([16]byte(data)))
 		} else {
-			err = errors.New("bogus IP")
+			err = lneto.ErrInvalidAddr
 		}
 	}
 	if err == nil && len(addrs) == 0 {
@@ -441,7 +439,7 @@ func (s *StackAsync) StartResolveHardwareAddress6(ip netip.Addr) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !ip.Is4() {
-		return errors.New("unsupported or invalid IP address")
+		return lneto.ErrUnsupported
 	}
 	addr := ip.As4()
 	return s.arp.StartQuery(nil, addr[:])
@@ -452,7 +450,7 @@ func (s *StackAsync) ResultResolveHardwareAddress6(ip netip.Addr) (hw [6]byte, e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !ip.Is4() {
-		return hw, errors.New("unsupported or invalid IP address")
+		return hw, lneto.ErrUnsupported
 	}
 	addr := ip.As4()
 	hwslice, err := s.arp.QueryResult(addr[:])
@@ -469,7 +467,7 @@ func (s *StackAsync) DiscardResolveHardwareAddress6(ip netip.Addr) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !ip.Is4() {
-		return errors.New("unsupported or invalid IP address")
+		return lneto.ErrUnsupported
 	}
 	addr := ip.As4()
 	return s.arp.DiscardQuery(addr[:])
@@ -526,7 +524,7 @@ func (stack *StackAsync) AssimilateDHCPResults(results *DHCPResults) error {
 	}
 	if len(results.DNSServers) > 0 {
 		if !results.DNSServers[0].IsValid() || !results.DNSServers[0].Is4() {
-			return errors.New("bad DNS server address, IPv6 or invalid")
+			return lneto.ErrInvalidAddr
 		}
 		stack.dnssv = results.DNSServers[0]
 	}
