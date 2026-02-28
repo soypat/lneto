@@ -70,6 +70,7 @@ func (sb *StackIP) SetLogger(logger *slog.Logger) {
 }
 
 func (sb *StackIP) Demux(carrierData []byte, offset int) error {
+	debugLog("ip:demux")
 	sb.handlers.info("StackIP.Demux:start")
 	frame := carrierData[offset:] // we don't care about carrier data in IP.
 	ifrm, err := ipv4.NewFrame(frame)
@@ -232,7 +233,7 @@ func (l logger) trace(msg string, attrs ...slog.Attr) {
 	internal.LogAttrs(l.log, internal.LevelTrace, msg, attrs...)
 }
 
-const enableAllocLog = false
+const enableAllocLog = internal.HeapAllocDebugging
 
 func debugLog(msg string) {
 	if enableAllocLog {

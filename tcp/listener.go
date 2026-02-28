@@ -241,6 +241,7 @@ func (listener *Listener) Demux(carrierData []byte, tcpFrameOffset int) error {
 		listener.logerr("Listener:demux", slog.String("err", err.Error()))
 		return lneto.ErrPacketDrop
 	}
+	debuglog("tcplistener:demux-append")
 	listener.incoming = append(listener.incoming, handler{
 		conn:     conn,
 		id:       *conn.ConnectionID(),
@@ -315,4 +316,12 @@ func (listener *Listener) returnAccepted(idx int) {
 func (listener *Listener) returnIncoming(idx int) {
 	listener.poolReturn(listener.incoming[idx].conn)
 	listener.incoming[idx] = handler{}
+}
+
+const enableDebug = internal.HeapAllocDebugging
+
+func debuglog(msg string) {
+	if enableDebug {
+		internal.LogAllocs(msg)
+	}
 }

@@ -3,7 +3,6 @@ package httpraw
 import (
 	"bytes"
 	"errors"
-	"log/slog"
 	"slices"
 	"unsafe"
 
@@ -300,11 +299,13 @@ func (h *Header) appendHeader(key, value string) {
 		if h.flags.hasAny(flagNoBufferGrow) {
 			panic(errSmallBuffer)
 		}
+		debuglog("http:appendhdr:grow-buf")
 		hb.buf = slices.Grow(buf, len(key)+len(value))
 	}
 	h.flags |= flagMangledBuffer
 	k := hb.mustAppendSlice(key)
 	v := hb.mustAppendSlice(value)
+	debuglog("http:appendhdr:grow-hdrs")
 	hb.headers = append(hb.headers, argsKV{
 		key:   k,
 		value: v,
@@ -426,10 +427,10 @@ func bytes2tok(buf, value []byte) headerSlice {
 	}
 }
 
-const enableDebug = false
+const enableDebug = internal.HeapAllocDebugging
 
 func debuglog(msg string) {
 	if enableDebug {
-		internal.LogAttrs(nil, slog.LevelDebug, msg)
+		internal.LogAllocs(msg)
 	}
 }

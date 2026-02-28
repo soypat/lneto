@@ -2,12 +2,12 @@ package pcap
 
 //go:generate stringer -type=FieldClass -linecomment -output stringers.go .
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"log/slog"
 	"math"
+	"strings"
+	"unsafe"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/arp"
@@ -553,21 +553,21 @@ func (pc *PacketBreakdown) CaptureDHCPv4(dst []Frame, pkt []byte, bitOffset int)
 // based on the Content-Type header, falling back to byte inspection when Content-Type is absent.
 func httpBodyClass(contentType, body []byte) FieldClass {
 	if len(contentType) > 0 {
+		// Use unsafe string conversion to avoid []byte("literal") heap allocations in TinyGo.
+		ct := unsafe.String(&contentType[0], len(contentType))
 		// Strip parameters (e.g. "; charset=utf-8") for media type matching.
-		mediaType := contentType
-		if i := bytes.IndexByte(contentType, ';'); i >= 0 {
-			mediaType = contentType[:i]
+		if i := strings.IndexByte(ct, ';'); i >= 0 {
+			ct = strings.TrimSpace(ct[:i])
 		}
-		mediaType = bytes.TrimSpace(mediaType)
 		switch {
-		case bytes.HasPrefix(mediaType, []byte("text/")):
+		case strings.HasPrefix(ct, "text/"):
 			return FieldClassText
-		case internal.BytesEqual(mediaType, []byte("application/json")),
-			internal.BytesEqual(mediaType, []byte("application/javascript")),
-			internal.BytesEqual(mediaType, []byte("application/xml")):
+		case ct == "application/json",
+			ct == "application/javascript",
+			ct == "application/xml":
 			return FieldClassText
-		case bytes.HasSuffix(mediaType, []byte("+json")),
-			bytes.HasSuffix(mediaType, []byte("+xml")):
+		case strings.HasSuffix(ct, "+json"),
+			strings.HasSuffix(ct, "+xml"):
 			return FieldClassText
 		}
 		return FieldClassPayload
@@ -603,8 +603,11 @@ func (pc *PacketBreakdown) CaptureHTTP(dst []Frame, pkt []byte, bitOffset int) (
 	debuglog("pcap:http:parsed")
 	hdrLen := pc.hdr.BufferParsed()
 	body, _ := pc.hdr.Body()
+	debuglog("pcap:http:body")
 	bodyClass := httpBodyClass(pc.hdr.Get("Content-Type"), body)
+	debuglog("pcap:http:bodyclass")
 	finfo := reclaimFrame(&dst, httpProtocol, bitOffset, nil)
+	debuglog("pcap:http:reclaim")
 	finfo.Fields = append(finfo.Fields,
 		FrameField{
 			Name:           "HTTP Header",
@@ -1351,10 +1354,10 @@ func reclaimRemainingFrame(dst *[]Frame, proto string, class FieldClass, pktBitO
 	})
 }
 
-const enableDebug = false
+const enableDebug = internal.HeapAllocDebugging
 
 func debuglog(msg string) {
 	if enableDebug {
-		internal.LogAttrs(nil, slog.LevelDebug, msg)
+		internal.LogAllocs(msg)
 	}
 }

@@ -411,10 +411,10 @@ func TestListener_RSTOnStalePacket(t *testing.T) {
 	copy(rawBuf[12:16], clientIP[:])
 	copy(rawBuf[16:20], serverIP[:])
 	// TCP header at offset 20.
-	binary.BigEndian.PutUint16(rawBuf[20:], 1337)     // src port
+	binary.BigEndian.PutUint16(rawBuf[20:], 1337)       // src port
 	binary.BigEndian.PutUint16(rawBuf[22:], serverPort) // dst port
-	binary.BigEndian.PutUint32(rawBuf[24:], 500)       // SEQ
-	binary.BigEndian.PutUint32(rawBuf[28:], 200)       // ACK
+	binary.BigEndian.PutUint32(rawBuf[24:], 500)        // SEQ
+	binary.BigEndian.PutUint32(rawBuf[28:], 200)        // ACK
 	rawBuf[32] = 0x50                                   // offset=5
 	rawBuf[33] = 0x11                                   // flags = FIN|ACK (0x01|0x10)
 
@@ -484,8 +484,8 @@ func TestStackPorts_RSTOnUnknownPort(t *testing.T) {
 	binary.BigEndian.PutUint16(rawBuf[22:], 443)  // dst port (no listener!)
 	binary.BigEndian.PutUint32(rawBuf[24:], 700)  // SEQ = 700
 	binary.BigEndian.PutUint32(rawBuf[28:], 0)    // ACK = 0
-	rawBuf[32] = 0x50                              // offset=5
-	rawBuf[33] = 0x02                              // flags = SYN
+	rawBuf[32] = 0x50                             // offset=5
+	rawBuf[33] = 0x02                             // flags = SYN
 
 	err := sp.Demux(rawBuf[:40], 20)
 	if err == nil {
@@ -546,9 +546,9 @@ func TestListener_ECN_SYN(t *testing.T) {
 	// TCP header at offset 20.
 	binary.BigEndian.PutUint16(rawBuf[20:], 5000) // src port
 	binary.BigEndian.PutUint16(rawBuf[22:], serverPort)
-	binary.BigEndian.PutUint32(rawBuf[24:], 300)  // SEQ
-	binary.BigEndian.PutUint32(rawBuf[28:], 0)    // ACK
-	rawBuf[32] = 0x50                              // offset=5
+	binary.BigEndian.PutUint32(rawBuf[24:], 300)               // SEQ
+	binary.BigEndian.PutUint32(rawBuf[28:], 0)                 // ACK
+	rawBuf[32] = 0x50                                          // offset=5
 	rawBuf[33] = byte(tcp.FlagSYN | tcp.FlagECE | tcp.FlagCWR) // SYN+ECE+CWR
 
 	// Should be accepted (create connection), not dropped.
