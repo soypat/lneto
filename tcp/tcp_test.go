@@ -788,3 +788,99 @@ func FuzzTCBActions(f *testing.F) {
 		// hasPanicked = false
 	})
 }
+
+func TestFlagsString(t *testing.T) {
+	tests := []struct {
+		flags tcp.Flags
+		want  string
+	}{
+		{flags: 0, want: "[]"},
+		{flags: tcp.FlagSYN, want: "[SYN]"},
+		{flags: tcp.FlagACK, want: "[ACK]"},
+		{flags: tcp.FlagFIN, want: "[FIN]"},
+		{flags: tcp.FlagRST, want: "[RST]"},
+		{flags: tcp.FlagSYN | tcp.FlagACK, want: "[SYN,ACK]"},
+		{flags: tcp.FlagFIN | tcp.FlagACK, want: "[FIN,ACK]"},
+		{flags: tcp.FlagPSH | tcp.FlagACK, want: "[PSH,ACK]"},
+		// Multi-flag combinations.
+		{flags: tcp.FlagFIN | tcp.FlagSYN | tcp.FlagACK, want: "[FIN,SYN,ACK]"},
+		{flags: tcp.FlagURG | tcp.FlagACK, want: "[ACK,URG]"},
+		{flags: tcp.FlagECE | tcp.FlagCWR, want: "[ECE,CWR]"},
+		{flags: tcp.FlagNS | tcp.FlagACK, want: "[ACK,NS ]"},
+		// All flags set.
+		{flags: tcp.FlagFIN | tcp.FlagSYN | tcp.FlagRST | tcp.FlagPSH | tcp.FlagACK | tcp.FlagURG | tcp.FlagECE | tcp.FlagCWR | tcp.FlagNS, want: "[FIN,SYN,RST,PSH,ACK,URG,ECE,CWR,NS ]"},
+		// Invalid flags (bits above mask).
+		{flags: 0xFFFF, want: "<invalid TCP flags>"},
+	}
+	for _, tc := range tests {
+		got := tc.flags.String()
+		if got != tc.want {
+			t.Errorf("Flags(%#x).String() = %q; want %q", uint16(tc.flags), got, tc.want)
+		}
+	}
+}
+
+func TestFlagsAppendFormat(t *testing.T) {
+	tests := []struct {
+		flags tcp.Flags
+		want  string
+	}{
+		{flags: 0, want: ""},
+		{flags: tcp.FlagSYN, want: "SYN"},
+		{flags: tcp.FlagACK, want: "ACK"},
+		{flags: tcp.FlagFIN, want: "FIN"},
+		{flags: tcp.FlagRST, want: "RST"},
+		{flags: tcp.FlagSYN | tcp.FlagACK, want: "SYN,ACK"},
+		{flags: tcp.FlagFIN | tcp.FlagACK, want: "FIN,ACK"},
+		{flags: tcp.FlagPSH | tcp.FlagACK, want: "PSH,ACK"},
+		{flags: tcp.FlagFIN | tcp.FlagSYN | tcp.FlagACK, want: "FIN,SYN,ACK"},
+		{flags: tcp.FlagURG | tcp.FlagACK, want: "ACK,URG"},
+		{flags: tcp.FlagECE | tcp.FlagCWR, want: "ECE,CWR"},
+		{flags: tcp.FlagNS | tcp.FlagACK, want: "ACK,NS "},
+		{flags: tcp.FlagFIN | tcp.FlagSYN | tcp.FlagRST | tcp.FlagPSH | tcp.FlagACK | tcp.FlagURG | tcp.FlagECE | tcp.FlagCWR | tcp.FlagNS, want: "FIN,SYN,RST,PSH,ACK,URG,ECE,CWR,NS "},
+		{flags: 0xFFFF, want: "<invalid TCP flags>"},
+	}
+	for _, tc := range tests {
+		got := string(tc.flags.AppendFormat(nil))
+		if got != tc.want {
+			t.Errorf("Flags(%#x).AppendFormat(nil) = %q; want %q", uint16(tc.flags), got, tc.want)
+		}
+	}
+
+	// Test that AppendFormat appends to existing data.
+	prefix := []byte("flags=")
+	got := string(SYNACK.AppendFormat(prefix))
+	if want := "flags=SYN,ACK"; got != want {
+		t.Errorf("AppendFormat with prefix = %q; want %q", got, want)
+	}
+}
+
+func TestFlagsStringAppendFormatConsistency(t *testing.T) {
+	// Verify String() and AppendFormat() produce consistent results
+	// for all single-flag and common multi-flag values.
+	allFlags := []tcp.Flags{
+		0,
+		tcp.FlagFIN, tcp.FlagSYN, tcp.FlagRST, tcp.FlagPSH,
+		tcp.FlagACK, tcp.FlagURG, tcp.FlagECE, tcp.FlagCWR, tcp.FlagNS,
+		SYNACK, FINACK, PSHACK,
+		tcp.FlagFIN | tcp.FlagSYN | tcp.FlagRST | tcp.FlagPSH | tcp.FlagACK | tcp.FlagURG | tcp.FlagECE | tcp.FlagCWR | tcp.FlagNS,
+	}
+	for _, flags := range allFlags {
+		str := flags.String()
+		appended := string(flags.AppendFormat(nil))
+		// String() wraps in brackets, AppendFormat() does not.
+		if flags == 0 {
+			if str != "[]" {
+				t.Errorf("Flags(0).String() = %q; want %q", str, "[]")
+			}
+			if appended != "" {
+				t.Errorf("Flags(0).AppendFormat() = %q; want empty", appended)
+			}
+			continue
+		}
+		wantStr := "[" + appended + "]"
+		if str != wantStr {
+			t.Errorf("Flags(%#x): String()=%q inconsistent with AppendFormat()=%q (want %q)", uint16(flags), str, appended, wantStr)
+		}
+	}
+}

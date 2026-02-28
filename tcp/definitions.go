@@ -183,6 +183,8 @@ func (flags Flags) HasAny(mask Flags) bool { return flags&mask != 0 }
 // Mask returns the flags with non-flag bits unset.
 func (flags Flags) Mask() Flags { return flags & flagMask }
 
+func (flags Flags) Invalid() bool { return flags&flagMask != flags }
+
 // StringFlags returns human readable flag string. i.e:
 //
 //	"[SYN,ACK]"
@@ -210,41 +212,48 @@ func (flags Flags) String() string {
 	case FlagRST:
 		return "[RST]"
 	}
-	if flags&flagMask != flags {
+	if flags.Invalid() {
 		return strInvalidTCPFlags
 	}
-	buf := make([]byte, 0, 2+3*bits.OnesCount16(uint16(flags)))
-	buf = append(buf, '[')
-	buf = flags.AppendFormat(buf)
-	buf = append(buf, ']')
-	return string(buf)
+	// Since Go 1.26 this should not allocate if returned string does not escape and is smaller than 32 bytes.
+	// https://go.dev/blog/allocation-optimizations
+	var buf [2 + 4*9]byte
+	buf[0] = '['
+	n := flags.format((*[36]byte)(buf[1:]))
+	buf[1+n] = ']'
+	return string(buf[:2+n])
+}
+
+// AppendFormat appends a human readable flag string to b returning the extended buffer.
+func (flags Flags) AppendFormat(b []byte) []byte {
+	var buf [36]byte
+	n := flags.format(&buf)
+	return append(b, buf[:n]...)
 }
 
 const strInvalidTCPFlags = "<invalid TCP flags>"
 
-// AppendFormat appends a human readable flag string to b returning the extended buffer.
-func (flags Flags) AppendFormat(b []byte) []byte {
+func (flags Flags) format(buf *[4 * 9]byte) (n int) {
 	if flags == 0 {
-		return b
-	} else if flags&flagMask != flags {
-		return append(b, strInvalidTCPFlags...)
+		return 0
+	} else if flags.Invalid() {
+		return copy(buf[:], strInvalidTCPFlags)
 	}
-
-	// String Flag const
 	const flaglen = 3
 	const strflags = "FINSYNRSTPSHACKURGECECWRNS "
 	var addcommas bool
 	for flags != 0 { // written by Github Copilot- looks OK.
 		i := bits.TrailingZeros16(uint16(flags))
 		if addcommas {
-			b = append(b, ',')
+			buf[n] = ','
+			n++
 		} else {
 			addcommas = true
 		}
-		b = append(b, strflags[i*flaglen:i*flaglen+flaglen]...)
+		n += copy(buf[n:], strflags[i*flaglen:i*flaglen+flaglen])
 		flags &= ^(1 << i)
 	}
-	return b
+	return n
 }
 
 // State enumerates states a TCP connection progresses through during its lifetime as per RFC9293.
