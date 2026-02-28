@@ -34,6 +34,7 @@ func LogAllocs(msg string) {
 		print(" inc=", int64(memstats.TotalAlloc)-int64(lastAllocs))
 		print(" n=", int64(memstats.Mallocs)-int64(lastMallocs))
 		print(" heap=", memstats.HeapAlloc)
+		print(" free=", memstats.HeapSys-memstats.HeapInuse)
 		print(" tot=", memstats.TotalAlloc)
 		println()
 	} else {
@@ -42,6 +43,7 @@ func LogAllocs(msg string) {
 		n += copyValueInt(allocbuf[n:], "inc", int64(memstats.TotalAlloc)-int64(lastAllocs))
 		n += copyValueInt(allocbuf[n:], "n", int64(memstats.Mallocs)-int64(lastMallocs))
 		n += copyValueUint(allocbuf[n:], "heap", memstats.HeapAlloc)
+		n += copyValueUint(allocbuf[n:], "free", memstats.HeapSys-memstats.HeapInuse)
 		n += copyValueUint(allocbuf[n:], "tot", memstats.TotalAlloc)
 		println(unsafe.String(&allocbuf[0], n))
 	}
