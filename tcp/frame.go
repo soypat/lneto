@@ -177,7 +177,6 @@ func (tfrm Frame) String() string {
 // Validation API
 //
 
-
 // func (tfrm Frame) Validate(v *lneto.Validator) {
 // tfrm.ValidateSize(v)
 // tfrm.ValidateExceptCRC(v)

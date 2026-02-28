@@ -118,7 +118,6 @@ func (i6frm Frame) ClearHeader() {
 // Validate API.
 //
 
-
 // ValidateSize checks the frame's size fields and compares with the actual buffer
 // the frame. It returns a non-nil error on finding an inconsistency.
 func (i6frm Frame) ValidateSize(v *lneto.Validator) {

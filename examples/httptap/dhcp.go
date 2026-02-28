@@ -259,8 +259,8 @@ func (d *dhcpInterceptor) buildARPReply(request []byte) {
 
 	// ARP reply.
 	afrm, _ := arp.NewFrame(buf[sizeEthernet:])
-	afrm.SetHardware(1, 6)                       // Ethernet, 6-byte addresses
-	afrm.SetProtocol(ethernet.TypeIPv4, 4)        // IPv4, 4-byte addresses
+	afrm.SetHardware(1, 6)                 // Ethernet, 6-byte addresses
+	afrm.SetProtocol(ethernet.TypeIPv4, 4) // IPv4, 4-byte addresses
 	afrm.SetOperation(arp.OpReply)
 	replySndrHW, replySndrIP := afrm.Sender4()
 	*replySndrHW = d.svMAC

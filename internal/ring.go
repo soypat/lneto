@@ -11,11 +11,11 @@ import (
 )
 
 var (
-	ErrRingBufferFull  = lneto.ErrBufferFull
-	errRingNoData      = errors.New("lneto/ring: empty write")
-	errInvalidDiscard  = errors.New("lneto/ring: invalid discard amount")
-	errDiscardExceeds  = errors.New("lneto/ring: discard exceeds length")
-	errOffsetOverflow  = errors.New("lneto/ring: offset too large (32 bit overflow)")
+	ErrRingBufferFull = lneto.ErrBufferFull
+	errRingNoData     = errors.New("lneto/ring: empty write")
+	errInvalidDiscard = errors.New("lneto/ring: invalid discard amount")
+	errDiscardExceeds = errors.New("lneto/ring: discard exceeds length")
+	errOffsetOverflow = errors.New("lneto/ring: offset too large (32 bit overflow)")
 )
 
 // Ring implements basic Ring buffer functionality.

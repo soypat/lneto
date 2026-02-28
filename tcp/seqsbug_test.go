@@ -214,7 +214,7 @@ func TestWindowReject_ChallengeACK(t *testing.T) {
 	t.Run("SeqNotInWindow", func(t *testing.T) {
 		tcb := setup()
 		retransmit := Segment{
-			SEQ:     issB,      // Before rcv.NXT (issB+512).
+			SEQ:     issB, // Before rcv.NXT (issB+512).
 			ACK:     issA,
 			Flags:   FlagACK,
 			WND:     64240,
@@ -237,7 +237,7 @@ func TestWindowReject_ChallengeACK(t *testing.T) {
 	t.Run("LastNotInWindow", func(t *testing.T) {
 		tcb := setup()
 		seg := Segment{
-			SEQ:     issB + 512,           // At rcv.NXT (in window).
+			SEQ:     issB + 512, // At rcv.NXT (in window).
 			ACK:     issA,
 			Flags:   FlagACK,
 			WND:     64240,
