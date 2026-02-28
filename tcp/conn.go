@@ -1,7 +1,6 @@
 package tcp
 
 import (
-	"bytes"
 	"errors"
 	"log/slog"
 	"net"
@@ -20,6 +19,8 @@ var (
 	errNoRemoteAddr        = errors.New("tcp: no remote address established")
 	errInvalidIP           = errors.New("tcp: invalid IP")
 	errMismatchedIPVersion = errors.New("mismatched IP version")
+	errBadDemuxOffset      = errors.New("bad offset in TCPConn.Recv")
+	errIPAddrMismatch      = errors.New("IP addr mismatch on TCPConn")
 )
 
 // Conn builds on the [Handler] abstraction and adds IP header knowledge, time management, and familiar user facing API
@@ -329,14 +330,14 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	if off >= len(buf) {
-		return errors.New("bad offset in TCPConn.Recv")
+		return errBadDemuxOffset
 	}
 	raddr, _, id, _, err := internal.GetIPAddr(buf[:off])
 	if err != nil {
 		return err
 	}
-	if conn.isRaddrSet() && !bytes.Equal(conn.remoteAddr, raddr) {
-		return errors.New("IP addr mismatch on TCPConn")
+	if conn.isRaddrSet() && !internal.BytesEqual(conn.remoteAddr, raddr) {
+		return errIPAddrMismatch
 	}
 	conn.trace("tcpconn.Recv", slog.Uint64("lport", uint64(conn.h.LocalPort())), slog.Uint64("rport", uint64(conn.h.remotePort)))
 	err = conn.h.Recv(buf[off:])

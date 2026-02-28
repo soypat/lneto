@@ -62,7 +62,33 @@ func (stack *CapturePrinter) PrintPacket(prefix string, pkt []byte) {
 	if err == nil {
 		if useTimestamps {
 			diff := captime.Sub(stack.origin)
-			fmtbuf = strconv.AppendFloat(fmtbuf, diff.Seconds(), 'f', stack.timeprec, 32)
+			ms := diff.Milliseconds()
+			fmtbuf = strconv.AppendInt(fmtbuf, ms/1000, 10)
+			fmtbuf = append(fmtbuf, '.')
+			frac := ms % 1000
+			if frac < 0 {
+				frac = -frac
+			}
+			// Pad fractional part to timeprec digits (up to 3).
+			switch {
+			case stack.timeprec >= 3:
+				if frac < 100 {
+					fmtbuf = append(fmtbuf, '0')
+				}
+				if frac < 10 {
+					fmtbuf = append(fmtbuf, '0')
+				}
+				fmtbuf = strconv.AppendInt(fmtbuf, frac, 10)
+			case stack.timeprec == 2:
+				frac /= 10 // truncate to centiseconds
+				if frac < 10 {
+					fmtbuf = append(fmtbuf, '0')
+				}
+				fmtbuf = strconv.AppendInt(fmtbuf, frac, 10)
+			case stack.timeprec == 1:
+				frac /= 100 // truncate to deciseconds
+				fmtbuf = strconv.AppendInt(fmtbuf, frac, 10)
+			}
 			fmtbuf = append(fmtbuf, ' ')
 		}
 		fmtbuf = append(fmtbuf, prefix...)

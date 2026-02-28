@@ -1,12 +1,12 @@
 package ltesto
 
 import (
-	"bytes"
 	"math"
 	"math/rand"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/ipv4/icmpv4"
 	"github.com/soypat/lneto/tcp"
@@ -134,9 +134,9 @@ func (gen *PacketGen) AppendRandomIPv4TCPPacket(dst []byte, rng *rand.Rand, seg 
 	switch {
 	case gen.SrcTCP != tfrm.SourcePort():
 		panic("IP options overwrite TCP header")
-	case !bytes.Equal(ifrm.Options(), ipOpts):
+	case !internal.BytesEqual(ifrm.Options(), ipOpts):
 		panic("bad ip options written, ensure ip options length is multiple of 4")
-	case !bytes.Equal(tfrm.Options(), tcpOpts):
+	case !internal.BytesEqual(tfrm.Options(), tcpOpts):
 		panic("bad tcp options written, ensure tcp options length is multiple of 4")
 	case *ifrm.DestinationAddr() != gen.DstIPv4:
 		panic("IP options overwrite own header")

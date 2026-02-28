@@ -7,7 +7,12 @@ import (
 )
 
 var (
-	errPacketQueueFull = errors.New("packet queue full")
+	errPacketQueueFull  = errors.New("packet queue full")
+	errQueuedPacketsLEZ = errors.New("queued packets <=0")
+	errInvalidBufSize   = errors.New("invalid buffer size")
+	errSeqLessThanLast  = errors.New("sequence number less than last sequence number")
+	errNoPacketToAck    = errors.New("no packet to ack")
+	errAckUnsent        = errors.New("ack of unsent packet")
 )
 
 const (
@@ -55,9 +60,9 @@ type ringidx struct {
 func (rtx *ringTx) Reset(buf []byte, maxqueuedPackets int, iss Value) error {
 	buf = buf[:len(buf):len(buf)] // safely omit capacity section.
 	if maxqueuedPackets <= 0 {
-		return errors.New("queued packets <=0")
+		return errQueuedPacketsLEZ
 	} else if len(buf) < minBufferSize || len(buf) < maxqueuedPackets {
-		return errors.New("invalid buffer size")
+		return errInvalidBufSize
 	}
 
 	*rtx = ringTx{
@@ -126,7 +131,7 @@ func (rtx *ringTx) MakePacket(b []byte, currentSeq Value) (int, error) {
 	}
 	endSeq, ok := rtx.sentEndSeq()
 	if ok && currentSeq.LessThan(endSeq) {
-		return 0, errors.New("sequence number less than last sequence number")
+		return 0, errSeqLessThanLast
 	}
 	// Reading unsent ring consumes unsent and converts it to "sent".
 	unsent, _ := rtx.unsentRing()
@@ -316,11 +321,11 @@ func (sl *sentlist) AddPacket(datalen, off, bufsize int, seq Value) *ringidx {
 func (sl *sentlist) RecvAck(ack Value, bufsize int) error {
 	newest := sl.Newest()
 	if newest == nil {
-		return errors.New("no packet to ack")
+		return errNoPacketToAck
 	}
 	endseq := newest.endSeq()
 	if endseq.LessThan(ack) {
-		return errors.New("ack of unsent packet")
+		return errAckUnsent
 	}
 	// Mark fully acked.
 	for i := 0; i < len(sl.pkts); i++ {
