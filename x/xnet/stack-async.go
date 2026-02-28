@@ -580,3 +580,16 @@ func (s *StackAsync) Debug(msg string) {
 		slog.Uint64("recv", s.totalrecv),
 	)
 }
+
+// DebugErr prints debugging and error info. Very useful for users when coupled with
+// the debugheaplog build tag. See [internal.LogAttrs] debugheaplog version.
+//
+//	go build -tags=debugheaplog ./yourprogram
+func (s *StackAsync) DebugErr(msg, err string) {
+	internal.LogAttrs(slog.Default(), slog.LevelError, "stackasync",
+		slog.String("umsg", msg),
+		slog.String("err", err),
+		slog.Uint64("sent", s.totalsent),
+		slog.Uint64("recv", s.totalrecv),
+	)
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"unsafe"
 )
 
 const (
@@ -240,6 +241,11 @@ func (h *Header) Body() ([]byte, error) {
 		return h.hbuf.buf[h.hbuf.off:], nil
 	}
 	return nil, errUnparsed
+}
+
+// SetBytes is equivalent to [Header.Set] but with a []byte value. Calling SetBytes Mangles the buffer.
+func (h *Header) SetBytes(key string, value []byte) {
+	h.Set(key, unsafe.String(&value[0], len(value)))
 }
 
 // Set sets a key-value pair in the HTTP header. Calling Set mangles the buffer.
