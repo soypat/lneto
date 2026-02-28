@@ -190,6 +190,158 @@ func TestSYNOnClosingStates(t *testing.T) {
 	}
 }
 
+// TestWindowReject_ChallengeACK verifies that per RFC 9293 §3.4,
+// segments failing the receive window acceptability test generate a challenge ACK
+// rather than being silently dropped.
+func TestWindowReject_ChallengeACK(t *testing.T) {
+	const (
+		issA   Value = 1000
+		issB   Value = 5000
+		window Size  = 1024
+	)
+
+	// wantACK is the expected challenge ACK for all sub-tests.
+	wantACK := Segment{SEQ: issA, ACK: issB + 512, Flags: FlagACK, WND: window}
+
+	setup := func() ControlBlock {
+		var tcb ControlBlock
+		tcb.HelperInitState(StateEstablished, issA, issA, window)
+		tcb.HelperInitRcv(issB, issB+512, window) // rcv.NXT advanced by 512 (data already received)
+		return tcb
+	}
+
+	// errSeqNotInWindow: segment SEQ entirely before rcv.NXT (retransmission of acked data).
+	t.Run("SeqNotInWindow", func(t *testing.T) {
+		tcb := setup()
+		retransmit := Segment{
+			SEQ:     issB,      // Before rcv.NXT (issB+512).
+			ACK:     issA,
+			Flags:   FlagACK,
+			WND:     64240,
+			DATALEN: 512, // Covers [issB, issB+512) — all already received.
+		}
+		err := tcb.Recv(retransmit)
+		if err == nil {
+			t.Fatal("expected rejection for retransmitted segment")
+		}
+		seg, ok := tcb.PendingSegment(0)
+		if !ok {
+			t.Fatal("no pending segment; expected challenge ACK")
+		}
+		if seg != wantACK {
+			t.Errorf("challenge ACK:\n got=%+v\nwant=%+v", seg, wantACK)
+		}
+	})
+
+	// errLastNotInWindow: segment starts in window but end is beyond window.
+	t.Run("LastNotInWindow", func(t *testing.T) {
+		tcb := setup()
+		seg := Segment{
+			SEQ:     issB + 512,           // At rcv.NXT (in window).
+			ACK:     issA,
+			Flags:   FlagACK,
+			WND:     64240,
+			DATALEN: Size(window) + 100, // End extends beyond window.
+		}
+		err := tcb.Recv(seg)
+		if err == nil {
+			t.Fatal("expected rejection for segment extending past window")
+		}
+		got, ok := tcb.PendingSegment(0)
+		if !ok {
+			t.Fatal("no pending segment; expected challenge ACK")
+		}
+		if got != wantACK {
+			t.Errorf("challenge ACK:\n got=%+v\nwant=%+v", got, wantACK)
+		}
+	})
+
+	// errZeroWindow: data sent to zero-size receive window.
+	t.Run("ZeroWindow", func(t *testing.T) {
+		var tcb ControlBlock
+		tcb.HelperInitState(StateEstablished, issA, issA, 0) // zero receive window
+		tcb.HelperInitRcv(issB, issB+512, window)
+		wantZW := Segment{SEQ: issA, ACK: issB + 512, Flags: FlagACK, WND: 0}
+		seg := Segment{
+			SEQ:     issB + 512, // At rcv.NXT.
+			ACK:     issA,
+			Flags:   FlagACK,
+			WND:     64240,
+			DATALEN: 100, // Data to zero window.
+		}
+		err := tcb.Recv(seg)
+		if err == nil {
+			t.Fatal("expected rejection for data on zero window")
+		}
+		got, ok := tcb.PendingSegment(0)
+		if !ok {
+			t.Fatal("no pending segment; expected challenge ACK")
+		}
+		if got != wantZW {
+			t.Errorf("challenge ACK:\n got=%+v\nwant=%+v", got, wantZW)
+		}
+	})
+
+	// errRequireSequential: segment in window but not at rcv.NXT (out-of-order).
+	t.Run("RequireSequential", func(t *testing.T) {
+		tcb := setup()
+		seg := Segment{
+			SEQ:     issB + 512 + 100, // In window but not at rcv.NXT.
+			ACK:     issA,
+			Flags:   FlagACK,
+			WND:     64240,
+			DATALEN: 50,
+		}
+		err := tcb.Recv(seg)
+		if err == nil {
+			t.Fatal("expected rejection for out-of-order segment")
+		}
+		got, ok := tcb.PendingSegment(0)
+		if !ok {
+			t.Fatal("no pending segment; expected challenge ACK")
+		}
+		if got != wantACK {
+			t.Errorf("challenge ACK:\n got=%+v\nwant=%+v", got, wantACK)
+		}
+	})
+
+	// RST segments failing window check must NOT generate a challenge ACK.
+	t.Run("RST_NoACK", func(t *testing.T) {
+		tcb := setup()
+		rst := Segment{
+			SEQ:   issB, // Before rcv.NXT, out of window.
+			Flags: FlagRST,
+		}
+		err := tcb.Recv(rst)
+		if err == nil {
+			t.Fatal("expected rejection for out-of-window RST")
+		}
+		_, ok := tcb.PendingSegment(0)
+		if ok {
+			t.Fatal("RST rejection should not generate a challenge ACK")
+		}
+	})
+
+	// Verify errWindowOverflow does NOT trigger challenge ACK.
+	t.Run("WindowOverflow_NoACK", func(t *testing.T) {
+		tcb := setup()
+		seg := Segment{
+			SEQ:   issB + 512,
+			ACK:   issA,
+			Flags: FlagACK,
+			WND:   Size(1 << 17), // > MaxUint16.
+		}
+		err := tcb.Recv(seg)
+		if err == nil {
+			t.Fatal("expected rejection for window overflow")
+		}
+		_, ok := tcb.PendingSegment(0)
+		if ok {
+			t.Fatal("window overflow should not generate a challenge ACK")
+		}
+	})
+}
+
 // TestSYNPreestablished_StillAllowed ensures the fix doesn't break normal SYN
 // processing in pre-established states (LISTEN, SYN-SENT, SYN-RCVD).
 func TestSYNPreestablished_StillAllowed(t *testing.T) {
