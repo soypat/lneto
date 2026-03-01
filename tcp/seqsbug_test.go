@@ -342,6 +342,102 @@ func TestWindowReject_ChallengeACK(t *testing.T) {
 	})
 }
 
+// TestPendingSegment_ACKSuppressedWhenWindowFull replicates the root cause of the
+// "reject in/out seg: seq not in snd/rcv.wnd" regression reported after eab43c4.
+//
+// When inFlight >= snd.WND (send window full) and the caller has buffered TX data
+// (payloadLen > 0), PendingSegment suppresses ALL segments—including pending ACKs—
+// because the maxPayload==0 guard only allows FIN/RST/SYN through.
+//
+// Before eab43c4, maxSend() underflowed to ~4 billion when inFlight > WND, so the
+// guard on line 204 never triggered and ACKs always piggybacked on data segments.
+// After the underflow fix, maxSend() correctly returns 0, but this exposes the
+// latent bug: ACKs are starved when the send window is full and there's TX data.
+//
+// The deadlock chain in production:
+//  1. Publisher keeps TX buffer non-empty (payloadLen > 0 always)
+//  2. Send window fills → maxSend() returns 0
+//  3. PendingSegment drops the pending ACK → remote never learns data was received
+//  4. Remote retransmits with stale SEQ → "seq not in snd/rcv.wnd" rejection
+//  5. (Before 3d0bc93: no challenge ACK → permanent deadlock → i/o timeout)
+//
+// The challenge ACK fix at 3d0bc93 masks this by allowing recovery, but the
+// underlying ACK suppression still causes unnecessary retransmission delays.
+func TestPendingSegment_ACKSuppressedWhenWindowFull(t *testing.T) {
+	const (
+		localISS  Value = 1000
+		remoteISS Value = 5000
+		dataInFlight Size = 500
+		remoteWND Size = 500 // == dataInFlight, so inFlight >= WND → maxSend()=0
+		localWND  Size = 1024
+	)
+
+	setup := func() ControlBlock {
+		var tcb ControlBlock
+		// snd.NXT = localISS + 1 + dataInFlight (SYN consumed 1 seq, then 500 bytes sent)
+		tcb.HelperInitState(StateEstablished, localISS, localISS+1+Value(dataInFlight), localWND)
+		// snd.WND = remoteWND (500), so inFlight(500) >= WND(500) → maxSend()=0
+		tcb.HelperInitRcv(remoteISS, remoteISS+1, remoteWND)
+		tcb.snd.UNA = localISS + 1 // SYN acked, 500 bytes unacked
+		return tcb
+	}
+
+	// Sanity check: maxSend() is actually 0 in our setup.
+	t.Run("precondition_maxSend_zero", func(t *testing.T) {
+		tcb := setup()
+		if ms := tcb.snd.maxSend(); ms != 0 {
+			t.Fatalf("maxSend()=%d; want 0 (test precondition broken)", ms)
+		}
+	})
+
+	// Control: PendingSegment(0) correctly returns the ACK when no payload requested.
+	t.Run("payloadLen_0_ACK_sent", func(t *testing.T) {
+		tcb := setup()
+		tcb.pending[0] |= FlagACK // Simulate pending ACK from receiving data.
+		seg, ok := tcb.PendingSegment(0)
+		if !ok {
+			t.Fatal("PendingSegment(0) returned !ok; pending ACK should be sent when no payload requested")
+		}
+		if !seg.Flags.HasAll(FlagACK) {
+			t.Errorf("segment flags = %s; want ACK", seg.Flags)
+		}
+	})
+
+	// THE BUG: PendingSegment(>0) suppresses the ACK when window is full.
+	// This is the exact scenario of a publisher with buffered TX data.
+	t.Run("payloadLen_gt0_ACK_must_not_be_suppressed", func(t *testing.T) {
+		tcb := setup()
+		tcb.pending[0] |= FlagACK // Simulate pending ACK from receiving data.
+
+		// Caller has 100 bytes buffered to send, but window is full.
+		// PendingSegment should return the ACK with DATALEN=0 (no data, window full)
+		// instead of returning false and dropping the ACK entirely.
+		seg, ok := tcb.PendingSegment(100)
+		if !ok {
+			t.Fatal("PendingSegment(100) returned !ok; pending ACK was suppressed because " +
+				"maxPayload==0 guard only allows FIN/RST/SYN, not ACK. " +
+				"This causes the remote to never learn data was received, " +
+				"leading to retransmissions and eventual 'seq not in snd/rcv.wnd' rejection")
+		}
+		if !seg.Flags.HasAll(FlagACK) {
+			t.Errorf("segment flags = %s; want ACK", seg.Flags)
+		}
+		if seg.DATALEN != 0 {
+			t.Errorf("segment DATALEN = %d; want 0 (window is full, no data should be sent)", seg.DATALEN)
+		}
+	})
+
+	// Verify FIN is still allowed through when window is full (existing behavior).
+	t.Run("payloadLen_gt0_FIN_allowed", func(t *testing.T) {
+		tcb := setup()
+		tcb.pending[0] |= FlagFIN | FlagACK
+		_, ok := tcb.PendingSegment(100)
+		if !ok {
+			t.Fatal("PendingSegment suppressed FIN+ACK when window full; FIN must always go through")
+		}
+	})
+}
+
 // TestSYNPreestablished_StillAllowed ensures the fix doesn't break normal SYN
 // processing in pre-established states (LISTEN, SYN-SENT, SYN-RCVD).
 func TestSYNPreestablished_StillAllowed(t *testing.T) {
