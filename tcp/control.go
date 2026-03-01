@@ -202,7 +202,7 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	_ = inFlight
 	maxPayload := tcb.snd.maxSend()
 	if payloadLen > int(maxPayload) {
-		if maxPayload == 0 && !pending.HasAny(FlagFIN|FlagRST|FlagSYN) {
+		if maxPayload == 0 && pending == 0 {
 			return Segment{}, false
 		} else if maxPayload > tcb.snd.WND {
 			panic("seqs: bad calculation")
