@@ -285,24 +285,26 @@ a FIN from A, acknowledges it, then later closes and sends its own FIN.
 */
 func TestExchange_rfc9293_figure12_peerB(t *testing.T) {
 	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
-	// Note: After B sends an ACK in CLOSE-WAIT, the implementation auto-queues FIN|ACK.
-	// This is an optimization that combines steps 3 and 4 of RFC 9293 Figure 12.
-	exchangeB := []tcp.Exchange{
-		0: { // B receives FIN|ACK from A, goes to CLOSE-WAIT with pending ACK.
+	// RFC 9293 Figure 12 steps 2-3: B receives FIN|ACK, then sends back ACK.
+	// B remains in CLOSE-WAIT, able to keep sending (RFC 9293 §3.5).
+	exchangeBeforeClose := []tcp.Exchange{
+		0: { // Step 2: B receives FIN|ACK from A, goes to CLOSE-WAIT with pending ACK.
 			Incoming:    &tcp.Segment{SEQ: issA, ACK: issB, Flags: FINACK, WND: windowA},
 			WantState:   tcp.StateCloseWait,
 			WantPending: &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: tcp.FlagACK, WND: windowB},
 		},
-		1: { // B sends ACK to A. Implementation auto-queues FIN|ACK for close.
-			Outgoing:    &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: tcp.FlagACK, WND: windowB},
-			WantState:   tcp.StateCloseWait,
-			WantPending: &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: FINACK, WND: windowB},
+		1: { // Step 3: B sends ACK to A. B remains in CLOSE-WAIT.
+			Outgoing:  &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: tcp.FlagACK, WND: windowB},
+			WantState: tcp.StateCloseWait,
 		},
-		2: { // B sends FIN|ACK to A, goes to LAST-ACK.
+	}
+	// RFC 9293 Figure 12 step 4: B calls Close(). Queues FIN|ACK, goes to LAST-ACK.
+	exchangeAfterClose := []tcp.Exchange{
+		0: { // Step 4: B sends FIN|ACK to A, goes to LAST-ACK.
 			Outgoing:  &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: FINACK, WND: windowB},
 			WantState: tcp.StateLastAck,
 		},
-		3: { // B receives final ACK from A, goes to CLOSED.
+		1: { // Step 5: B receives final ACK from A, goes to CLOSED.
 			Incoming:  &tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
 			WantState: tcp.StateClosed,
 		},
@@ -310,7 +312,11 @@ func TestExchange_rfc9293_figure12_peerB(t *testing.T) {
 	var tcbB tcp.ControlBlock
 	tcbB.HelperInitState(tcp.StateEstablished, issB, issB, windowB)
 	tcbB.HelperInitRcv(issA, issA, windowA)
-	tcbB.HelperExchange(t, exchangeB)
+	tcbB.HelperExchange(t, exchangeBeforeClose)
+	if err := tcbB.Close(); err != nil { // Step 4: (Close) from RFC Figure 12.
+		t.Fatal("close:", err)
+	}
+	tcbB.HelperExchange(t, exchangeAfterClose)
 }
 
 /*

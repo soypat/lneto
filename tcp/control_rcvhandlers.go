@@ -48,8 +48,9 @@ func (tcb *ControlBlock) rcvSynSent(seg Segment) (pending Flags, err error) {
 
 func (tcb *ControlBlock) rcvSynRcvd(seg Segment) (pending Flags, err error) {
 	switch {
-	// case !seg.Flags.HasAll(FlagACK):
-	// 	err = errors.New("rcvSynRcvd: expected ACK")
+	case !seg.Flags.HasAll(FlagACK):
+		// RFC 9293 §3.10.7.4 step 5: "If the ACK bit is off, drop the segment and return."
+		err = errBadSegack
 	case seg.ACK != tcb.snd.UNA+1:
 		err = errBadSegack
 	}
@@ -69,7 +70,8 @@ func (tcb *ControlBlock) rcvEstablished(seg Segment) (pending Flags, err error) 
 		if hasFin {
 			// See Figure 5: TCP Connection State Diagram of RFC 9293.
 			tcb._state = StateCloseWait
-			tcb.pending[1] = FlagFIN // Queue FIN for after the CloseWait ACK.
+			// RFC 9293 §3.5: CLOSE-WAIT allows local side to continue sending.
+			// Do NOT auto-queue FIN here; user must call Close() explicitly.
 		}
 	}
 

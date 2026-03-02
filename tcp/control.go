@@ -82,7 +82,10 @@ func (tcb *ControlBlock) MaxInFlightData() Size {
 		return 0 // SYN not yet received.
 	}
 	unacked := Sizeof(tcb.snd.UNA, tcb.snd.NXT)
-	return tcb.snd.WND - unacked - 1 // TODO: is this -1 supposed to be here?
+	if unacked >= tcb.snd.WND {
+		return 0
+	}
+	return tcb.snd.WND - unacked
 }
 
 // SetWindow sets the local receive window size. This represents the maximum amount of data
@@ -123,8 +126,8 @@ type sendSpace struct {
 	NXT Value // send next. This seq and up to UNA+WND-1 are allowed to be sent. Corresponds to local data.
 	WND Size  // send window defined by remote. Permitted number of local unacked octets in flight.
 	MSS Size  // maximum segment size advertised by remote peer. 0 means not set.
-	// WL1 Value // segment sequence number used for last window update
-	// WL2 Value // segment acknowledgment number used for last window update
+	WL1 Value // segment SEQ number of the last send-window update (RFC 9293 §3.10.7.4)
+	WL2 Value // segment ACK number of the last send-window update (RFC 9293 §3.10.7.4)
 }
 
 // inFlight returns amount of unacked bytes sent out.
@@ -184,7 +187,8 @@ func (tcb *ControlBlock) HasPending() bool { return tcb.pending[0] != 0 }
 // It does not modify the ControlBlock state or pending segment queue.
 func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	if tcb.challengeAck {
-		tcb.challengeAck = false
+		// Do not clear challengeAck here: PendingSegment is documented as read-only.
+		// The flag is consumed in Send when the ACK segment is actually transmitted.
 		return Segment{SEQ: tcb.snd.NXT, ACK: tcb.rcv.NXT, Flags: FlagACK, WND: tcb.rcv.WND}, true
 	}
 	pending := tcb.pending[0]
@@ -304,7 +308,19 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	}
 
 	// We accept the segment and update TCB state.
-	tcb.snd.WND = seg.WND
+	// RFC 9293 §3.10.7.4 step 5: update send window only when WL1/WL2 conditions allow it.
+	// WL1==WL2==0 is the uninitialized sentinel; the first update is always allowed so that
+	// connections with a remote ISS in the upper half of the uint32 space still work
+	// (modular LessThan would otherwise return false for 0.LessThan(largeISS)).
+	// Within that, duplicate ACKs (non-advancing) may only open the window, never shrink it.
+	wlUnset := tcb.snd.WL1 == 0 && tcb.snd.WL2 == 0
+	if wlUnset || tcb.snd.WL1.LessThan(seg.SEQ) || (tcb.snd.WL1 == seg.SEQ && tcb.snd.WL2.LessThanEq(seg.ACK)) {
+		if tcb.snd.UNA.LessThan(seg.ACK) || seg.WND > tcb.snd.WND {
+			tcb.snd.WND = seg.WND
+		}
+		tcb.snd.WL1 = seg.SEQ
+		tcb.snd.WL2 = seg.ACK
+	}
 	if seg.Flags.HasAny(FlagACK) && tcb.snd.UNA.LessThan(seg.ACK) && seg.ACK.LessThanEq(tcb.snd.NXT) {
 		// Only update ACK if it advances UNA and is not in the future.
 		tcb.snd.UNA = seg.ACK
@@ -350,9 +366,8 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 	case StateCloseWait:
 		if hasFIN {
 			tcb._state = StateLastAck
-		} else if hasACK {
-			newPending = finack // Queue finack.
 		}
+		// No auto-queue of FIN on ACK: user must call Close() to initiate local FIN.
 	}
 
 	// Advance pending flags queue.
@@ -362,6 +377,11 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 		tcb.pending = [2]Flags{tcb.pending[1] &^ (seg.Flags & (FlagFIN)), 0}
 	}
 	tcb.pending[0] |= newPending
+
+	// Sending an ACK satisfies any outstanding challenge-ACK obligation.
+	if tcb.challengeAck && seg.Flags.HasAny(FlagACK) {
+		tcb.challengeAck = false
+	}
 
 	// The segment is valid, we can update TCB state.
 	seglen := seg.LEN()
@@ -474,7 +494,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 
 	case established && acksUnsentData:
 		err = errDropSegment
-		tcb.pending[0] = FlagACK // Send ACK for unsent data.
+		tcb.pending[0] |= FlagACK // Send ACK for unsent data; |= preserves any pending FIN.
 		if isDebug {
 			tcb.debug("rcv:ACK-unsent", slog.String("state", tcb._state.String()),
 				slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)))
@@ -512,16 +532,23 @@ func (tcb *ControlBlock) resetRcv(localWND Size, remoteISS Value) {
 
 func (tcb *ControlBlock) handleRST(seq Value) error {
 	tcb.debug("rcv:RST", slog.String("state", tcb._state.String()))
-	if tcb._state.IsPreestablished() {
-		// RFC 9293 §3.5.3: non-synchronized states accept RST if SEQ is in window.
-		// No challenge ACK for non-synchronized states. Return to LISTEN.
+	switch tcb._state {
+	case StateSynSent:
+		// RFC 9293 §3.10.7.2: RST in SYN-SENT aborts the active open.
+		tcb.Abort()
+		return net.ErrClosed
+	case StateListen:
+		// RFC 9293 §3.5.3: RST in LISTEN state is ignored.
+		return errDropSegment
+	case StateSynRcvd:
+		// RFC 9293 §3.5.3: SYN-RCVD (passive open) returns to LISTEN on RST.
 		tcb.pending[0] = 0
 		tcb._state = StateListen
 		tcb.resetSnd(tcb.snd.ISS+tcb.rstJump(), tcb.snd.WND)
 		tcb.resetRcv(tcb.rcv.WND, 3_14159_2653^tcb.rcv.IRS)
 		return errDropSegment
 	}
-	// Synchronized states: exact match required, challenge ACK for in-window non-exact.
+	// Synchronized states: exact SEQ match required; challenge ACK for in-window non-exact.
 	if seq != tcb.rcv.NXT {
 		tcb.challengeAck = true
 		tcb.pending[0] |= FlagACK

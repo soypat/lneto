@@ -34,16 +34,15 @@ func TestExchangeTest_PassiveClose_FINACKRegression(t *testing.T) {
 				BState:   tcp.StateCloseWait,
 				BPending: &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: tcp.FlagACK, WND: windowB},
 			},
-			1: { // B sends ACK to A. Auto-queues FIN|ACK in CLOSE-WAIT.
-				Seg:      tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: tcp.FlagACK, WND: windowB},
-				Action:   tcp.StepBSends,
-				AState:   tcp.StateFinWait2,
-				BState:   tcp.StateCloseWait,
-				BPending: &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: FINACK, WND: windowB},
+			1: { // B sends ACK to A (RFC 9293 Figure 12 step 3). B stays in CLOSE-WAIT.
+				Seg:    tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: tcp.FlagACK, WND: windowB},
+				Action: tcp.StepBSends,
+				AState: tcp.StateFinWait2,
+				BState: tcp.StateCloseWait,
 			},
-			2: { // B calls Close(). Goes to LAST-ACK. Pending must be FIN|ACK combined.
-				// This is the regression check: Close() must NOT overwrite the auto-queued
-				// FIN|ACK with [FlagFIN, FlagACK] in separate pending slots.
+			2: { // B calls Close() (RFC 9293 Figure 12 step 4). Goes to LAST-ACK.
+				// Regression check: Close() must queue FIN|ACK as a single combined flag
+				// in pending[0], not as [FlagFIN, FlagACK] in separate pending slots.
 				Action:   tcp.StepBCloses,
 				AState:   tcp.StateFinWait2, // A unchanged.
 				BState:   tcp.StateLastAck,
@@ -79,7 +78,7 @@ func TestExchangeTest_figure12(t *testing.T) {
 		InitStateA: tcp.StateEstablished,
 		InitStateB: tcp.StateEstablished,
 		Steps: []tcp.SegmentStep{
-			0: { // A sends FIN|ACK to B.
+			0: { // A sends FIN|ACK to B (RFC 9293 Figure 12 step 2).
 				Seg:      tcp.Segment{SEQ: issA, ACK: issB, Flags: FINACK, WND: windowA},
 				Action:   tcp.StepASends,
 				AState:   tcp.StateFinWait1,
@@ -87,15 +86,20 @@ func TestExchangeTest_figure12(t *testing.T) {
 				APending: nil,
 				BPending: &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: tcp.FlagACK, WND: windowB},
 			},
-			1: { // B sends ACK to A. (Auto-queues FIN|ACK in CLOSE-WAIT)
+			1: { // B sends ACK to A (RFC 9293 Figure 12 step 3). B stays in CLOSE-WAIT.
 				Seg:      tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: tcp.FlagACK, WND: windowB},
 				Action:   tcp.StepBSends,
 				AState:   tcp.StateFinWait2,
 				BState:   tcp.StateCloseWait,
 				APending: &tcp.Segment{SEQ: issA + 1, ACK: issB, Flags: tcp.FlagACK, WND: windowA}, // TODO: should be nil?
+			},
+			2: { // B calls Close() (RFC 9293 Figure 12 step 4). B goes to LAST-ACK.
+				Action:   tcp.StepBCloses,
+				AState:   tcp.StateFinWait2,
+				BState:   tcp.StateLastAck,
 				BPending: &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: FINACK, WND: windowB},
 			},
-			2: { // B sends FIN|ACK to A.
+			3: { // B sends FIN|ACK to A (RFC 9293 Figure 12 step 4 cont).
 				Seg:      tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: FINACK, WND: windowB},
 				Action:   tcp.StepBSends,
 				AState:   tcp.StateTimeWait,
@@ -103,7 +107,7 @@ func TestExchangeTest_figure12(t *testing.T) {
 				APending: &tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
 				BPending: nil,
 			},
-			3: { // A sends final ACK to B.
+			4: { // A sends final ACK to B (RFC 9293 Figure 12 step 5).
 				Seg:      tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
 				Action:   tcp.StepASends,
 				AState:   tcp.StateTimeWait,

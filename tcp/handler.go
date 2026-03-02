@@ -241,6 +241,12 @@ func (h *Handler) Send(b []byte) (int, error) {
 	}
 	awaitingSyn := h.AwaitingSynSend()
 	buffered := h.bufTx.BufferedUnsent()
+	if h.scb.State() == StateCloseWait && !h.closing && buffered == 0 && !h.scb.HasPending() {
+		// Remote closed with no application data left to send: initiate our own close.
+		// Checked here (not in Recv) so the application can still write in CLOSE-WAIT
+		// before Send is called, implementing the half-close per RFC 9293 §3.5.
+		h.closing = true
+	}
 	if !awaitingSyn && buffered == 0 && !h.closing && !h.scb.HasPending() {
 		// Early nop short circuit.
 		return 0, nil
@@ -249,8 +255,10 @@ func (h *Handler) Send(b []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if buffered == 0 && h.closing {
-		// If Close called and no more data to be sent, terminate connection!
+	if buffered == 0 && h.closing && (h.scb.State() != StateCloseWait || !h.scb.HasPending()) {
+		// If Close called and no more data to be sent, terminate connection.
+		// In CLOSE-WAIT: wait until the pending ACK is sent first, since scb.Close()
+		// overwrites pending with [FIN|ACK] (unlike ESTABLISHED which merges via bitmask).
 		h.closing = false
 		err = h.scb.Close()
 		if err != nil {
