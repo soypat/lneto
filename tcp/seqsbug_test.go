@@ -365,11 +365,11 @@ func TestWindowReject_ChallengeACK(t *testing.T) {
 // underlying ACK suppression still causes unnecessary retransmission delays.
 func TestPendingSegment_ACKSuppressedWhenWindowFull(t *testing.T) {
 	const (
-		localISS  Value = 1000
-		remoteISS Value = 5000
-		dataInFlight Size = 500
-		remoteWND Size = 500 // == dataInFlight, so inFlight >= WND → maxSend()=0
-		localWND  Size = 1024
+		localISS     Value = 1000
+		remoteISS    Value = 5000
+		dataInFlight Size  = 500
+		remoteWND    Size  = 500 // == dataInFlight, so inFlight >= WND → maxSend()=0
+		localWND     Size  = 1024
 	)
 
 	setup := func() ControlBlock {
@@ -469,4 +469,81 @@ func TestSYNPreestablished_StillAllowed(t *testing.T) {
 			t.Fatalf("state = %s; want SYN-RCVD", tcb.State())
 		}
 	})
+}
+
+func TestRecvAckUpdatesUnaCorrectly(t *testing.T) {
+	// Create a TCB in ESTABLISHED state with some data sent but not yet acknowledged.
+	tcb := &ControlBlock{
+		_state: StateEstablished,
+		snd: sendSpace{
+			UNA: 1000,  // oldest unacknowledged sequence number
+			NXT: 2000,  // next sequence number to send (1000 bytes outstanding)
+			ISS: 500,   // initial send sequence number (not critical here)
+			WND: 65535, // large window to avoid window issues
+		},
+		rcv: recvSpace{
+			NXT: 3000, // any value, not used in these tests
+			WND: 65535,
+		},
+		// logger can be nil or a no-op for tests
+	}
+
+	// Helper to check that UNA stays at expected value after processing a segment.
+	checkUna := func(want Value, msg string) {
+		if got := tcb.snd.UNA; got != want {
+			t.Errorf("%s: UNA = %d, want %d", msg, got, want)
+		}
+	}
+
+	// 1. Send an old ACK (below current UNA) – should be silently accepted but not advance UNA.
+	oldAckSeg := Segment{
+		Flags: FlagACK,
+		ACK:   500, // less than UNA=1000
+		WND:   65535,
+		SEQ:   3000, // any acceptable sequence (within rcv window)
+	}
+	err := tcb.Recv(oldAckSeg)
+	if err != nil {
+		t.Errorf("old ACK returned error: %v, want nil (silent accept)", err)
+	}
+	checkUna(1000, "after old ACK")
+
+	// 2. Send an ACK for unsent data (beyond NXT) – should be rejected (error) and UNA unchanged.
+	futureAckSeg := Segment{
+		Flags: FlagACK,
+		ACK:   2500, // > NXT=2000
+		WND:   65535,
+		SEQ:   3000,
+	}
+	err = tcb.Recv(futureAckSeg)
+	if err == nil {
+		t.Error("ACK for unsent data returned nil, want error")
+	}
+	checkUna(1000, "after future ACK")
+
+	// 3. Send a valid ACK that acknowledges some, but not all, outstanding data.
+	validAckSeg := Segment{
+		Flags: FlagACK,
+		ACK:   1500, // between UNA and NXT
+		WND:   65535,
+		SEQ:   3000,
+	}
+	err = tcb.Recv(validAckSeg)
+	if err != nil {
+		t.Errorf("valid ACK returned error: %v, want nil", err)
+	}
+	checkUna(1500, "after valid ACK")
+
+	// 4. Send an ACK that acknowledges exactly all outstanding data (ACK == NXT).
+	allAckSeg := Segment{
+		Flags: FlagACK,
+		ACK:   2000, // == NXT
+		WND:   65535,
+		SEQ:   3000,
+	}
+	err = tcb.Recv(allAckSeg)
+	if err != nil {
+		t.Errorf("ACK == NXT returned error: %v, want nil", err)
+	}
+	checkUna(2000, "after ACK == NXT")
 }

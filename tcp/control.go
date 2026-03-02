@@ -305,7 +305,8 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 
 	// We accept the segment and update TCB state.
 	tcb.snd.WND = seg.WND
-	if seg.Flags.HasAny(FlagACK) {
+	if seg.Flags.HasAny(FlagACK) && tcb.snd.UNA.LessThan(seg.ACK) && seg.ACK.LessThanEq(tcb.snd.NXT) {
+		// Only update ACK if it advances UNA and is not in the future.
 		tcb.snd.UNA = seg.ACK
 	}
 	seglen := seg.LEN()
@@ -465,8 +466,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	// Special treatment of duplicate ACKs on established connection and of ACKs of unsent data.
 	// https://www.rfc-editor.org/rfc/rfc9293.html#section-3.10.7.4-2.5.2.2.2.3.2.1
 	case established && acksOld && !ctlOrDataSegment:
-		err = errDropSegment
-		tcb.pending[0] &= FlagFIN // Completely ignore duplicate ACKs but do not erase fin bit.
+		// We don't drop packet.
 		if isDebug {
 			tcb.debug("rcv:ACK-dup", slog.String("state", tcb._state.String()),
 				slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.una", uint64(tcb.snd.UNA)))
