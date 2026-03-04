@@ -562,6 +562,12 @@ func (tcb *ControlBlock) rstJump() Value {
 	return 100
 }
 
+// Retransmit resets snd.NXT back to snd.UNA, allowing the next PendingSegment
+// and Send calls to retransmit unacknowledged data. Must be paired with
+// ringTx.RetransmitFromUNA to rewind the transmit buffer.
+// Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
+func (tcb *ControlBlock) Retransmit() { tcb.snd.NXT = tcb.snd.UNA }
+
 // Abort sets ControlBlock state to Closed and resets all sequence numbers and pending flag.
 // No more data can be sent nor received after the connection is aborted until opened again.
 // An abort call prepares the connection for opening an active connection via a

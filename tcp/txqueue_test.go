@@ -84,7 +84,7 @@ func TestRingTx_op(t *testing.T) {
 					clear(opWriteData)
 				case opSend:
 					// oplen=num bytes to send in this operation.
-					nsgot, err := rtx.MakePacket(auxbuf[:oplen], currentSeq)
+					nsgot, err := rtx.MakePacket(auxbuf[:oplen], currentSeq, 0)
 					megafail := nsgot > nunsent
 					if err != nil && oplen <= nunsent && availPkt > 0 {
 						t.Fatal(itest, iop, err)
@@ -138,17 +138,17 @@ func TestSentlist_multi(t *testing.T) {
 	sl.Reset(3, 0)
 
 	// Test multi packet x2.
-	p1 := sl.AddPacket(5, 0, bufsize, 0)
-	p2 := sl.AddPacket(5, p1.end, bufsize, p1.endSeq())
+	p1 := sl.AddPacket(5, 0, bufsize, 0, 0)
+	p2 := sl.AddPacket(5, p1.end, bufsize, p1.endSeq(), 0)
 	sl.RecvAck(Value(p2.size+p1.size), bufsize)
 	if sl.Oldest() != nil {
 		t.Fatal("expected full ack")
 	}
 	// multi packet x3.
 	sl.Reset(3, 0)
-	p1 = sl.AddPacket(3, 0, bufsize, 0)
-	p2 = sl.AddPacket(3, p1.end, bufsize, p1.endSeq())
-	p3 := sl.AddPacket(4, p2.end, bufsize, p2.endSeq())
+	p1 = sl.AddPacket(3, 0, bufsize, 0, 0)
+	p2 = sl.AddPacket(3, p1.end, bufsize, p1.endSeq(), 0)
+	p3 := sl.AddPacket(4, p2.end, bufsize, p2.endSeq(), 0)
 	sl.RecvAck(2, bufsize)
 	oldest := sl.Oldest()
 	if oldest != p1 {
@@ -167,7 +167,7 @@ func TestSentlist_simple(t *testing.T) {
 	// Test full ack.
 	const bufsize = 16
 	const pkt = 10
-	sl.AddPacket(pkt, 0, bufsize, 0)
+	sl.AddPacket(pkt, 0, bufsize, 0, 0)
 	if sl.Oldest() == nil || sl.Newest() != sl.Oldest() {
 		t.Error("expected same oldest/newest non-nil packet")
 	}
@@ -179,7 +179,7 @@ func TestSentlist_simple(t *testing.T) {
 	}
 
 	// Test partial ack.
-	sl.AddPacket(pkt, 0, bufsize, sl.ssn)
+	sl.AddPacket(pkt, 0, bufsize, sl.ssn, 0)
 	for i := Value(0); i < pkt-1; i++ {
 		ack++
 		sl.RecvAck(ack, bufsize)
@@ -239,7 +239,7 @@ func TestTxQueue_multipacket(t *testing.T) {
 			pktlen := rng.Intn(maxToPacket) + 1
 			pkt := rbuf[roff : roff+pktlen]
 			expectPkt := wbuf[roff : roff+pktlen]
-			ngot, err := rtx.MakePacket(pkt, seq)
+			ngot, err := rtx.MakePacket(pkt, seq, 0)
 			testQueueSanity(t, &rtx)
 			roff += ngot
 			seq += Value(ngot)
@@ -374,7 +374,7 @@ func TestTxQueue(t *testing.T) {
 					datalens = datalens[:0]
 					for rtx.BufferedUnsent() != 0 {
 						nbytes := rng.Intn(maxPacketSize-minBufferSize) + minBufferSize
-						n, err := rtx.MakePacket(readBuf[:nbytes], currentSeq)
+						n, err := rtx.MakePacket(readBuf[:nbytes], currentSeq, 0)
 						if err != nil {
 							t.Fatal(err)
 						} else if n == 0 {
@@ -572,7 +572,7 @@ func operateOnRing(t *testing.T, rtx *ringTx, write, readPacket, aux []byte, new
 		if wantRead != len(wantBufRead) {
 			t.Fatalf("miscalculated expect read %d != %d", wantRead, len(wantBufRead))
 		}
-		n, err := rtx.MakePacket(readPacket, newPacketSeq)
+		n, err := rtx.MakePacket(readPacket, newPacketSeq, 0)
 		if err != nil && wantRead != 0 {
 			t.Errorf("error reading: %s", err)
 		} else if n != wantRead {

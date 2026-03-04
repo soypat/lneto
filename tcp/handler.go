@@ -13,7 +13,6 @@ import (
 // Handler is a low level TCP handling data structure. It implements logic
 // related to data buffering, frame sequencing and connection state handling.
 // Does NOT implement IP related logic, so no CRC calculation/validation or pseudo header logic.
-// Does NOT implement connection lifetime handling, so NO deadlines, keepalives, backoffs or anything that requires use of time package.
 //
 // See [Conn] for a higher level abstraction of a TCP connection, and see [ControlBlock] for the lower level bits of a TCP connection.
 type Handler struct {
@@ -25,12 +24,24 @@ type Handler struct {
 	validator  lneto.Validator
 	localPort  uint16
 	remotePort uint16
-	// connid is a conenction counter that is incremented each time a new
-	// connection is established via Open calls. This disambiguate's whether
+	// connid is a connection counter that is incremented each time a new
+	// connection is established via Open calls. This disambiguates whether
 	// Read and Write calls belong to the current connection.
 
 	optcodec OptionCodec
 	closing  bool
+
+	// Retransmission timer state — all uint32 milliseconds, no time package needed.
+	// rto is the current retransmission timeout in ms; starts at 1000 per RFC 6298 §2.1.
+	rto uint32
+	// now is the current time in ms, set by Conn before Send/Recv via SetNow.
+	now uint32
+	// lastACK is the last ACK value seen, for duplicate ACK detection (RFC 5681 §3.2).
+	lastACK Value
+	// dupACKs counts consecutive duplicate ACKs for fast retransmit (RFC 5681 §3.2).
+	dupACKs uint8
+	// nRetx counts consecutive retransmissions for exponential backoff (RFC 6298 §5.5).
+	nRetx uint8
 }
 
 func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
@@ -127,10 +138,18 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 		validator:  h.validator,
 		logger:     h.logger,
 		closing:    false,
+		rto:        rtoInitial, // RFC 6298 §2.1: initial RTO = 1s.
 	}
 	h.bufTx.ResetOrReuse(nil, 0, iss)
 	h.bufRx.Reset()
 }
+
+const (
+	// rtoInitial is the initial RTO per RFC 6298 §2.1: "the sender SHOULD set RTO <- 1 second".
+	rtoInitial uint32 = 1000
+	// rtoMax caps exponential backoff per RFC 6298 §2.5.
+	rtoMax uint32 = 60_000
+)
 
 // Recv receives an incoming TCP packet frame with the first byte being the first octet of the TCP frame.
 // The [Handler]'s internal state is updated if the packet is admitted successfully.
@@ -189,8 +208,29 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		}
 	}
 	if segIncoming.Flags.HasAny(FlagACK) {
+		prevUNA := h.scb.snd.UNA
 		// Update TX ring buffer to free up acked data.
 		h.bufTx.RecvACK(segIncoming.ACK)
+		// Dup-ACK tracking per RFC 5681 §3.2 and RTO reset per RFC 6298 §5.3.
+		if segIncoming.ACK != prevUNA && prevUNA.LessThan(segIncoming.ACK) {
+			// New data acknowledged — reset RTO and dup-ACK counter.
+			h.rto = rtoInitial // RFC 6298 §5.3.
+			h.nRetx = 0
+			h.dupACKs = 0
+			h.lastACK = segIncoming.ACK
+		} else if segIncoming.ACK == h.lastACK && segIncoming.DATALEN == 0 &&
+			!segIncoming.Flags.HasAny(FlagSYN|FlagFIN) && h.bufTx.BufferedSent() > 0 {
+			// Duplicate ACK per RFC 5681 §2: same ACK, no data, no SYN/FIN,
+			// and receiver has outstanding data.
+			h.dupACKs++
+			if h.dupACKs == 3 {
+				// RFC 5681 §3.2: "After receiving 3 duplicate ACKs [...]
+				// TCP performs a retransmission of what appears to be the
+				// missing segment, without waiting for the retransmission
+				// timer to expire."
+				h.triggerRetransmit()
+			}
+		}
 	}
 	if segIncoming.Flags.HasAny(FlagSYN) {
 		// Parse remote MSS from TCP options.
@@ -285,7 +325,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 			return 0, nil
 		}
 		if segment.DATALEN > 0 {
-			n, err := h.bufTx.MakePacket(b[sizeHeaderTCP:sizeHeaderTCP+segment.DATALEN], segment.SEQ)
+			n, err := h.bufTx.MakePacket(b[sizeHeaderTCP:sizeHeaderTCP+segment.DATALEN], segment.SEQ, h.now)
 			if err != nil {
 				return 0, err
 			} else if n != int(segment.DATALEN) {
@@ -427,6 +467,36 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// SetNow sets the current time in milliseconds for retransmission timing.
+// Must be called by Conn before Send/Recv operations.
+func (h *Handler) SetNow(ms uint32) { h.now = ms }
+
+// ShouldRetransmit returns true if the retransmission timeout has expired
+// on the oldest unacknowledged segment. Per RFC 6298 §5.1 and §5.4.
+func (h *Handler) ShouldRetransmit() bool {
+	oldest := h.bufTx.slist.Oldest()
+	if oldest == nil {
+		return false
+	}
+	return h.now-oldest.sentAt >= h.rto
+}
+
+// triggerRetransmit rewinds the transmit queue and control block so the next
+// Send call retransmits from snd.UNA. Per RFC 9293 §3.10.8, RFC 6298 §5.4–5.5.
+func (h *Handler) triggerRetransmit() {
+	h.scb.Retransmit()
+	h.bufTx.RetransmitFromUNA()
+	// RFC 6298 §5.5: "The host MUST set RTO <- RTO * 2 ('back off the timer')."
+	h.nRetx++
+	h.rto *= 2
+	if h.rto > rtoMax {
+		h.rto = rtoMax
+	}
+	h.dupACKs = 0
+	h.debug("tcp.Handler:retransmit", slog.Uint64("port", uint64(h.localPort)),
+		slog.Uint64("rto", uint64(h.rto)), slog.Uint64("nRetx", uint64(h.nRetx)))
 }
 
 func errstr(err error) string {
