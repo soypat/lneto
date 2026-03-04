@@ -241,6 +241,12 @@ func (h *Handler) Send(b []byte) (int, error) {
 	}
 	awaitingSyn := h.AwaitingSynSend()
 	buffered := h.bufTx.BufferedUnsent()
+	if h.scb.State() == StateCloseWait && !h.closing && buffered == 0 && !h.scb.HasPending() {
+		// Remote closed with no application data left to send: initiate our own close.
+		// Checked here (not in Recv) so the application can still write in CLOSE-WAIT
+		// before Send is called, implementing the half-close per RFC 9293 §3.5.
+		h.closing = true
+	}
 	if !awaitingSyn && buffered == 0 && !h.closing && !h.scb.HasPending() {
 		// Early nop short circuit.
 		return 0, nil
@@ -249,8 +255,10 @@ func (h *Handler) Send(b []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if buffered == 0 && h.closing {
-		// If Close called and no more data to be sent, terminate connection!
+	if buffered == 0 && h.closing && (h.scb.State() != StateCloseWait || !h.scb.HasPending()) {
+		// If Close called and no more data to be sent, terminate connection.
+		// In CLOSE-WAIT: wait until the pending ACK is sent first, since scb.Close()
+		// overwrites pending with [FIN|ACK] (unlike ESTABLISHED which merges via bitmask).
 		h.closing = false
 		err = h.scb.Close()
 		if err != nil {
@@ -307,21 +315,6 @@ func (h *Handler) Send(b []byte) (int, error) {
 	return datalen, nil
 }
 
-// FreeTx returns the amount of space free in the transmit buffer. A call to [Handler.Write] with a larger buffer will fail.
-func (h *Handler) FreeTx() int {
-	return h.bufTx.Free()
-}
-
-// FreeRx returns the amount of space free in the receive buffer.
-func (h *Handler) FreeRx() int {
-	return h.bufRx.Free()
-}
-
-// SizeRx returns the size of the TCP receive ring buffer.
-func (h *Handler) SizeRx() int {
-	return h.bufRx.Size()
-}
-
 // Write implements [io.Writer] by copying b to a internal buffer to be sent over the network on the next
 // [Handler.Send] call that can send data to remote peer. Use [Handler.Free] to know the maximum length the argument slice can be before erroring.
 func (h *Handler) Write(b []byte) (int, error) {
@@ -376,22 +369,34 @@ func (h *Handler) maybeQueueWindowUpdate() {
 	}
 }
 
-// BufferedInput returns amount of bytes buffered in receive(input) buffer and ready to read
-// with a [Handler.Read] call.
+// SizeOutput returns the total size of the transmit ring buffer.
+func (h *Handler) SizeOutput() int {
+	return h.bufTx.Size()
+}
+
+// SizeInput returns the total size of the receive ring buffer.
+func (h *Handler) SizeInput() int {
+	return h.bufRx.Size()
+}
+
+// BufferedInput returns the number of unread bytes in the receive buffer.
 func (h *Handler) BufferedInput() int {
 	return h.bufRx.Buffered()
 }
 
-// BufferedUnsent returns the number of bytes in the socket's transmit(output) buffer
-// that has yet to be sent.
+// BufferedUnsent returns the number of written but unsent bytes in the transmit buffer.
 func (h *Handler) BufferedUnsent() int {
 	return h.bufTx.BufferedUnsent()
 }
 
-// AvailableOutput returns amount of bytes available to write to output
-// before [Handler.Write] returns an error.
-func (h *Handler) AvailableOutput() int {
+// FreeOutput returns the number of free bytes in the transmit buffer.
+func (h *Handler) FreeOutput() int {
 	return h.bufTx.Free()
+}
+
+// FreeInput returns the number of free bytes in the receive buffer.
+func (h *Handler) FreeInput() int {
+	return h.bufRx.Free()
 }
 
 // AwaitingSynResponse returns true if the Handler is an active client opened with [Handler.OpenActive] and has already sent out the first SYN packet to the remote client.
