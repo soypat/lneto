@@ -287,8 +287,8 @@ func (tst *tester) TestTCPHandshake(stack1, stack2 *StackAsync) {
 func (tst *tester) TestTCPEstablishedSingleData(srcStack, dstStack *StackAsync, srcConn, dstConn *tcp.Conn, sendData []byte) {
 	t := tst.t
 	t.Helper()
-	availTx := srcConn.AvailableOutput()
-	availRx := dstConn.AvailableInput()
+	availTx := srcConn.FreeOutput()
+	availRx := dstConn.FreeInput()
 	if availTx < len(sendData) {
 		t.Fatal("insufficient space for write call", availTx, len(sendData))
 	} else if len(sendData) <= 0 {

@@ -111,18 +111,21 @@ func (conn *Conn) BufferedUnsent() int {
 	return conn.h.BufferedUnsent()
 }
 
-func (conn *Conn) AvailableInput() int {
+// FreeInput returns the number of free bytes in the socket's receive(input) buffer.
+// The TCP window mechanism advertises this space to the remote peer,
+// preventing the sender from transmitting more data than the buffer can hold.
+func (conn *Conn) FreeInput() int {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	return conn.h.FreeRx()
+	return conn.h.FreeInput()
 }
 
-// AvailableOutput returns amount of bytes available to write to output
-// before [Conn.Write] returns an error due to insufficient space to store outgoing data.
-func (conn *Conn) AvailableOutput() int {
+// FreeOutput returns the number of free bytes in the socket's transmit(output) buffer.
+// This is the amount of data that can be written via [Conn.Write] before it blocks.
+func (conn *Conn) FreeOutput() int {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	return conn.h.AvailableOutput()
+	return conn.h.FreeOutput()
 }
 
 // OpenActive opens a connection to a remote peer with a known IP address and port combination.

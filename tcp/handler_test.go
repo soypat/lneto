@@ -266,7 +266,7 @@ func TestTxBufferFreedOnACK(t *testing.T) {
 	establish(t, client, server, rawbuf[:])
 
 	// Record initial available space.
-	initialAvailable := client.AvailableOutput()
+	initialAvailable := client.FreeOutput()
 	if initialAvailable == 0 {
 		t.Fatal("expected non-zero initial available output")
 	}
@@ -284,7 +284,7 @@ func TestTxBufferFreedOnACK(t *testing.T) {
 	}
 
 	// Available space should have decreased.
-	afterWriteAvailable := client.AvailableOutput()
+	afterWriteAvailable := client.FreeOutput()
 	if afterWriteAvailable >= initialAvailable {
 		t.Fatalf("expected available to decrease after write: before=%d, after=%d",
 			initialAvailable, afterWriteAvailable)
@@ -303,7 +303,7 @@ func TestTxBufferFreedOnACK(t *testing.T) {
 
 	// After sending, data moves from "unsent" to "sent" - available should still be reduced
 	// until we receive an ACK.
-	afterSendAvailable := client.AvailableOutput()
+	afterSendAvailable := client.FreeOutput()
 
 	// Server receives DATA.
 	err = server.Recv(dataPacket)
@@ -329,7 +329,7 @@ func TestTxBufferFreedOnACK(t *testing.T) {
 
 	// THE BUG: After receiving ACK, the TX buffer should be freed.
 	// Without the fix, AvailableOutput() stays at the post-send value.
-	afterAckAvailable := client.AvailableOutput()
+	afterAckAvailable := client.FreeOutput()
 
 	if afterAckAvailable <= afterSendAvailable {
 		t.Fatalf("BUG (issue #22): TX buffer not freed after receiving ACK\n"+
@@ -384,7 +384,7 @@ func TestWindowUpdateAfterRead(t *testing.T) {
 	establish(t, client, server, rawbuf[:])
 
 	// Fill the server's RX buffer completely (without reading).
-	fillData := make([]byte, server.FreeRx())
+	fillData := make([]byte, server.FreeInput())
 	n, err := client.Write(fillData)
 	if err != nil {
 		t.Fatal("client write:", err)
@@ -400,8 +400,8 @@ func TestWindowUpdateAfterRead(t *testing.T) {
 	if err != nil {
 		t.Fatal("server recv:", err)
 	}
-	if server.FreeRx() != 0 {
-		t.Fatalf("expected server RX buffer full, got %d free", server.FreeRx())
+	if server.FreeInput() != 0 {
+		t.Fatalf("expected server RX buffer full, got %d free", server.FreeInput())
 	}
 
 	// Server sends ACK — should advertise Window=0.
@@ -451,7 +451,7 @@ func TestWindowUpdateAfterRead(t *testing.T) {
 	if wnd := wndFrm.WindowSize(); wnd == 0 {
 		t.Fatal("BUG: window update ACK still has Window=0")
 	}
-	t.Logf("window update sent: Window=%d (buffer free=%d)", wndFrm.WindowSize(), server.FreeRx())
+	t.Logf("window update sent: Window=%d (buffer free=%d)", wndFrm.WindowSize(), server.FreeInput())
 }
 
 // TestWindowUpdateSWSAvoidance verifies that small reads that free less than
@@ -486,7 +486,7 @@ func TestWindowUpdateSWSAvoidance(t *testing.T) {
 	establish(t, client, server, rawbuf[:])
 
 	// Fill most of the server's RX buffer (leave a tiny amount free).
-	fillSize := server.FreeRx() - 10
+	fillSize := server.FreeInput() - 10
 	fillData := make([]byte, fillSize)
 	for i := range fillData {
 		fillData[i] = byte(i)
@@ -542,7 +542,7 @@ func TestWindowUpdateSWSAvoidance(t *testing.T) {
 		t.Logf("NOTE: window update sent after small read (freed %d of %d buffer)", len(smallRead), rxBufSize)
 		// This is acceptable if the threshold is met, but for SWS avoidance
 		// we expect no update when the freed increment is < bufSize/2.
-		freeAfterRead := Size(server.FreeRx())
+		freeAfterRead := Size(server.FreeInput())
 		if freeAfterRead < Size(rxBufSize/2) {
 			t.Fatalf("SWS violation: window update sent when free=%d < bufSize/2=%d", freeAfterRead, rxBufSize/2)
 		}
