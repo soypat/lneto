@@ -185,6 +185,7 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		return nil
 	}
 	prevState := h.scb.State()
+	prevUNA := h.scb.snd.UNA // Capture before Recv updates snd.UNA (RFC 6298 §5.3).
 	err = h.scb.Recv(segIncoming)
 	if err != nil {
 		if h.scb.State() == StateClosed {
@@ -208,7 +209,6 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		}
 	}
 	if segIncoming.Flags.HasAny(FlagACK) {
-		prevUNA := h.scb.snd.UNA
 		// Update TX ring buffer to free up acked data.
 		h.bufTx.RecvACK(segIncoming.ACK)
 		// Dup-ACK tracking per RFC 5681 §3.2 and RTO reset per RFC 6298 §5.3.
