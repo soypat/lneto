@@ -597,6 +597,73 @@ func TestIssue19(t *testing.T) {
 // TestRcvFinWait2 tests rcvFinWait2 behavior per RFC 9293 §3.10.7.4.
 // In FIN-WAIT-2, the local side has sent FIN and received its ACK.
 // The remote side has NOT closed yet and may still send data or ACKs.
+// TestFinWait1_PartialACK_StaysInFinWait1 tests that receiving an ACK in FIN-WAIT-1
+// that acknowledges data but NOT the FIN does not transition to FIN-WAIT-2.
+// This is a regression test for a bug observed in monitor.log where lneto sent
+// data followed by FIN, received a stale ACK covering only the data, and
+// incorrectly entered FIN-WAIT-2. Per RFC 9293 §3.10.7.4 step 5, FIN-WAIT-2
+// is entered only "if the FIN segment is now acknowledged."
+func TestFinWait1_PartialACK_StaysInFinWait1(t *testing.T) {
+	const windowA, windowB = 1024, 64240
+	const issA, issB = 100, 300
+	const dataLen = 192
+
+	var tcb tcp.ControlBlock
+	tcb.HelperInitState(tcp.StateEstablished, issA, issA, windowA)
+	tcb.HelperInitRcv(issB, issB, windowB)
+
+	// Send data segment (like MQTT publish).
+	err := tcb.Send(tcp.Segment{SEQ: issA, ACK: issB, Flags: PSHACK, WND: windowA, DATALEN: dataLen})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Close connection — queues FIN.
+	err = tcb.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Send the pending FIN|ACK.
+	seg, ok := tcb.PendingSegment(0)
+	if !ok {
+		t.Fatal("expected pending FIN|ACK")
+	}
+	if !seg.Flags.HasAll(FINACK) {
+		t.Fatalf("expected FIN|ACK; got %s", seg.Flags)
+	}
+	err = tcb.Send(seg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tcb.State() != tcp.StateFinWait1 {
+		t.Fatalf("expected FIN-WAIT-1; got %s", tcb.State())
+	}
+	// snd.NXT is now issA + dataLen + 1 (data + FIN).
+
+	// Receive ACK that covers the data but NOT the FIN (seg.ack = issA + dataLen).
+	// This is what the remote sends when it received the data but the FIN was lost.
+	err = tcb.Recv(tcp.Segment{SEQ: issB, ACK: tcp.Value(issA + dataLen), Flags: tcp.FlagACK, WND: windowB})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Bug: old code transitions to FIN-WAIT-2 here.
+	// Correct: must stay in FIN-WAIT-1 because FIN is not yet acknowledged.
+	if tcb.State() != tcp.StateFinWait1 {
+		t.Fatalf("expected FIN-WAIT-1 (FIN not yet ACKed); got %s", tcb.State())
+	}
+
+	// Now receive ACK that covers the FIN (seg.ack = issA + dataLen + 1).
+	err = tcb.Recv(tcp.Segment{SEQ: issB, ACK: tcp.Value(issA + dataLen + 1), Flags: tcp.FlagACK, WND: windowB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tcb.State() != tcp.StateFinWait2 {
+		t.Fatalf("expected FIN-WAIT-2 (FIN now ACKed); got %s", tcb.State())
+	}
+}
+
 func TestRcvFinWait2(t *testing.T) {
 	const windowA, windowB = 1000, 1000
 	const issA, issB = 100, 300

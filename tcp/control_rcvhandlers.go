@@ -89,9 +89,11 @@ func (tcb *ControlBlock) rcvFinWait1(seg Segment) (pending Flags, err error) {
 		tcb._state = StateTimeWait
 	case hasFin:
 		tcb._state = StateClosing
-	case hasAck:
-		// TODO(soypat): Check if this branch does NOT need ACK queued. Online flowcharts say not needed.
+	case hasAck && seg.ACK == tcb.snd.NXT:
+		// RFC 9293 §3.10.7.4 step 5: enter FIN-WAIT-2 only if the FIN is now acknowledged.
 		tcb._state = StateFinWait2
+	case hasAck:
+		// Partial ACK: acknowledges data but not the FIN. Stay in FIN-WAIT-1.
 	default:
 		return 0, errFinwaitExpectedACK
 	}
