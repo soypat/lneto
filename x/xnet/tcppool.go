@@ -16,11 +16,11 @@ type TCPPool struct {
 	naqcuired      int
 	conns          []tcp.Conn
 	userData       []any
-	acquiredAt     []time.Time
-	closingAt      []time.Time
-	abortedAt      []time.Time
+	acquiredAt     []int64
+	closingAt      []int64
+	abortedAt      []int64
 	nextISS        tcp.Value
-	_now           func() time.Time
+	_now           func() int64
 	estbTimeout    time.Duration
 	closingTimeout time.Duration
 	logger         *slog.Logger
@@ -39,7 +39,11 @@ type TCPPoolConfig struct {
 
 	Logger     *slog.Logger
 	ConnLogger *slog.Logger
-	Now        func() time.Time
+
+	// NanoTime returns the current monotonic time in nanoseconds.
+	// Used for pool timeout tracking and passed to each [tcp.Conn] for
+	// retransmission timing (RFC 6298). If nil, defaults to time.Now().UnixNano().
+	NanoTime func() int64
 	// EstablishedTimeout sets the timeout for a TCP connection since it is acquired until it is established.
 	// If the connection does not establish in this time it will be closed by the pool.
 	EstablishedTimeout time.Duration
@@ -56,12 +60,12 @@ func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
 	}
 	n := cfg.PoolSize
 	pool := &TCPPool{
-		acquiredAt:     make([]time.Time, n),
-		closingAt:      make([]time.Time, n),
-		abortedAt:      make([]time.Time, n),
+		acquiredAt:     make([]int64, n),
+		closingAt:      make([]int64, n),
+		abortedAt:      make([]int64, n),
 		conns:          make([]tcp.Conn, n),
 		userData:       make([]any, n),
-		_now:           cfg.Now,
+		_now:           cfg.NanoTime,
 		estbTimeout:    cfg.EstablishedTimeout,
 		closingTimeout: cfg.ClosingTimeout,
 		logger:         cfg.Logger,
@@ -76,6 +80,7 @@ func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
 			TxBuf:             bufSpace[txOff : txOff+cfg.TxBufSize],
 			TxPacketQueueSize: cfg.QueueSize,
 			Logger:            cfg.ConnLogger,
+			NanoTime:          cfg.NanoTime,
 		})
 		if err != nil {
 			return nil, err
@@ -98,7 +103,7 @@ func (p *TCPPool) GetTCP() (conn *tcp.Conn, userData any, SuggestedISS tcp.Value
 	defer p.mu.Unlock()
 	p.debug("TCPPool:get")
 	for i := range p.conns {
-		if p.acquiredAt[i].IsZero() {
+		if p.acquiredAt[i] == 0 {
 			p.acquiredAt[i] = p.now()
 			p.nextISS += 1000
 			p.naqcuired++
@@ -116,9 +121,9 @@ func (p *TCPPool) PutTCP(conn *tcp.Conn) {
 		if &p.conns[i] == conn {
 			// p.mu.Lock()
 			p.conns[i].Abort()
-			p.acquiredAt[i] = time.Time{}
-			p.abortedAt[i] = time.Time{}
-			p.closingAt[i] = time.Time{}
+			p.acquiredAt[i] = 0
+			p.abortedAt[i] = 0
+			p.closingAt[i] = 0
 			p.naqcuired--
 			// p.mu.Unlock()
 			return
@@ -140,7 +145,7 @@ func (p *TCPPool) CheckTimeouts() {
 		// p.mu.Lock()
 		acq := p.acquiredAt[i]
 		// p.mu.Unlock()
-		if acq.IsZero() {
+		if acq == 0 {
 			continue
 		} else if st.IsPreestablished() && p.since(acq) > p.estbTimeout {
 			// Was acquired and did not reach establishment state so we close.
@@ -148,12 +153,12 @@ func (p *TCPPool) CheckTimeouts() {
 			conn.Close()
 		} else if st.IsClosed() || st.IsClosing() {
 			// p.mu.Lock()
-			if p.closingAt[i].IsZero() {
+			if p.closingAt[i] == 0 {
 				p.closingAt[i] = p.now()
-			} else if p.abortedAt[i].IsZero() && p.since(p.closingAt[i]) > p.closingTimeout {
+			} else if p.abortedAt[i] == 0 && p.since(p.closingAt[i]) > p.closingTimeout {
 				p.abortedAt[i] = p.now()
 				conn.Abort()
-			} else if !p.abortedAt[i].IsZero() && p.since(p.abortedAt[i]) > 10*time.Second {
+			} else if p.abortedAt[i] != 0 && p.since(p.abortedAt[i]) > 10*time.Second {
 				println("connection aborted and still not returned to TCPPool")
 				println("source", conn.LocalPort(), "remote", conn.RemotePort(), "state", conn.State().String())
 			}
@@ -161,16 +166,13 @@ func (p *TCPPool) CheckTimeouts() {
 	}
 }
 
-func (p *TCPPool) since(t time.Time) time.Duration {
-	if p._now == nil {
-		return time.Since(t)
-	}
-	return p._now().Sub(t)
+func (p *TCPPool) since(t int64) time.Duration {
+	return time.Duration(p.now() - t)
 }
 
-func (p *TCPPool) now() time.Time {
+func (p *TCPPool) now() int64 {
 	if p._now == nil {
-		return time.Now()
+		return time.Now().UnixNano()
 	}
 	return p._now()
 }

@@ -493,11 +493,24 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 		}
 
 	case established && acksUnsentData:
-		err = errDropSegment
-		tcb.pending[0] |= FlagACK // Send ACK for unsent data; |= preserves any pending FIN.
-		if isDebug {
-			tcb.debug("rcv:ACK-unsent", slog.String("state", tcb._state.String()),
-				slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)))
+		// After Retransmit() rewinds snd.NXT to snd.UNA, the remote may ACK
+		// data it received pre-rewind — a valid cumulative ACK that exceeds
+		// the rewound snd.NXT. Detect this case (NXT==UNA means rewind active)
+		// and accept the ACK if within the send window.
+		retransmitActive := tcb.snd.NXT == tcb.snd.UNA
+		if retransmitActive && seg.ACK.InWindow(tcb.snd.UNA, tcb.snd.WND) {
+			tcb.snd.NXT = seg.ACK
+			if isDebug {
+				tcb.debug("rcv:ACK-advance-nxt", slog.String("state", tcb._state.String()),
+					slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)))
+			}
+		} else {
+			err = errDropSegment
+			tcb.pending[0] |= FlagACK // Send ACK for unsent data; |= preserves any pending FIN.
+			if isDebug {
+				tcb.debug("rcv:ACK-unsent", slog.String("state", tcb._state.String()),
+					slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)))
+			}
 		}
 
 	case preestablished && (acksOld || acksUnsentData):
@@ -561,6 +574,12 @@ func (tcb *ControlBlock) handleRST(seq Value) error {
 func (tcb *ControlBlock) rstJump() Value {
 	return 100
 }
+
+// Retransmit resets snd.NXT back to snd.UNA, allowing the next PendingSegment
+// and Send calls to retransmit unacknowledged data. Must be paired with
+// ringTx.RetransmitFromUNA to rewind the transmit buffer.
+// Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
+func (tcb *ControlBlock) Retransmit() { tcb.snd.NXT = tcb.snd.UNA }
 
 // Abort sets ControlBlock state to Closed and resets all sequence numbers and pending flag.
 // No more data can be sent nor received after the connection is aborted until opened again.

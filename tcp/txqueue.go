@@ -34,7 +34,8 @@ type ringTx struct {
 	iss       Value
 }
 
-// ringidx represents packet data inside RingTx
+// ringidx represents packet data inside RingTx.
+// Part of the retransmission queue required by RFC 9293 §3.4, §3.10.8.
 type ringidx struct {
 	// off is data start offset of packet data inside buf. Follows [internal.Ring] semantics.
 	off int
@@ -44,7 +45,9 @@ type ringidx struct {
 	seq Value
 	// size is the size of the packet in bytes.
 	size Size
-	// time is a measure of the instant of time message was sent at.
+	// sentAt is the time in milliseconds when this packet was first sent.
+	// Used for RTO detection per RFC 6298 §5.
+	sentAt uint32
 }
 
 // Reset resets the RingTx's internal state to use buf as the main ring buffer and creates or reuses
@@ -115,8 +118,9 @@ func (rtx *ringTx) Write(b []byte) (n int, err error) {
 }
 
 // MakePacket reads from the unsent data ring buffer and generates a new packet segment.
-// It fails if the sent packet queue is full.
-func (rtx *ringTx) MakePacket(b []byte, currentSeq Value) (int, error) {
+// It fails if the sent packet queue is full. sentAt is the current time in milliseconds,
+// stamped on the packet for RTO detection per RFC 6298 §5.1.
+func (rtx *ringTx) MakePacket(b []byte, currentSeq Value, sentAt uint32) (int, error) {
 	free := rtx.slist.Free()
 	if free == 0 {
 		return 0, lneto.ErrBufferFull
@@ -137,7 +141,7 @@ func (rtx *ringTx) MakePacket(b []byte, currentSeq Value) (int, error) {
 	// Start of buffer will be SENT, end of buffer will be UNSENT(or empty).
 	// Packet generated has offset at old unsentOff.
 	size := rtx.Size()
-	pkt := rtx.slist.AddPacket(n, oldUnsentOff, size, currentSeq)
+	pkt := rtx.slist.AddPacket(n, oldUnsentOff, size, currentSeq, sentAt)
 	if pkt.off != oldUnsentOff || pkt.end != addEnd(pkt.off, n, size) {
 		panic("invalid generated packet")
 	}
@@ -202,6 +206,32 @@ func (rtx *ringTx) ring(off, end int) internal.Ring {
 // addEnd adds two integers together and wraps the value around the ring's buffer size.
 // Result of addEnd will never be 0 unless arguments are (0,0).
 func (rtx *ringTx) addEnd(a, b int) int { return addEnd(a, b, len(rtx.rawbuf)) }
+
+// RetransmitFromUNA rewinds the transmit queue so that all sent-but-unacked
+// data becomes unsent again. The next MakePacket call will re-send starting
+// from snd.UNA. This is the smoltcp-style pointer-rewind approach: no extra
+// mode flag, Send() has a single code path.
+//
+// Implements "send the segment at the front of the retransmission queue"
+// per RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
+func (rtx *ringTx) RetransmitFromUNA() {
+	oldest := rtx.slist.Oldest()
+	if oldest == nil {
+		return // Nothing in the retransmission queue.
+	}
+	unaSeq := oldest.seq
+	if rtx.sentend != 0 {
+		// Merge sent region [sentoff, sentend) back into unsent.
+		rtx.unsentoff = rtx.sentoff
+		if rtx.unsentend == 0 {
+			rtx.unsentend = rtx.sentend
+		}
+		rtx.sentoff = 0
+		rtx.sentend = 0
+	}
+	// Clear packet metadata; sequence tracking restarts from UNA.
+	rtx.slist.Reset(cap(rtx.slist.pkts), unaSeq)
+}
 
 func (rtx *ringTx) consolidateBufs() {
 	unsentEmpty := rtx.unsentend == 0
@@ -293,7 +323,7 @@ func (sl *sentlist) Free() int {
 	return cap(sl.pkts) - len(sl.pkts)
 }
 
-func (sl *sentlist) AddPacket(datalen, off, bufsize int, seq Value) *ringidx {
+func (sl *sentlist) AddPacket(datalen, off, bufsize int, seq Value, sentAt uint32) *ringidx {
 	free := sl.Free()
 	if free == 0 {
 		panic("pkt buffer full")
@@ -303,10 +333,11 @@ func (sl *sentlist) AddPacket(datalen, off, bufsize int, seq Value) *ringidx {
 		panic("new sent packet offset must match last sent packet end")
 	}
 	sl.pkts = append(sl.pkts, ringidx{
-		off:  off,
-		end:  addEnd(off, datalen, bufsize),
-		seq:  seq,
-		size: Size(datalen),
+		off:    off,
+		end:    addEnd(off, datalen, bufsize),
+		seq:    seq,
+		size:   Size(datalen),
+		sentAt: sentAt,
 	})
 	return &sl.pkts[len(sl.pkts)-1]
 }
