@@ -228,3 +228,78 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 		doRequest(netip.AddrPortFrom(caddr, uint16(sv.Prand32())), 0, []byte("HTTP 1.0\r\n"))
 	}
 }
+
+func TestListener_Close(t *testing.T) {
+	const svPort uint16 = 80
+
+	pool, err := NewTCPPool(TCPPoolConfig{
+		PoolSize:           1,
+		QueueSize:          4,
+		TxBufSize:          512,
+		RxBufSize:          512,
+		EstablishedTimeout: 10e9,
+		ClosingTimeout:     10e9,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var listener tcp.Listener
+	err = listener.Reset(svPort, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listener.LocalPort() != svPort {
+		t.Fatalf("expected port %d, got %d", svPort, listener.LocalPort())
+	}
+
+	err = listener.Close()
+	if err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	if listener.LocalPort() != 0 {
+		t.Fatalf("port should be 0 after Close, got %d", listener.LocalPort())
+	}
+
+	// Double close should return net.ErrClosed.
+	err = listener.Close()
+	if err == nil {
+		t.Fatal("double Close should return error")
+	}
+}
+
+func TestListener_ResetAfterClose(t *testing.T) {
+	const svPort uint16 = 80
+
+	pool, err := NewTCPPool(TCPPoolConfig{
+		PoolSize:           1,
+		QueueSize:          4,
+		TxBufSize:          512,
+		RxBufSize:          512,
+		EstablishedTimeout: 10e9,
+		ClosingTimeout:     10e9,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var listener tcp.Listener
+	err = listener.Reset(svPort, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = listener.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should be able to Reset after Close.
+	err = listener.Reset(svPort, pool)
+	if err != nil {
+		t.Fatalf("Reset after Close failed: %v", err)
+	}
+	if listener.LocalPort() != svPort {
+		t.Fatalf("expected port %d after re-Reset, got %d", svPort, listener.LocalPort())
+	}
+}
