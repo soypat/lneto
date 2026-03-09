@@ -462,6 +462,74 @@ func TestHeader_RequestRoundTrip(t *testing.T) {
 	}
 }
 
+func TestParseResponse_StatusCodeOnly(t *testing.T) {
+	// Response with status code but no status text.
+	full := "HTTP/1.1 204\r\n\r\n"
+	var hdr Header
+	err := hdr.ParseBytes(true, []byte(full))
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, text := hdr.Status()
+	if string(code) != "204" {
+		t.Errorf("code = %q; want 204", code)
+	}
+	_ = text // Text may be empty, that's OK.
+}
+
+func TestParseResponse_HTTP10(t *testing.T) {
+	full := "HTTP/1.0 200 OK\r\nServer: old\r\n\r\n"
+	var hdr Header
+	err := hdr.ParseBytes(true, []byte(full))
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _ := hdr.Status()
+	if string(code) != "200" {
+		t.Errorf("code = %q; want 200", code)
+	}
+	if !hdr.ConnectionClose() {
+		t.Error("HTTP/1.0 response should default to connection close")
+	}
+}
+
+func TestParseRequest_NoProtocol(t *testing.T) {
+	// HTTP/0.9 style: just method and URI, no version.
+	full := "GET /simple\r\nHost: test\r\n\r\n"
+	var hdr Header
+	err := hdr.ParseBytes(false, []byte(full))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(hdr.Method()) != "GET" {
+		t.Errorf("method = %q; want GET", hdr.Method())
+	}
+	if string(hdr.RequestURI()) != "/simple" {
+		t.Errorf("URI = %q; want /simple", hdr.RequestURI())
+	}
+	if hdr.Protocol() != nil {
+		t.Errorf("protocol should be nil for version-less request, got %q", hdr.Protocol())
+	}
+}
+
+func TestCookie_QuotedValue(t *testing.T) {
+	var c Cookie
+	c.ParseBytes([]byte("token=\"abc123\""))
+	if string(c.Value()) != "abc123" {
+		t.Errorf("quoted value = %q; want abc123", c.Value())
+	}
+}
+
+func TestParseRequest_InvalidHeaderSpaceBeforeColon(t *testing.T) {
+	// RFC 7230 §3.2.4: No whitespace allowed between header name and colon.
+	full := "GET / HTTP/1.1\r\nBad Header : value\r\n\r\n"
+	var hdr Header
+	err := hdr.ParseBytes(false, []byte(full))
+	if err == nil {
+		t.Fatal("expected error for space before colon in header name")
+	}
+}
+
 func splitInto(s string, n int) []string {
 	var chunks []string
 	for len(s) > 0 {

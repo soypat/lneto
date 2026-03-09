@@ -122,6 +122,14 @@ go mod download github.com/soypat/lneto@latest
 - [`xcurl`](./examples/xcurl) Contains example of a application that uses lneto and can attach to a linux tap/bridge interface or a [httptap](./examples/httptap)(with -ihttp flag) to work. When using httptap can be run as non-root user to be debugged comfortably. 
     - Example: `go run ./examples/xcurl -host google.com -ihttp`
 
+### LLM Policy / AI Policy
+LLMs are a tool. As such they should be used carefully. The policy for this project is [covered in Oxide's RFD576](https://rfd.shared.oxide.computer/rfd/0576).
+
+Examples of LLM contribution in lneto:
+- https://github.com/soypat/lneto/pull/19 and https://github.com/soypat/lneto/pull/18: Egon told me he was using an LLM to find bugs in lneto before submitting these PRs.
+- https://github.com/soypat/lneto/commit/6b06cb1237071a0c22f86821db5aaa6135996e98: Writing tests to capture functionality in lneto that has been tested and works.
+- https://github.com/soypat/lneto/commit/7042a653a6e46999314c2e36dd5c868bcbc68908: adding mutex locking on tcp.Conn
+
 ### Quick run xcurl
 Run xcurl over httptap interface. Requires running two programs in separate shell/consoles in linux:
 ```sh
