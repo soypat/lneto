@@ -17,6 +17,8 @@ const (
 	// classCacheFlush is bit 15 of the Class field, indicating the record
 	// is from a unique source and should replace cached entries (RFC 6762 §10.2).
 	classCacheFlush uint16 = 1 << 15
+	mdnsTxID               = 0
+	mdnsFlags              = 0
 )
 
 type querierState uint8
@@ -39,7 +41,6 @@ type Client struct {
 
 	lport uint16
 	// Query State:
-	qtxid  uint16
 	qstate querierState
 	qcode  dns.RCode
 	qerr   error
@@ -70,16 +71,17 @@ func (c *Client) LocalPort() uint16 { return c.lport }
 func (c *Client) ConnectionID() *uint64 { return &c.connID }
 
 type ResolveConfig struct {
-	Questions []dns.Question
+	Questions  []dns.Question
+	MaxAnswers uint16
 }
 
-func (c *Client) StartResolve(txid uint16, cfg ResolveConfig) error {
+func (c *Client) StartResolve(cfg ResolveConfig) error {
 	nq := len(cfg.Questions)
-	if nq > math.MaxUint16 {
+	if nq > math.MaxUint16 || nq == 0 || cfg.MaxAnswers == 0 {
 		return lneto.ErrInvalidConfig
 	}
-	c.qreset(txid, querierSendQuery)
-	c.qmsg.LimitResourceDecoding(uint16(nq), uint16(nq), 0, 0)
+	c.qreset(querierSendQuery)
+	c.qmsg.LimitResourceDecoding(uint16(nq), cfg.MaxAnswers, 0, 0)
 	c.qmsg.AddQuestions(cfg.Questions)
 	return nil
 }
@@ -93,9 +95,8 @@ func (c *Client) reset(localport uint16) {
 }
 
 // qreset resets the current query state. It is only a partial reset of a Client.
-func (c *Client) qreset(txid uint16, state querierState) {
+func (c *Client) qreset(state querierState) {
 	c.qstate = state
-	c.qtxid = txid
 	c.qmsg.Reset()
 }
 
@@ -123,19 +124,17 @@ func (q *Client) Demux(carrierData []byte, frameOffset int) error {
 	f, err := dns.NewFrame(frame)
 	if err != nil {
 		return err
+	} else if f.TxID() != 0 {
+		return lneto.ErrPacketDrop
 	}
 	flags := f.Flags()
 	if flags.IsResponse() && q.qstate == querierAwaitResponse {
-		if f.TxID() != q.qtxid {
-			return lneto.ErrPacketDrop // Not for this transaction.
-		}
 		q.qcode = flags.ResponseCode()
 		// Decode response into our message, collecting answers.
-		q.qmsg.LimitResourceDecoding(0, f.ANCount(), 0, 0)
 		_, _, q.qerr = q.qmsg.Decode(frame)
 		if q.qerr != nil {
 			q.qstate = querierFailed
-			return err
+			return q.qerr
 		}
 		q.qstate = querierDone
 		return nil // success.
@@ -151,16 +150,15 @@ func (q *Client) encapsQuery(frame []byte) (int, error) {
 	if int(msglen) > len(frame) {
 		q.qerr = lneto.ErrShortBuffer
 		q.qstate = querierFailed
-		q.qreset(0, querierFailed)
 		return 0, q.qerr
 	}
 	// mDNS queries use txid=0 and no flags (RFC 6762 §18.1).
-	data, err := msg.AppendTo(frame[:0], q.qtxid, 0)
+	data, err := msg.AppendTo(frame[:0], mdnsTxID, mdnsFlags)
 	if err != nil {
 		q.qerr = err
 		q.qstate = querierFailed
 		return 0, err
-	} else if len(data) != len(frame) {
+	} else if len(data) != int(msglen) {
 		panic("bad dns length calculation") // panic since this is a big bug in lneto.
 	}
 	q.qstate = querierAwaitResponse
