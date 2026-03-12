@@ -278,12 +278,14 @@ func (h *Header) reuseOrAppend(tok headerSlice, value string) headerSlice {
 }
 
 func (h *Header) appendSlice(value string) headerSlice {
+	debuglog("http:appendslice:start")
 	free := h.hbuf.free()
 	if len(value) > free {
 		if h.flags.hasAny(flagNoBufferGrow) {
 			h.flags |= flagOOMReached
 			return headerSlice{}
 		}
+		debuglog("http:appendslice:grow-buf")
 		h.hbuf.buf = slices.Grow(h.hbuf.buf, len(value)+1) // Grow 1 beyond due to slice validity.
 	}
 	h.flags |= flagMangledBuffer

@@ -6,22 +6,6 @@ import (
 	"github.com/soypat/lneto/dns"
 )
 
-// mDNS constants per RFC 6762.
-const (
-	// Port is the mDNS UDP port (RFC 6762 §1).
-	Port = 5353
-
-	// Default TTL for mDNS records (RFC 6762 §11).
-	DefaultTTL uint32 = 120
-
-	// classCacheFlush is bit 15 of the Class field, indicating the record
-	// is from a unique source and should replace cached entries (RFC 6762 §10.2).
-	classCacheFlush uint16 = 1 << 15
-)
-
-// IPv4 multicast address 224.0.0.251 in network byte order.
-var IPv4Multicast = [4]byte{224, 0, 0, 251}
-
 // Service describes a service to advertise via mDNS.
 // A single Service produces PTR, SRV, TXT, and A resource records.
 type Service struct {
@@ -72,15 +56,6 @@ func (s *Service) serviceType() dns.Name {
 }
 
 // Querier/Responder states.
-
-type querierState uint8
-
-const (
-	querierIdle          querierState = iota
-	querierSendQuery                  // Query ready to be sent.
-	querierAwaitResponse              // Waiting for answers.
-	querierDone                       // Answers collected.
-)
 
 type responderState uint8
 
