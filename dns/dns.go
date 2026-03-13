@@ -483,6 +483,20 @@ func NewName(domain string) (Name, error) {
 	return name, nil
 }
 
+// TrimLabels returns a Name sharing the same backing data with the first n labels removed.
+// For example, trimming 1 label from "My Web._http._tcp.local" yields "_http._tcp.local".
+// Returns an empty Name if n exceeds the number of labels.
+func (n Name) TrimLabels(skip int) Name {
+	off := 0
+	for i := 0; i < skip; i++ {
+		if off >= len(n.data) {
+			return Name{}
+		}
+		off += 1 + int(n.data[off])
+	}
+	return Name{data: n.data[off:]}
+}
+
 // Len returns the length over-the-wire of the encoded Name.
 func (n *Name) Len() uint16 {
 	if len(n.data) > math.MaxUint16 {

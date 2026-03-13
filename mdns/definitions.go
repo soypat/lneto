@@ -31,26 +31,17 @@ func (s *Service) ttl() uint32 {
 
 // serviceType extracts the service type portion of the instance name.
 // For "_http._tcp.local" it returns the same; for "My Web._http._tcp.local"
-// it returns "_http._tcp.local" by skipping the first label.
+// it returns "_http._tcp.local" by trimming the first label.
+// Returns a view into the original Name data — zero allocation.
 func (s *Service) serviceType() dns.Name {
-	// Skip first label (instance name) to get service type.
-	var labels int
 	var totalLabels int
 	s.Name.VisitLabels(func(label []byte) {
 		totalLabels++
 	})
 	if totalLabels <= 3 {
-		// Already a bare service type, no instance prefix.
 		return s.Name
 	}
-	var name dns.Name
-	s.Name.VisitLabels(func(label []byte) {
-		labels++
-		if labels > 1 {
-			name.AddLabel(string(label))
-		}
-	})
-	return name
+	return s.Name.TrimLabels(1)
 }
 
 // matchQuestion reports whether the question matches the given service.
@@ -82,8 +73,7 @@ func addServiceAnswers(dst *[]dns.Resource, q *dns.Question, svc *Service) {
 		if avail < 1 {
 			return
 		}
-		svcType := svc.serviceType()
-		growSlice(dst).SetPTR(svcType, dns.ClassINET, ttl, svc.Name)
+		setPTR(growSlice(dst), svc)
 	case dns.TypeSRV:
 		if avail < 2 {
 			return
@@ -104,8 +94,7 @@ func addServiceAnswers(dst *[]dns.Resource, q *dns.Question, svc *Service) {
 		if avail < 4 {
 			return
 		}
-		svcType := svc.serviceType()
-		growSlice(dst).SetPTR(svcType, dns.ClassINET, ttl, svc.Name)
+		setPTR(growSlice(dst), svc)
 		growSlice(dst).SetSRV(svc.Name, cacheFlush, ttl, 0, 0, svc.Port, svc.Host)
 		growSlice(dst).SetTXT(svc.Name, cacheFlush, ttl, txtData)
 		growSlice(dst).SetA(svc.Host, cacheFlush, ttl, svc.Addr)
@@ -117,4 +106,9 @@ func addServiceAnswers(dst *[]dns.Resource, q *dns.Question, svc *Service) {
 func growSlice[T any](s *[]T) *T {
 	*s = (*s)[:len(*s)+1]
 	return &(*s)[len(*s)-1]
+}
+
+func setPTR(ans *dns.Resource, svc *Service) {
+	svcType := svc.serviceType()
+	ans.SetPTR(svcType, dns.ClassINET, svc.ttl(), svc.Name)
 }
