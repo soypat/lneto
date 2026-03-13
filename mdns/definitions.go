@@ -1,10 +1,6 @@
 package mdns
 
 import (
-	"encoding/binary"
-	"errors"
-
-	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/dns"
 )
 
@@ -62,103 +58,47 @@ func matchQuestion(q *dns.Question, svc *Service) bool {
 	switch q.Type {
 	case dns.TypePTR:
 		svcType := svc.serviceType()
-		return namesEqual(&q.Name, &svcType)
+		return dns.NamesEqual(q.Name, svcType)
 	case dns.TypeSRV, dns.TypeTXT:
-		return namesEqual(&q.Name, &svc.Name)
+		return dns.NamesEqual(q.Name, svc.Name)
 	case dns.TypeA:
-		return namesEqual(&q.Name, &svc.Host)
+		return dns.NamesEqual(q.Name, svc.Host)
 	case dns.TypeALL:
 		svcType := svc.serviceType()
-		return namesEqual(&q.Name, &svc.Name) || namesEqual(&q.Name, &svc.Host) || namesEqual(&q.Name, &svcType)
+		return dns.NamesEqual(q.Name, svc.Name) || dns.NamesEqual(q.Name, svc.Host) || dns.NamesEqual(q.Name, svcType)
 	}
 	return false
 }
 
-// namesEqual compares two DNS names by their dotted representation.
-func namesEqual(a, b *dns.Name) bool {
-	la, lb := a.Len(), b.Len()
-	return la == lb && a.String() == b.String()
-}
+// addServiceAnswers adds the appropriate answer records for a matched question.
+// It grows ans in-place, reusing existing Resource buffers when available.
+func addServiceAnswers(dst *[]dns.Resource, q *dns.Question, svc *Service) {
 
-// addServiceAnswers adds the appropriate answer records for a matched question to msg.
-func addServiceAnswers(ans *[]dns.Resource, q *dns.Question, svc *Service) {
+	cacheFlush := dns.Class(uint16(dns.ClassINET) | classCacheFlush)
+	ttl := svc.ttl()
+	txtData := svc.TXTData
 	switch q.Type {
 	case dns.TypePTR:
-		addPTRRecord(ans, svc)
+		svcType := svc.serviceType()
+		growSlice(dst).SetPTR(svcType, dns.ClassINET, ttl, svc.Name)
 	case dns.TypeSRV:
-		addSRVRecord(ans, svc)
-		addARecord(ans, svc)
+		growSlice(dst).SetSRV(svc.Name, cacheFlush, ttl, 0, 0, svc.Port, svc.Host)
+		growSlice(dst).SetA(svc.Host, cacheFlush, ttl, svc.Addr)
 	case dns.TypeTXT:
-		addTXTRecord(ans, svc)
+		growSlice(dst).SetTXT(svc.Name, cacheFlush, ttl, txtData)
 	case dns.TypeA:
-		addARecord(ans, svc)
+		growSlice(dst).SetA(svc.Host, cacheFlush, ttl, svc.Addr)
 	case dns.TypeALL:
-		addAllRecords(ans, svc)
+		svcType := svc.serviceType()
+		growSlice(dst).SetPTR(svcType, dns.ClassINET, ttl, svc.Name)
+		growSlice(dst).SetSRV(svc.Name, cacheFlush, ttl, 0, 0, svc.Port, svc.Host)
+		growSlice(dst).SetTXT(svc.Name, cacheFlush, ttl, txtData)
+		growSlice(dst).SetA(svc.Host, cacheFlush, ttl, svc.Addr)
 	}
 }
 
-// addAllRecords adds PTR, SRV, TXT, and A records for a service.
-func addAllRecords(ans *[]dns.Resource, svc *Service) {
-	addPTRRecord(ans, svc)
-	addSRVRecord(ans, svc)
-	addTXTRecord(ans, svc)
-	addARecord(ans, svc)
+// growSlice grows the slice by one element and returns a pointer to the new last element.
+func growSlice[T any](s *[]T) *T {
+	*s = (*s)[:len(*s)+1]
+	return &(*s)[len(*s)-1]
 }
-
-func addPTRRecord(ans *[]dns.Resource, svc *Service) {
-	svcType := svc.serviceType()
-	var buf [255]byte
-	nameData, _ := svc.Name.AppendTo(buf[:0])
-	rsc := dns.NewResource(svcType, dns.TypePTR, dns.ClassINET, svc.ttl(), nameData)
-	*ans = append(*ans, rsc)
-}
-
-func addSRVRecord(ans *[]dns.Resource, svc *Service) {
-	var buf [6 + 255]byte
-	n, err := encodeSRVData(buf[:], 0, 0, svc.Port, svc.Host)
-	if err != nil {
-		return
-	}
-	class := dns.Class(uint16(dns.ClassINET) | classCacheFlush)
-	rsc := dns.NewResource(svc.Name, dns.TypeSRV, class, svc.ttl(), buf[:n])
-	*ans = append(*ans, rsc)
-}
-
-func addTXTRecord(ans *[]dns.Resource, svc *Service) {
-	txtData := svc.TXTData
-	if len(txtData) == 0 {
-		txtData = []byte{0}
-	}
-	class := dns.Class(uint16(dns.ClassINET) | classCacheFlush)
-	rsc := dns.NewResource(svc.Name, dns.TypeTXT, class, svc.ttl(), txtData)
-	*ans = append(*ans, rsc)
-}
-
-func addARecord(ans *[]dns.Resource, svc *Service) {
-	class := dns.Class(uint16(dns.ClassINET) | classCacheFlush)
-	rsc := dns.NewResource(svc.Host, dns.TypeA, class, svc.ttl(), svc.Addr[:])
-	*ans = append(*ans, rsc)
-}
-
-// encodeSRVData encodes SRV record data (priority, weight, port, target) into dst.
-// Returns bytes written. dst must be at least 6+target.Len() bytes.
-func encodeSRVData(dst []byte, priority, weight, port uint16, target dns.Name) (int, error) {
-	tlen := target.Len()
-	need := 6 + int(tlen)
-	if len(dst) < need {
-		return 0, lneto.ErrShortBuffer
-	}
-	binary.BigEndian.PutUint16(dst[0:2], priority)
-	binary.BigEndian.PutUint16(dst[2:4], weight)
-	binary.BigEndian.PutUint16(dst[4:6], port)
-	b, err := target.AppendTo(dst[:6])
-	if err != nil {
-		return 0, err
-	}
-	return len(b), nil
-}
-
-var (
-	errNoServices = errors.New("mdns: no services configured")
-	errNoQuery    = errors.New("mdns: no query questions provided")
-)

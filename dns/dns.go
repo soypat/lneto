@@ -681,6 +681,48 @@ func (dst *Resource) CopyFrom(r Resource) {
 	dst.data = append(dst.data[:0], r.data...)
 }
 
+// SetA sets an A (IPv4 address) resource record, reusing internal buffers.
+func (r *Resource) SetA(name Name, class Class, ttl uint32, addr []byte) {
+	r.setHeader(name, TypeA, class, ttl)
+	r.data = append(r.data[:0], addr...)
+	r.header.Length = uint16(len(r.data))
+}
+
+// SetPTR sets a PTR (pointer) resource record, reusing internal buffers.
+func (r *Resource) SetPTR(name Name, class Class, ttl uint32, target Name) {
+	r.setHeader(name, TypePTR, class, ttl)
+	r.data, _ = target.AppendTo(r.data[:0])
+	r.header.Length = uint16(len(r.data))
+}
+
+// SetSRV sets a SRV (service locator) resource record, reusing internal buffers.
+func (r *Resource) SetSRV(name Name, class Class, ttl uint32, priority, weight, port uint16, target Name) {
+	r.setHeader(name, TypeSRV, class, ttl)
+	r.data = binary.BigEndian.AppendUint16(r.data[:0], priority)
+	r.data = binary.BigEndian.AppendUint16(r.data, weight)
+	r.data = binary.BigEndian.AppendUint16(r.data, port)
+	r.data, _ = target.AppendTo(r.data)
+	r.header.Length = uint16(len(r.data))
+}
+
+// SetTXT sets a TXT resource record, reusing internal buffers.
+func (r *Resource) SetTXT(name Name, class Class, ttl uint32, txt []byte) {
+	r.setHeader(name, TypeTXT, class, ttl)
+	if len(txt) == 0 {
+		r.data = append(r.data[:0], 0)
+	} else {
+		r.data = append(r.data[:0], txt...)
+	}
+	r.header.Length = uint16(len(r.data))
+}
+
+func (r *Resource) setHeader(name Name, typ Type, class Class, ttl uint32) {
+	r.header.Name.CopyFrom(name)
+	r.header.Type = typ
+	r.header.Class = class
+	r.header.TTL = ttl
+}
+
 func (dst *ResourceHeader) CopyFrom(rh ResourceHeader) {
 	dst.Name.CopyFrom(rh.Name)
 	dst.Type = rh.Type

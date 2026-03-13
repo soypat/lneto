@@ -70,6 +70,8 @@ func (c *Client) Configure(cfg ClientConfig) error {
 	c.services = append(c.services[:0], cfg.Services...)
 	c.ip = append(c.ip[:0], cfg.MulticastAddr...)
 	internal.SliceReuse(&c.rqst, len(cfg.Services))
+	// Each service can produce up to 4 answer records (PTR+SRV+TXT+A).
+	internal.SliceReuse(&c.rans, 4*len(cfg.Services))
 	return nil
 }
 
