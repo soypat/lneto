@@ -39,8 +39,9 @@ const (
 // due to their dual design: they double as a querier and service discovery.
 type Client struct {
 	connID uint64
-
-	lport uint16
+	closed bool
+	lport  uint16
+	ip     []byte
 	// Query State:
 	qstate querierState
 	qcode  dns.RCode
@@ -50,18 +51,15 @@ type Client struct {
 	qans []dns.Resource
 	qqst []dns.Question
 	// Response state:
-	// TODO.
-	resps []pendingResponse
-	rmsg  dns.Message
-}
-
-// pendingResponse holds all the data necessary to effect an mdns pendingResponse.
-type pendingResponse struct {
-	state responderState
+	services []Service // Stores services we'd broadcast.
+	rans     []dns.Resource
+	rqst     []dns.Question
 }
 
 type ClientConfig struct {
-	LocalPort uint16
+	LocalPort     uint16
+	Services      []Service
+	MulticastAddr []byte
 }
 
 func (c *Client) Configure(cfg ClientConfig) error {
@@ -69,6 +67,9 @@ func (c *Client) Configure(cfg ClientConfig) error {
 		return lneto.ErrZeroSource
 	}
 	c.reset(cfg.LocalPort)
+	c.services = append(c.services[:0], cfg.Services...)
+	c.ip = append(c.ip[:0], cfg.MulticastAddr...)
+	internal.SliceReuse(&c.rqst, len(cfg.Services))
 	return nil
 }
 
@@ -102,11 +103,12 @@ func (c *Client) reset(localport uint16) {
 	*c = Client{
 		connID: c.connID + 1,
 		lport:  localport,
-		// Ensure memory not lost:
-		qqst:  c.qqst[:0],
-		qans:  c.qans[:0],
-		resps: c.resps[:0],
-		rmsg:  c.rmsg,
+		// Ensure memory reused:
+		qqst:     c.qqst[:0],
+		qans:     c.qans[:0],
+		services: c.services[:0],
+		rans:     c.rans[:0],
+		ip:       c.ip[:0],
 	}
 }
 
@@ -115,17 +117,23 @@ func (c *Client) qreset(state querierState) {
 	c.qstate = state
 }
 
-// Encapsulate writes an mDNS query packet into carrierData[offsetToFrame:].
-// The mDNS query has txid=0, no recursion desired, and no opcode (RFC 6762 §18.1).
-func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
+// Encapsulate writes a pending mDNS packet into carrierData[offsetToFrame:].
+// Pending responses take priority over outgoing queries.
+func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (n int, err error) {
 	if c.isClosed() {
 		return 0, net.ErrClosed
 	}
-	if c.qstate == querierSendQuery {
-		// User requested a query.
-		return c.encapsQuery(carrierData[offsetToFrame:])
+	if len(c.rans) > 0 {
+		// Pending response to an incoming query.
+		n, err = c.encapsResponse(carrierData[offsetToFrame:])
+	} else if c.qstate == querierSendQuery {
+		n, err = c.encapsQuery(carrierData[offsetToFrame:])
 	}
-	return 0, nil
+	if n > 0 && offsetToIP >= 0 {
+		// Set Multicast address.
+		internal.SetIPAddrs(carrierData[offsetToIP:], 0, nil, c.ip)
+	}
+	return n, err
 }
 
 // Demux processes an incoming mDNS response packet. Answers are accumulated
@@ -143,7 +151,8 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 		return lneto.ErrPacketDrop
 	}
 	flags := f.Flags()
-	if flags.IsResponse() && c.qstate == querierAwaitResponse {
+	isresponse := flags.IsResponse()
+	if isresponse && c.qstate == querierAwaitResponse {
 		c.qcode = flags.ResponseCode()
 		// Decode response into our message, collecting answers.
 		_, _, c.qerr = dns.DecodeMessage(nil, &c.qans, nil, nil, frame)
@@ -154,8 +163,24 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 		c.qstate = querierDone
 		return nil // success.
 	}
-	// Is a request
-	// TODO: support requests.
+	if !isresponse && len(c.services) > 0 && len(c.rans) < len(c.services) {
+		// Incoming query — match against our services.
+		var query dns.Message
+		query.LimitResourceDecoding(f.QDCount(), 0, 0, 0)
+		_, _, err = query.Decode(frame)
+		if err != nil {
+			return err
+		}
+		for i := range query.Questions {
+			q := &query.Questions[i]
+			for j := range c.services {
+				if matchQuestion(q, &c.services[j]) {
+					addServiceAnswers(&c.rans, q, &c.services[j])
+					break
+				}
+			}
+		}
+	}
 	return nil
 }
 
@@ -182,8 +207,29 @@ func (c *Client) encapsQuery(frame []byte) (int, error) {
 	return len(data), nil
 }
 
+func (c *Client) encapsResponse(frame []byte) (int, error) {
+	var msg dns.Message
+	msg.Answers = c.rans
+	msglen := msg.Len()
+	if int(msglen) > len(frame) {
+		return 0, lneto.ErrShortBuffer
+	}
+	// mDNS responses: txid=0, QR=1, AA=1 (RFC 6762 §18.4, §6).
+	flags := dns.HeaderFlags(1<<15 | 1<<10)
+	data, err := msg.AppendTo(frame[:0], 0, flags)
+	if err != nil {
+		return 0, err
+	}
+	return len(data), nil
+}
+
+// Abort closes the client, causing all subsequent Encapsulate/Demux calls to return [net.ErrClosed].
+func (c *Client) Abort() {
+	c.closed = true
+}
+
 func (c *Client) isClosed() bool {
-	return false
+	return c.closed
 }
 
 // AnswersCopyTo checks if [Client.StartResolve] ended succesfully before

@@ -57,6 +57,13 @@ type Name struct {
 	data []byte
 }
 
+// NamesEqual reports whether two DNS names are equal by comparing
+// their wire-format representations directly. This is case-sensitive;
+// for case-insensitive comparison use [NamesEqualFold].
+func NamesEqual(a, b Name) bool {
+	return internal.BytesEqual(a.data, b.data)
+}
+
 type ZFlags uint16
 
 func NewResource(name Name, typ Type, class Class, ttl uint32, data []byte) Resource {

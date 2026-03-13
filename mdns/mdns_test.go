@@ -2,6 +2,7 @@ package mdns
 
 import (
 	"encoding/binary"
+	"net"
 	"testing"
 
 	"github.com/soypat/lneto/dns"
@@ -19,46 +20,79 @@ func testService() Service {
 	return Service{
 		Name: mustNewName("My Web._http._tcp.local"),
 		Host: mustNewName("mydevice.local"),
-		Addr: [4]byte{192, 168, 1, 50},
+		Addr: []byte{192, 168, 1, 50},
 		Port: 80,
 	}
 }
 
-func TestQuerierResponder(t *testing.T) {
-	svc := testService()
-
-	// Configure responder with one service.
-	var resp Responder
-	err := resp.Configure([]Service{svc})
+func newQuerier(t *testing.T, questions []dns.Question, maxAnswers uint16) *Client {
+	t.Helper()
+	var c Client
+	err := c.Configure(ClientConfig{LocalPort: Port})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.State() != responderReady {
-		t.Fatalf("want responder state ready, got %d", resp.State())
-	}
-
-	// Set up querier to ask for the PTR record of the service type.
-	var querier Querier
-	err = querier.StartQuery(QueryConfig{
-		Questions: []dns.Question{{
-			Name:  mustNewName("_http._tcp.local"),
-			Type:  dns.TypePTR,
-			Class: dns.ClassINET,
-		}},
-		MaxAnswers: 8,
+	err = c.StartResolve(ResolveConfig{
+		Questions:  questions,
+		MaxAnswers: maxAnswers,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	return &c
+}
+
+func newResponder(t *testing.T, services []Service) *Client {
+	t.Helper()
+	var c Client
+	err := c.Configure(ClientConfig{
+		LocalPort: Port,
+		Services:  services,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &c
+}
+
+// queryRespond performs the full query->demux->encapsulate->demux cycle
+// between a querier and responder, returning the response length.
+func queryRespond(t *testing.T, querier, responder *Client, buf []byte) int {
+	t.Helper()
+	n, err := querier.Encapsulate(buf, -1, 0)
+	if err != nil || n == 0 {
+		t.Fatal("querier encapsulate:", err, n)
+	}
+	if err = responder.Demux(buf[:n], 0); err != nil {
+		t.Fatal("responder demux:", err)
+	}
+	n, err = responder.Encapsulate(buf, -1, 0)
+	if err != nil {
+		t.Fatal("responder encapsulate:", err)
+	}
+	if n > 0 {
+		if err = querier.Demux(buf[:n], 0); err != nil {
+			t.Fatal("querier demux:", err)
+		}
+	}
+	return n
+}
+
+func TestClientQueryPTR(t *testing.T) {
+	svc := testService()
+	responder := newResponder(t, []Service{svc})
+	querier := newQuerier(t, []dns.Question{{
+		Name:  mustNewName("_http._tcp.local"),
+		Type:  dns.TypePTR,
+		Class: dns.ClassINET,
+	}}, 8)
 
 	var buf [1024]byte
 
-	// QUERIER: Encapsulate query.
+	// Querier encapsulates query.
 	n, err := querier.Encapsulate(buf[:], -1, 0)
-	if err != nil {
-		t.Fatal("querier encapsulate:", err)
-	} else if n == 0 {
-		t.Fatal("querier wrote 0 bytes")
+	if err != nil || n == 0 {
+		t.Fatal("querier encapsulate:", err, n)
 	}
 
 	// Verify query wire format: txid=0, flags=0.
@@ -73,18 +107,13 @@ func TestQuerierResponder(t *testing.T) {
 		t.Errorf("mDNS query QDCount=%d, want 1", f.QDCount())
 	}
 
-	// RESPONDER: Demux the query.
-	err = resp.Demux(buf[:n], 0)
-	if err != nil {
+	// Responder demuxes and encapsulates response.
+	if err = responder.Demux(buf[:n], 0); err != nil {
 		t.Fatal("responder demux:", err)
 	}
-
-	// RESPONDER: Encapsulate response.
-	n, err = resp.Encapsulate(buf[:], -1, 0)
-	if err != nil {
-		t.Fatal("responder encapsulate:", err)
-	} else if n == 0 {
-		t.Fatal("responder wrote 0 bytes")
+	n, err = responder.Encapsulate(buf[:], -1, 0)
+	if err != nil || n == 0 {
+		t.Fatal("responder encapsulate:", err, n)
 	}
 
 	// Verify response wire format: QR=1, AA=1.
@@ -100,14 +129,17 @@ func TestQuerierResponder(t *testing.T) {
 		t.Fatal("mDNS response has 0 answers")
 	}
 
-	// QUERIER: Demux the response.
-	err = querier.Demux(buf[:n], 0)
-	if err != nil {
+	// Querier demuxes response and reads answers.
+	if err = querier.Demux(buf[:n], 0); err != nil {
 		t.Fatal("querier demux:", err)
 	}
-
-	answers := querier.Answers()
-	if len(answers) == 0 {
+	var answers [8]dns.Resource
+	nans, done, err := querier.AnswersCopyTo(answers[:])
+	if err != nil {
+		t.Fatal(err)
+	} else if !done {
+		t.Fatal("expected done")
+	} else if nans == 0 {
 		t.Fatal("querier got 0 answers")
 	}
 
@@ -116,7 +148,6 @@ func TestQuerierResponder(t *testing.T) {
 	if len(ptrData) == 0 {
 		t.Fatal("PTR answer has no data")
 	}
-	// Decode the name from the PTR data.
 	var ptrName dns.Name
 	_, err = ptrName.Decode(ptrData, 0)
 	if err != nil {
@@ -127,44 +158,26 @@ func TestQuerierResponder(t *testing.T) {
 	}
 }
 
-func TestQuerierResponderSRV(t *testing.T) {
+func TestClientQuerySRV(t *testing.T) {
 	svc := testService()
-	var resp Responder
-	resp.Configure([]Service{svc})
-
-	// Query for SRV record by instance name.
-	var querier Querier
-	querier.StartQuery(QueryConfig{
-		Questions: []dns.Question{{
-			Name:  mustNewName("My Web._http._tcp.local"),
-			Type:  dns.TypeSRV,
-			Class: dns.ClassINET,
-		}},
-		MaxAnswers: 8,
-	})
+	responder := newResponder(t, []Service{svc})
+	querier := newQuerier(t, []dns.Question{{
+		Name:  mustNewName("My Web._http._tcp.local"),
+		Type:  dns.TypeSRV,
+		Class: dns.ClassINET,
+	}}, 8)
 
 	var buf [1024]byte
+	queryRespond(t, querier, responder, buf[:])
 
-	// Query -> Responder -> Response -> Querier.
-	n, err := querier.Encapsulate(buf[:], -1, 0)
-	if err != nil || n == 0 {
-		t.Fatal("querier encapsulate:", err, n)
+	var answers [8]dns.Resource
+	nans, done, err := querier.AnswersCopyTo(answers[:])
+	if err != nil || !done {
+		t.Fatal("expected done without error:", err)
 	}
-	if err = resp.Demux(buf[:n], 0); err != nil {
-		t.Fatal("responder demux:", err)
-	}
-	n, err = resp.Encapsulate(buf[:], -1, 0)
-	if err != nil || n == 0 {
-		t.Fatal("responder encapsulate:", err, n)
-	}
-	if err = querier.Demux(buf[:n], 0); err != nil {
-		t.Fatal("querier demux:", err)
-	}
-
-	answers := querier.Answers()
 	// SRV query should return SRV + A record.
-	if len(answers) < 2 {
-		t.Fatalf("expected at least 2 answers (SRV+A), got %d", len(answers))
+	if nans < 2 {
+		t.Fatalf("expected at least 2 answers (SRV+A), got %d", nans)
 	}
 
 	// First answer should be SRV. Parse priority(2)+weight(2)+port(2)+target.
@@ -190,150 +203,68 @@ func TestQuerierResponderSRV(t *testing.T) {
 	if len(aData) != 4 {
 		t.Fatalf("A record data length=%d, want 4", len(aData))
 	}
-	if [4]byte(aData) != svc.Addr {
+	if [4]byte(aData) != [4]byte(svc.Addr) {
 		t.Errorf("A record addr=%v, want %v", aData, svc.Addr)
 	}
 }
 
-func TestQuerierResponderARecord(t *testing.T) {
+func TestClientQueryARecord(t *testing.T) {
 	svc := testService()
-	var resp Responder
-	resp.Configure([]Service{svc})
-
-	// Query for A record by hostname.
-	var querier Querier
-	querier.StartQuery(QueryConfig{
-		Questions: []dns.Question{{
-			Name:  mustNewName("mydevice.local"),
-			Type:  dns.TypeA,
-			Class: dns.ClassINET,
-		}},
-		MaxAnswers: 4,
-	})
+	responder := newResponder(t, []Service{svc})
+	querier := newQuerier(t, []dns.Question{{
+		Name:  mustNewName("mydevice.local"),
+		Type:  dns.TypeA,
+		Class: dns.ClassINET,
+	}}, 4)
 
 	var buf [1024]byte
-	n, err := querier.Encapsulate(buf[:], -1, 0)
-	if err != nil || n == 0 {
-		t.Fatal("querier encapsulate:", err, n)
-	}
-	if err = resp.Demux(buf[:n], 0); err != nil {
-		t.Fatal("responder demux:", err)
-	}
-	n, err = resp.Encapsulate(buf[:], -1, 0)
-	if err != nil || n == 0 {
-		t.Fatal("responder encapsulate:", err, n)
-	}
-	if err = querier.Demux(buf[:n], 0); err != nil {
-		t.Fatal("querier demux:", err)
-	}
+	queryRespond(t, querier, responder, buf[:])
 
-	answers := querier.Answers()
-	if len(answers) != 1 {
-		t.Fatalf("expected 1 answer, got %d", len(answers))
+	var answers [4]dns.Resource
+	nans, done, err := querier.AnswersCopyTo(answers[:])
+	if err != nil || !done {
+		t.Fatal("expected done without error:", err)
+	}
+	if nans != 1 {
+		t.Fatalf("expected 1 answer, got %d", nans)
 	}
 	aData := answers[0].RawData()
-	if [4]byte(aData) != svc.Addr {
+	if [4]byte(aData) != [4]byte(svc.Addr) {
 		t.Errorf("A record addr=%v, want %v", aData, svc.Addr)
 	}
 }
 
-func TestResponderAnnounce(t *testing.T) {
-	svc := testService()
-	var resp Responder
-	resp.Configure([]Service{svc})
-	resp.Announce()
+// TODO: TestClientAnnounce — test unsolicited announcement of all registered services.
+// func TestClientAnnounce(t *testing.T) { ... }
 
-	var buf [1024]byte
-	n, err := resp.Encapsulate(buf[:], -1, 0)
-	if err != nil {
-		t.Fatal(err)
-	} else if n == 0 {
-		t.Fatal("announce wrote 0 bytes")
-	}
+// TODO: TestClientProbeFinish — test probing sequence for name uniqueness (RFC 6762 §8.1).
+// func TestClientProbeFinish(t *testing.T) { ... }
 
-	// Decode and verify announcement contains PTR+SRV+TXT+A.
-	f, _ := dns.NewFrame(buf[:n])
-	if !f.Flags().IsResponse() {
-		t.Error("announcement missing QR bit")
-	}
-	ancount := f.ANCount()
-	if ancount != 4 {
-		t.Errorf("announcement ANCount=%d, want 4 (PTR+SRV+TXT+A)", ancount)
-	}
-}
+func TestClientIgnoresQueriesWithoutServices(t *testing.T) {
+	// A querier-only client should ignore incoming queries.
+	querier := newQuerier(t, []dns.Question{{
+		Name:  mustNewName("_http._tcp.local"),
+		Type:  dns.TypePTR,
+		Class: dns.ClassINET,
+	}}, 4)
 
-func TestResponderProbeFinish(t *testing.T) {
-	svc := testService()
-	var resp Responder
-	resp.Configure([]Service{svc})
-
-	resp.Probe()
-	if resp.State() != responderProbing {
-		t.Fatalf("expected probing state, got %d", resp.State())
-	}
-
-	var buf [1024]byte
-	n, err := resp.Encapsulate(buf[:], -1, 0)
-	if err != nil {
-		t.Fatal(err)
-	} else if n == 0 {
-		t.Fatal("probe wrote 0 bytes")
-	}
-
-	// Probe should be a query (QR=0).
-	f, _ := dns.NewFrame(buf[:n])
-	if f.Flags().IsResponse() {
-		t.Error("probe should be a query, not a response")
-	}
-	if f.QDCount() != 1 {
-		t.Errorf("probe QDCount=%d, want 1", f.QDCount())
-	}
-
-	// Finish probing should transition to ready and trigger announcement.
-	resp.FinishProbe()
-	if resp.State() != responderReady {
-		t.Fatalf("expected ready state after FinishProbe, got %d", resp.State())
-	}
-
-	// Should have a pending announcement.
-	n, err = resp.Encapsulate(buf[:], -1, 0)
-	if err != nil {
-		t.Fatal(err)
-	} else if n == 0 {
-		t.Fatal("expected announcement after FinishProbe")
-	}
-}
-
-func TestQuerierIgnoresQueries(t *testing.T) {
-	// Querier should ignore non-response packets.
-	var querier Querier
-	querier.StartQuery(QueryConfig{
-		Questions: []dns.Question{{
-			Name:  mustNewName("_http._tcp.local"),
-			Type:  dns.TypePTR,
-			Class: dns.ClassINET,
-		}},
-		MaxAnswers: 4,
-	})
-
-	// Encapsulate the query first.
+	// Encapsulate query, then feed it back — should be ignored (not a response).
 	var buf [512]byte
 	n, _ := querier.Encapsulate(buf[:], -1, 0)
-
-	// Feed the query back into the querier — it should be ignored (not a response).
 	err := querier.Demux(buf[:n], 0)
 	if err != nil {
 		t.Fatal("demux query:", err)
 	}
-	if len(querier.Answers()) != 0 {
-		t.Error("querier should ignore queries")
+	// No response should be pending.
+	n, _ = querier.Encapsulate(buf[:], -1, 0)
+	if n != 0 {
+		t.Error("querier without services should not respond to queries")
 	}
 }
 
-func TestResponderIgnoresResponses(t *testing.T) {
+func TestClientResponderIgnoresResponses(t *testing.T) {
 	svc := testService()
-	var resp Responder
-	resp.Configure([]Service{svc})
+	responder := newResponder(t, []Service{svc})
 
 	// Build a response packet (QR=1).
 	var msg dns.Message
@@ -345,96 +276,62 @@ func TestResponderIgnoresResponses(t *testing.T) {
 	}
 
 	// Feed a response to the responder — should be ignored.
-	err = resp.Demux(data, 0)
+	err = responder.Demux(data, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Nothing should be pending.
-	n, _ := resp.Encapsulate(buf[:], -1, 0)
+	n, _ := responder.Encapsulate(buf[:], -1, 0)
 	if n != 0 {
 		t.Error("responder should not respond to responses")
 	}
 }
 
-func TestQuerierFinish(t *testing.T) {
-	var querier Querier
-	querier.StartQuery(QueryConfig{
-		Questions: []dns.Question{{
-			Name:  mustNewName("_http._tcp.local"),
-			Type:  dns.TypePTR,
-			Class: dns.ClassINET,
-		}},
-		MaxAnswers: 4,
-	})
-
-	var buf [512]byte
-	querier.Encapsulate(buf[:], -1, 0)
-
-	if querier.Done() {
-		t.Error("querier should not be done before Finish")
-	}
-	querier.Finish()
-	if !querier.Done() {
-		t.Error("querier should be done after Finish")
-	}
-}
-
-func TestResponderUnmatchedQuery(t *testing.T) {
+func TestClientUnmatchedQuery(t *testing.T) {
 	svc := testService()
-	var resp Responder
-	resp.Configure([]Service{svc})
+	responder := newResponder(t, []Service{svc})
 
 	// Query for a name the responder doesn't know.
-	var querier Querier
-	querier.StartQuery(QueryConfig{
-		Questions: []dns.Question{{
-			Name:  mustNewName("_ftp._tcp.local"),
-			Type:  dns.TypePTR,
-			Class: dns.ClassINET,
-		}},
-		MaxAnswers: 4,
-	})
+	querier := newQuerier(t, []dns.Question{{
+		Name:  mustNewName("_ftp._tcp.local"),
+		Type:  dns.TypePTR,
+		Class: dns.ClassINET,
+	}}, 4)
 
 	var buf [1024]byte
 	n, _ := querier.Encapsulate(buf[:], -1, 0)
-	resp.Demux(buf[:n], 0)
+	responder.Demux(buf[:n], 0)
 
 	// Responder should have nothing pending.
-	n, _ = resp.Encapsulate(buf[:], -1, 0)
+	n, _ = responder.Encapsulate(buf[:], -1, 0)
 	if n != 0 {
 		t.Error("responder should not respond to unmatched query")
 	}
 }
 
-func TestQuerierMultipleResponses(t *testing.T) {
-	// Two responders advertising different instances of the same service type.
+func TestClientMultipleResponders(t *testing.T) {
+	// Two responder clients advertising different instances of the same service type.
 	svc1 := Service{
 		Name: mustNewName("Device A._http._tcp.local"),
 		Host: mustNewName("device-a.local"),
-		Addr: [4]byte{192, 168, 1, 10},
+		Addr: []byte{192, 168, 1, 10},
 		Port: 80,
 	}
 	svc2 := Service{
 		Name: mustNewName("Device B._http._tcp.local"),
 		Host: mustNewName("device-b.local"),
-		Addr: [4]byte{192, 168, 1, 11},
+		Addr: []byte{192, 168, 1, 11},
 		Port: 8080,
 	}
 
-	var resp1, resp2 Responder
-	resp1.Configure([]Service{svc1})
-	resp2.Configure([]Service{svc2})
-
-	var querier Querier
-	querier.StartQuery(QueryConfig{
-		Questions: []dns.Question{{
-			Name:  mustNewName("_http._tcp.local"),
-			Type:  dns.TypePTR,
-			Class: dns.ClassINET,
-		}},
-		MaxAnswers: 8,
-	})
+	responder1 := newResponder(t, []Service{svc1})
+	responder2 := newResponder(t, []Service{svc2})
+	querier := newQuerier(t, []dns.Question{{
+		Name:  mustNewName("_http._tcp.local"),
+		Type:  dns.TypePTR,
+		Class: dns.ClassINET,
+	}}, 8)
 
 	var buf [1024]byte
 
@@ -444,56 +341,53 @@ func TestQuerierMultipleResponses(t *testing.T) {
 	copy(query, buf[:n])
 
 	// Both responders process the query.
-	resp1.Demux(query, 0)
-	resp2.Demux(query, 0)
+	responder1.Demux(query, 0)
+	responder2.Demux(query, 0)
 
 	// Querier receives response from responder 1.
-	n, _ = resp1.Encapsulate(buf[:], -1, 0)
+	n, _ = responder1.Encapsulate(buf[:], -1, 0)
 	querier.Demux(buf[:n], 0)
 
-	// Querier receives response from responder 2.
-	n, _ = resp2.Encapsulate(buf[:], -1, 0)
+	var answers [8]dns.Resource
+	nans, _, err := querier.AnswersCopyTo(answers[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nans < 1 {
+		t.Fatalf("expected at least 1 answer from first responder, got %d", nans)
+	}
+
+	// Start a new resolve to receive from responder 2.
+	querier.StartResolve(ResolveConfig{
+		Questions: []dns.Question{{
+			Name:  mustNewName("_http._tcp.local"),
+			Type:  dns.TypePTR,
+			Class: dns.ClassINET,
+		}},
+		MaxAnswers: 8,
+	})
+	// Re-send query for second responder.
+	n, _ = querier.Encapsulate(buf[:], -1, 0)
+
+	n, _ = responder2.Encapsulate(buf[:], -1, 0)
 	querier.Demux(buf[:n], 0)
 
-	answers := querier.Answers()
-	if len(answers) < 2 {
-		t.Fatalf("expected at least 2 answers from 2 responders, got %d", len(answers))
+	nans, _, err = querier.AnswersCopyTo(answers[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nans < 1 {
+		t.Fatalf("expected at least 1 answer from second responder, got %d", nans)
 	}
 }
 
-func TestResponderConfigureErrors(t *testing.T) {
-	var resp Responder
-	err := resp.Configure(nil)
-	if err == nil {
-		t.Error("expected error for nil services")
-	}
-	err = resp.Configure([]Service{})
-	if err == nil {
-		t.Error("expected error for empty services")
-	}
-}
-
-func TestQuerierStartQueryErrors(t *testing.T) {
-	var querier Querier
-	err := querier.StartQuery(QueryConfig{})
-	if err == nil {
-		t.Error("expected error for empty questions")
-	}
-}
-
-func TestResponderReset(t *testing.T) {
+func TestClientAbort(t *testing.T) {
 	svc := testService()
-	var resp Responder
-	resp.Configure([]Service{svc})
-	if resp.State() != responderReady {
-		t.Fatal("expected ready")
-	}
-	resp.Reset()
-	if resp.State() != responderIdle {
-		t.Fatalf("expected idle after reset, got %d", resp.State())
-	}
+	responder := newResponder(t, []Service{svc})
 
-	// Demux on idle responder should return ErrClosed.
+	responder.Abort()
+
+	// Demux on aborted client should return ErrClosed.
 	var buf [512]byte
 	var msg dns.Message
 	msg.AddQuestions([]dns.Question{{
@@ -502,8 +396,14 @@ func TestResponderReset(t *testing.T) {
 		Class: dns.ClassINET,
 	}})
 	data, _ := msg.AppendTo(buf[:0], 0, 0)
-	err := resp.Demux(data, 0)
-	if err == nil {
-		t.Error("expected error on idle responder demux")
+	err := responder.Demux(data, 0)
+	if err != net.ErrClosed {
+		t.Errorf("expected net.ErrClosed, got %v", err)
+	}
+
+	// Encapsulate on aborted client should return ErrClosed.
+	_, err = responder.Encapsulate(buf[:], -1, 0)
+	if err != net.ErrClosed {
+		t.Errorf("expected net.ErrClosed, got %v", err)
 	}
 }
