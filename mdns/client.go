@@ -6,6 +6,7 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/dns"
+	"github.com/soypat/lneto/internal"
 )
 
 const (
@@ -31,11 +32,11 @@ const (
 	querierDone                       // Answers collected.
 )
 
-// Client provides both querying and service multicast DNS funcionality
+// Client provides both querying and service multicast DNS functionality
 // once configured and attached to MDNS port 5353.
 //
-// Clients are attached to MDNS ports and function until manual deattachment
-// due to their dual design: they double as a queryier and service discovery.
+// Clients are attached to MDNS ports and function until manual detachment
+// due to their dual design: they double as a querier and service discovery.
 type Client struct {
 	connID uint64
 
@@ -46,10 +47,17 @@ type Client struct {
 	qerr   error
 	// qmsg is used for queries to marshal/unmarshal our
 	// outgoing queries and responses to our queries.
-	qmsg dns.Message
-
+	qans []dns.Resource
+	qqst []dns.Question
 	// Response state:
 	// TODO.
+	resps []pendingResponse
+	rmsg  dns.Message
+}
+
+// pendingResponse holds all the data necessary to effect an mdns pendingResponse.
+type pendingResponse struct {
+	state responderState
 }
 
 type ClientConfig struct {
@@ -81,8 +89,12 @@ func (c *Client) StartResolve(cfg ResolveConfig) error {
 		return lneto.ErrInvalidConfig
 	}
 	c.qreset(querierSendQuery)
-	c.qmsg.LimitResourceDecoding(uint16(nq), cfg.MaxAnswers, 0, 0)
-	c.qmsg.AddQuestions(cfg.Questions)
+	internal.SliceReuse(&c.qans, int(cfg.MaxAnswers))
+	internal.SliceReuse(&c.qqst, nq)
+	c.qqst = c.qqst[:nq]
+	for i := range c.qqst {
+		c.qqst[i].CopyFrom(cfg.Questions[i])
+	}
 	return nil
 }
 
@@ -90,25 +102,28 @@ func (c *Client) reset(localport uint16) {
 	*c = Client{
 		connID: c.connID + 1,
 		lport:  localport,
-		qmsg:   c.qmsg, // Ensure memory not lost.
+		// Ensure memory not lost:
+		qqst:  c.qqst[:0],
+		qans:  c.qans[:0],
+		resps: c.resps[:0],
+		rmsg:  c.rmsg,
 	}
 }
 
 // qreset resets the current query state. It is only a partial reset of a Client.
 func (c *Client) qreset(state querierState) {
 	c.qstate = state
-	c.qmsg.Reset()
 }
 
 // Encapsulate writes an mDNS query packet into carrierData[offsetToFrame:].
 // The mDNS query has txid=0, no recursion desired, and no opcode (RFC 6762 §18.1).
-func (q *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
-	if q.isClosed() {
+func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
+	if c.isClosed() {
 		return 0, net.ErrClosed
 	}
-	if q.qstate == querierSendQuery {
+	if c.qstate == querierSendQuery {
 		// User requested a query.
-		return q.encapsQuery(carrierData[offsetToFrame:])
+		return c.encapsQuery(carrierData[offsetToFrame:])
 	}
 	return 0, nil
 }
@@ -116,8 +131,8 @@ func (q *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) 
 // Demux processes an incoming mDNS response packet. Answers are accumulated
 // into the internal message. Once sufficient answers are collected or a
 // timeout occurs the querier transitions to querierDone.
-func (q *Client) Demux(carrierData []byte, frameOffset int) error {
-	if q.isClosed() {
+func (c *Client) Demux(carrierData []byte, frameOffset int) error {
+	if c.isClosed() {
 		return net.ErrClosed
 	}
 	frame := carrierData[frameOffset:]
@@ -128,15 +143,15 @@ func (q *Client) Demux(carrierData []byte, frameOffset int) error {
 		return lneto.ErrPacketDrop
 	}
 	flags := f.Flags()
-	if flags.IsResponse() && q.qstate == querierAwaitResponse {
-		q.qcode = flags.ResponseCode()
+	if flags.IsResponse() && c.qstate == querierAwaitResponse {
+		c.qcode = flags.ResponseCode()
 		// Decode response into our message, collecting answers.
-		_, _, q.qerr = q.qmsg.Decode(frame)
-		if q.qerr != nil {
-			q.qstate = querierFailed
-			return q.qerr
+		_, _, c.qerr = dns.DecodeMessage(nil, &c.qans, nil, nil, frame)
+		if c.qerr != nil {
+			c.qstate = querierFailed
+			return c.qerr
 		}
-		q.qstate = querierDone
+		c.qstate = querierDone
 		return nil // success.
 	}
 	// Is a request
@@ -144,24 +159,26 @@ func (q *Client) Demux(carrierData []byte, frameOffset int) error {
 	return nil
 }
 
-func (q *Client) encapsQuery(frame []byte) (int, error) {
-	msg := &q.qmsg
+func (c *Client) encapsQuery(frame []byte) (int, error) {
+	msg := dns.Message{
+		Questions: c.qqst,
+	}
 	msglen := msg.Len()
 	if int(msglen) > len(frame) {
-		q.qerr = lneto.ErrShortBuffer
-		q.qstate = querierFailed
-		return 0, q.qerr
+		c.qerr = lneto.ErrShortBuffer
+		c.qstate = querierFailed
+		return 0, c.qerr
 	}
 	// mDNS queries use txid=0 and no flags (RFC 6762 §18.1).
 	data, err := msg.AppendTo(frame[:0], mdnsTxID, mdnsFlags)
 	if err != nil {
-		q.qerr = err
-		q.qstate = querierFailed
+		c.qerr = err
+		c.qstate = querierFailed
 		return 0, err
 	} else if len(data) != int(msglen) {
 		panic("bad dns length calculation") // panic since this is a big bug in lneto.
 	}
-	q.qstate = querierAwaitResponse
+	c.qstate = querierAwaitResponse
 	return len(data), nil
 }
 
@@ -169,16 +186,23 @@ func (c *Client) isClosed() bool {
 	return false
 }
 
-func (c *Client) MessageCopyTo(dst *dns.Message) (done bool, err error) {
-	if c.qstate == querierFailed {
-		return false, c.qerr
+// AnswersCopyTo checks if [Client.StartResolve] ended succesfully before
+// doing a deep copy of answers received to the argument buffer using [dns.Resource.CopyFrom].
+func (c *Client) AnswersCopyTo(dst []dns.Resource) (n int, done bool, err error) {
+	if len(dst) == 0 {
+		return 0, false, lneto.ErrShortBuffer
+	} else if c.qstate == querierFailed {
+		return 0, false, c.qerr
 	} else if c.qstate != querierDone {
-		return false, nil
+		return 0, false, nil
 	}
-	dst.CopyFrom(c.qmsg)
+	for i := range min(len(dst), len(c.qans)) {
+		dst[i].CopyFrom(c.qans[i])
+		n++
+	}
 	rcode := c.qcode
 	if rcode != 0 {
-		return true, rcode
+		return n, true, rcode
 	}
-	return true, nil
+	return n, true, nil
 }

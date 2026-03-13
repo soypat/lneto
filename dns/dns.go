@@ -86,83 +86,91 @@ func (r *Resource) SetEDNS0(UDPlength uint16, rcode RCode, zflags ZFlags, data [
 	r.data = append(r.data[:0], data...)
 }
 
-// Decode decodes the DNS message in b into m. It returns the number of bytes
+// DecodeMessage decodes the DNS message into question, answer, authority and additional resources.
+// It returns the number of bytes
 // consumed from b (0 if no bytes were consumed) and any error encountered.
 // If the message was not completely parsed due to LimitResourceDecoding,
 // incompleteButOK is true and an error is returned, though the message is still usable.
-func (m *Message) Decode(msg []byte) (_ uint16, incompleteButOK bool, err error) {
-	if len(msg) < SizeHeader {
-		return 0, false, errBaseLen
-	} else if len(msg) > math.MaxUint16 {
-		return 0, false, errResTooLong
-	}
-	m.Reset()
+//
+// The slice memory is overwritten and capacity used as the limit of encoding.
+// If the argument slice is nil it is skipped for decoding but does not prevent further decoding
+// of other answers, authorities or additionals from being decoded.
+func DecodeMessage(q *[]Question, answers, authorities, additionals *[]Resource, msg []byte) (_ uint16, incompleteButOK bool, err error) {
 	hdr, err := NewFrame(msg)
 	if err != nil {
 		return 0, false, err
 	}
-	nq := int(hdr.QDCount())
+	qd := hdr.QDCount()
+	nq := int(qd)
 	off := uint16(SizeHeader)
 	// Return tooManyErr if found to flag to the caller that the message was
 	// decoded but contained too many resources to decode completely.
-
 	var tooManyErr error
 	switch {
-	case nq > cap(m.Questions):
+	case nq > caporzero(q):
 		tooManyErr = errTooManyQuestions
-	case hdr.ANCount() > uint16(cap(m.Answers)):
+	case int(hdr.ANCount()) > caporzero(answers):
 		tooManyErr = errTooManyAnswers
-	case hdr.NSCount() > uint16(cap(m.Authorities)):
+	case int(hdr.NSCount()) > caporzero(authorities):
 		tooManyErr = errTooManyAuthorities
-	case hdr.ARCount() > uint16(cap(m.Additionals)):
+	case int(hdr.ARCount()) > caporzero(additionals):
 		tooManyErr = errTooManyAdditionals
 	}
-	if nq > cap(m.Questions) {
-		nq = cap(m.Questions)
-	}
-	m.Questions = m.Questions[:nq]
-	for i := 0; i < nq; i++ {
-		off, err = m.Questions[i].Decode(msg, off)
-		if err != nil {
-			m.Questions = m.Questions[:i] // Trim non-decoded/failed questions.
-			return off, false, err
+	if q != nil {
+		if nq > cap(*q) {
+			nq = cap(*q)
 		}
+		*q = (*q)[:nq]
+		for i := 0; i < nq; i++ {
+			off, err = (*q)[i].Decode(msg, off)
+			if err != nil {
+				*q = (*q)[:i] // Trim non-decoded/failed questions.
+				return off, false, err
+			}
+		}
+	} else {
+		nq = 0 // No question slice provided, skip all questions below.
 	}
 	// Skip undecoded questions.
-	qd := hdr.QDCount()
 	for i := 0; i < int(qd)-nq; i++ {
 		off, err = skipQuestion(msg, off)
 		if err != nil {
 			return off, false, err
 		}
 	}
-
-	off, err = decodeToCapResources(&m.Answers, msg, hdr.ANCount(), off)
+	off, err = decodeToCapResources(answers, msg, hdr.ANCount(), off)
 	if err != nil {
 		return off, false, err
 	}
-	off, err = decodeToCapResources(&m.Authorities, msg, hdr.NSCount(), off)
+	off, err = decodeToCapResources(authorities, msg, hdr.NSCount(), off)
 	if err != nil {
 		return off, false, err
 	}
-	off, err = decodeToCapResources(&m.Additionals, msg, hdr.ARCount(), off)
+	off, err = decodeToCapResources(additionals, msg, hdr.ARCount(), off)
 	if err != nil {
 		return off, false, err
 	}
 	return off, tooManyErr != nil, tooManyErr
 }
 
+// Decode decodes the DNS message in b into m. It is a convenience wrapper for [DecodeMessage].
+func (m *Message) Decode(msg []byte) (_ uint16, incompleteButOK bool, err error) {
+	return DecodeMessage(&m.Questions, &m.Answers, &m.Authorities, &m.Additionals, msg)
+}
+
 func decodeToCapResources(dst *[]Resource, msg []byte, nrec, off uint16) (_ uint16, err error) {
 	originalRec := nrec
-	if nrec > uint16(cap(*dst)) {
-		nrec = uint16(cap(*dst)) // Decode up to cap. Caller will return an error flag.
-	}
-	*dst = (*dst)[:nrec]
-	for i := uint16(0); i < nrec; i++ {
-		off, err = (*dst)[i].Decode(msg, off)
-		if err != nil {
-			*dst = (*dst)[:i] // Trim non-decoded/failed resources.
-			return off, err
+	if dst != nil {
+		if nrec > uint16(cap(*dst)) {
+			nrec = uint16(cap(*dst)) // Decode up to cap. Caller will return an error flag.
+		}
+		*dst = (*dst)[:nrec]
+		for i := uint16(0); i < nrec; i++ {
+			off, err = (*dst)[i].Decode(msg, off)
+			if err != nil {
+				*dst = (*dst)[:i] // Trim non-decoded/failed resources.
+				return off, err
+			}
 		}
 	}
 	// Parse undecoded resources, effectively skipping them.
@@ -672,4 +680,11 @@ func (dst *ResourceHeader) CopyFrom(rh ResourceHeader) {
 	dst.Class = rh.Class
 	dst.TTL = rh.TTL
 	dst.Length = rh.Length
+}
+
+func caporzero[T any](v *[]T) int {
+	if v == nil {
+		return 0
+	}
+	return cap(*v)
 }
