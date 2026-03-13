@@ -68,9 +68,9 @@ type StackConfig struct {
 	MaxUDPConns           int
 	EthernetTxCRC32Update func(crc uint32, b []byte) uint32
 
-	// Accept multicast ethernet and IP packets. Needed for MDNS.
 	HardwareAddress [6]byte
 	MTU             uint16
+	// Accept multicast ethernet and IP packets. Needed for MDNS.
 	AcceptMulticast bool
 }
 
