@@ -73,22 +73,37 @@ func matchQuestion(q *dns.Question, svc *Service) bool {
 // addServiceAnswers adds the appropriate answer records for a matched question.
 // It grows ans in-place, reusing existing Resource buffers when available.
 func addServiceAnswers(dst *[]dns.Resource, q *dns.Question, svc *Service) {
-
 	cacheFlush := dns.Class(uint16(dns.ClassINET) | classCacheFlush)
 	ttl := svc.ttl()
 	txtData := svc.TXTData
+	avail := cap(*dst) - len(*dst)
 	switch q.Type {
 	case dns.TypePTR:
+		if avail < 1 {
+			return
+		}
 		svcType := svc.serviceType()
 		growSlice(dst).SetPTR(svcType, dns.ClassINET, ttl, svc.Name)
 	case dns.TypeSRV:
+		if avail < 2 {
+			return
+		}
 		growSlice(dst).SetSRV(svc.Name, cacheFlush, ttl, 0, 0, svc.Port, svc.Host)
 		growSlice(dst).SetA(svc.Host, cacheFlush, ttl, svc.Addr)
 	case dns.TypeTXT:
+		if avail < 1 {
+			return
+		}
 		growSlice(dst).SetTXT(svc.Name, cacheFlush, ttl, txtData)
 	case dns.TypeA:
+		if avail < 1 {
+			return
+		}
 		growSlice(dst).SetA(svc.Host, cacheFlush, ttl, svc.Addr)
 	case dns.TypeALL:
+		if avail < 4 {
+			return
+		}
 		svcType := svc.serviceType()
 		growSlice(dst).SetPTR(svcType, dns.ClassINET, ttl, svc.Name)
 		growSlice(dst).SetSRV(svc.Name, cacheFlush, ttl, 0, 0, svc.Port, svc.Host)
@@ -98,6 +113,7 @@ func addServiceAnswers(dst *[]dns.Resource, q *dns.Question, svc *Service) {
 }
 
 // growSlice grows the slice by one element and returns a pointer to the new last element.
+// Panics if at capacity — callers must check available space before calling.
 func growSlice[T any](s *[]T) *T {
 	*s = (*s)[:len(*s)+1]
 	return &(*s)[len(*s)-1]

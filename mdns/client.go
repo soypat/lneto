@@ -71,7 +71,11 @@ func (c *Client) Configure(cfg ClientConfig) error {
 	c.ip = append(c.ip[:0], cfg.MulticastAddr...)
 	internal.SliceReuse(&c.rqst, len(cfg.Services))
 	// Each service can produce up to 4 answer records (PTR+SRV+TXT+A).
-	internal.SliceReuse(&c.rans, 4*len(cfg.Services))
+	nrans := 2 * len(cfg.Services)
+	if nrans > 0 {
+		nrans = max(4, nrans)
+	}
+	internal.SliceReuse(&c.rans, nrans)
 	return nil
 }
 
@@ -165,7 +169,8 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 		c.qstate = querierDone
 		return nil // success.
 	}
-	if !isresponse && len(c.services) > 0 && len(c.rans) < len(c.services) {
+	freeAns := cap(c.rans) - len(c.rans)
+	if !isresponse && len(c.services) > 0 && freeAns > 0 {
 		// Incoming query — match against our services.
 		var query dns.Message
 		query.LimitResourceDecoding(f.QDCount(), 0, 0, 0)
