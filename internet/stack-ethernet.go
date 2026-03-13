@@ -33,11 +33,12 @@ type StackEthernetConfig struct {
 }
 
 type StackEthernet struct {
-	connID   uint64
-	handlers handlers
-	mac      [6]byte
-	gwmac    [6]byte
-	mtu      uint16
+	connID          uint64
+	handlers        handlers
+	mac             [6]byte
+	gwmac           [6]byte
+	mtu             uint16
+	acceptMulticast bool
 	// crcupdate set when crc32 has been configured to be appended.
 	crcupdate func(crc uint32, p []byte) uint32
 }
@@ -48,6 +49,10 @@ func (ls *StackEthernet) SetGateway6(gw [6]byte) {
 
 func (ls *StackEthernet) Gateway6() (gw [6]byte) {
 	return ls.gwmac
+}
+
+func (ls *StackEthernet) SetAcceptMulticast(accept bool) {
+	ls.acceptMulticast = accept
 }
 
 func (ls *StackEthernet) SetHardwareAddr6(mac [6]byte) {
@@ -83,11 +88,12 @@ func (ls *StackEthernet) Configure(cfg StackEthernetConfig) error {
 	}
 	ls.handlers.reset("StackEthernet", cfg.MaxNodes)
 	*ls = StackEthernet{
-		connID:   ls.connID + 1,
-		handlers: ls.handlers,
-		mac:      cfg.MAC,
-		gwmac:    cfg.Gateway,
-		mtu:      uint16(cfg.MTU),
+		connID:          ls.connID + 1,
+		handlers:        ls.handlers,
+		mac:             cfg.MAC,
+		gwmac:           cfg.Gateway,
+		mtu:             uint16(cfg.MTU),
+		acceptMulticast: ls.acceptMulticast,
 	}
 	if cfg.AppendCRC32 {
 		ls.crcupdate = cfg.CRC32Update
@@ -121,7 +127,9 @@ func (ls *StackEthernet) Demux(carrierData []byte, frameOffset int) (err error) 
 	dstaddr := efrm.DestinationHardwareAddr()
 	var vld lneto.Validator
 	if !efrm.IsBroadcast() && ls.mac != *dstaddr {
-		goto DROP
+		if !ls.acceptMulticast || dstaddr[0]&1 == 0 {
+			goto DROP
+		}
 	}
 	efrm.ValidateSize(&vld)
 	if vld.HasError() {

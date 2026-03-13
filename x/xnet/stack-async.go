@@ -46,6 +46,8 @@ type StackAsync struct {
 	ntpUDP internet.StackUDPPort
 	ntp    ntp.Client
 
+	userUDPs []internet.StackUDPPort
+
 	sysprec int8 // NTP system precision.
 
 	prng uint32
@@ -60,12 +62,16 @@ type StackConfig struct {
 	StaticAddress         netip.Addr
 	DNSServer             netip.Addr
 	NTPServer             netip.Addr
+	RandSeed              int64
 	Hostname              string
 	MaxTCPConns           int
-	RandSeed              int64
-	HardwareAddress       [6]byte
-	MTU                   uint16
+	MaxUDPConns           int
 	EthernetTxCRC32Update func(crc uint32, b []byte) uint32
+
+	// Accept multicast ethernet and IP packets. Needed for MDNS.
+	HardwareAddress [6]byte
+	MTU             uint16
+	AcceptMulticast bool
 }
 
 func (s *StackAsync) Hostname() string {
@@ -120,18 +126,24 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	if err != nil {
 		return err
 	}
+	s.link.SetAcceptMulticast(cfg.AcceptMulticast)
 	const ipNodes = 2 // UDP, TCP ports.
 	err = s.ip.Reset(addr, ipNodes)
 	if err != nil {
 		return err
 	}
+	s.ip.SetAcceptMulticast(cfg.AcceptMulticast)
 	//
 	err = s.resetARP()
 	if err != nil {
 		return err
 	}
-	const udpMaintenanceConns = 3 // DHCP, DNS, NTP.
-	err = s.udps.ResetUDP(udpMaintenanceConns)
+	udpConns := 3 + cfg.MaxUDPConns // DHCP, DNS, NTP + user-registered.
+	err = s.udps.ResetUDP(udpConns)
+	if err != nil {
+		return err
+	}
+	internal.SliceReuse(&s.userUDPs, cfg.MaxUDPConns)
 	if err != nil {
 		return err
 	}
@@ -320,6 +332,21 @@ func (s *StackAsync) RegisterListener(listener *tcp.Listener) (err error) {
 		return lneto.ErrZeroSource
 	}
 	return s.tcps.Register(listener, nil)
+}
+
+// RegisterUDP registers a StackNode on a UDP port with the given remote address and port.
+// The StackUDPPort wrapping is handled internally. The number of user-registered UDP ports
+// is limited by [StackConfig.MaxUDPConns].
+func (s *StackAsync) RegisterUDP(node internet.StackNode, remoteAddr []byte, remotePort uint16) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	idx := len(s.userUDPs)
+	if idx >= cap(s.userUDPs) {
+		return lneto.ErrBufferFull
+	}
+	s.userUDPs = s.userUDPs[:idx+1]
+	s.userUDPs[idx].SetStackNode(node, remoteAddr, remotePort)
+	return s.udps.Register(&s.userUDPs[idx])
 }
 
 var errNoDNSServer = errors.New("no DNS server- did DHCP complete? You can set a predetermined DNS server in Stack configuration")

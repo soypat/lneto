@@ -33,8 +33,8 @@ func newQuerier(t *testing.T, questions []dns.Question, maxAnswers uint16) *Clie
 		t.Fatal(err)
 	}
 	err = c.StartResolve(ResolveConfig{
-		Questions:  questions,
-		MaxAnswers: maxAnswers,
+		Questions:          questions,
+		MaxResponseAnswers: maxAnswers,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -364,7 +364,7 @@ func TestClientMultipleResponders(t *testing.T) {
 			Type:  dns.TypePTR,
 			Class: dns.ClassINET,
 		}},
-		MaxAnswers: 8,
+		MaxResponseAnswers: 8,
 	})
 	// Re-send query for second responder.
 	n, _ = querier.Encapsulate(buf[:], -1, 0)

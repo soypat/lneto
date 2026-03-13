@@ -86,17 +86,17 @@ func (c *Client) LocalPort() uint16 { return c.lport }
 func (c *Client) ConnectionID() *uint64 { return &c.connID }
 
 type ResolveConfig struct {
-	Questions  []dns.Question
-	MaxAnswers uint16
+	Questions          []dns.Question
+	MaxResponseAnswers uint16
 }
 
 func (c *Client) StartResolve(cfg ResolveConfig) error {
 	nq := len(cfg.Questions)
-	if nq > math.MaxUint16 || nq == 0 || cfg.MaxAnswers == 0 {
+	if nq > math.MaxUint16 || nq == 0 || cfg.MaxResponseAnswers == 0 {
 		return lneto.ErrInvalidConfig
 	}
 	c.qreset(querierSendQuery)
-	internal.SliceReuse(&c.qans, int(cfg.MaxAnswers))
+	internal.SliceReuse(&c.qans, int(cfg.MaxResponseAnswers))
 	internal.SliceReuse(&c.qqst, nq)
 	c.qqst = c.qqst[:nq]
 	for i := range c.qqst {
