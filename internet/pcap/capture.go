@@ -172,31 +172,31 @@ func (pc *PacketBreakdown) CaptureIPv6(dst []Frame, pkt []byte, bitOffset int) (
 	debuglog("pcap:ipv6:reclaimed")
 	proto := ifrm6.NextHeader()
 	end := bitOffset + 40*octet
-	var protoErrs []error
+	var protoErr error
 	var crc lneto.CRC791
 	ifrm6.CRCWritePseudo(&crc)
 	switch proto {
 	case lneto.IPProtoTCP:
 		if crc.PayloadSum16(ifrm6.Payload()) != 0 {
-			protoErrs = append(protoErrs, lneto.ErrBadCRC)
+			protoErr = lneto.ErrBadCRC
 		}
 	case lneto.IPProtoUDP, lneto.IPProtoUDPLite:
 		ufrm, err := udp.NewFrame(ifrm6.Payload())
 		if err != nil {
-			protoErrs = append(protoErrs, err)
+			protoErr = err
 			break
 		}
 		ufrm.ValidateSize(pc.validator())
 		if err = pc.validator().ErrPop(); err != nil {
-			protoErrs = append(protoErrs, err)
+			protoErr = err
 			break
 		}
 		frameLen := ufrm.Length()
 		if crc.PayloadSum16(ufrm.RawData()[:frameLen]) != 0 {
-			protoErrs = append(protoErrs, lneto.ErrBadCRC)
+			protoErr = lneto.ErrBadCRC
 		}
 	}
-	return pc.captureIPProto(proto, dst, pkt, end, protoErrs...)
+	return pc.captureIPProto(proto, dst, pkt, end, protoErr)
 }
 
 func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
@@ -232,12 +232,8 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 	proto := ifrm4.Protocol()
 	end := bitOffset + octet*ifrm4.HeaderLength()
 	var crc lneto.CRC791
-	// We do some black magic here to avoid heap allocations.
-	// We know the next frame in dst will store the protocol, use its error buffer
-	// to store errors which will later be appended to.
-	var auxFrm = internal.SliceReclaim(&dst)
-	dst = dst[:len(dst)-1]
 
+	var ipProtoErr error
 	payload := ifrm4.Payload()
 	switch proto {
 	case lneto.IPProtoTCP:
@@ -249,7 +245,7 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 			}
 			ifrm4.CRCWriteTCPPseudo(&crc)
 			if crc.PayloadSum16(payload) != 0 {
-				auxFrm.Errors = append(auxFrm.Errors, lneto.ErrBadCRC)
+				ipProtoErr = lneto.ErrBadCRC
 			}
 		}
 	case lneto.IPProtoUDP:
@@ -263,7 +259,7 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 				frameLen := ufrm.Length()
 				ifrm4.CRCWriteUDPPseudo(&crc, frameLen)
 				if crc.PayloadSum16(ufrm.RawData()[:frameLen]) != 0 {
-					auxFrm.Errors = append(auxFrm.Errors, lneto.ErrBadCRC)
+					ipProtoErr = lneto.ErrBadCRC
 				}
 			}
 		}
@@ -271,15 +267,15 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 		_, err := icmpv4.NewFrame(payload)
 		if err == nil {
 			if crc.PayloadSum16(payload) != 0 {
-				auxFrm.Errors = append(auxFrm.Errors, lneto.ErrBadCRC)
+				ipProtoErr = lneto.ErrBadCRC
 			}
 		}
 	}
 	debuglog("pcap:ipv4:proto-crc-done")
-	return pc.captureIPProto(proto, dst, pkt, end, auxFrm.Errors...)
+	return pc.captureIPProto(proto, dst, pkt, end, ipProtoErr)
 }
 
-func (pc *PacketBreakdown) captureIPProto(proto lneto.IPProto, dst []Frame, pkt []byte, bitOffset int, ipProtoErrs ...error) (_ []Frame, err error) {
+func (pc *PacketBreakdown) captureIPProto(proto lneto.IPProto, dst []Frame, pkt []byte, bitOffset int, ipProtoErr error) (_ []Frame, err error) {
 	debuglog("pcap:ipproto:start")
 	nextFrame := len(dst)
 	switch proto {
@@ -297,8 +293,8 @@ func (pc *PacketBreakdown) captureIPProto(proto lneto.IPProto, dst []Frame, pkt 
 	default:
 		reclaimRemainingFrame(&dst, "unknown proto", 0, bitOffset, octet*len(pkt))
 	}
-	if len(ipProtoErrs) > 0 && len(dst) > nextFrame {
-		dst[nextFrame].Errors = append(dst[nextFrame].Errors, ipProtoErrs...)
+	if ipProtoErr != nil && len(dst) > nextFrame {
+		dst[nextFrame].Errors = append(dst[nextFrame].Errors, ipProtoErr)
 	}
 	debuglog("pcap:ipproto:done")
 	return dst, err
