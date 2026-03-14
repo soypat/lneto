@@ -3,6 +3,7 @@ package lneto
 import (
 	"errors"
 	"fmt"
+	"strconv"
 )
 
 type ValidateFlags uint64
@@ -82,4 +83,13 @@ type BitPosErr struct {
 
 func (bpe *BitPosErr) Error() string {
 	return fmt.Sprintf("%s at bits %d..%d", bpe.Err.Error(), bpe.BitStart, bpe.BitStart+bpe.BitLen)
+}
+
+func (bpe *BitPosErr) AppendError(dst []byte) []byte {
+	dst = append(dst, bpe.Err.Error()...)
+	dst = append(dst, ": bits "...)
+	dst = strconv.AppendUint(dst, uint64(bpe.BitStart), 10)
+	dst = append(dst, '.', '.')
+	dst = strconv.AppendUint(dst, uint64(bpe.BitStart+bpe.BitLen), 10)
+	return dst
 }

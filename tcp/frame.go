@@ -187,19 +187,19 @@ func (tfrm Frame) String() string {
 func (tfrm Frame) ValidateSize(v *lneto.Validator) {
 	off := tfrm.HeaderLength()
 	if off < sizeHeaderTCP {
-		v.AddBitPosErr(12*8, 4, lneto.ErrInvalidLengthField)
+		v.AddError(lneto.ErrInvalidLengthField)
 	}
 	if off > len(tfrm.RawData()) {
-		v.AddBitPosErr(12*8, 4, lneto.ErrInvalidLengthField)
+		v.AddError(lneto.ErrShortBuffer)
 	}
 }
 
 func (tfrm Frame) ValidateExceptCRC(v *lneto.Validator) {
 	tfrm.ValidateSize(v)
 	if tfrm.DestinationPort() == 0 {
-		v.AddBitPosErr(2*8, 16, lneto.ErrZeroDestination)
+		v.AddError(lneto.ErrZeroDestination)
 	}
 	if tfrm.SourcePort() == 0 {
-		v.AddBitPosErr(0, 16, lneto.ErrZeroSource)
+		v.AddError(lneto.ErrZeroSource)
 	}
 }

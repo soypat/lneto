@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"math"
-	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,6 +13,8 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/ipv4"
+	"github.com/soypat/lneto/ipv6"
 	"github.com/soypat/lneto/ntp"
 	"github.com/soypat/lneto/tcp"
 )
@@ -65,6 +66,7 @@ func (f *Formatter) FormatFrame(dst []byte, frm Frame, pkt []byte) (_ []byte, er
 		dst = append(dst, " bitlen="...)
 		dst = strconv.AppendInt(dst, int64(bitlen), 10)
 	}
+	debuglog("pcap:FormatFrame:int")
 
 	for ifield := range frm.Fields {
 		field := frm.Fields[ifield]
@@ -94,6 +96,7 @@ func (f *Formatter) FormatFrame(dst []byte, frm Frame, pkt []byte) (_ []byte, er
 				dst = append(dst, ';')
 			}
 			dst = append(dst, err.Error()...)
+			debuglog("pcap:fmtframe:error")
 		}
 		dst = append(dst, ')')
 	}
@@ -122,6 +125,7 @@ func (f *Formatter) FormatField(dst []byte, pktStartOff int, field FrameField, p
 			dst, err = f.formatField(dst, pktStartOff, field.SubFields[i], pkt)
 		}
 	}
+	debuglog("pcap:FormatField:end")
 	return dst, err
 }
 
@@ -181,15 +185,20 @@ func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, p
 				return dst, err
 			}
 			dst = strconv.AppendUint(dst, v, 10)
+			debuglog("pcap:fmtfield:uint")
 		} else if field.BitLength == 4*8 {
-			dst = netip.AddrFrom4([4]byte(f.buf)).AppendTo(dst)
+			dst = ipv4.AppendFormatAddr(dst, [4]byte(f.buf))
+			debuglog("pcap:fmtfield:addr4")
 		} else if field.BitLength == 6*8 {
 			dst = ethernet.AppendAddr(dst, [6]byte(f.buf))
+			debuglog("pcap:fmtfield:addr6")
 		} else if field.BitLength == 16*8 {
-			dst = netip.AddrFrom16([16]byte(f.buf)).AppendTo(dst)
+			dst = ipv6.AppendFormatAddr(dst, [16]byte(f.buf))
+			debuglog("pcap:fmtfield:addr16")
 		} else {
 			dst = append(dst, "0x"...)
 			dst = hex.AppendEncode(dst, f.buf)
+			debuglog("pcap:fmtfield:addrN")
 		}
 	}
 	return dst, err
