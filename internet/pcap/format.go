@@ -65,6 +65,7 @@ func (f *Formatter) FormatFrame(dst []byte, frm Frame, pkt []byte) (_ []byte, er
 		dst = append(dst, " bitlen="...)
 		dst = strconv.AppendInt(dst, int64(bitlen), 10)
 	}
+	debuglog("pcap:FormatFrame:int")
 
 	for ifield := range frm.Fields {
 		field := frm.Fields[ifield]
@@ -94,6 +95,7 @@ func (f *Formatter) FormatFrame(dst []byte, frm Frame, pkt []byte) (_ []byte, er
 				dst = append(dst, ';')
 			}
 			dst = append(dst, err.Error()...)
+			debuglog("pcap:fmtframe:error")
 		}
 		dst = append(dst, ')')
 	}
@@ -122,6 +124,7 @@ func (f *Formatter) FormatField(dst []byte, pktStartOff int, field FrameField, p
 			dst, err = f.formatField(dst, pktStartOff, field.SubFields[i], pkt)
 		}
 	}
+	debuglog("pcap:FormatField:end")
 	return dst, err
 }
 

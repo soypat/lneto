@@ -231,8 +231,13 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 	debuglog("pcap:ipv4:crc-done")
 	proto := ifrm4.Protocol()
 	end := bitOffset + octet*ifrm4.HeaderLength()
-	var protoErrs []error
 	var crc lneto.CRC791
+	// We do some black magic here to avoid heap allocations.
+	// We know the next frame in dst will store the protocol, use its error buffer
+	// to store errors which will later be appended to.
+	var auxFrm = internal.SliceReclaim(&dst)
+	dst = dst[:len(dst)-1]
+
 	payload := ifrm4.Payload()
 	switch proto {
 	case lneto.IPProtoTCP:
@@ -244,7 +249,7 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 			}
 			ifrm4.CRCWriteTCPPseudo(&crc)
 			if crc.PayloadSum16(payload) != 0 {
-				protoErrs = append(protoErrs, lneto.ErrBadCRC)
+				auxFrm.Errors = append(auxFrm.Errors, lneto.ErrBadCRC)
 			}
 		}
 	case lneto.IPProtoUDP:
@@ -258,7 +263,7 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 				frameLen := ufrm.Length()
 				ifrm4.CRCWriteUDPPseudo(&crc, frameLen)
 				if crc.PayloadSum16(ufrm.RawData()[:frameLen]) != 0 {
-					protoErrs = append(protoErrs, lneto.ErrBadCRC)
+					auxFrm.Errors = append(auxFrm.Errors, lneto.ErrBadCRC)
 				}
 			}
 		}
@@ -266,12 +271,12 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 		_, err := icmpv4.NewFrame(payload)
 		if err == nil {
 			if crc.PayloadSum16(payload) != 0 {
-				protoErrs = append(protoErrs, lneto.ErrBadCRC)
+				auxFrm.Errors = append(auxFrm.Errors, lneto.ErrBadCRC)
 			}
 		}
 	}
 	debuglog("pcap:ipv4:proto-crc-done")
-	return pc.captureIPProto(proto, dst, pkt, end, protoErrs...)
+	return pc.captureIPProto(proto, dst, pkt, end, auxFrm.Errors...)
 }
 
 func (pc *PacketBreakdown) captureIPProto(proto lneto.IPProto, dst []Frame, pkt []byte, bitOffset int, ipProtoErrs ...error) (_ []Frame, err error) {
@@ -739,6 +744,7 @@ func appendField(dst, pkt []byte, fieldBitStart, bitlen int, rightAligned bool) 
 		}
 		// Optimized path: field starts at byte boundary.
 		dst = append(dst, pkt[octetsStart:octetsStart+octets]...)
+		debuglog("pcap:appendField:optpath")
 		if lastOctetExcessBits != 0 {
 			dst[len(dst)-1] >>= lastOctetExcessBits
 		}
@@ -750,7 +756,9 @@ func appendField(dst, pkt []byte, fieldBitStart, bitlen int, rightAligned bool) 
 		if lastOctetExcessBits == 0 {
 			// Right aligned with no loose trailing bits. i.e: TCP flags.
 			dst = append(dst, pkt[octetsStart]&mask)
+			debuglog("pcap:appendField:rightalign1")
 			dst = append(dst, pkt[octetsStart+1:octetsStart+octets]...)
+			debuglog("pcap:appendField:rightalign2")
 			return dst, nil
 		}
 		// Right aligned with trailing bits. i.e: IPv6 Traffic Class.
@@ -762,6 +770,7 @@ func appendField(dst, pkt []byte, fieldBitStart, bitlen int, rightAligned bool) 
 			b := (pkt[octetsStart+i] & mask) << (8 - firstBitOffset)
 			b |= pkt[octetsStart+i+1] >> firstBitOffset
 			dst = append(dst, b)
+			debuglog("pcap:appendField:rightalign3")
 		}
 		return dst, nil
 	}
@@ -772,10 +781,12 @@ func appendField(dst, pkt []byte, fieldBitStart, bitlen int, rightAligned bool) 
 		b := pkt[i+octetsStart] & mask
 		b |= pkt[i+octetsStart+1] >> firstBitOffset
 		dst = append(dst, b)
+		debuglog("pcap:appendField:leftalign1")
 	}
 	lastOctet := pkt[octetsStart+octets-1] & mask
 	lastOctet >>= lastOctetExcessBits
 	dst = append(dst, lastOctet)
+	debuglog("pcap:appendField:leftalign2")
 	return dst, nil
 }
 
