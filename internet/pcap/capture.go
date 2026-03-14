@@ -442,15 +442,19 @@ func (pc *PacketBreakdown) CaptureDNS(dst []Frame, pkt []byte, bitOffset int) ([
 	if err != nil && !incomplete {
 		return dst, err
 	}
+	debuglog("pcap:dns-decode")
 	finfo := reclaimFrame(&dst, "DNS", bitOffset, nil)
 	if incomplete {
 		finfo.Errors = append(finfo.Errors, ErrLimitExceeded)
 	}
-	finfo.Fields = append(finfo.Fields[:0], FrameField{
+	field := internal.SliceReclaim(&finfo.Fields)
+	*field = FrameField{
 		Name:           "Data",
 		FrameBitOffset: 0,
 		BitLength:      int(off) * octet,
-	})
+		SubFields:      field.SubFields[:0], // Reuse subfields.
+	}
+	debuglog("pcap:dns-done")
 	return dst, nil
 }
 
@@ -464,6 +468,7 @@ func (pc *PacketBreakdown) CaptureNTP(dst []Frame, pkt []byte, bitOffset int) ([
 		return dst, err
 	}
 	reclaimFrame(&dst, "NTP", bitOffset, baseNTPFields[:])
+	debuglog("pcap:ntp")
 	return dst, nil
 }
 
@@ -491,6 +496,7 @@ func (pc *PacketBreakdown) CaptureDHCPv4(dst []Frame, pkt []byte, bitOffset int)
 			SubFields: optfield.SubFields[:0],
 			Name:      "options",
 		}
+		debuglog("pcap:dhcp-opt0")
 		err = dfrm.ForEachOption(func(optoff int, opt dhcpv4.OptNum, data []byte) error {
 			if len(optfield.SubFields) >= pc.SubfieldLimit {
 				return ErrLimitExceeded
@@ -542,11 +548,13 @@ func (pc *PacketBreakdown) CaptureDHCPv4(dst []Frame, pkt []byte, bitOffset int)
 			optfield.SubFields = append(optfield.SubFields, field)
 			return nil
 		})
+		debuglog("pcap:dhcp-opt1")
 		// optfield already in finfo.Fields via SliceReclaim, no append needed.
 		if err != nil {
 			finfo.Errors = append(finfo.Errors, err)
 		}
 	}
+	debuglog("pcap:dhcp-done")
 	return dst, nil
 }
 
@@ -1348,6 +1356,7 @@ func reclaimFrame(dst *[]Frame, proto string, bitOffset int, baseFields []FrameF
 		Fields:          append(finfo.Fields[:0], baseFields...),
 		Errors:          finfo.Errors[:0],
 	}
+	debuglog("pcap:reclaim")
 	return finfo
 }
 
@@ -1359,6 +1368,7 @@ func reclaimRemainingFrame(dst *[]Frame, proto string, class FieldClass, pktBitO
 		Class:     class,
 		BitLength: pktBitLen - pktBitOffset,
 	})
+	debuglog("pcap:reclaim-rem")
 }
 
 const enableDebug = internal.HeapAllocDebugging
