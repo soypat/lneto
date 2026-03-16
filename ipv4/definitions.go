@@ -1,5 +1,7 @@
 package ipv4
 
+import "strconv"
+
 const (
 	sizeHeader = 20
 )
@@ -75,4 +77,16 @@ func b2u8(b bool) uint8 {
 		return 1
 	}
 	return 0
+}
+
+// AppendFormatAddr appends the dotted-decimal text representation of an IPv4 address
+// to dst. Zero heap allocations.
+func AppendFormatAddr(dst []byte, addr [4]byte) []byte {
+	for i, b := range addr {
+		if i != 0 {
+			dst = append(dst, '.')
+		}
+		dst = strconv.AppendUint(dst, uint64(b), 10)
+	}
+	return dst
 }

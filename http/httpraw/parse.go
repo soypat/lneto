@@ -159,10 +159,12 @@ func (hb *headerBuf) scanUntilByte(c byte) []byte {
 func (hb *headerBuf) parseFirstLineRequest(initFlags flags) (method, uri, proto headerSlice, flags flags, err error) {
 	debuglog("http:req:scan")
 	hb.off = 0 // Parsing first line resets offset.
-	var b []byte
 	hb.skipLeadingCRLF()
-	b = hb.scanLine()
 	flags = initFlags
+	if bytes.IndexByte(hb.offBuf(), '\n') < 0 {
+		return method, uri, proto, flags, errNeedMore // Incomplete line.
+	}
+	b := hb.scanLine()
 	if len(b) < 5 {
 		return method, uri, proto, flags, errNeedMore
 	}
@@ -173,18 +175,17 @@ func (hb *headerBuf) parseFirstLineRequest(initFlags flags) (method, uri, proto 
 	if reqURIEnd > 0 {
 		reqURIEnd += methodEnd + 1
 		uri = hb.slice(b[methodEnd+1 : reqURIEnd])
-		if b2s(b[methodEnd+1:reqURIEnd]) != strHTTP11 {
+		proto = hb.slice(b[reqURIEnd+1:]) // Skip space before protocol.
+		if b2s(b[reqURIEnd+1:]) != strHTTP11 {
 			flags |= flagNoHTTP11
 		}
 	} else if reqURIEnd == 0 {
 		return method, uri, proto, flags, errEmptyURI
 	} else {
 		// No version provided.
-		reqURIEnd = methodEnd + 1
 		flags |= flagNoHTTP11
-		uri = hb.slice(b[methodEnd+1 : reqURIEnd])
+		uri = hb.slice(b[methodEnd+1:])
 	}
-	proto = hb.slice(b[reqURIEnd:])
 	method = hb.slice(b[:methodEnd])
 	return method, uri, proto, flags, nil
 }
@@ -192,18 +193,32 @@ func (hb *headerBuf) parseFirstLineRequest(initFlags flags) (method, uri, proto 
 func (hb *headerBuf) parseFirstLineResponse(initFlags flags) (statusCode, statusText headerSlice, flags flags, err error) {
 	debuglog("http:resp:scan")
 	hb.off = 0 // Parsing first line resets offset.
-	var b []byte
 	hb.skipLeadingCRLF()
-	b = hb.scanLine()
 	flags = initFlags
+	if bytes.IndexByte(hb.offBuf(), '\n') < 0 {
+		return statusCode, statusText, flags, errNeedMore // Incomplete line.
+	}
+	b := hb.scanLine()
 	if len(b) < 5 {
 		return statusCode, statusText, flags, errNeedMore
 	}
 	debuglog("http:resp:parse")
 
-	statusCodeEnd := max(0, bytes.IndexByte(b, ' '))
-	code := b[:statusCodeEnd]
-	text := b[statusCodeEnd:]
+	// Parse protocol (e.g. "HTTP/1.1"), then status code, then status text.
+	protoEnd := bytes.IndexByte(b, ' ')
+	if protoEnd < 0 {
+		return statusCode, statusText, flags, errNeedMore
+	}
+	if b2s(b[:protoEnd]) != strHTTP11 {
+		flags |= flagNoHTTP11
+	}
+	b = b[protoEnd+1:] // Advance past protocol and space.
+
+	codeEnd := bytes.IndexByte(b, ' ')
+	if codeEnd < 0 {
+		codeEnd = len(b) // Status text is optional.
+	}
+	code := b[:codeEnd]
 	if len(code) > 3 {
 		return statusCode, statusText, flags, errLongStatusCode
 	}
@@ -214,7 +229,9 @@ func (hb *headerBuf) parseFirstLineResponse(initFlags flags) (statusCode, status
 		}
 	}
 	statusCode = hb.slice(code)
-	statusText = hb.slice(text)
+	if codeEnd < len(b) {
+		statusText = hb.slice(b[codeEnd+1:]) // Skip space before text.
+	}
 	debuglog("http:resp:done")
 	return statusCode, statusText, flags, nil
 }
@@ -400,7 +417,8 @@ func (hb *headerBuf) next(ss *scannerState) argsKV {
 // ConnectionClose returns true if 'Connection: close' header is set or if a invalid header was found.
 func (h *Header) ConnectionClose() bool {
 	closed := h.flags.hasAny(flagConnClose) ||
-		(h.flags.hasAny(flagNoHTTP11) && !h.hasHeaderValue("Connection", "keep-alive"))
+		h.hasHeaderValue(headerConnection, strClose) ||
+		(h.flags.hasAny(flagNoHTTP11) && !h.hasHeaderValue(headerConnection, "keep-alive"))
 	if closed {
 		h.flags |= flagConnClose
 	}

@@ -173,31 +173,31 @@ func (pc *PacketBreakdown) CaptureIPv6(dst []Frame, pkt []byte, bitOffset int) (
 	debuglog("pcap:ipv6:reclaimed")
 	proto := ifrm6.NextHeader()
 	end := bitOffset + 40*octet
-	var protoErrs []error
+	var protoErr error
 	var crc lneto.CRC791
 	ifrm6.CRCWritePseudo(&crc)
 	switch proto {
 	case lneto.IPProtoTCP:
 		if crc.PayloadSum16(ifrm6.Payload()) != 0 {
-			protoErrs = append(protoErrs, lneto.ErrBadCRC)
+			protoErr = lneto.ErrBadCRC
 		}
 	case lneto.IPProtoUDP, lneto.IPProtoUDPLite:
 		ufrm, err := udp.NewFrame(ifrm6.Payload())
 		if err != nil {
-			protoErrs = append(protoErrs, err)
+			protoErr = err
 			break
 		}
 		ufrm.ValidateSize(pc.validator())
 		if err = pc.validator().ErrPop(); err != nil {
-			protoErrs = append(protoErrs, err)
+			protoErr = err
 			break
 		}
 		frameLen := ufrm.Length()
 		if crc.PayloadSum16(ufrm.RawData()[:frameLen]) != 0 {
-			protoErrs = append(protoErrs, lneto.ErrBadCRC)
+			protoErr = lneto.ErrBadCRC
 		}
 	}
-	return pc.captureIPProto(proto, dst, pkt, end, protoErrs...)
+	return pc.captureIPProto(proto, dst, pkt, end, protoErr)
 }
 
 func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
@@ -232,8 +232,9 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 	debuglog("pcap:ipv4:crc-done")
 	proto := ifrm4.Protocol()
 	end := bitOffset + octet*ifrm4.HeaderLength()
-	var protoErrs []error
 	var crc lneto.CRC791
+
+	var ipProtoErr error
 	payload := ifrm4.Payload()
 	switch proto {
 	case lneto.IPProtoTCP:
@@ -245,7 +246,7 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 			}
 			ifrm4.CRCWriteTCPPseudo(&crc)
 			if crc.PayloadSum16(payload) != 0 {
-				protoErrs = append(protoErrs, lneto.ErrBadCRC)
+				ipProtoErr = lneto.ErrBadCRC
 			}
 		}
 	case lneto.IPProtoUDP:
@@ -259,7 +260,7 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 				frameLen := ufrm.Length()
 				ifrm4.CRCWriteUDPPseudo(&crc, frameLen)
 				if crc.PayloadSum16(ufrm.RawData()[:frameLen]) != 0 {
-					protoErrs = append(protoErrs, lneto.ErrBadCRC)
+					ipProtoErr = lneto.ErrBadCRC
 				}
 			}
 		}
@@ -267,15 +268,15 @@ func (pc *PacketBreakdown) CaptureIPv4(dst []Frame, pkt []byte, bitOffset int) (
 		_, err := icmpv4.NewFrame(payload)
 		if err == nil {
 			if crc.PayloadSum16(payload) != 0 {
-				protoErrs = append(protoErrs, lneto.ErrBadCRC)
+				ipProtoErr = lneto.ErrBadCRC
 			}
 		}
 	}
 	debuglog("pcap:ipv4:proto-crc-done")
-	return pc.captureIPProto(proto, dst, pkt, end, protoErrs...)
+	return pc.captureIPProto(proto, dst, pkt, end, ipProtoErr)
 }
 
-func (pc *PacketBreakdown) captureIPProto(proto lneto.IPProto, dst []Frame, pkt []byte, bitOffset int, ipProtoErrs ...error) (_ []Frame, err error) {
+func (pc *PacketBreakdown) captureIPProto(proto lneto.IPProto, dst []Frame, pkt []byte, bitOffset int, ipProtoErr error) (_ []Frame, err error) {
 	debuglog("pcap:ipproto:start")
 	nextFrame := len(dst)
 	switch proto {
@@ -293,8 +294,8 @@ func (pc *PacketBreakdown) captureIPProto(proto lneto.IPProto, dst []Frame, pkt 
 	default:
 		reclaimRemainingFrame(&dst, "unknown proto", 0, bitOffset, octet*len(pkt))
 	}
-	if len(ipProtoErrs) > 0 && len(dst) > nextFrame {
-		dst[nextFrame].Errors = append(dst[nextFrame].Errors, ipProtoErrs...)
+	if ipProtoErr != nil && len(dst) > nextFrame {
+		dst[nextFrame].Errors = append(dst[nextFrame].Errors, ipProtoErr)
 	}
 	debuglog("pcap:ipproto:done")
 	return dst, err
@@ -442,18 +443,19 @@ func (pc *PacketBreakdown) CaptureDNS(dst []Frame, pkt []byte, bitOffset int) ([
 	if err != nil && !incomplete {
 		return dst, err
 	}
-	finfo := reclaimFrame(&dst, "DNS", bitOffset, baseDNSFields[:])
+	debuglog("pcap:dns-decode")
+	finfo := reclaimFrame(&dst, "DNS", bitOffset, nil)
 	if incomplete {
 		finfo.Errors = append(finfo.Errors, ErrLimitExceeded)
 	}
-	payload := internal.SliceReclaim(&finfo.Fields)
-	*payload = FrameField{
+	field := internal.SliceReclaim(&finfo.Fields)
+	*field = FrameField{
 		Name:           "Data",
-		Class:          FieldClassPayload,
-		FrameBitOffset: dns.SizeHeader * octet,
-		BitLength:      (int(off) - dns.SizeHeader) * octet,
-		SubFields:      payload.SubFields[:0],
+		FrameBitOffset: 0,
+		BitLength:      int(off) * octet,
+		SubFields:      field.SubFields[:0], // Reuse subfields.
 	}
+	debuglog("pcap:dns-done")
 	return dst, nil
 }
 
@@ -467,6 +469,7 @@ func (pc *PacketBreakdown) CaptureNTP(dst []Frame, pkt []byte, bitOffset int) ([
 		return dst, err
 	}
 	reclaimFrame(&dst, "NTP", bitOffset, baseNTPFields[:])
+	debuglog("pcap:ntp")
 	return dst, nil
 }
 
@@ -494,6 +497,7 @@ func (pc *PacketBreakdown) CaptureDHCPv4(dst []Frame, pkt []byte, bitOffset int)
 			SubFields: optfield.SubFields[:0],
 			Name:      "options",
 		}
+		debuglog("pcap:dhcp-opt0")
 		err = dfrm.ForEachOption(func(optoff int, opt dhcpv4.OptNum, data []byte) error {
 			if len(optfield.SubFields) >= pc.SubfieldLimit {
 				return ErrLimitExceeded
@@ -545,11 +549,13 @@ func (pc *PacketBreakdown) CaptureDHCPv4(dst []Frame, pkt []byte, bitOffset int)
 			optfield.SubFields = append(optfield.SubFields, field)
 			return nil
 		})
+		debuglog("pcap:dhcp-opt1")
 		// optfield already in finfo.Fields via SliceReclaim, no append needed.
 		if err != nil {
 			finfo.Errors = append(finfo.Errors, err)
 		}
 	}
+	debuglog("pcap:dhcp-done")
 	return dst, nil
 }
 
@@ -743,6 +749,7 @@ func appendField(dst, pkt []byte, fieldBitStart, bitlen int, rightAligned bool) 
 		}
 		// Optimized path: field starts at byte boundary.
 		dst = append(dst, pkt[octetsStart:octetsStart+octets]...)
+		debuglog("pcap:appendField:optpath")
 		if lastOctetExcessBits != 0 {
 			dst[len(dst)-1] >>= lastOctetExcessBits
 		}
@@ -754,7 +761,9 @@ func appendField(dst, pkt []byte, fieldBitStart, bitlen int, rightAligned bool) 
 		if lastOctetExcessBits == 0 {
 			// Right aligned with no loose trailing bits. i.e: TCP flags.
 			dst = append(dst, pkt[octetsStart]&mask)
+			debuglog("pcap:appendField:rightalign1")
 			dst = append(dst, pkt[octetsStart+1:octetsStart+octets]...)
+			debuglog("pcap:appendField:rightalign2")
 			return dst, nil
 		}
 		// Right aligned with trailing bits. i.e: IPv6 Traffic Class.
@@ -766,6 +775,7 @@ func appendField(dst, pkt []byte, fieldBitStart, bitlen int, rightAligned bool) 
 			b := (pkt[octetsStart+i] & mask) << (8 - firstBitOffset)
 			b |= pkt[octetsStart+i+1] >> firstBitOffset
 			dst = append(dst, b)
+			debuglog("pcap:appendField:rightalign3")
 		}
 		return dst, nil
 	}
@@ -776,10 +786,12 @@ func appendField(dst, pkt []byte, fieldBitStart, bitlen int, rightAligned bool) 
 		b := pkt[i+octetsStart] & mask
 		b |= pkt[i+octetsStart+1] >> firstBitOffset
 		dst = append(dst, b)
+		debuglog("pcap:appendField:leftalign1")
 	}
 	lastOctet := pkt[octetsStart+octets-1] & mask
 	lastOctet >>= lastOctetExcessBits
 	dst = append(dst, lastOctet)
+	debuglog("pcap:appendField:leftalign2")
 	return dst, nil
 }
 
@@ -1382,6 +1394,7 @@ func reclaimFrame(dst *[]Frame, proto string, bitOffset int, baseFields []FrameF
 		Fields:          append(finfo.Fields[:0], baseFields...),
 		Errors:          finfo.Errors[:0],
 	}
+	debuglog("pcap:reclaim")
 	return finfo
 }
 
@@ -1393,6 +1406,7 @@ func reclaimRemainingFrame(dst *[]Frame, proto string, class FieldClass, pktBitO
 		Class:     class,
 		BitLength: pktBitLen - pktBitOffset,
 	})
+	debuglog("pcap:reclaim-rem")
 }
 
 const enableDebug = internal.HeapAllocDebugging
