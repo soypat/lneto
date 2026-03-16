@@ -381,6 +381,45 @@ func TestClientMultipleResponders(t *testing.T) {
 	}
 }
 
+func TestClientResponderSendsOnce(t *testing.T) {
+	svc := testService()
+	responder := newResponder(t, []Service{svc})
+	querier := newQuerier(t, []dns.Question{{
+		Name:  mustNewName("_http._tcp.local"),
+		Type:  dns.TypePTR,
+		Class: dns.ClassINET,
+	}}, 8)
+
+	var buf [1024]byte
+
+	// Querier sends query, responder processes it.
+	n, err := querier.Encapsulate(buf[:], -1, 0)
+	if err != nil || n == 0 {
+		t.Fatal("querier encapsulate:", err, n)
+	}
+	if err = responder.Demux(buf[:n], 0); err != nil {
+		t.Fatal("responder demux:", err)
+	}
+
+	// First Encapsulate should produce a response.
+	n, err = responder.Encapsulate(buf[:], -1, 0)
+	if err != nil || n == 0 {
+		t.Fatal("responder first encapsulate:", err, n)
+	}
+
+	// Subsequent Encapsulate calls without new queries must produce nothing.
+	const maxSpurious = 5
+	for i := range maxSpurious {
+		n, err = responder.Encapsulate(buf[:], -1, 0)
+		if err != nil {
+			t.Fatal("responder encapsulate:", err)
+		}
+		if n != 0 {
+			t.Fatalf("responder sent spurious response on call %d (got %d bytes); expected silence after first response", i+1, n)
+		}
+	}
+}
+
 func TestClientAbort(t *testing.T) {
 	svc := testService()
 	responder := newResponder(t, []Service{svc})

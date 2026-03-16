@@ -227,6 +227,7 @@ func (c *Client) encapsResponse(frame []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	c.rans = c.rans[:0] // Drain pending answers after successful send.
 	return len(data), nil
 }
 
