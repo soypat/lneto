@@ -386,6 +386,7 @@ func (conn *Conn) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 	// RFC 6298 §5.1: check RTO before sending new data.
 	if conn.h.ShouldRetransmit() {
 		conn.h.triggerRetransmit()
+		conn.h.dupACKs = 0 // RTO is a new loss event; reset dup-ACK counter.
 	}
 	n, err = conn.h.Send(carrierData[offsetToFrame:])
 	if err != nil || n == 0 {

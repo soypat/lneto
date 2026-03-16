@@ -494,7 +494,6 @@ func (h *Handler) triggerRetransmit() {
 	if h.rto > rtoMax {
 		h.rto = rtoMax
 	}
-	h.dupACKs = 0
 	h.debug("tcp.Handler:retransmit", slog.Uint64("port", uint64(h.localPort)),
 		slog.Uint64("rto", uint64(h.rto)), slog.Uint64("nRetx", uint64(h.nRetx)))
 }
