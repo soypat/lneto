@@ -117,6 +117,7 @@ func run() (err error) {
 	}
 	fmt.Println("NIC hardware address:", net.HardwareAddr(nicHW[:]).String(), "bridgeHW:", net.HardwareAddr(brHW[:]).String(), "mtu:", mtu, "addr:", nicAddr.String())
 	var stack xnet.StackAsync
+
 	err = stack.Reset(xnet.StackConfig{
 		Hostname:        "xnet-test",
 		RandSeed:        softRand,
@@ -221,6 +222,7 @@ func run() (err error) {
 		return fmt.Errorf("DHCP failed: %w", err)
 	}
 	timeDHCP()
+
 	err = stack.AssimilateDHCPResults(results)
 	if err != nil {
 		return fmt.Errorf("assimilating DHCP results: %w", err)

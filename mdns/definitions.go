@@ -6,9 +6,17 @@ import (
 
 // Service describes a service to advertise via mDNS.
 // A single Service produces PTR, SRV, TXT, and A resource records.
+//
+// i.e: To generate a hostname styled A record like the one
+// linux machines provide to reach them at hostname.local:
+//
+//	s := Service{
+//		Host: dns.NewName("yourhostname.local"),
+//		Addr: ipAddressSlice,
+//	}
 type Service struct {
 	// Name is the fully-qualified service instance name in wire format,
-	// e.g. "My Web Server._http._tcp.local".
+	//  e.g. "My Web Server._http._tcp.local".
 	Name dns.Name
 	// Host is the hostname in wire format, e.g. "mydevice.local".
 	Host dns.Name

@@ -136,8 +136,8 @@ func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) 
 		n, err = c.encapsQuery(carrierData[offsetToFrame:])
 	}
 	if n > 0 && offsetToIP >= 0 {
-		// Set Multicast address.
-		internal.SetIPAddrs(carrierData[offsetToIP:], 0, nil, c.ip)
+		// Set Multicast IP destination and Ethernet MAC.
+		internal.SetMulticast(carrierData, offsetToIP, c.ip)
 	}
 	return n, err
 }
@@ -244,6 +244,8 @@ func (c *Client) isClosed() bool {
 func (c *Client) AnswersCopyTo(dst []dns.Resource) (n int, done bool, err error) {
 	if len(dst) == 0 {
 		return 0, false, lneto.ErrShortBuffer
+	} else if c.qstate == querierIdle {
+		return 0, false, net.ErrClosed
 	} else if c.qstate == querierFailed {
 		return 0, false, c.qerr
 	} else if c.qstate != querierDone {

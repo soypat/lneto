@@ -19,6 +19,7 @@ import (
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/ipv4/icmpv4"
 	"github.com/soypat/lneto/ipv6"
+	"github.com/soypat/lneto/mdns"
 	"github.com/soypat/lneto/ntp"
 	"github.com/soypat/lneto/tcp"
 	"github.com/soypat/lneto/udp"
@@ -358,7 +359,7 @@ func (pc *PacketBreakdown) CaptureUDP(dst []Frame, pkt []byte, bitOffset int) ([
 	srcport := ufrm.SourcePort()
 	if dhcpv4.PayloadIsDHCPv4(payload) {
 		dst, err = pc.CaptureDHCPv4(dst, pkt, end)
-	} else if dstport == dns.ServerPort || srcport == dns.ServerPort {
+	} else if dstport == dns.ServerPort || srcport == dns.ServerPort || dstport == mdns.Port || srcport == mdns.Port {
 		dst, err = pc.CaptureDNS(dst, pkt, end)
 	} else if dstport == ntp.ServerPort || srcport == ntp.ServerPort {
 		dst, err = pc.CaptureNTP(dst, pkt, end)
@@ -436,20 +437,23 @@ func (pc *PacketBreakdown) CaptureDNS(dst []Frame, pkt []byte, bitOffset int) ([
 		return dst, errNotByteAligned
 	}
 	dnsData := pkt[bitOffset/8:]
-	pc.dmsg.LimitResourceDecoding(20, 20, 20, 20)
+	pc.dmsg.LimitResourceDecoding(4, 4, 4, 4)
 	off, incomplete, err := pc.dmsg.Decode(dnsData)
 	if err != nil && !incomplete {
 		return dst, err
 	}
-	finfo := reclaimFrame(&dst, "DNS", bitOffset, nil)
+	finfo := reclaimFrame(&dst, "DNS", bitOffset, baseDNSFields[:])
 	if incomplete {
 		finfo.Errors = append(finfo.Errors, ErrLimitExceeded)
 	}
-	finfo.Fields = append(finfo.Fields[:0], FrameField{
+	payload := internal.SliceReclaim(&finfo.Fields)
+	*payload = FrameField{
 		Name:           "Data",
-		FrameBitOffset: 0,
-		BitLength:      int(off) * octet,
-	})
+		Class:          FieldClassPayload,
+		FrameBitOffset: dns.SizeHeader * octet,
+		BitLength:      (int(off) - dns.SizeHeader) * octet,
+		SubFields:      payload.SubFields[:0],
+	}
 	return dst, nil
 }
 
@@ -1247,6 +1251,43 @@ var baseDHCPv4Fields = [...]FrameField{
 		FrameBitOffset: (28 + 16) * octet,
 		BitLength:      (dhcpv4.OptionsOffset - (28 + 16)) * octet,
 		Flags:          FlagLegacy,
+	},
+}
+
+var baseDNSFields = [...]FrameField{
+	{
+		Class:          FieldClassID,
+		FrameBitOffset: 0,
+		BitLength:      2 * octet,
+	},
+	{
+		Class:          FieldClassFlags,
+		FrameBitOffset: 2 * octet,
+		BitLength:      2 * octet,
+	},
+	{
+		Name:           "Questions",
+		Class:          FieldClassSize,
+		FrameBitOffset: 4 * octet,
+		BitLength:      2 * octet,
+	},
+	{
+		Name:           "Answers",
+		Class:          FieldClassSize,
+		FrameBitOffset: 6 * octet,
+		BitLength:      2 * octet,
+	},
+	{
+		Name:           "Authorities",
+		Class:          FieldClassSize,
+		FrameBitOffset: 8 * octet,
+		BitLength:      2 * octet,
+	},
+	{
+		Name:           "Additionals",
+		Class:          FieldClassSize,
+		FrameBitOffset: 10 * octet,
+		BitLength:      2 * octet,
 	},
 }
 

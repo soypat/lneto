@@ -4,6 +4,14 @@ const (
 	sizeHeader = 20
 )
 
+// IsMulticast reports whether addr is an IPv4 multicast address (224.0.0.0/4),
+// i.e. the most significant nibble is 0xE (1110 in binary) as defined in [RFC1112].
+//
+// [RFC1112]: https://datatracker.ietf.org/doc/html/rfc1112
+func IsMulticast(addr [4]byte) bool {
+	return addr[0]&0xf0 == 0xe0
+}
+
 // ToS represents the Traffic Class (a.k.a Type of Service). It is 8 bits long. 6 MSB are Differentiated Services; 2 LSB are Explicit Congenstion Notification.
 type ToS uint8
 
