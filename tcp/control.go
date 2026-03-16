@@ -438,7 +438,8 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	// Short circuit SEQ checks if SYN present in pre-established states only.
 	// In synchronized states SYN must pass normal SEQ validation (RFC 9293 §3.10.7.4).
 	preestablished := tcb._state.IsPreestablished()
-	checkSEQ := !flags.HasAny(FlagSYN) || !preestablished
+	// LISTEN has no receive window context; RFC 9293 §3.10.7.1 step 1: "no checking in LISTEN state."
+	checkSEQ := (!flags.HasAny(FlagSYN) || !preestablished) && tcb._state != StateListen
 	established := tcb._state == StateEstablished
 	acksOld := hasAck && !tcb.snd.UNA.LessThan(seg.ACK)
 	acksUnsentData := hasAck && !seg.ACK.LessThanEq(tcb.snd.NXT)
