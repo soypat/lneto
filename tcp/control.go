@@ -581,6 +581,19 @@ func (tcb *ControlBlock) rstJump() Value {
 // Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
 func (tcb *ControlBlock) Retransmit() { tcb.snd.NXT = tcb.snd.UNA }
 
+// RecoveryACK accepts a cumulative ACK that covers data sent before a retransmit
+// rewind. After Retransmit() rewinds snd.NXT, the remote may ACK data it received
+// pre-rewind — a valid cumulative ACK that exceeds the rewound snd.NXT. This method
+// advances snd.UNA, snd.NXT and updates the send window from the segment.
+// The caller must verify that seg.ACK is within the pre-rewind NXT range.
+func (tcb *ControlBlock) RecoveryACK(seg Segment) {
+	tcb.snd.UNA = seg.ACK
+	tcb.snd.NXT = seg.ACK
+	tcb.snd.WND = seg.WND
+	// Clear any pending ACK that validateIncomingSegment queued on rejection.
+	tcb.pending[0] &^= FlagACK
+}
+
 // Abort sets ControlBlock state to Closed and resets all sequence numbers and pending flag.
 // No more data can be sent nor received after the connection is aborted until opened again.
 // An abort call prepares the connection for opening an active connection via a

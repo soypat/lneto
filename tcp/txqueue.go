@@ -233,6 +233,34 @@ func (rtx *ringTx) RetransmitFromUNA() {
 	rtx.slist.Reset(cap(rtx.slist.pkts), unaSeq)
 }
 
+// RecoveryACK processes a cumulative ACK that covers data sent before a
+// retransmit rewind. After RetransmitFromUNA merged sent→unsent and cleared
+// the sentlist, a recovery ACK may exceed what's currently in the sentlist.
+// This method acks any sentlist entries, then skips unsent bytes that were
+// implicitly acknowledged (they were received by the remote before the rewind).
+func (rtx *ringTx) RecoveryACK(ack Value) {
+	size := rtx.Size()
+	// First, ack everything in the sentlist (if any packets were re-sent).
+	if newest := rtx.slist.Newest(); newest != nil {
+		rtx.slist.RecvAck(newest.endSeq(), size)
+	}
+	rtx.sentoff = 0
+	rtx.sentend = 0
+
+	// Skip unsent data that was implicitly acked. The sequence of the first
+	// unsent byte is slist.ssn (the end-seq of the last acked packet).
+	excess := int32(ack - rtx.slist.ssn)
+	if excess > 0 && rtx.unsentend != 0 {
+		rtx.unsentoff = addOff(rtx.unsentoff, int(excess), size)
+		if rtx.unsentoff == rtx.unsentend {
+			rtx.unsentoff = 0
+			rtx.unsentend = 0
+		}
+	}
+	rtx.slist.Reset(cap(rtx.slist.pkts), ack)
+	rtx.consolidateBufs()
+}
+
 func (rtx *ringTx) consolidateBufs() {
 	unsentEmpty := rtx.unsentend == 0
 	sentEmpty := rtx.sentend == 0

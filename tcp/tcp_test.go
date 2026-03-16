@@ -91,7 +91,7 @@ func TestExchangeTest_figure12(t *testing.T) {
 				Action:   tcp.StepBSends,
 				AState:   tcp.StateFinWait2,
 				BState:   tcp.StateCloseWait,
-				APending: &tcp.Segment{SEQ: issA + 1, ACK: issB, Flags: tcp.FlagACK, WND: windowA}, // TODO: should be nil?
+				APending: nil, // RFC Figure 12 shows no response from A here — bare ACK must not elicit ACK.
 			},
 			2: { // B calls Close() (RFC 9293 Figure 12 step 4). B goes to LAST-ACK.
 				Action:   tcp.StepBCloses,

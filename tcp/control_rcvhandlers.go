@@ -97,7 +97,12 @@ func (tcb *ControlBlock) rcvFinWait1(seg Segment) (pending Flags, err error) {
 	default:
 		return 0, errFinwaitExpectedACK
 	}
-	pending = FlagACK
+	// Only queue ACK when there is data or FIN to acknowledge.
+	// Bare ACKs must not elicit an ACK response; doing so creates an
+	// infinite ACK ping-pong when the peer sends challenge ACKs.
+	if seg.DATALEN > 0 || hasFin {
+		pending = FlagACK
+	}
 	return pending, nil
 }
 

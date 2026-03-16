@@ -146,6 +146,197 @@ func TestPostRetransmitACKAccepted(t *testing.T) {
 	}
 }
 
+// TestRecoveryACKSkipsSpuriousRetransmit verifies that after fast retransmit
+// rewinds snd.NXT and the client re-sends the lost segment, a cumulative ACK
+// from the remote (acknowledging all data received before and after the hole)
+// is accepted — even though it exceeds the rewound snd.NXT.
+//
+// Without this fix, lneto rejects the cumulative ACK as "acks unsent data"
+// and then spuriously retransmits data that was already received by the remote.
+//
+// Timeline:
+//  1. Client sends packets 0..N; packet 1 is lost (the "hole")
+//  2. Server ACKs packet 0; sends 3 dup ACKs → fast retransmit fires
+//  3. Client rewinds to snd.UNA, re-sends lost segment → snd.NXT advances by 1 MSS
+//  4. Server (having received all other packets) sends cumulative ACK for ALL data
+//  5. Client should accept this ACK (not reject it) and NOT send spurious retransmissions
+func TestRecoveryACKSkipsSpuriousRetransmit(t *testing.T) {
+	const mtu = 60 // 20-byte header + 40-byte payload per packet.
+	const txBuf = 2048
+	const maxpackets = 10
+	rng := rand.New(rand.NewSource(59))
+
+	client := new(Handler)
+	server := new(Handler)
+	err := client.SetBuffers(make([]byte, txBuf), make([]byte, txBuf), maxpackets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.rto = rtoInitial
+	err = server.SetBuffers(make([]byte, txBuf), make([]byte, txBuf), maxpackets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.rto = rtoInitial
+
+	err = server.OpenListen(uint16(rng.Uint32()), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.OpenActive(uint16(rng.Uint32()), server.LocalPort(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var rawbuf [mtu]byte
+	establish(t, client, server, rawbuf[:])
+
+	// Send enough data to fill several packets (MSS=40).
+	data := make([]byte, 40*6) // 6 packets worth of data.
+	for i := range data {
+		data[i] = byte(i)
+	}
+	written := 0
+	var packets [][]byte
+	for written < len(data) {
+		n, werr := client.Write(data[written:])
+		if werr != nil {
+			t.Fatal("client write:", werr)
+		}
+		written += n
+		for {
+			clear(rawbuf[:])
+			ns, serr := client.Send(rawbuf[:])
+			if serr != nil {
+				t.Fatal("client send:", serr)
+			}
+			if ns == 0 {
+				break
+			}
+			packets = append(packets, append([]byte(nil), rawbuf[:ns]...))
+		}
+	}
+	if len(packets) < 4 {
+		t.Fatalf("need at least 4 data packets, got %d", len(packets))
+	}
+	t.Logf("sent %d data packets", len(packets))
+
+	// Record the sequence endpoint: this is the ACK value the server will
+	// send once it receives all data (including the "lost" packet).
+	preRewindNXT := client.scb.snd.NXT
+	t.Logf("pre-rewind snd.NXT=%d, snd.UNA=%d", preRewindNXT, client.scb.snd.UNA)
+
+	// Server receives only packet 0 → ACKs it. This establishes lastACK on client.
+	err = server.Recv(packets[0])
+	if err != nil {
+		t.Fatal("server recv pkt0:", err)
+	}
+	clear(rawbuf[:])
+	n, err := server.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("server send ACK:", err)
+	}
+	if n == 0 {
+		t.Fatal("expected server to send ACK")
+	}
+	err = client.Recv(rawbuf[:n])
+	if err != nil {
+		t.Fatal("client recv ACK:", err)
+	}
+	dupACKValue := client.lastACK
+	t.Logf("lastACK=%d after first ACK", dupACKValue)
+
+	// Craft 3 dup ACKs (packet 1 is "lost", server keeps acking dupACKValue).
+	for i := 0; i < 3; i++ {
+		var buf [mtu]byte
+		frm, ferr := NewFrame(buf[:])
+		if ferr != nil {
+			t.Fatal(ferr)
+		}
+		frm.SetSourcePort(server.LocalPort())
+		frm.SetDestinationPort(client.LocalPort())
+		frm.SetSegment(Segment{
+			SEQ:   server.scb.snd.NXT,
+			ACK:   dupACKValue,
+			Flags: FlagACK,
+			WND:   65535,
+		}, 5)
+		rerr := client.Recv(buf[:sizeHeaderTCP])
+		if rerr != nil {
+			t.Logf("dup ACK %d recv err (expected): %v", i+1, rerr)
+		}
+	}
+	if client.nRetx == 0 {
+		t.Fatal("fast retransmit did not fire after 3 dup ACKs")
+	}
+	t.Logf("fast retransmit fired: snd.NXT=%d, snd.UNA=%d", client.scb.snd.NXT, client.scb.snd.UNA)
+
+	// Client re-sends the lost segment. After this, snd.NXT > snd.UNA
+	// (advanced by one MSS), but still < preRewindNXT.
+	clear(rawbuf[:])
+	n, err = client.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("client retransmit send:", err)
+	}
+	if n == 0 {
+		t.Fatal("expected client to send retransmit packet")
+	}
+	if client.scb.snd.NXT == client.scb.snd.UNA {
+		t.Fatal("expected snd.NXT to advance past snd.UNA after re-send")
+	}
+	t.Logf("after retransmit send: snd.NXT=%d, snd.UNA=%d (preRewind=%d)",
+		client.scb.snd.NXT, client.scb.snd.UNA, preRewindNXT)
+
+	// Craft cumulative ACK from server for ALL data (as if server had received
+	// everything and the lost packet just arrived, filling the hole).
+	{
+		var buf [mtu]byte
+		frm, ferr := NewFrame(buf[:])
+		if ferr != nil {
+			t.Fatal(ferr)
+		}
+		frm.SetSourcePort(server.LocalPort())
+		frm.SetDestinationPort(client.LocalPort())
+		frm.SetSegment(Segment{
+			SEQ:   server.scb.snd.NXT,
+			ACK:   preRewindNXT, // ACKs all data sent before the rewind.
+			Flags: FlagACK,
+			WND:   65535,
+		}, 5)
+
+		err = client.Recv(buf[:sizeHeaderTCP])
+		if err != nil {
+			t.Fatalf("BUG: cumulative recovery ACK rejected: %v\n"+
+				"After fast retransmit rewound snd.NXT and client re-sent one packet,\n"+
+				"the remote's cumulative ACK (seg.ACK=%d) exceeds the current snd.NXT=%d\n"+
+				"and is incorrectly rejected as 'acks unsent data'.\n"+
+				"This causes spurious retransmissions of already-received data.",
+				err, preRewindNXT, client.scb.snd.NXT)
+		}
+	}
+
+	// snd.UNA should have advanced to cover all original data.
+	if client.scb.snd.UNA != preRewindNXT {
+		t.Fatalf("snd.UNA not advanced: got %d, want %d", client.scb.snd.UNA, preRewindNXT)
+	}
+	// snd.NXT should be at least preRewindNXT.
+	if client.scb.snd.NXT.LessThan(preRewindNXT) {
+		t.Fatalf("snd.NXT behind preRewindNXT: got %d, want >= %d", client.scb.snd.NXT, preRewindNXT)
+	}
+
+	// No more data should be sent — any Send() output here is a spurious retransmission.
+	clear(rawbuf[:])
+	n, err = client.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("client send after recovery:", err)
+	}
+	if n != 0 {
+		t.Fatalf("BUG: spurious retransmission after recovery ACK: sent %d bytes.\n"+
+			"All data was already acknowledged by the cumulative ACK, but the client\n"+
+			"still has 'unsent' data in the TX buffer that was actually received.", n)
+	}
+}
+
 // TestFastRetransmitOncePerLoss is a regression test for
 // https://github.com/soypat/lneto/issues/58
 // where fast retransmit was triggered multiple times for the same lost segment.
