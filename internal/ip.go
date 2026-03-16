@@ -52,3 +52,41 @@ func SetIPAddrs(buf []byte, id uint16, src, dst []byte) (err error) {
 	copy(dstaddr, dst)
 	return nil
 }
+
+// SetMulticast sets the IP destination to multicastAddr and derives the
+// Ethernet destination MAC from it. It supports IPv4 (RFC 1112 §6.4) and
+// IPv6 (RFC 2464 §7) multicast MAC mapping.
+func SetMulticast(ethernetCarrier []byte, ipOff int, multicastAddr []byte) (err error) {
+	ip := ethernetCarrier[ipOff:]
+	mac := ethernetCarrier[0:6]
+	version := ip[0] >> 4
+	switch version {
+	case 4:
+		if len(multicastAddr) != 4 {
+			return lneto.ErrMismatchLen
+		}
+		copy(ip[16:20], multicastAddr)
+		// IPv4 multicast MAC: 01:00:5e + low 23 bits of IP destination.
+		mac[0] = 0x01
+		mac[1] = 0x00
+		mac[2] = 0x5e
+		mac[3] = multicastAddr[1] & 0x7f
+		mac[4] = multicastAddr[2]
+		mac[5] = multicastAddr[3]
+	case 6:
+		if len(multicastAddr) != 16 {
+			return lneto.ErrMismatchLen
+		}
+		copy(ip[24:40], multicastAddr)
+		// IPv6 multicast MAC: 33:33 + last 4 bytes of IP destination.
+		mac[0] = 0x33
+		mac[1] = 0x33
+		mac[2] = multicastAddr[12]
+		mac[3] = multicastAddr[13]
+		mac[4] = multicastAddr[14]
+		mac[5] = multicastAddr[15]
+	default:
+		return lneto.ErrUnsupported
+	}
+	return nil
+}

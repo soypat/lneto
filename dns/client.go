@@ -34,7 +34,7 @@ func (sudp *Client) ConnectionID() *uint64 { return &sudp.connID }
 func (c *Client) StartResolve(localPort, txid uint16, cfg ResolveConfig) error {
 	nd := len(cfg.Questions)
 	if nd > math.MaxUint16 {
-		return lneto.ErrBufferFull
+		return lneto.ErrInvalidConfig
 	}
 	c.reset(localPort, txid, dnsSendQuery, cfg.EnableRecursion)
 	c.msg.LimitResourceDecoding(uint16(nd), uint16(nd), 0, 0)

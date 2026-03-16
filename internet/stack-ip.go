@@ -16,11 +16,12 @@ import (
 var _ StackNode = (*StackIP)(nil)
 
 type StackIP struct {
-	connID    uint64
-	ipID      uint16
-	ip        [4]byte
-	validator lneto.Validator
-	handlers  handlers
+	connID          uint64
+	ipID            uint16
+	ip              [4]byte
+	acceptMulticast bool
+	validator       lneto.Validator
+	handlers        handlers
 }
 
 func (sb *StackIP) Reset(addr netip.Addr, maxNodes int) error {
@@ -33,10 +34,11 @@ func (sb *StackIP) Reset(addr netip.Addr, maxNodes int) error {
 	}
 	sb.handlers.reset("StackIP", maxNodes)
 	*sb = StackIP{
-		connID:    sb.connID + 1,
-		validator: sb.validator,
-		handlers:  sb.handlers,
-		ip:        sb.ip,
+		connID:          sb.connID + 1,
+		validator:       sb.validator,
+		handlers:        sb.handlers,
+		ip:              sb.ip,
+		acceptMulticast: sb.acceptMulticast,
 	}
 	return nil
 }
@@ -65,6 +67,10 @@ func (sb *StackIP) Addr() netip.Addr {
 	return netip.AddrFrom4(sb.ip)
 }
 
+func (sb *StackIP) SetAcceptMulticast(accept bool) {
+	sb.acceptMulticast = accept
+}
+
 func (sb *StackIP) SetLogger(logger *slog.Logger) {
 	sb.handlers.log = logger
 }
@@ -79,8 +85,10 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 	}
 	dst := ifrm.DestinationAddr()
 	if sb.ip != ([4]byte{}) && *dst != sb.ip {
-		sb.handlers.debug("ip:not-for-us")
-		return lneto.ErrPacketDrop // Not meant for us.
+		if !sb.acceptMulticast || dst[0]&0xF0 != 0xE0 {
+			sb.handlers.debug("ip:not-for-us")
+			return lneto.ErrPacketDrop // Not meant for us.
+		}
 	}
 
 	sb.validator.ResetErr()
