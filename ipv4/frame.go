@@ -127,7 +127,13 @@ func (ifrm Frame) SetCRC(cs uint16) {
 	binary.BigEndian.PutUint16(ifrm.buf[10:12], cs)
 }
 
-// CalculateHeaderCRC calculates the CRC for this IPv4 frame.
+// CalculateHeaderCRC calculates the CRC for this IPv4 frame including CRC field.
+// If the result of this function is 0 then the CRC is valid for the frame.
+// To calculate the CRC for a frame set the CRC field to zero and then call this function:
+//
+//	ifrm.SetCRC(0)
+//	crcValue := ifrm.CalculateHeaderCRC()
+//	ifrm.SetCRC(crcValue)
 func (ifrm Frame) CalculateHeaderCRC() uint16 {
 	var crc lneto.CRC791
 	ifrm.CRCWriteHeader(&crc)
@@ -138,6 +144,12 @@ func (ifrm Frame) CRCWriteHeader(crc *lneto.CRC791) {
 	crc.WriteEven(ifrm.buf[:20])
 }
 
+// CRCWriteTCPPseudo is used to calculate the TCP checksum for IPv4 framed packets.
+// To calculate the CRC of a TCP frame:
+//
+//	ifrm.CRCWriteTCPPseudo(&crc)
+//	// tfrm.SetCRC(0) // Zero if calculating frame for sending out.
+//	crcValue := crc.PayloadSum16(ifrm.Payload()) // If validating a received frame crcValue should be zero here.
 func (ifrm Frame) CRCWriteTCPPseudo(crc *lneto.CRC791) {
 	crc.WriteEven(ifrm.sourceAndDestinationAddr())
 	crc.AddUint16(ifrm.TotalLength() - uint16(ifrm.HeaderLength()))
