@@ -174,8 +174,8 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 		// Incoming query — match against our services.
 		var query dns.Message
 		query.LimitResourceDecoding(f.QDCount(), 0, 0, 0)
-		_, _, err = query.Decode(frame)
-		if err != nil {
+		_, incomplete, err := query.Decode(frame)
+		if err != nil && !incomplete {
 			return err
 		}
 		for i := range query.Questions {

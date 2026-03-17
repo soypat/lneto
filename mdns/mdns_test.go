@@ -420,6 +420,49 @@ func TestClientResponderSendsOnce(t *testing.T) {
 	}
 }
 
+func TestClientResponderHandlesQueryWithKnownAnswers(t *testing.T) {
+	// RFC 6762 §7.1: mDNS queries may include known-answer records.
+	// The responder must not return an error when decoding such queries.
+	svc := testService()
+	responder := newResponder(t, []Service{svc})
+
+	// Build an mDNS query with a known-answer record (QDCount=1, ANCount=1).
+	ptrName := mustNewName("Other Device._http._tcp.local")
+	ptrData, perr := ptrName.AppendTo(nil)
+	if perr != nil {
+		t.Fatal("encode PTR name:", perr)
+	}
+	var msg dns.Message
+	msg.Questions = []dns.Question{{
+		Name:  mustNewName("_http._tcp.local"),
+		Type:  dns.TypePTR,
+		Class: dns.ClassINET,
+	}}
+	msg.Answers = []dns.Resource{
+		dns.NewResource(mustNewName("_http._tcp.local"), dns.TypePTR, dns.ClassINET, 120, ptrData),
+	}
+	var buf [1024]byte
+	data, err := msg.AppendTo(buf[:0], 0, 0) // txid=0, flags=0 (query).
+	if err != nil {
+		t.Fatal("build query with known-answer:", err)
+	}
+
+	// Demux must not return an error.
+	err = responder.Demux(data, 0)
+	if err != nil {
+		t.Fatalf("responder demux returned error on query with known-answers: %v", err)
+	}
+
+	// Responder should still generate a response for its service.
+	n, err := responder.Encapsulate(buf[:], -1, 0)
+	if err != nil {
+		t.Fatal("responder encapsulate:", err)
+	}
+	if n == 0 {
+		t.Fatal("responder should respond to query even when known-answers are present")
+	}
+}
+
 func TestClientAbort(t *testing.T) {
 	svc := testService()
 	responder := newResponder(t, []Service{svc})
