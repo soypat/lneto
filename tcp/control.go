@@ -494,24 +494,15 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 		}
 
 	case established && acksUnsentData:
-		// After Retransmit() rewinds snd.NXT to snd.UNA, the remote may ACK
-		// data it received pre-rewind — a valid cumulative ACK that exceeds
-		// the rewound snd.NXT. Detect this case (NXT==UNA means rewind active)
-		// and accept the ACK if within the send window.
-		retransmitActive := tcb.snd.NXT == tcb.snd.UNA
-		if retransmitActive && seg.ACK.InWindow(tcb.snd.UNA, tcb.snd.WND) {
-			tcb.snd.NXT = seg.ACK
-			if isDebug {
-				tcb.debug("rcv:ACK-advance-nxt", slog.String("state", tcb._state.String()),
-					slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)))
-			}
-		} else {
-			err = errDropSegment
-			tcb.pending[0] |= FlagACK // Send ACK for unsent data; |= preserves any pending FIN.
-			if isDebug {
-				tcb.debug("rcv:ACK-unsent", slog.String("state", tcb._state.String()),
-					slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)))
-			}
+		// ACK for data we haven't sent. Drop and send challenge ACK.
+		// Note: after Retransmit() rewinds snd.NXT, a cumulative ACK may exceed
+		// the rewound NXT. That case is handled by Handler.RecoveryACK, not here —
+		// NXT==UNA is ambiguous (also true when no data is in flight).
+		err = errDropSegment
+		tcb.pending[0] |= FlagACK // Send ACK for unsent data; |= preserves any pending FIN.
+		if isDebug {
+			tcb.debug("rcv:ACK-unsent", slog.String("state", tcb._state.String()),
+				slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)))
 		}
 
 	case preestablished && (acksOld || acksUnsentData):
