@@ -349,7 +349,7 @@ func TestRecoveryACKSkipsSpuriousRetransmit(t *testing.T) {
 // Per RFC 5681 §3.2, fast retransmit should fire once per loss event.
 // Subsequent dup ACKs (beyond the 3rd) should NOT re-trigger it.
 func TestFastRetransmitOncePerLoss(t *testing.T) {
-	const mtu = 60  // Small MTU: 20 byte header + 40 bytes payload per packet.
+	const mtu = 60 // Small MTU: 20 byte header + 40 bytes payload per packet.
 	const txBuf = 2048
 	const maxpackets = 10
 	rng := rand.New(rand.NewSource(58))
