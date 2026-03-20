@@ -51,7 +51,23 @@ func (s StackBerkeley) Socket(ctx context.Context, network string, family, sotyp
 			return nil, err
 		}
 	}
+	return s.SocketNetip(ctx, network, family, sotype, local, remote)
+}
 
+func (s StackBerkeley) SocketNetip(ctx context.Context, network string, family, sotype int, laddr, raddr netip.AddrPort) (c interface{}, err error) {
+	switch family {
+	case syscall.AF_INET:
+	default:
+		return nil, lneto.ErrUnsupported
+	}
+	if laddr.Port() == 0 {
+		return nil, lneto.ErrZeroSource
+	} else if laddr.Addr() == netip.IPv4Unspecified() {
+		// Specify address.
+		laddr = netip.AddrPortFrom(s.blk.async.ip.Addr(), laddr.Port())
+	} else if laddr.Addr().Is6() {
+		return nil, lneto.ErrUnsupported
+	}
 	switch network {
 	case "udp", "udp4":
 		return nil, lneto.ErrUnsupported
@@ -60,10 +76,10 @@ func (s StackBerkeley) Socket(ctx context.Context, network string, family, sotyp
 			return nil, lneto.ErrUnsupported
 		}
 
-		if raddr != nil {
+		if raddr.IsValid() && raddr.Addr() != netip.IPv4Unspecified() {
 			var conn tcp.Conn
 			// DIAL TCP: active connection a.k.a TCP Client branch.
-			err = s.blk.async.DialTCP(&conn, local.Port(), remote)
+			err = s.blk.async.DialTCP(&conn, laddr.Port(), raddr)
 			if err != nil {
 				return nil, err
 			}
@@ -73,7 +89,7 @@ func (s StackBerkeley) Socket(ctx context.Context, network string, family, sotyp
 				if state == tcp.StateEstablished {
 					tc := tcpconn{
 						Conn:      &conn,
-						localAddr: laddr,
+						localAddr: net.TCPAddrFromAddrPort(laddr),
 					}
 					return tc, nil
 				} else if state == tcp.StateSynSent || state == tcp.StateSynRcvd || conn.InternalHandler().AwaitingSynSend() {
@@ -94,8 +110,9 @@ func (s StackBerkeley) Socket(ctx context.Context, network string, family, sotyp
 				return nil, err
 			}
 			var l tcplistener
+			l.localAddr = net.TCPAddrFromAddrPort(laddr)
 			l.sleep = s.blk.loopSleep
-			err = l.l.Reset(local.Port(), pool)
+			err = l.l.Reset(laddr.Port(), pool)
 			if err != nil {
 				return nil, err
 			}

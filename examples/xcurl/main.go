@@ -30,6 +30,8 @@ import (
 	"github.com/soypat/lneto/x/xnet"
 )
 
+const pollTime = 5 * time.Millisecond
+
 var softRand = time.Now().Unix()
 
 func main() {
@@ -180,7 +182,7 @@ func run() (err error) {
 
 			clear(buf[:nwrite])
 			// Poll before read if interface supports it, to avoid blocking indefinitely.
-			ready, err := tryPoll(iface, 5*time.Millisecond)
+			ready, err := tryPoll(iface, pollTime)
 			if err != nil {
 				log.Fatal("goroutine poll:", err)
 			}
