@@ -35,6 +35,8 @@ const pollTime = 5 * time.Millisecond
 
 var softRand = time.Now().Unix()
 
+var mockStack = new(xnet.StackAsync)
+
 const indexhtml = "<html><body><h1>Berkeley Stack HTTP Server</h1></body></html>"
 
 func main() {
@@ -155,6 +157,13 @@ func run() error {
 					log.Fatal("goroutine encapsulate:", err)
 				} else if n != nwrite {
 					log.Fatalf("mismatch written bytes %d!=%d", nwrite, n)
+				}
+				if flagMockClient && mockStack.Addr().IsValid() {
+					mockStack.Demux(buf[:nwrite], 0)
+					n, _ := mockStack.Encapsulate(buf[:], -1, 0)
+					if n > 0 {
+						stack.Demux(buf[:n], 0)
+					}
 				}
 			}
 
@@ -316,7 +325,6 @@ func tryPoll(iface ltesto.Interface, poll time.Duration) (dataMayBeReady bool, _
 
 func mockClient(stack *xnet.StackAsync, port uint16, subnet netip.Prefix) {
 	target := netip.AddrPortFrom(stack.Addr(), port)
-	var mockStack xnet.StackAsync
 	err := mockStack.Reset(xnet.StackConfig{
 		StaticAddress:   subnet.Addr().Next(),
 		MaxTCPConns:     1,
