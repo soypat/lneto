@@ -30,7 +30,10 @@ type Handler struct {
 
 	optcodec OptionCodec
 	closing  bool
-
+	// dupACKs counts consecutive duplicate ACKs for fast retransmit (RFC 5681 §3.2).
+	dupACKs uint8
+	// nRetx counts consecutive retransmissions for exponential backoff (RFC 6298 §5.5).
+	nRetx uint8
 	// Retransmission timer state — all uint32 milliseconds, no time package needed.
 	// rto is the current retransmission timeout in ms; starts at 1000 per RFC 6298 §2.1.
 	rto uint32
@@ -38,10 +41,11 @@ type Handler struct {
 	now uint32
 	// lastACK is the last ACK value seen, for duplicate ACK detection (RFC 5681 §3.2).
 	lastACK Value
-	// dupACKs counts consecutive duplicate ACKs for fast retransmit (RFC 5681 §3.2).
-	dupACKs uint8
-	// nRetx counts consecutive retransmissions for exponential backoff (RFC 6298 §5.5).
-	nRetx uint8
+
+	// retransmitNXT is the pre-rewind value of snd.NXT, saved when fast retransmit
+	// fires. A cumulative ACK with seg.ACK <= retransmitNXT is valid even if it
+	// exceeds the rewound snd.NXT. Zero means not in recovery.
+	retransmitNXT Value
 }
 
 func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
@@ -188,11 +192,30 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 	prevUNA := h.scb.snd.UNA // Capture before Recv updates snd.UNA (RFC 6298 §5.3).
 	err = h.scb.Recv(segIncoming)
 	if err != nil {
-		if h.scb.State() == StateClosed {
-			// TODO(soypat): Should return EOF/ErrClosed?
-			err = net.ErrClosed //err // Connection closed by reset.
+		// Recovery path: after fast retransmit rewinds snd.NXT, a cumulative ACK
+		// for data sent pre-rewind exceeds the rewound NXT. The ControlBlock rejects
+		// it, but we know it's valid if ACK <= retransmitNXT (pre-rewind high water mark).
+		if h.retransmitNXT != 0 && segIncoming.Flags.HasAny(FlagACK) &&
+			h.scb.snd.NXT.LessThan(segIncoming.ACK) &&
+			segIncoming.ACK.LessThanEq(h.retransmitNXT) {
+			// TODO: This is a very hacky workaround. It'd be great
+			// to detect recover acks in Handler before calling ControlBlock.Recv
+			// and handle it cleanly instead of with an error.
+			h.scb.RecoveryACK(segIncoming)
+			h.bufTx.RecoveryACK(segIncoming.ACK)
+			h.retransmitNXT = 0
+			h.rto = rtoInitial
+			h.nRetx = 0
+			h.dupACKs = 0
+			h.lastACK = segIncoming.ACK
+			err = nil // Accept the segment.
+		} else {
+			if h.scb.State() == StateClosed {
+				// TODO(soypat): Should return EOF/ErrClosed?
+				err = net.ErrClosed //err // Connection closed by reset.
+			}
+			return err
 		}
-		return err
 	}
 	if h.scb.State() == StateClosed {
 		// TCB aborted, likely because it received an ACK in LastAck state.
@@ -486,6 +509,11 @@ func (h *Handler) ShouldRetransmit() bool {
 // triggerRetransmit rewinds the transmit queue and control block so the next
 // Send call retransmits from snd.UNA. Per RFC 9293 §3.10.8, RFC 6298 §5.4–5.5.
 func (h *Handler) triggerRetransmit() {
+	// Save the high-water mark of NXT before rewinding so that cumulative ACKs
+	// for data sent pre-rewind can still be accepted (see Recv recovery path).
+	if h.retransmitNXT == 0 || h.retransmitNXT.LessThan(h.scb.snd.NXT) {
+		h.retransmitNXT = h.scb.snd.NXT
+	}
 	h.scb.Retransmit()
 	h.bufTx.RetransmitFromUNA()
 	// RFC 6298 §5.5: "The host MUST set RTO <- RTO * 2 ('back off the timer')."
@@ -494,7 +522,6 @@ func (h *Handler) triggerRetransmit() {
 	if h.rto > rtoMax {
 		h.rto = rtoMax
 	}
-	h.dupACKs = 0
 	h.debug("tcp.Handler:retransmit", slog.Uint64("port", uint64(h.localPort)),
 		slog.Uint64("rto", uint64(h.rto)), slog.Uint64("nRetx", uint64(h.nRetx)))
 }

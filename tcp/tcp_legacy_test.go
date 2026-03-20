@@ -231,8 +231,8 @@ func TestExchange_rfc9293_figure12(t *testing.T) {
 			Incoming:      &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: tcp.FlagACK, WND: windowB},
 			WantState:     tcp.StateFinWait2,
 			WantPeerState: tcp.StateCloseWait,
-			//	 TODO(soypat): WantPending should be nil here? Perhaps fix test by modifying rcvFinWait1 pending result.
-			WantPending: &tcp.Segment{SEQ: issA + 1, ACK: issB, Flags: tcp.FlagACK, WND: windowA},
+			// RFC Figure 12: no response from A here — bare ACK must not elicit ACK.
+			WantPending: nil,
 		},
 		2: { // A receives FIN|ACK from B.
 			Incoming:      &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: FINACK, WND: windowB},
@@ -496,7 +496,7 @@ func TestExchange_helloworld(t *testing.T) {
 		11: { // A receives B's ACK of FIN.
 			Incoming:      &tcp.Segment{SEQ: issB + 1 + 2*datalen, ACK: issA + 2 + 2*datalen, Flags: tcp.FlagACK, WND: windowB},
 			WantState:     tcp.StateFinWait2,
-			WantPending:   &tcp.Segment{SEQ: issA + 2 + 2*datalen, ACK: issB + 1 + 2*datalen, Flags: tcp.FlagACK, WND: windowA},
+			WantPending:   nil, // Bare ACK must not elicit ACK (same as Figure 12 fix).
 			WantPeerState: tcp.StateCloseWait,
 		},
 	}

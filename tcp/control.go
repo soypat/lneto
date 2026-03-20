@@ -438,7 +438,8 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	// Short circuit SEQ checks if SYN present in pre-established states only.
 	// In synchronized states SYN must pass normal SEQ validation (RFC 9293 §3.10.7.4).
 	preestablished := tcb._state.IsPreestablished()
-	checkSEQ := !flags.HasAny(FlagSYN) || !preestablished
+	// LISTEN has no receive window context; RFC 9293 §3.10.7.1 step 1: "no checking in LISTEN state."
+	checkSEQ := (!flags.HasAny(FlagSYN) || !preestablished) && tcb._state != StateListen
 	established := tcb._state == StateEstablished
 	acksOld := hasAck && !tcb.snd.UNA.LessThan(seg.ACK)
 	acksUnsentData := hasAck && !seg.ACK.LessThanEq(tcb.snd.NXT)
@@ -493,24 +494,15 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 		}
 
 	case established && acksUnsentData:
-		// After Retransmit() rewinds snd.NXT to snd.UNA, the remote may ACK
-		// data it received pre-rewind — a valid cumulative ACK that exceeds
-		// the rewound snd.NXT. Detect this case (NXT==UNA means rewind active)
-		// and accept the ACK if within the send window.
-		retransmitActive := tcb.snd.NXT == tcb.snd.UNA
-		if retransmitActive && seg.ACK.InWindow(tcb.snd.UNA, tcb.snd.WND) {
-			tcb.snd.NXT = seg.ACK
-			if isDebug {
-				tcb.debug("rcv:ACK-advance-nxt", slog.String("state", tcb._state.String()),
-					slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)))
-			}
-		} else {
-			err = errDropSegment
-			tcb.pending[0] |= FlagACK // Send ACK for unsent data; |= preserves any pending FIN.
-			if isDebug {
-				tcb.debug("rcv:ACK-unsent", slog.String("state", tcb._state.String()),
-					slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)))
-			}
+		// ACK for data we haven't sent. Drop and send challenge ACK.
+		// Note: after Retransmit() rewinds snd.NXT, a cumulative ACK may exceed
+		// the rewound NXT. That case is handled by Handler.RecoveryACK, not here —
+		// NXT==UNA is ambiguous (also true when no data is in flight).
+		err = errDropSegment
+		tcb.pending[0] |= FlagACK // Send ACK for unsent data; |= preserves any pending FIN.
+		if isDebug {
+			tcb.debug("rcv:ACK-unsent", slog.String("state", tcb._state.String()),
+				slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.nxt", uint64(tcb.snd.NXT)))
 		}
 
 	case preestablished && (acksOld || acksUnsentData):
@@ -580,6 +572,19 @@ func (tcb *ControlBlock) rstJump() Value {
 // ringTx.RetransmitFromUNA to rewind the transmit buffer.
 // Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
 func (tcb *ControlBlock) Retransmit() { tcb.snd.NXT = tcb.snd.UNA }
+
+// RecoveryACK accepts a cumulative ACK that covers data sent before a retransmit
+// rewind. After Retransmit() rewinds snd.NXT, the remote may ACK data it received
+// pre-rewind — a valid cumulative ACK that exceeds the rewound snd.NXT. This method
+// advances snd.UNA, snd.NXT and updates the send window from the segment.
+// The caller must verify that seg.ACK is within the pre-rewind NXT range.
+func (tcb *ControlBlock) RecoveryACK(seg Segment) {
+	tcb.snd.UNA = seg.ACK
+	tcb.snd.NXT = seg.ACK
+	tcb.snd.WND = seg.WND
+	// Clear any pending ACK that validateIncomingSegment queued on rejection.
+	tcb.pending[0] &^= FlagACK
+}
 
 // Abort sets ControlBlock state to Closed and resets all sequence numbers and pending flag.
 // No more data can be sent nor received after the connection is aborted until opened again.

@@ -4,8 +4,10 @@ import (
 	"net/netip"
 	"testing"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/http/httpraw"
+	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -93,6 +95,7 @@ func FuzzStackAsyncHTTP(f *testing.F) {
 			if n1 > 0 {
 				if pkt == pktnum {
 					n1 = copy(buf[:], a)
+					fixIPTCPCRCs(buf[:n1])
 				}
 				s2.Demux(buf[:n1], 0)
 				pkt++
@@ -105,6 +108,7 @@ func FuzzStackAsyncHTTP(f *testing.F) {
 			if n2 > 0 {
 				if pkt == pktnum {
 					n2 = copy(buf[:], a)
+					fixIPTCPCRCs(buf[:n2])
 				}
 				pkt++
 				s1.Demux(buf[:n2], 0)
@@ -128,4 +132,41 @@ func FuzzStackAsyncHTTP(f *testing.F) {
 			}
 		}
 	})
+}
+
+// fixIPTCPCRCs corrects CRCs of IP and TCP headers so that
+// fuzzed packets are not discarded 99.9999% of the time.
+func fixIPTCPCRCs(pkt []byte) (fixable bool) {
+	efrm, err := ethernet.NewFrame(pkt)
+	if err != nil || efrm.EtherTypeOrSize() != ethernet.TypeIPv4 {
+		return false
+	}
+	ifrm, err := ipv4.NewFrame(efrm.Payload())
+	if err != nil {
+		return false
+	}
+	v, ihl := ifrm.VersionAndIHL()
+	tl := ifrm.TotalLength()
+	if v != 4 || ihl < 5 || tl < uint16(ihl)*4 || int(tl) > len(pkt) {
+		return false // Invalid frame
+	}
+	var crc lneto.CRC791
+	ifrm.SetCRC(0)
+	ifrm.CRCWriteHeader(&crc)
+	ifrm.SetCRC(crc.Sum16())
+	if ifrm.Protocol() != lneto.IPProtoTCP {
+		return false
+	}
+	IPpayload := ifrm.Payload()
+	tfrm, err := tcp.NewFrame(IPpayload)
+	if err != nil {
+		return false
+	}
+	crc.Reset()
+	ifrm.CRCWriteTCPPseudo(&crc)
+	// Zero the CRC field so its value does not add to the final result.
+	tfrm.SetCRC(0)
+	crcValue := crc.PayloadSum16(IPpayload)
+	tfrm.SetCRC(crcValue)
+	return true
 }
