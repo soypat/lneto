@@ -30,10 +30,6 @@ type Handler struct {
 
 	optcodec OptionCodec
 	closing  bool
-	// dupACKs counts consecutive duplicate ACKs for fast retransmit (RFC 5681 §3.2).
-	dupACKs uint8
-	// lastACK is the last ACK value seen, for duplicate ACK detection (RFC 5681 §3.2).
-	lastACK Value
 	// nRetransmit stores the number of times the oldest packet was retransmit.
 	nRetransmit uint8
 }

@@ -115,8 +115,7 @@ func (rtx *ringTx) Write(b []byte) (n int, err error) {
 }
 
 // MakePacket reads from the unsent data ring buffer and generates a new packet segment.
-// It fails if the sent packet queue is full. sentAt is the current time in milliseconds,
-// stamped on the packet for RTO detection per RFC 6298 §5.1.
+// It fails if the sent packet queue is full.
 func (rtx *ringTx) MakePacket(b []byte, currentSeq Value) (int, error) {
 	free := rtx.slist.Free()
 	if free == 0 {
@@ -124,6 +123,15 @@ func (rtx *ringTx) MakePacket(b []byte, currentSeq Value) (int, error) {
 	}
 	endSeq, ok := rtx.sentEndSeq()
 	if ok && currentSeq.LessThan(endSeq) {
+		// maybe retransmit. Look for exact match.
+		for i := range rtx.slist.pkts {
+			pkt := &rtx.slist.pkts[i]
+			if pkt.seq == currentSeq {
+				// This packet to be retransmit.
+				data := rtx.ring(pkt.off, pkt.end)
+				return data.Read(b)
+			}
+		}
 		internal.LogAttrs(nil, slog.LevelError, "txqueue:seq<endseq", slog.Uint64("seq", uint64(currentSeq)), slog.Uint64("endseq", uint64(endSeq)))
 		return 0, lneto.ErrBug
 	}
@@ -228,34 +236,6 @@ func (rtx *ringTx) RetransmitFromUNA() {
 	}
 	// Clear packet metadata; sequence tracking restarts from UNA.
 	rtx.slist.Reset(cap(rtx.slist.pkts), unaSeq)
-}
-
-// RecoveryACK processes a cumulative ACK that covers data sent before a
-// retransmit rewind. After RetransmitFromUNA merged sent→unsent and cleared
-// the sentlist, a recovery ACK may exceed what's currently in the sentlist.
-// This method acks any sentlist entries, then skips unsent bytes that were
-// implicitly acknowledged (they were received by the remote before the rewind).
-func (rtx *ringTx) RecoveryACK(ack Value) {
-	size := rtx.Size()
-	// First, ack everything in the sentlist (if any packets were re-sent).
-	if newest := rtx.slist.Newest(); newest != nil {
-		rtx.slist.RecvAck(newest.endSeq(), size)
-	}
-	rtx.sentoff = 0
-	rtx.sentend = 0
-
-	// Skip unsent data that was implicitly acked. The sequence of the first
-	// unsent byte is slist.ssn (the end-seq of the last acked packet).
-	excess := int32(ack - rtx.slist.ssn)
-	if excess > 0 && rtx.unsentend != 0 {
-		rtx.unsentoff = addOff(rtx.unsentoff, int(excess), size)
-		if rtx.unsentoff == rtx.unsentend {
-			rtx.unsentoff = 0
-			rtx.unsentend = 0
-		}
-	}
-	rtx.slist.Reset(cap(rtx.slist.pkts), ack)
-	rtx.consolidateBufs()
 }
 
 func (rtx *ringTx) consolidateBufs() {

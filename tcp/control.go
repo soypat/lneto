@@ -59,7 +59,10 @@ type ControlBlock struct {
 	pending      [2]Flags
 	_state       State // leading underscore so field not suggested on top of exported State method when developing.
 	challengeAck bool
-	dupack       uint8
+	// dupack counts received ACK==snd.UNA && ACK<snd.NXT received. Does not count ack that set UNA.
+	dupack uint8
+	// nRetransmit counts number of retransmits sent since last UNA update.
+	nRetransmit uint8
 }
 
 // State returns the current state of the TCP connection. See [State].
@@ -186,7 +189,17 @@ func (tcb *ControlBlock) prepareToHandshake(iss Value, wnd Size, newState State)
 }
 
 // HasPending returns true if there is a pending control segment to send. Calls to Send will advance the pending queue.
-func (tcb *ControlBlock) HasPending() bool { return tcb.pending[0] != 0 }
+func (tcb *ControlBlock) HasPending() bool {
+	return tcb.pending[0] != 0 || tcb.challengeAck || tcb.HasPendingRetransmit()
+}
+
+// HasPending returns true if the control block is pending a retransmit according to simple optmist
+// retransmit strategy.
+func (tcb *ControlBlock) HasPendingRetransmit() bool {
+	// Force retransmit after 3 consecutive acks of UNA.
+	const retransmitAfterDupacks = 3
+	return tcb.dupack >= retransmitAfterDupacks-1 && tcb.nRetransmit < tcb.dupack-1
+}
 
 // PendingSegment calculates a suitable next segment to send from a payload length.
 // It does not modify the ControlBlock state or pending segment queue.
@@ -195,6 +208,10 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 		// Do not clear challengeAck here: PendingSegment is documented as read-only.
 		// The flag is consumed in Send when the ACK segment is actually transmitted.
 		return Segment{SEQ: tcb.snd.NXT, ACK: tcb.rcv.NXT, Flags: FlagACK, WND: tcb.rcv.WND}, true
+	} else if tcb.HasPendingRetransmit() {
+		// Optimist Strategy: retransmit oldest data once.
+		// panic("retransmit active")
+		return Segment{SEQ: tcb.snd.UNA, DATALEN: Size(payloadLen), ACK: tcb.rcv.NXT, WND: tcb.rcv.WND, Flags: FlagACK}, true
 	}
 	pending := tcb.pending[0]
 	established := tcb._state == StateEstablished
@@ -335,6 +352,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 			// Only update ACK if it advances UNA and is not in the future.
 			tcb.snd.UNA = seg.ACK
 			tcb.dupack = 0
+			tcb.nRetransmit = 0
 		}
 	}
 
@@ -398,9 +416,14 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 
 	// The segment is valid, we can update TCB state.
 	seglen := seg.LEN()
-	tcb.snd.NXT.UpdateForward(seglen)
-	tcb.rcv.WND = seg.WND
+	retransmit := seg.SEQ.LessThan(tcb.snd.NXT)
+	if retransmit && tcb.nRetransmit < 255 {
+		tcb.nRetransmit++
+	} else {
+		tcb.snd.NXT.UpdateForward(seglen)
+	}
 
+	tcb.rcv.WND = seg.WND
 	if tcb.logenabled(internal.LevelTrace) {
 		tcb.traceSnd("tcb:snd")
 		tcb.traceSeg("tcb:snd", seg)
@@ -418,6 +441,7 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	zeroWindowOK := tcb.snd.WND == 0 && seg.DATALEN == 0 && seg.SEQ == tcb.snd.NXT
 	outOfWindow := checkSeq && !seg.SEQ.InWindow(tcb.snd.NXT, tcb.snd.WND) &&
 		!zeroWindowOK
+	isRetransmit := checkSeq && seg.SEQ.InRange(tcb.snd.UNA, tcb.snd.NXT)
 	switch {
 	case tcb._state == StateClosed && !isFirst:
 		err = io.ErrClosedPipe
@@ -426,7 +450,7 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	case hasAck && seg.ACK != tcb.rcv.NXT:
 		err = errAckNotNext
 
-	case outOfWindow:
+	case outOfWindow && !isRetransmit:
 		if tcb.snd.WND == 0 {
 			err = errZeroWindow
 		} else {

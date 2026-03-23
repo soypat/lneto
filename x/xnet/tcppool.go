@@ -80,7 +80,6 @@ func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
 			TxBuf:             bufSpace[txOff : txOff+cfg.TxBufSize],
 			TxPacketQueueSize: cfg.QueueSize,
 			Logger:            cfg.ConnLogger,
-			NanoTime:          cfg.NanoTime,
 		})
 		if err != nil {
 			return nil, err
