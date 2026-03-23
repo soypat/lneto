@@ -198,22 +198,22 @@ func (tcb *ControlBlock) HasPending() bool {
 func (tcb *ControlBlock) HasPendingRetransmit() bool {
 	// Force retransmit after 3 consecutive acks of UNA.
 	const retransmitAfterDupacks = 3
-	return tcb.dupack >= retransmitAfterDupacks-1 && tcb.nRetransmit < tcb.dupack-1
+	return tcb._state.TxDataOpen() && tcb.dupack >= retransmitAfterDupacks && tcb.nRetransmit <= tcb.dupack-retransmitAfterDupacks
 }
 
 // PendingSegment calculates a suitable next segment to send from a payload length.
 // It does not modify the ControlBlock state or pending segment queue.
 func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
+	pending := tcb.pending[0]
 	if tcb.challengeAck {
 		// Do not clear challengeAck here: PendingSegment is documented as read-only.
 		// The flag is consumed in Send when the ACK segment is actually transmitted.
 		return Segment{SEQ: tcb.snd.NXT, ACK: tcb.rcv.NXT, Flags: FlagACK, WND: tcb.rcv.WND}, true
-	} else if tcb.HasPendingRetransmit() {
+	} else if !pending.HasAny(flagctl) && tcb.HasPendingRetransmit() {
 		// Optimist Strategy: retransmit oldest data once.
 		// panic("retransmit active")
 		return Segment{SEQ: tcb.snd.UNA, DATALEN: Size(payloadLen), ACK: tcb.rcv.NXT, WND: tcb.rcv.WND, Flags: FlagACK}, true
 	}
-	pending := tcb.pending[0]
 	established := tcb._state == StateEstablished
 	canSendData := established || tcb._state == StateCloseWait
 	if !canSendData {
@@ -345,7 +345,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	}
 
 	if seg.Flags.HasAny(FlagACK) && seg.ACK.LessThanEq(tcb.snd.NXT) {
-		if seg.ACK == tcb.snd.UNA && tcb.dupack < 255 {
+		if seg.ACK == tcb.snd.UNA && tcb.State().TxDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < 255 {
 			// Duplicate ack.
 			tcb.dupack++
 		} else if tcb.snd.UNA.LessThan(seg.ACK) {
