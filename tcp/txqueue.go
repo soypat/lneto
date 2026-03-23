@@ -45,9 +45,6 @@ type ringidx struct {
 	seq Value
 	// size is the size of the packet in bytes.
 	size Size
-	// sentAt is the time in milliseconds when this packet was first sent.
-	// Used for RTO detection per RFC 6298 §5.
-	sentAt uint32
 }
 
 // Reset resets the RingTx's internal state to use buf as the main ring buffer and creates or reuses
@@ -120,7 +117,7 @@ func (rtx *ringTx) Write(b []byte) (n int, err error) {
 // MakePacket reads from the unsent data ring buffer and generates a new packet segment.
 // It fails if the sent packet queue is full. sentAt is the current time in milliseconds,
 // stamped on the packet for RTO detection per RFC 6298 §5.1.
-func (rtx *ringTx) MakePacket(b []byte, currentSeq Value, sentAt uint32) (int, error) {
+func (rtx *ringTx) MakePacket(b []byte, currentSeq Value) (int, error) {
 	free := rtx.slist.Free()
 	if free == 0 {
 		return 0, lneto.ErrBufferFull
@@ -141,7 +138,7 @@ func (rtx *ringTx) MakePacket(b []byte, currentSeq Value, sentAt uint32) (int, e
 	// Start of buffer will be SENT, end of buffer will be UNSENT(or empty).
 	// Packet generated has offset at old unsentOff.
 	size := rtx.Size()
-	pkt := rtx.slist.AddPacket(n, oldUnsentOff, size, currentSeq, sentAt)
+	pkt := rtx.slist.AddPacket(n, oldUnsentOff, size, currentSeq)
 	if pkt.off != oldUnsentOff || pkt.end != addEnd(pkt.off, n, size) {
 		panic("invalid generated packet")
 	}
@@ -351,7 +348,7 @@ func (sl *sentlist) Free() int {
 	return cap(sl.pkts) - len(sl.pkts)
 }
 
-func (sl *sentlist) AddPacket(datalen, off, bufsize int, seq Value, sentAt uint32) *ringidx {
+func (sl *sentlist) AddPacket(datalen, off, bufsize int, seq Value) *ringidx {
 	free := sl.Free()
 	if free == 0 {
 		panic("pkt buffer full")
@@ -361,11 +358,10 @@ func (sl *sentlist) AddPacket(datalen, off, bufsize int, seq Value, sentAt uint3
 		panic("new sent packet offset must match last sent packet end")
 	}
 	sl.pkts = append(sl.pkts, ringidx{
-		off:    off,
-		end:    addEnd(off, datalen, bufsize),
-		seq:    seq,
-		size:   Size(datalen),
-		sentAt: sentAt,
+		off:  off,
+		end:  addEnd(off, datalen, bufsize),
+		seq:  seq,
+		size: Size(datalen),
 	})
 	return &sl.pkts[len(sl.pkts)-1]
 }

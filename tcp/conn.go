@@ -354,7 +354,6 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 		return lneto.ErrMismatch
 	}
 	conn.trace("tcpconn.Recv", slog.Uint64("lport", uint64(conn.h.LocalPort())), slog.Uint64("rport", uint64(conn.h.remotePort)))
-	conn.h.SetNow(uint32(conn.now() / 1e6)) // ns → ms for accurate ACK timestamps.
 	err = conn.h.Recv(buf[off:])
 	if err != nil {
 		return err
@@ -381,12 +380,6 @@ func (conn *Conn) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 		return 0, err
 	} else if len(raddr) != len(conn.remoteAddr) {
 		return 0, lneto.ErrMismatchLen
-	}
-	conn.h.SetNow(uint32(conn.now() / 1e6)) // ns → ms.
-	// RFC 6298 §5.1: check RTO before sending new data.
-	if conn.h.ShouldRetransmit() {
-		conn.h.triggerRetransmit()
-		conn.h.dupACKs = 0 // RTO is a new loss event; reset dup-ACK counter.
 	}
 	n, err = conn.h.Send(carrierData[offsetToFrame:])
 	if err != nil || n == 0 {

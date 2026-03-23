@@ -59,6 +59,7 @@ type ControlBlock struct {
 	pending      [2]Flags
 	_state       State // leading underscore so field not suggested on top of exported State method when developing.
 	challengeAck bool
+	dupack       uint8
 }
 
 // State returns the current state of the TCP connection. See [State].
@@ -105,6 +106,10 @@ func (tcb *ControlBlock) IncomingIsKeepalive(incomingSegment Segment) bool {
 	return incomingSegment.SEQ == tcb.rcv.NXT-1 &&
 		incomingSegment.Flags == FlagACK &&
 		incomingSegment.ACK == tcb.snd.NXT && incomingSegment.DATALEN == 0
+}
+
+func (tcb *ControlBlock) IncomingIsDupeAck(incomingSegment Segment) bool {
+	return incomingSegment.Flags.HasAny(FlagACK) && incomingSegment.ACK == tcb.snd.UNA && incomingSegment.ACK.LessThan(tcb.snd.NXT)
 }
 
 // MakeKeepalive creates a TCP keepalive segment. This segment
@@ -321,10 +326,18 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 		tcb.snd.WL1 = seg.SEQ
 		tcb.snd.WL2 = seg.ACK
 	}
-	if seg.Flags.HasAny(FlagACK) && tcb.snd.UNA.LessThan(seg.ACK) && seg.ACK.LessThanEq(tcb.snd.NXT) {
-		// Only update ACK if it advances UNA and is not in the future.
-		tcb.snd.UNA = seg.ACK
+
+	if seg.Flags.HasAny(FlagACK) && seg.ACK.LessThanEq(tcb.snd.NXT) {
+		if seg.ACK == tcb.snd.UNA && tcb.dupack < 255 {
+			// Duplicate ack.
+			tcb.dupack++
+		} else if tcb.snd.UNA.LessThan(seg.ACK) {
+			// Only update ACK if it advances UNA and is not in the future.
+			tcb.snd.UNA = seg.ACK
+			tcb.dupack = 0
+		}
 	}
+
 	seglen := seg.LEN()
 	tcb.rcv.NXT.UpdateForward(seglen)
 
@@ -489,7 +502,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	case established && acksOld && !ctlOrDataSegment:
 		// We don't drop packet.
 		if isDebug {
-			tcb.debug("rcv:ACK-dup", slog.String("state", tcb._state.String()),
+			tcb.debug("rcv:ACK-old", slog.String("state", tcb._state.String()),
 				slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.una", uint64(tcb.snd.UNA)))
 		}
 
@@ -571,20 +584,7 @@ func (tcb *ControlBlock) rstJump() Value {
 // and Send calls to retransmit unacknowledged data. Must be paired with
 // ringTx.RetransmitFromUNA to rewind the transmit buffer.
 // Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
-func (tcb *ControlBlock) Retransmit() { tcb.snd.NXT = tcb.snd.UNA }
-
-// RecoveryACK accepts a cumulative ACK that covers data sent before a retransmit
-// rewind. After Retransmit() rewinds snd.NXT, the remote may ACK data it received
-// pre-rewind — a valid cumulative ACK that exceeds the rewound snd.NXT. This method
-// advances snd.UNA, snd.NXT and updates the send window from the segment.
-// The caller must verify that seg.ACK is within the pre-rewind NXT range.
-func (tcb *ControlBlock) RecoveryACK(seg Segment) {
-	tcb.snd.UNA = seg.ACK
-	tcb.snd.NXT = seg.ACK
-	tcb.snd.WND = seg.WND
-	// Clear any pending ACK that validateIncomingSegment queued on rejection.
-	tcb.pending[0] &^= FlagACK
-}
+// func (tcb *ControlBlock) Retransmit() { tcb.snd.NXT = tcb.snd.UNA }
 
 // Abort sets ControlBlock state to Closed and resets all sequence numbers and pending flag.
 // No more data can be sent nor received after the connection is aborted until opened again.

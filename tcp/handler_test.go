@@ -53,7 +53,6 @@ func newHandler(t *testing.T, mtu, mintaxpackets int) *Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.rto = rtoInitial // Fake time: now=0 and sentAt=0, so RTO never fires in tests.
 	return h
 }
 
