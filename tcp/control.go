@@ -111,6 +111,9 @@ func (tcb *ControlBlock) IncomingIsKeepalive(incomingSegment Segment) bool {
 		incomingSegment.ACK == tcb.snd.NXT && incomingSegment.DATALEN == 0
 }
 
+// IncomingIsDupACK returns true if the ACK value is a duplicate acknowledgement:
+// the ACK equals the oldest unacknowledged sequence number (snd.UNA) meaning no
+// new data is acknowledged, while snd.UNA < snd.NXT meaning data is in flight.
 func (tcb *ControlBlock) IncomingIsDupACK(ack Value) bool {
 	return ack == tcb.snd.UNA && ack.LessThan(tcb.snd.NXT)
 }
