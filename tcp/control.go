@@ -111,8 +111,8 @@ func (tcb *ControlBlock) IncomingIsKeepalive(incomingSegment Segment) bool {
 		incomingSegment.ACK == tcb.snd.NXT && incomingSegment.DATALEN == 0
 }
 
-func (tcb *ControlBlock) IncomingIsDupACK(incomingSegment Segment) bool {
-	return incomingSegment.Flags.HasAny(FlagACK) && incomingSegment.ACK == tcb.snd.UNA && incomingSegment.ACK.LessThan(tcb.snd.NXT)
+func (tcb *ControlBlock) IncomingIsDupACK(ack Value) bool {
+	return ack == tcb.snd.UNA && ack.LessThan(tcb.snd.NXT)
 }
 
 // MakeKeepalive creates a TCP keepalive segment. This segment
@@ -356,7 +356,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	}
 
 	if seg.Flags.HasAny(FlagACK) && seg.ACK.LessThanEq(tcb.snd.NXT) {
-		if seg.ACK == tcb.snd.UNA && tcb.State().TxDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < 255 {
+		if tcb.IncomingIsDupACK(seg.ACK) && tcb.State().TxDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < 255 {
 			// Duplicate ack.
 			tcb.dupack++
 		} else if tcb.snd.UNA.LessThan(seg.ACK) {
