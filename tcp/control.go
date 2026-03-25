@@ -127,12 +127,12 @@ func (tcb *ControlBlock) MakeKeepalive() Segment {
 	}
 }
 
-// MakeRetransmitDupACK returns a duplicate ACK segment suitable for fast-retransmit
+// MakeDupACK returns a duplicate ACK segment suitable for fast-retransmit
 // recovery signaling, without advancing the sender ACK boundary. Useful for:
 //   - constructing an explicit duplicate ACK from local state (e.g. test harness),
 //   - expressing retransmit-request condition (`ACK == snd.UNA`, `SEQ == snd.UNA`)
 //   - advertising receive window via current `rcv.WND`.
-func (tcb *ControlBlock) MakeRetransmitDupACK() Segment {
+func (tcb *ControlBlock) MakeDupACK() Segment {
 	return Segment{
 		SEQ:     tcb.snd.UNA,
 		ACK:     tcb.rcv.NXT,

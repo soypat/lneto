@@ -995,7 +995,7 @@ func TestHandler_RetransmitAfter3DupACKs(t *testing.T) {
 	// no server.Recv(pkt[:n]) -> Packet loss.
 
 	// Simulate 3 duplicate ACKs (ACK == UNA, no progress).
-	dupACK := server.scb.MakeRetransmitDupACK()
+	dupACK := server.scb.MakeDupACK()
 	if !client.scb.IncomingIsDupACK(dupACK) {
 		t.Fatal("MakeRetransmitDupACK return should be considered a duplicate ACK by remote")
 	}
@@ -1024,6 +1024,8 @@ func TestHandler_RetransmitAfter3DupACKs(t *testing.T) {
 	}
 	if n <= sizeHeaderTCP {
 		t.Fatalf("expected retransmit segment (>=20 bytes); got %d", n)
+	} else if client.scb.HasPendingRetransmit() {
+		t.Fatal("expected client to satisfy pending retransmit after single Send call")
 	}
 
 	retransmitFrame, _ := NewFrame(pkt[:n])
