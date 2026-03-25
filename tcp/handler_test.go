@@ -962,3 +962,89 @@ func TestChallengeACKWithBufferedData(t *testing.T) {
 		t.Fatal("expected data packet, got header-only")
 	}
 }
+
+func TestHandler_RetransmitAfter3DupACKs(t *testing.T) {
+	const (
+		mtu        = 1500
+		maxpackets = 3
+	)
+	rng := rand.New(rand.NewSource(42))
+
+	client := newHandler(t, mtu, maxpackets)
+	server := newHandler(t, mtu, maxpackets)
+	setupClientServer(t, rng, client, server)
+
+	// Client sends some data in flight.
+	payload := []byte("0123456789")
+	var pkt [mtu]byte
+
+	written, err := client.Write(payload)
+	if err != nil || written != len(payload) {
+		t.Fatalf("client.Write failed: %v len=%d", err, written)
+	}
+
+	n, err := client.Send(pkt[:])
+	if err != nil {
+		t.Fatalf("client.Send initial data: %v", err)
+	}
+	if n <= sizeHeaderTCP {
+		t.Fatalf("expected non-empty data packet; got %d", n)
+	}
+
+	// Server receives data (but we do NOT give client the ACK yet).
+	if err := server.Recv(pkt[:n]); err != nil {
+		t.Fatalf("server.Recv initial data failed: %v", err)
+	}
+
+	// Simulate 3 duplicate ACKs (ACK == UNA, no progress).
+	dupACK := Segment{
+		SEQ:   client.scb.rcv.NXT,
+		ACK:   client.scb.snd.UNA,
+		Flags: FlagACK,
+		WND:   client.scb.rcv.WND,
+	}
+
+	for i := 0; i < 3; i++ {
+		fb, _ := NewFrame(pkt[:])
+		fb.SetSourcePort(server.LocalPort())
+		fb.SetDestinationPort(client.LocalPort())
+		fb.SetSegment(dupACK, 5)
+
+		if err := client.Recv(pkt[:sizeHeaderTCP]); err != nil {
+			t.Fatalf("client.Recv dupACK #%d failed: %v", i+1, err)
+		}
+	}
+
+	if client.scb.dupack != 3 {
+		t.Fatalf("expected dupack=3; got %d", client.scb.dupack)
+	}
+	if !client.scb.HasPendingRetransmit() {
+		t.Fatal("expected HasPendingRetransmit() true after 3 dupACKs")
+	}
+
+	oldUNA := client.scb.snd.UNA
+	n, err = client.Send(pkt[:])
+	if err != nil {
+		t.Fatalf("client.Send retransmit failed: %v", err)
+	}
+	if n <= sizeHeaderTCP {
+		t.Fatalf("expected retransmit segment (>=20 bytes); got %d", n)
+	}
+
+	retransmitFrame, _ := NewFrame(pkt[:n])
+	rtSeg := retransmitFrame.Segment(0)
+	if rtSeg.SEQ != oldUNA {
+		t.Fatalf("retransmit SEQ = %d; expected UNA=%d", rtSeg.SEQ, oldUNA)
+	}
+	if !rtSeg.Flags.HasAny(FlagACK) {
+		t.Fatalf("retransmit missing ACK flag: %#v", rtSeg.Flags)
+	}
+	if client.scb.nRetransmit != 1 {
+		t.Fatalf("expected scb.nRetransmit = 1; got %d", client.scb.nRetransmit)
+	}
+
+	// Ensure remote side can receive the retransmit frame.
+	if err := server.Recv(pkt[:n]); err != nil {
+		t.Fatalf("server.Recv retransmit packet failed: %v", err)
+	}
+}
