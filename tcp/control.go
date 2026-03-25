@@ -211,7 +211,6 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 		return Segment{SEQ: tcb.snd.NXT, ACK: tcb.rcv.NXT, Flags: FlagACK, WND: tcb.rcv.WND}, true
 	} else if !pending.HasAny(flagctl) && tcb.HasPendingRetransmit() {
 		// Optimist Strategy: retransmit oldest data once.
-		// panic("retransmit active")
 		return Segment{SEQ: tcb.snd.UNA, DATALEN: Size(payloadLen), ACK: tcb.rcv.NXT, WND: tcb.rcv.WND, Flags: FlagACK}, true
 	}
 	established := tcb._state == StateEstablished

@@ -973,10 +973,11 @@ func TestHandler_RetransmitAfter3DupACKs(t *testing.T) {
 	client := newHandler(t, mtu, maxpackets)
 	server := newHandler(t, mtu, maxpackets)
 	setupClientServer(t, rng, client, server)
+	var pkt [mtu]byte
+	establish(t, client, server, pkt[:])
 
 	// Client sends some data in flight.
 	payload := []byte("0123456789")
-	var pkt [mtu]byte
 
 	written, err := client.Write(payload)
 	if err != nil || written != len(payload) {

@@ -285,23 +285,25 @@ func (h *Handler) Send(b []byte) (int, error) {
 		offset++
 	} else {
 		var ok bool
-		available := min(buffered, len(b)-sizeHeaderTCP)
-		segment, ok = h.scb.PendingSegment(available)
+		maxPayload := len(b) - sizeHeaderTCP
+		segment, ok = h.scb.PendingSegment(maxPayload)
 		segment.WND = Size(h.bufRx.Free())
 		if !ok {
 			// No pending control segment or data to send. Yield.
 			return 0, nil
-		}
-		if segment.DATALEN > 0 {
-			n, err := h.bufTx.MakePacket(b[sizeHeaderTCP:sizeHeaderTCP+segment.DATALEN], segment.SEQ)
-			if err != nil {
-				return 0, err
-			} else if n != int(segment.DATALEN) {
-				panic("expected n == available")
-			}
 		} else if segment.Flags == synack {
+			segment.DATALEN = 0
 			h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
 			offset++
+		} else if segment.DATALEN > 0 {
+			n, err := h.bufTx.MakePacket(b[sizeHeaderTCP:sizeHeaderTCP+segment.DATALEN], segment.SEQ)
+			if err != nil {
+				if err == io.EOF {
+					return 0, nil // No data to send.
+				}
+				return 0, err
+			}
+			segment.DATALEN = Size(n)
 		}
 	}
 	prevState := h.scb.State()
