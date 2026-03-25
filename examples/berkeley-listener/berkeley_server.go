@@ -160,10 +160,12 @@ func run() error {
 				}
 				if flagMockClient && mockStack.Addr().IsValid() {
 					mockStack.Demux(buf[:nwrite], 0)
-					n, _ := mockStack.Encapsulate(buf[:], -1, 0)
-					if n > 0 {
-						stack.Demux(buf[:n], 0)
-					}
+				}
+			}
+			if flagMockClient && mockStack.Addr().IsValid() {
+				n, _ := mockStack.Encapsulate(buf[:], -1, 0)
+				if n > 0 {
+					stack.Demux(buf[:n], 0)
 				}
 			}
 
@@ -341,6 +343,7 @@ func mockClient(stack *xnet.StackAsync, port uint16, subnet netip.Prefix) {
 		RxBuf:             make([]byte, 2048),
 		TxBuf:             make([]byte, 2048),
 		TxPacketQueueSize: 4,
+		Logger:            slog.Default(),
 	})
 	if err != nil {
 		panic(err.Error())
