@@ -314,7 +314,9 @@ func TestPendingSegment_RetransmitAfter3DupACKs(t *testing.T) {
 			Flags: FlagACK,
 			WND:   wnd,
 		}
-
+		if !tcb.IncomingIsDupACK(dup) {
+			t.Fatal("supposed duplicate ack segment not considered dupack")
+		}
 		if err := tcb.Recv(dup); err != nil {
 			t.Fatalf("dup ACK %d: unexpected error: %v", i+1, err)
 		}

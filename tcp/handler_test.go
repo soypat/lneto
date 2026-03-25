@@ -991,20 +991,14 @@ func TestHandler_RetransmitAfter3DupACKs(t *testing.T) {
 	if n <= sizeHeaderTCP {
 		t.Fatalf("expected non-empty data packet; got %d", n)
 	}
-
-	// Server receives data (but we do NOT give client the ACK yet).
-	if err := server.Recv(pkt[:n]); err != nil {
-		t.Fatalf("server.Recv initial data failed: %v", err)
-	}
+	// Server does NOT receive the intended packet, but rather the retransmission later on.
+	// no server.Recv(pkt[:n]) -> Packet loss.
 
 	// Simulate 3 duplicate ACKs (ACK == UNA, no progress).
-	dupACK := Segment{
-		SEQ:   client.scb.rcv.NXT,
-		ACK:   client.scb.snd.UNA,
-		Flags: FlagACK,
-		WND:   client.scb.rcv.WND,
+	dupACK := server.scb.MakeRetransmitDupACK()
+	if !client.scb.IncomingIsDupACK(dupACK) {
+		t.Fatal("MakeRetransmitDupACK return should be considered a duplicate ACK by remote")
 	}
-
 	for i := 0; i < 3; i++ {
 		fb, _ := NewFrame(pkt[:])
 		fb.SetSourcePort(server.LocalPort())

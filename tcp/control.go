@@ -111,7 +111,7 @@ func (tcb *ControlBlock) IncomingIsKeepalive(incomingSegment Segment) bool {
 		incomingSegment.ACK == tcb.snd.NXT && incomingSegment.DATALEN == 0
 }
 
-func (tcb *ControlBlock) IncomingIsDupeAck(incomingSegment Segment) bool {
+func (tcb *ControlBlock) IncomingIsDupACK(incomingSegment Segment) bool {
 	return incomingSegment.Flags.HasAny(FlagACK) && incomingSegment.ACK == tcb.snd.UNA && incomingSegment.ACK.LessThan(tcb.snd.NXT)
 }
 
@@ -120,6 +120,21 @@ func (tcb *ControlBlock) IncomingIsDupeAck(incomingSegment Segment) bool {
 func (tcb *ControlBlock) MakeKeepalive() Segment {
 	return Segment{
 		SEQ:     tcb.snd.NXT - 1,
+		ACK:     tcb.rcv.NXT,
+		Flags:   FlagACK,
+		WND:     tcb.rcv.WND,
+		DATALEN: 0,
+	}
+}
+
+// MakeRetransmitDupACK returns a duplicate ACK segment suitable for fast-retransmit
+// recovery signaling, without advancing the sender ACK boundary. Useful for:
+//   - constructing an explicit duplicate ACK from local state (e.g. test harness),
+//   - expressing retransmit-request condition (`ACK == snd.UNA`, `SEQ == snd.UNA`)
+//   - advertising receive window via current `rcv.WND`.
+func (tcb *ControlBlock) MakeRetransmitDupACK() Segment {
+	return Segment{
+		SEQ:     tcb.snd.UNA,
 		ACK:     tcb.rcv.NXT,
 		Flags:   FlagACK,
 		WND:     tcb.rcv.WND,
