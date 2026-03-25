@@ -9,6 +9,13 @@ import (
 	"github.com/soypat/lneto/internal"
 )
 
+const (
+	// signals to create a retransmit packet after receiving this number of duplicate acks, not including the ack that set UNA.
+	retransmitAfterDupacks = 3
+	// retransmitMaxQueued sets maximum amount of retransmits to queue while receiving dupacks.
+	retransmitMaxQueued = 2
+)
+
 // ControlBlock is a partial Transmission Control Block (TCB) implementation as
 // per RFC 9293 in section 3.3.1. In contrast with the description in RFC9293,
 // this implementation is limited to receiving only sequential segments.
@@ -215,7 +222,6 @@ func (tcb *ControlBlock) HasPending() bool {
 // retransmit strategy.
 func (tcb *ControlBlock) HasPendingRetransmit() bool {
 	// Force retransmit after 3 consecutive acks of UNA.
-	const retransmitAfterDupacks = 3
 	return tcb._state.TxDataOpen() && tcb.dupack >= retransmitAfterDupacks && tcb.nRetransmit <= tcb.dupack-retransmitAfterDupacks
 }
 
@@ -359,8 +365,8 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	}
 
 	if seg.Flags.HasAny(FlagACK) && seg.ACK.LessThanEq(tcb.snd.NXT) {
-		if tcb.IncomingIsDupACK(seg.ACK) && tcb.State().TxDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < 255 {
-			// Duplicate ack.
+		if tcb.IncomingIsDupACK(seg.ACK) && tcb.State().TxDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < tcb.nRetransmit+retransmitMaxQueued+retransmitMaxQueued {
+			// Duplicate ack. Don't advance dupack counter past scb.nRetransmit+retransmitAfterDupacks
 			tcb.dupack++
 		} else if tcb.snd.UNA.LessThan(seg.ACK) {
 			// Only update ACK if it advances UNA and is not in the future.
@@ -431,7 +437,7 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 	// The segment is valid, we can update TCB state.
 	seglen := seg.LEN()
 	retransmit := seg.SEQ.LessThan(tcb.snd.NXT)
-	if retransmit && tcb.nRetransmit < 255 {
+	if retransmit && tcb.nRetransmit < 255-retransmitMaxQueued-retransmitAfterDupacks {
 		tcb.nRetransmit++
 	} else {
 		tcb.snd.NXT.UpdateForward(seglen)
