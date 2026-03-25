@@ -293,3 +293,83 @@ func TestCloseWait_NoAutoFINBeforeUserClose(t *testing.T) {
 			"(control.go:353-354 queues finack on any ACK sent in CLOSE-WAIT)", seg.Flags)
 	}
 }
+
+func TestPendingSegment_RetransmitAfter3DupACKs(t *testing.T) {
+	const (
+		iss       Value = 100
+		remoteISS Value = 500
+		inFlight        = 10
+		wnd       Size  = 1024
+	)
+
+	var tcb ControlBlock
+	tcb.HelperInitState(StateEstablished, iss, iss+inFlight, wnd)
+	tcb.HelperInitRcv(remoteISS, remoteISS+1, wnd)
+
+	// Three duplicate ACKs against UNA must trigger retransmit state
+	for i := 0; i < 3; i++ {
+		dup := Segment{
+			SEQ:   remoteISS + 1,
+			ACK:   iss, // UNA (duplicate, no progress)
+			Flags: FlagACK,
+			WND:   wnd,
+		}
+
+		if err := tcb.Recv(dup); err != nil {
+			t.Fatalf("dup ACK %d: unexpected error: %v", i+1, err)
+		}
+	}
+
+	if tcb.dupack != 3 {
+		t.Fatalf("dupack = %d; want 3", tcb.dupack)
+	}
+	if !tcb.HasPendingRetransmit() {
+		t.Fatal("expected HasPendingRetransmit() == true after 3 dupacks")
+	}
+
+	seg, ok := tcb.PendingSegment(4)
+	if !ok {
+		t.Fatal("PendingSegment(false) returned no segment; expected retransmit segment")
+	}
+	if seg.SEQ != tcb.snd.UNA {
+		t.Fatalf("retransmit SEQ = %d; want UNA(%d)", seg.SEQ, tcb.snd.UNA)
+	}
+	if seg.ACK != tcb.rcv.NXT {
+		t.Fatalf("retransmit ACK = %d; want RCV.NXT(%d)", seg.ACK, tcb.rcv.NXT)
+	}
+	if !seg.Flags.HasAny(FlagACK) {
+		t.Errorf("retransmit segment must include ACK")
+	}
+
+	// Send retransmit, expect nRetransmit to be incremented and NXT not moved
+	prevNXT := tcb.snd.NXT
+	if err := tcb.Send(seg); err != nil {
+		t.Fatalf("Send(retransmit) unexpected error: %v", err)
+	}
+	if tcb.nRetransmit != 1 {
+		t.Fatalf("nRetransmit = %d; want 1", tcb.nRetransmit)
+	}
+	if tcb.snd.NXT != prevNXT {
+		t.Fatalf("snd.NXT advanced on retransmit: got %d, want %d", tcb.snd.NXT, prevNXT)
+	}
+	if tcb.HasPendingRetransmit() {
+		t.Fatal("expected retransmit reservation gone after retransmit send")
+	}
+
+	// Deliver cumulative ACK for all in-flight data => reset dupack + nRetransmit
+	successACK := Segment{
+		SEQ:   remoteISS + 1,
+		ACK:   iss + inFlight,
+		Flags: FlagACK,
+		WND:   wnd,
+	}
+	if err := tcb.Recv(successACK); err != nil {
+		t.Fatalf("successful ACK unexpected err: %v", err)
+	}
+	if tcb.dupack != 0 {
+		t.Fatalf("dupack after progress = %d; want 0", tcb.dupack)
+	}
+	if tcb.nRetransmit != 0 {
+		t.Fatalf("nRetransmit after progress = %d; want 0", tcb.nRetransmit)
+	}
+}
