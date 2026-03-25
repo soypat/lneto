@@ -437,8 +437,10 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 	// The segment is valid, we can update TCB state.
 	seglen := seg.LEN()
 	retransmit := seg.SEQ.LessThan(tcb.snd.NXT)
-	if retransmit && tcb.nRetransmit < 255-retransmitMaxQueued-retransmitAfterDupacks {
-		tcb.nRetransmit++
+	if retransmit {
+		if tcb.nRetransmit < 255-retransmitMaxQueued-retransmitAfterDupacks {
+			tcb.nRetransmit++
+		}
 	} else {
 		tcb.snd.NXT.UpdateForward(seglen)
 	}
