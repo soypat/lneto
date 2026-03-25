@@ -292,18 +292,17 @@ func (h *Handler) Send(b []byte) (int, error) {
 			// No pending control segment or data to send. Yield.
 			return 0, nil
 		} else if segment.Flags == synack {
-			segment.DATALEN = 0
 			h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
 			offset++
 		} else if segment.DATALEN > 0 {
 			n, err := h.bufTx.MakePacket(b[sizeHeaderTCP:sizeHeaderTCP+segment.DATALEN], segment.SEQ)
 			if err != nil {
-				if err == io.EOF {
-					return 0, nil // No data to send.
-				}
 				return 0, err
 			}
 			segment.DATALEN = Size(n)
+			if n > 0 {
+				segment.Flags |= FlagPSH
+			}
 		}
 	}
 	prevState := h.scb.State()

@@ -137,6 +137,9 @@ func (rtx *ringTx) MakePacket(b []byte, currentSeq Value) (int, error) {
 	}
 	// Reading unsent ring consumes unsent and converts it to "sent".
 	unsent, _ := rtx.unsentRing()
+	if unsent.IsEmpty() {
+		return 0, nil // No data to send.
+	}
 	oldUnsentOff := unsent.Off
 	n, err := unsent.Read(b)
 	if err != nil {

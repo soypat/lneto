@@ -238,9 +238,6 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	if tcb.snd.MSS > 0 && payloadLen > int(tcb.snd.MSS) {
 		payloadLen = int(tcb.snd.MSS)
 	}
-	if payloadLen > 0 {
-		pending |= FlagPSH // By default ensure all data flushed to destination application immediately on receive.
-	}
 
 	if canSendData {
 		pending |= FlagACK // ACK is always set in established state. Not in RFC9293 but somehow expected?
