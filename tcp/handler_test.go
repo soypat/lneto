@@ -2,6 +2,7 @@ package tcp
 
 import (
 	"bytes"
+	"fmt"
 	"math/rand"
 	"testing"
 )
@@ -53,7 +54,6 @@ func newHandler(t *testing.T, mtu, mintaxpackets int) *Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.rto = rtoInitial // Fake time: now=0 and sentAt=0, so RTO never fires in tests.
 	return h
 }
 
@@ -961,5 +961,194 @@ func TestChallengeACKWithBufferedData(t *testing.T) {
 	}
 	if n <= sizeHeaderTCP {
 		t.Fatal("expected data packet, got header-only")
+	}
+}
+
+func TestHandler_RetransmitAfter3DupACKs(t *testing.T) {
+	const (
+		mtu        = 1500
+		maxpackets = 3
+	)
+	rng := rand.New(rand.NewSource(42))
+
+	client := newHandler(t, mtu, maxpackets)
+	server := newHandler(t, mtu, maxpackets)
+	setupClientServer(t, rng, client, server)
+	var pkt [mtu]byte
+	establish(t, client, server, pkt[:])
+
+	// Client sends some data in flight.
+	payload := []byte("0123456789")
+
+	written, err := client.Write(payload)
+	if err != nil || written != len(payload) {
+		t.Fatalf("client.Write failed: %v len=%d", err, written)
+	}
+
+	n, err := client.Send(pkt[:])
+	if err != nil {
+		t.Fatalf("client.Send initial data: %v", err)
+	}
+	if n <= sizeHeaderTCP {
+		t.Fatalf("expected non-empty data packet; got %d", n)
+	}
+	// Server does NOT receive the intended packet, but rather the retransmission later on.
+	// no server.Recv(pkt[:n]) -> Packet loss.
+
+	// Simulate 3 duplicate ACKs (ACK == UNA, no progress).
+	dup := server.scb.MakeDupACK()
+	if !client.scb.IncomingIsDupACK(dup.ACK) {
+		t.Fatal("MakeRetransmitDupACK return should be considered a duplicate ACK by remote")
+	}
+	for i := 0; i < 3; i++ {
+		fb, _ := NewFrame(pkt[:])
+		fb.SetSourcePort(server.LocalPort())
+		fb.SetDestinationPort(client.LocalPort())
+		fb.SetSegment(dup, 5)
+
+		if err := client.Recv(pkt[:sizeHeaderTCP]); err != nil {
+			t.Fatalf("client.Recv dupACK #%d failed: %v", i+1, err)
+		}
+	}
+
+	if client.scb.dupack != 3 {
+		t.Fatalf("expected dupack=3; got %d", client.scb.dupack)
+	}
+	if !client.scb.HasPendingRetransmit() {
+		t.Fatal("expected HasPendingRetransmit() true after 3 dupACKs")
+	}
+
+	oldUNA := client.scb.snd.UNA
+	n, err = client.Send(pkt[:])
+	if err != nil {
+		t.Fatalf("client.Send retransmit failed: %v", err)
+	}
+	if n <= sizeHeaderTCP {
+		t.Fatalf("expected retransmit segment (>=20 bytes); got %d", n)
+	} else if client.scb.HasPendingRetransmit() {
+		t.Fatal("expected client to satisfy pending retransmit after single Send call")
+	}
+
+	retransmitFrame, _ := NewFrame(pkt[:n])
+	rtSeg := retransmitFrame.Segment(0)
+	if rtSeg.SEQ != oldUNA {
+		t.Fatalf("retransmit SEQ = %d; expected UNA=%d", rtSeg.SEQ, oldUNA)
+	}
+	if !rtSeg.Flags.HasAny(FlagACK) {
+		t.Fatalf("retransmit missing ACK flag: %#v", rtSeg.Flags)
+	}
+	if client.scb.nRetransmit != 1 {
+		t.Fatalf("expected scb.nRetransmit = 1; got %d", client.scb.nRetransmit)
+	}
+
+	// Ensure remote side can receive the retransmit frame.
+	if err := server.Recv(pkt[:n]); err != nil {
+		t.Fatalf("server.Recv retransmit packet failed: %v", err)
+	}
+}
+
+func TestHandler_RetransmitAfterMultipleLossesBothDirections(t *testing.T) {
+	const (
+		mtu        = 1500
+		maxpackets = 3
+		loops      = 3
+	)
+
+	rng := rand.New(rand.NewSource(1))
+	client := newHandler(t, mtu, maxpackets)
+	server := newHandler(t, mtu, maxpackets)
+	setupClientServer(t, rng, client, server)
+	var pkt [mtu]byte
+	establish(t, client, server, pkt[:])
+	sendWithLoss := func(sender, receiver *Handler, pay []byte) {
+		n, err := sender.Write(pay)
+		if err != nil || n != len(pay) {
+			t.Fatalf("write failed: %v len=%d", err, n)
+		}
+		n, err = sender.Send(pkt[:])
+		if err != nil {
+			t.Fatalf("Send initial data: %v", err)
+		} else if n <= sizeHeaderTCP {
+			t.Fatalf("expected non-empty data packet; got %d", n)
+		} else if sender.BufferedUnsent() > 0 {
+			t.Fatal("buffer too small to send all data")
+		}
+
+		// Drop packet (simulate loss): NO receiver.Recv(pkt[:n]).
+
+		// Three dupACKs from receiver side (its rcv state has not advanced).
+		dup := receiver.scb.MakeDupACK()
+		if !sender.scb.IncomingIsDupACK(dup.ACK) {
+			t.Fatal("dup ACK not recognized as dupack by sender")
+		}
+		for i := 0; i < 3; i++ {
+			clear(pkt[:])
+			fb, _ := NewFrame(pkt[:])
+			fb.SetSourcePort(receiver.LocalPort())
+			fb.SetDestinationPort(sender.LocalPort())
+			fb.SetSegment(dup, 5)
+			if !sender.scb.IncomingIsDupACK(dup.ACK) {
+				t.Fatal("expected incoming segment to be dupack")
+			}
+			if err := sender.Recv(pkt[:sizeHeaderTCP]); err != nil {
+				t.Fatalf("sender.Recv dupACK #%d failed: %v", i+1, err)
+			}
+		}
+		t.Log("dupack", sender.scb.dupack)
+		if sender.scb.dupack != 3 {
+			t.Fatalf("expected dupack=3; got=%d", sender.scb.dupack)
+		} else if !sender.scb.HasPendingRetransmit() {
+			t.Fatal("expected pending retransmit after 3 dupacks")
+		}
+
+		// Now expect retransmission packet.
+		oldUNA := sender.scb.snd.UNA
+		clear(pkt[:])
+		n, err = sender.Send(pkt[:])
+		if err != nil {
+			t.Fatalf("sender.Send retransmit failed: %v", err)
+		} else if n <= sizeHeaderTCP {
+			t.Fatalf("expected retransmit packet; got %d", n)
+		} else if sender.scb.HasPendingRetransmit() {
+			t.Error("after one retransmit should be satisfied")
+		}
+		retrFrm, _ := NewFrame(pkt[:n])
+		seg := retrFrm.Segment(0)
+		if seg.SEQ != oldUNA {
+			t.Fatalf("retransmit SEQ=%d; want=%d", seg.SEQ, oldUNA)
+		}
+		// Receiver consumes retransmit
+		if err := receiver.Recv(pkt[:n]); err != nil {
+			t.Fatalf("receiver.Recv retransmit failed: %v", err)
+		}
+		if receiver.scb.dupack > 0 {
+			t.Fatal("receiver has dupack", receiver.scb.dupack)
+		}
+
+		// Receiver ACKs, so sender progresses and dupack should reset.
+		clear(pkt[:])
+		n, err = receiver.Send(pkt[:])
+		if err != nil {
+			t.Fatalf("receiver.Send ACK after retransmit: %v", err)
+		}
+		if n > 0 {
+			if err := sender.Recv(pkt[:n]); err != nil {
+				t.Fatalf("sender.Recv ACK after retransmit: %v", err)
+			}
+		}
+		if sender.scb.dupack != 0 {
+			t.Fatalf("expected sender.dupack reset, got %d", sender.scb.dupack)
+		}
+	}
+
+	// Do several losses in client->server direction
+	for i := 0; i < loops; i++ {
+		payload := []byte(fmt.Sprintf("C->S loss %d", i))
+		sendWithLoss(client, server, payload)
+		sendWithLoss(client, server, payload)
+		sendWithLoss(server, client, payload)
+		sendWithLoss(client, server, payload)
+		sendWithLoss(server, client, payload)
+		sendWithLoss(server, client, payload)
 	}
 }

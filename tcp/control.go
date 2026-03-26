@@ -9,6 +9,13 @@ import (
 	"github.com/soypat/lneto/internal"
 )
 
+const (
+	// signals to create a retransmit packet after receiving this number of duplicate acks, not including the ack that set UNA.
+	retransmitAfterDupacks = 3
+	// retransmitMaxQueued sets maximum amount of retransmits to queue while receiving dupacks.
+	retransmitMaxQueued = 2
+)
+
 // ControlBlock is a partial Transmission Control Block (TCB) implementation as
 // per RFC 9293 in section 3.3.1. In contrast with the description in RFC9293,
 // this implementation is limited to receiving only sequential segments.
@@ -59,6 +66,10 @@ type ControlBlock struct {
 	pending      [2]Flags
 	_state       State // leading underscore so field not suggested on top of exported State method when developing.
 	challengeAck bool
+	// dupack counts received ACK==snd.UNA && ACK<snd.NXT received. Does not count ack that set UNA.
+	dupack uint8
+	// nRetransmit counts number of retransmits sent since last UNA update.
+	nRetransmit uint8
 }
 
 // State returns the current state of the TCP connection. See [State].
@@ -107,11 +118,33 @@ func (tcb *ControlBlock) IncomingIsKeepalive(incomingSegment Segment) bool {
 		incomingSegment.ACK == tcb.snd.NXT && incomingSegment.DATALEN == 0
 }
 
+// IncomingIsDupACK returns true if the ACK value is a duplicate acknowledgement:
+// the ACK equals the oldest unacknowledged sequence number (snd.UNA) meaning no
+// new data is acknowledged, while snd.UNA < snd.NXT meaning data is in flight.
+func (tcb *ControlBlock) IncomingIsDupACK(ack Value) bool {
+	return ack == tcb.snd.UNA && ack.LessThan(tcb.snd.NXT)
+}
+
 // MakeKeepalive creates a TCP keepalive segment. This segment
 // should not be passed into Recv or Send methods.
 func (tcb *ControlBlock) MakeKeepalive() Segment {
 	return Segment{
 		SEQ:     tcb.snd.NXT - 1,
+		ACK:     tcb.rcv.NXT,
+		Flags:   FlagACK,
+		WND:     tcb.rcv.WND,
+		DATALEN: 0,
+	}
+}
+
+// MakeDupACK returns a duplicate ACK segment suitable for fast-retransmit
+// recovery signaling, without advancing the sender ACK boundary. Useful for:
+//   - constructing an explicit duplicate ACK from local state (e.g. test harness),
+//   - expressing retransmit-request condition (`ACK == snd.UNA`, `SEQ == snd.UNA`)
+//   - advertising receive window via current `rcv.WND`.
+func (tcb *ControlBlock) MakeDupACK() Segment {
+	return Segment{
+		SEQ:     tcb.snd.UNA,
 		ACK:     tcb.rcv.NXT,
 		Flags:   FlagACK,
 		WND:     tcb.rcv.WND,
@@ -181,17 +214,29 @@ func (tcb *ControlBlock) prepareToHandshake(iss Value, wnd Size, newState State)
 }
 
 // HasPending returns true if there is a pending control segment to send. Calls to Send will advance the pending queue.
-func (tcb *ControlBlock) HasPending() bool { return tcb.pending[0] != 0 }
+func (tcb *ControlBlock) HasPending() bool {
+	return tcb.pending[0] != 0 || tcb.challengeAck || tcb.HasPendingRetransmit()
+}
+
+// HasPending returns true if the control block is pending a retransmit according to simple optmist
+// retransmit strategy.
+func (tcb *ControlBlock) HasPendingRetransmit() bool {
+	// Force retransmit after 3 consecutive acks of UNA.
+	return tcb._state.TxDataOpen() && tcb.dupack >= retransmitAfterDupacks && tcb.nRetransmit <= tcb.dupack-retransmitAfterDupacks
+}
 
 // PendingSegment calculates a suitable next segment to send from a payload length.
 // It does not modify the ControlBlock state or pending segment queue.
 func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
+	pending := tcb.pending[0]
 	if tcb.challengeAck {
 		// Do not clear challengeAck here: PendingSegment is documented as read-only.
 		// The flag is consumed in Send when the ACK segment is actually transmitted.
 		return Segment{SEQ: tcb.snd.NXT, ACK: tcb.rcv.NXT, Flags: FlagACK, WND: tcb.rcv.WND}, true
+	} else if !pending.HasAny(flagctl) && tcb.HasPendingRetransmit() {
+		// Optimist Strategy: retransmit oldest data once.
+		return Segment{SEQ: tcb.snd.UNA, DATALEN: Size(payloadLen), ACK: tcb.rcv.NXT, WND: tcb.rcv.WND, Flags: FlagACK}, true
 	}
-	pending := tcb.pending[0]
 	established := tcb._state == StateEstablished
 	canSendData := established || tcb._state == StateCloseWait
 	if !canSendData {
@@ -216,9 +261,6 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	// Cap by remote MSS.
 	if tcb.snd.MSS > 0 && payloadLen > int(tcb.snd.MSS) {
 		payloadLen = int(tcb.snd.MSS)
-	}
-	if payloadLen > 0 {
-		pending |= FlagPSH // By default ensure all data flushed to destination application immediately on receive.
 	}
 
 	if canSendData {
@@ -321,10 +363,19 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 		tcb.snd.WL1 = seg.SEQ
 		tcb.snd.WL2 = seg.ACK
 	}
-	if seg.Flags.HasAny(FlagACK) && tcb.snd.UNA.LessThan(seg.ACK) && seg.ACK.LessThanEq(tcb.snd.NXT) {
-		// Only update ACK if it advances UNA and is not in the future.
-		tcb.snd.UNA = seg.ACK
+
+	if seg.Flags.HasAny(FlagACK) && seg.ACK.LessThanEq(tcb.snd.NXT) {
+		if tcb.IncomingIsDupACK(seg.ACK) && tcb.State().TxDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < tcb.nRetransmit+retransmitMaxQueued+retransmitMaxQueued {
+			// Duplicate ack. Don't advance dupack counter past scb.nRetransmit+retransmitAfterDupacks
+			tcb.dupack++
+		} else if tcb.snd.UNA.LessThan(seg.ACK) {
+			// Only update ACK if it advances UNA and is not in the future.
+			tcb.snd.UNA = seg.ACK
+			tcb.dupack = 0
+			tcb.nRetransmit = 0
+		}
 	}
+
 	seglen := seg.LEN()
 	tcb.rcv.NXT.UpdateForward(seglen)
 
@@ -385,9 +436,16 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 
 	// The segment is valid, we can update TCB state.
 	seglen := seg.LEN()
-	tcb.snd.NXT.UpdateForward(seglen)
-	tcb.rcv.WND = seg.WND
+	retransmit := seg.SEQ.LessThan(tcb.snd.NXT)
+	if retransmit {
+		if tcb.nRetransmit < 255-retransmitMaxQueued-retransmitAfterDupacks {
+			tcb.nRetransmit++
+		}
+	} else {
+		tcb.snd.NXT.UpdateForward(seglen)
+	}
 
+	tcb.rcv.WND = seg.WND
 	if tcb.logenabled(internal.LevelTrace) {
 		tcb.traceSnd("tcb:snd")
 		tcb.traceSeg("tcb:snd", seg)
@@ -405,6 +463,7 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	zeroWindowOK := tcb.snd.WND == 0 && seg.DATALEN == 0 && seg.SEQ == tcb.snd.NXT
 	outOfWindow := checkSeq && !seg.SEQ.InWindow(tcb.snd.NXT, tcb.snd.WND) &&
 		!zeroWindowOK
+	isRetransmit := checkSeq && seg.SEQ.InRange(tcb.snd.UNA, tcb.snd.NXT)
 	switch {
 	case tcb._state == StateClosed && !isFirst:
 		err = io.ErrClosedPipe
@@ -413,7 +472,7 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	case hasAck && seg.ACK != tcb.rcv.NXT:
 		err = errAckNotNext
 
-	case outOfWindow:
+	case outOfWindow && !isRetransmit:
 		if tcb.snd.WND == 0 {
 			err = errZeroWindow
 		} else {
@@ -426,7 +485,7 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	case checkSeq && tcb.snd.WND == 0 && seg.DATALEN > 0 && seg.SEQ == tcb.snd.NXT:
 		err = errZeroWindow
 
-	case checkSeq && !seglast.InWindow(tcb.snd.NXT, tcb.snd.WND) && !zeroWindowOK:
+	case checkSeq && !seglast.InWindow(tcb.snd.NXT, tcb.snd.WND) && !zeroWindowOK && !isRetransmit:
 		err = errLastNotInWindow
 	}
 	return err
@@ -489,7 +548,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	case established && acksOld && !ctlOrDataSegment:
 		// We don't drop packet.
 		if isDebug {
-			tcb.debug("rcv:ACK-dup", slog.String("state", tcb._state.String()),
+			tcb.debug("rcv:ACK-old", slog.String("state", tcb._state.String()),
 				slog.Uint64("seg.ack", uint64(seg.ACK)), slog.Uint64("snd.una", uint64(tcb.snd.UNA)))
 		}
 
@@ -571,20 +630,7 @@ func (tcb *ControlBlock) rstJump() Value {
 // and Send calls to retransmit unacknowledged data. Must be paired with
 // ringTx.RetransmitFromUNA to rewind the transmit buffer.
 // Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
-func (tcb *ControlBlock) Retransmit() { tcb.snd.NXT = tcb.snd.UNA }
-
-// RecoveryACK accepts a cumulative ACK that covers data sent before a retransmit
-// rewind. After Retransmit() rewinds snd.NXT, the remote may ACK data it received
-// pre-rewind — a valid cumulative ACK that exceeds the rewound snd.NXT. This method
-// advances snd.UNA, snd.NXT and updates the send window from the segment.
-// The caller must verify that seg.ACK is within the pre-rewind NXT range.
-func (tcb *ControlBlock) RecoveryACK(seg Segment) {
-	tcb.snd.UNA = seg.ACK
-	tcb.snd.NXT = seg.ACK
-	tcb.snd.WND = seg.WND
-	// Clear any pending ACK that validateIncomingSegment queued on rejection.
-	tcb.pending[0] &^= FlagACK
-}
+// func (tcb *ControlBlock) Retransmit() { tcb.snd.NXT = tcb.snd.UNA }
 
 // Abort sets ControlBlock state to Closed and resets all sequence numbers and pending flag.
 // No more data can be sent nor received after the connection is aborted until opened again.

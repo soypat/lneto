@@ -28,7 +28,6 @@ type Conn struct {
 	mu         sync.Mutex
 	h          Handler
 	remoteAddr []byte
-	nanoTime   func() int64 // monotonic clock source; set by Configure.
 
 	rdead    time.Time
 	wdead    time.Time
@@ -56,10 +55,6 @@ type ConnConfig struct {
 	TxBuf             []byte
 	TxPacketQueueSize int
 	Logger            *slog.Logger
-	// NanoTime returns the current monotonic time in nanoseconds.
-	// Used for retransmission timing (RFC 6298).
-	// If nil, defaults to a function that calls time.Now().UnixNano().
-	NanoTime func() int64
 }
 
 func (conn *Conn) Configure(config ConnConfig) (err error) {
@@ -70,17 +65,7 @@ func (conn *Conn) Configure(config ConnConfig) (err error) {
 		return err
 	}
 	conn.logger.log = config.Logger
-	conn.nanoTime = config.NanoTime // nil is fine; conn.now() falls back to time.Now().
 	return nil
-}
-
-// now returns the current monotonic time in nanoseconds.
-// Uses the configured NanoTime function or falls back to time.Now().UnixNano().
-func (conn *Conn) now() int64 {
-	if conn.nanoTime != nil {
-		return conn.nanoTime()
-	}
-	return time.Now().UnixNano()
 }
 
 // LocalPort returns the local port on which the socket is listening or connected to.
@@ -354,7 +339,6 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 		return lneto.ErrMismatch
 	}
 	conn.trace("tcpconn.Recv", slog.Uint64("lport", uint64(conn.h.LocalPort())), slog.Uint64("rport", uint64(conn.h.remotePort)))
-	conn.h.SetNow(uint32(conn.now() / 1e6)) // ns → ms for accurate ACK timestamps.
 	err = conn.h.Recv(buf[off:])
 	if err != nil {
 		return err
@@ -381,12 +365,6 @@ func (conn *Conn) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 		return 0, err
 	} else if len(raddr) != len(conn.remoteAddr) {
 		return 0, lneto.ErrMismatchLen
-	}
-	conn.h.SetNow(uint32(conn.now() / 1e6)) // ns → ms.
-	// RFC 6298 §5.1: check RTO before sending new data.
-	if conn.h.ShouldRetransmit() {
-		conn.h.triggerRetransmit()
-		conn.h.dupACKs = 0 // RTO is a new loss event; reset dup-ACK counter.
 	}
 	n, err = conn.h.Send(carrierData[offsetToFrame:])
 	if err != nil || n == 0 {

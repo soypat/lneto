@@ -17,3 +17,11 @@ func Prand32[T ~uint32](seed T) T {
 	seed ^= seed << 5
 	return seed
 }
+
+// Prand32 generates a pseudo random number from a seed.
+func Prand64[T ~uint64](seed T) T {
+	seed ^= seed << 13
+	seed ^= seed >> 7
+	seed ^= seed << 17
+	return seed
+}

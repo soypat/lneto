@@ -172,6 +172,8 @@ const (
 	synack = FlagSYN | FlagACK
 	finack = FlagFIN | FlagACK
 	pshack = FlagPSH | FlagACK
+
+	flagctl = FlagSYN | FlagFIN | FlagRST
 )
 
 // HasAll checks if mask bits are all set in the receiver flags.
