@@ -4,6 +4,19 @@ import (
 	"github.com/soypat/lneto/dns"
 )
 
+// IPv4MulticastAddr is the IPv4 multicast address used by mDNS (224.0.0.251).
+// Defined by RFC 6762. Packets sent to this address use UDP port 5353 and are
+// link-local (not routed beyond the local network segment).
+func IPv4MulticastAddr() [4]byte {
+	return [4]byte{224, 0, 0, 251}
+}
+
+// IPv4MulticastMAC is the Ethernet multicast MAC address corresponding to
+// 224.0.0.251 (01:00:5e:00:00:fb). Used for L2 delivery of mDNS over Ethernet.
+func IPv4MulticastMAC() [6]byte {
+	return [6]byte{0x01, 0x00, 0x5e, 0x00, 0x00, 0xfb}
+}
+
 // Service describes a service to advertise via mDNS.
 // A single Service produces PTR, SRV, TXT, and A resource records.
 //
@@ -67,6 +80,23 @@ func matchQuestion(q *dns.Question, svc *Service) bool {
 		return dns.NamesEqual(q.Name, svc.Name) || dns.NamesEqual(q.Name, svc.Host) || dns.NamesEqual(q.Name, svcType)
 	}
 	return false
+}
+func MulticastMAC(ip [4]byte) (mac [6]byte, ok bool) {
+	// Check IPv4 multicast range: 224.0.0.0/4
+	if ip[0]&0xf0 != 0xe0 {
+		return mac, false
+	}
+
+	mac[0] = 0x01
+	mac[1] = 0x00
+	mac[2] = 0x5e
+
+	// Lower 23 bits of IP
+	mac[3] = ip[1] & 0x7f // drop top bit
+	mac[4] = ip[2]
+	mac[5] = ip[3]
+
+	return mac, true
 }
 
 // addServiceAnswers adds the appropriate answer records for a matched question.

@@ -33,6 +33,28 @@ func BroadcastAddr() [6]byte {
 	return [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 }
 
+// IPv4MulticastToMAC maps an IPv4 multicast address to the corresponding
+// Ethernet multicast MAC address.
+//
+// If ip is not in the IPv4 multicast range (224.0.0.0/4), ok is false and
+// mac is zero.
+func MulticastAddrFrom4(ip [4]byte) (mac [6]byte, ok bool) {
+	if ip[0]&0xf0 != 0xe0 {
+		return mac, false
+	}
+
+	mac[0] = 0x01
+	mac[1] = 0x00
+	mac[2] = 0x5e
+
+	// Lower 23 bits of IP
+	mac[3] = ip[1] & 0x7f // drop top bit
+	mac[4] = ip[2]
+	mac[5] = ip[3]
+
+	return mac, true
+}
+
 //go:generate stringer -type=Type -linecomment -output stringers.go .
 
 type Type uint16

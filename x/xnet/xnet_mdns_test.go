@@ -5,9 +5,12 @@ import (
 	"net/netip"
 	"testing"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/dns"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/mdns"
+	"github.com/soypat/lneto/udp"
 )
 
 func TestMDNS_QueryResponse(t *testing.T) {
@@ -329,4 +332,130 @@ func mdnsQueryRespond(t *testing.T, querier, responder *StackAsync, buf []byte) 
 	if err != nil {
 		t.Fatal("querier demux:", err)
 	}
+}
+
+func TestMDNS_RealWorldQueries(t *testing.T) {
+	const MTU = 1500
+
+	responderMAC := [6]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x01}
+	querierMAC := [6]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x02}
+
+	responderIP := netip.AddrFrom4([4]byte{192, 168, 50, 81})
+	querierIP := netip.AddrFrom4([4]byte{192, 168, 50, 213})
+
+	mcastAddr := mdns.IPv4MulticastAddr()
+
+	// Service hosted by responder.
+	hostName := dns.MustNewName("server.local")
+	svc := mdns.Service{
+		Name: hostName,
+		Host: hostName,
+		Addr: []byte{192, 168, 50, 81},
+		Port: 80,
+	}
+
+	responderStack, _ := newMDNSStack(t, "responder", 1,
+		responderIP, responderMAC, querierMAC,
+		mdns.ClientConfig{
+			LocalPort:     mdns.Port,
+			Services:      []mdns.Service{svc},
+			MulticastAddr: mcastAddr[:],
+		},
+	)
+
+	pkts := []struct {
+		name    string
+		qname   string
+		qtype   dns.Type
+		unicast bool // QU bit
+	}{
+		// Frame 1: QM multicast A server.local
+		{"QM_A_server", "server.local", dns.TypeA, false},
+
+		// Frame 2: QU unicast AAAA random.local
+		{"QU_AAAA_random", "rds-th-TH010-e6614864d3511735.local", dns.TypeAAAA, true},
+
+		// Frame 3: QU unicast A random.local
+		{"QU_A_random", "rds-th-TH010-e6614864d3511735.local", dns.TypeA, true},
+	}
+
+	var buf [MTU + ethernet.MaxOverheadSize]byte
+	checkNoData := func(msg string) {
+		t.Helper()
+		n, err := responderStack.Encapsulate(buf[:], -1, 0)
+		if err != nil {
+			t.Fatal(err)
+		} else if n != 0 {
+			t.Errorf(" %s: expected no data sent: %d", msg, n)
+		}
+	}
+	checkNoData("before transaction")
+	var msg dns.Message
+	for _, q := range pkts {
+		msg.Reset()
+		msg.AddQuestions([]dns.Question{
+			{
+				Name:  dns.MustNewName(q.qname),
+				Type:  q.qtype,
+				Class: withQU(q.unicast),
+			},
+		})
+		efrm, _ := ethernet.NewFrame(buf[:])
+		*efrm.DestinationHardwareAddr(), _ = ethernet.MulticastAddrFrom4(mdns.IPv4MulticastAddr())
+		*efrm.SourceHardwareAddr() = querierMAC
+		efrm.SetEtherType(ethernet.TypeIPv4)
+
+		ifrm, _ := ipv4.NewFrame(efrm.Payload())
+		ifrm.SetVersionAndIHL(4, 5) // No options. IHL=5, IPLEN=4*IHL=20
+		ifrm.SetToS(ipv4.NewToS(0, 0))
+		ifrm.SetTotalLength(20 + 8 + msg.Len())
+		ifrm.SetID(1337)
+		ifrm.SetFlags(ipv4.FlagDontFragment)
+		ifrm.SetTTL(64)
+		ifrm.SetProtocol(lneto.IPProtoUDP)
+
+		*ifrm.SourceAddr() = querierIP.As4()
+		*ifrm.DestinationAddr() = mdns.IPv4MulticastAddr()
+
+		ifrm.SetCRC(0) // Zero CRC before calculating CRC, as custom with lneto.
+		ifrm.SetCRC(ifrm.CalculateHeaderCRC())
+
+		ufrm, _ := udp.NewFrame(ifrm.Payload())
+		ufrm.SetSourcePort(mdns.Port)
+		ufrm.SetDestinationPort(mdns.Port)
+		ufrm.SetLength(8 + msg.Len())
+
+		mdnsPayload, _ := msg.AppendTo(ufrm.Payload()[:0], 0, 0)
+		if len(mdnsPayload) != int(msg.Len()) {
+			t.Fatal("unreachable")
+		}
+		var crc lneto.CRC791
+		ufrm.SetCRC(0)
+		ifrm.CRCWriteUDPPseudo(&crc, ufrm.Length())
+		got := crc.PayloadSum16(ifrm.Payload())
+		ufrm.SetCRC(got)
+		err := responderStack.Demux(buf[:14+20+8+msg.Len()], 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := responderStack.Encapsulate(buf[:], -1, 0)
+	if err != nil {
+		t.Fatal(err)
+	} else if n < 14+20+8+dns.SizeHeader {
+		t.Error("expected response", n)
+	}
+	n, err = responderStack.Encapsulate(buf[:], -1, 0)
+	if err != nil {
+		t.Fatal(err)
+	} else if n != 0 {
+		t.Error("expected single response")
+	}
+}
+
+func withQU(unicast bool) dns.Class {
+	if !unicast {
+		return dns.ClassINET
+	}
+	return dns.ClassINET | (1 << 15) // QU bit
 }

@@ -22,6 +22,7 @@ func NewFrame(buf []byte) (Frame, error) {
 // Frame encapsulates the raw data of an IPv4 packet
 // and provides methods for manipulating, validating and
 // retreiving fields and payload data. See [RFC791].
+// Below is an example of setting IPv4 fields for MDNS:
 //
 // [RFC791]: https://tools.ietf.org/html/rfc791
 type Frame struct {
@@ -156,6 +157,12 @@ func (ifrm Frame) CRCWriteTCPPseudo(crc *lneto.CRC791) {
 	crc.AddUint16(uint16(ifrm.Protocol()))
 }
 
+// CRCWriteUDPPseudo writes the IPv4 UDP pseudo-header into crc for checksum
+// calculation. Typical usage for computing or validating a UDP checksum:
+//
+//	ifrm.CRCWriteUDPPseudo(&crc, ufrm.Length())
+//	// ufrm.SetCRC(0) // Zero before computing checksum for transmission.
+//	crcValue := crc.PayloadSum16(ifrm.Payload()) // For received frames, crcValue should be zero if valid.
 func (ifrm Frame) CRCWriteUDPPseudo(crc *lneto.CRC791, udpLength uint16) {
 	crc.WriteEven(ifrm.sourceAndDestinationAddr())
 	crc.AddUint16(udpLength)
