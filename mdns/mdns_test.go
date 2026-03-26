@@ -1,8 +1,10 @@
 package mdns
 
 import (
+	"bytes"
 	"encoding/binary"
 	"net"
+	"net/netip"
 	"testing"
 
 	"github.com/soypat/lneto/dns"
@@ -488,4 +490,101 @@ func TestClientAbort(t *testing.T) {
 	if err != net.ErrClosed {
 		t.Errorf("expected net.ErrClosed, got %v", err)
 	}
+}
+
+func TestClientReceive(t *testing.T) {
+	var client Client
+	var buf [512]byte
+	const (
+		hostname = "server"
+		domain   = hostname + ".local"
+	)
+
+	addr := netip.AddrFrom4([4]byte{192, 168, 1, 1})
+	multicast := netip.AddrFrom4([4]byte{224, 0, 0, 251})
+	err := client.Configure(ClientConfig{
+		LocalPort: Port,
+		Services: []Service{
+			{
+				Host: dns.MustNewName(domain),
+				Addr: addr.AsSlice(),
+			},
+		},
+		MulticastAddr: multicast.AsSlice(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkts := []struct {
+		name    string
+		qtype   dns.Type
+		unicast bool
+	}{
+		{domain, dns.TypeA, false},                                  // QM multicast
+		{"rds-th-TH010-e6614864d3511735.local", dns.TypeAAAA, true}, // QU
+		{"rds-th-TH010-e6614864d3511735.local", dns.TypeA, true},    // QU
+	}
+	for _, pkt := range pkts {
+		n := buildMDNSQuery(t, buf[:], pkt.name, pkt.qtype, pkt.unicast)
+		err = client.Demux(buf[:n], 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const off = 14 + 20
+	n, err := client.Encapsulate(buf[:], 14, off)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dfrm, err := dns.NewFrame(buf[off:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = dfrm
+	var msg dns.Message
+	msg.LimitResourceDecoding(0, 1, 0, 0)
+	msg.Reset()
+	_, incomplete, err := msg.Decode(buf[off:])
+	if err != nil {
+		t.Fatal("decoding answer:", err)
+	} else if incomplete {
+		t.Fatal("incomplete decode, expected 1 answer")
+	} else if len(msg.Answers) != 1 {
+		t.Fatal("expected 1 answer")
+	}
+	ans := msg.Answers[0]
+	if !bytes.Equal(ans.RawData(), addr.AsSlice()) {
+		t.Errorf("expected answer addr %s, got %d", addr, ans.RawData())
+	}
+	n, err = client.Encapsulate(buf[:], 14, off)
+	if err != nil {
+		t.Fatal("expected no error on re-encapsulate")
+	} else if n > 0 {
+		t.Error("expected no data sent after first reply")
+	}
+}
+
+func buildMDNSQuery(t *testing.T, buf []byte, name string, qtype dns.Type, unicast bool) (n int) {
+	var msg dns.Message
+	class := dns.ClassINET
+	if unicast {
+		// mDNS QU bit (RFC 6762 §5.4)
+		class |= 1 << 15
+	}
+	msg.AddQuestions([]dns.Question{{
+		Name:  mustNewName(name),
+		Type:  qtype,
+		Class: class,
+	}})
+	if len(buf) < int(msg.Len()) {
+		t.Fatal("short buffer")
+	}
+	// mDNS uses ID = 0
+	flags := dns.NewClientHeaderFlags(dns.OpCodeQuery, false)
+	buf, err := msg.AppendTo(buf[:0], 0, flags)
+	if err != nil {
+		t.Fatal("unable to build mdns query:", err)
+	}
+	return len(buf)
 }
