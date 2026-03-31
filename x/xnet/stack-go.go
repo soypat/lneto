@@ -25,10 +25,11 @@ func (s *StackAsync) StackGo(loopSleep time.Duration, cfg StackGoConfig) StackGo
 }
 
 func (s StackBlocking) StackGo(cfg StackGoConfig) StackGo {
-	return StackGo{
+	sg := StackGo{
 		blk:   s,
 		plcfg: cfg.ListenerPoolConfig,
 	}
+	return sg
 }
 
 type StackGo struct {
@@ -65,8 +66,14 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 		return nil, lneto.ErrUnsupported
 	}
 	if laddr.Port() == 0 {
-		return nil, lneto.ErrZeroSource
-	} else if laddr.Addr() == netip.IPv4Unspecified() {
+		if raddr.IsValid() && raddr.Addr() != netip.IPv4Unspecified() {
+			// Outbound (dial) connection: auto-assign ephemeral port.
+			laddr = netip.AddrPortFrom(laddr.Addr(), uint16(49152+s.blk.async.Prand32()%16384))
+		} else {
+			return nil, lneto.ErrZeroSource
+		}
+	}
+	if laddr.Addr() == netip.IPv4Unspecified() {
 		// Specify address.
 		laddr = netip.AddrPortFrom(s.blk.async.ip.Addr(), laddr.Port())
 	} else if laddr.Addr().Is6() {
@@ -83,6 +90,14 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 		if raddr.IsValid() && raddr.Addr() != netip.IPv4Unspecified() {
 			var conn tcp.Conn
 			// DIAL TCP: active connection a.k.a TCP Client branch.
+			err = conn.Configure(tcp.ConnConfig{
+				TxBuf:             make([]byte, s.plcfg.TxBufSize),
+				RxBuf:             make([]byte, s.plcfg.RxBufSize),
+				TxPacketQueueSize: s.plcfg.QueueSize,
+			})
+			if err != nil {
+				return nil, err
+			}
 			err = s.blk.async.DialTCP(&conn, laddr.Port(), raddr)
 			if err != nil {
 				return nil, err
