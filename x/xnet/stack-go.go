@@ -18,9 +18,6 @@ const (
 
 type StackGoConfig struct {
 	ListenerPoolConfig TCPPoolConfig
-	DialTxBufSize      int
-	DialRxBufSize      int
-	DialQueueSize      int
 }
 
 func (s *StackAsync) StackGo(loopSleep time.Duration, cfg StackGoConfig) StackGo {
@@ -32,30 +29,12 @@ func (s StackBlocking) StackGo(cfg StackGoConfig) StackGo {
 		blk:   s,
 		plcfg: cfg.ListenerPoolConfig,
 	}
-	if cfg.DialTxBufSize > 0 {
-		sg.dialTxBufSize = cfg.DialTxBufSize
-	} else {
-		sg.dialTxBufSize = 2048
-	}
-	if cfg.DialRxBufSize > 0 {
-		sg.dialRxBufSize = cfg.DialRxBufSize
-	} else {
-		sg.dialRxBufSize = 2048
-	}
-	if cfg.DialQueueSize > 0 {
-		sg.dialQueueSize = cfg.DialQueueSize
-	} else {
-		sg.dialQueueSize = 4
-	}
 	return sg
 }
 
 type StackGo struct {
-	blk            StackBlocking
-	plcfg          TCPPoolConfig
-	dialTxBufSize  int
-	dialRxBufSize  int
-	dialQueueSize  int
+	blk   StackBlocking
+	plcfg TCPPoolConfig
 }
 
 func (s StackGo) Socket(ctx context.Context, network string, family, sotype int, laddr, raddr net.Addr) (c interface{}, err error) {
@@ -112,9 +91,9 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			var conn tcp.Conn
 			// DIAL TCP: active connection a.k.a TCP Client branch.
 			err = conn.Configure(tcp.ConnConfig{
-				TxBuf:             make([]byte, s.dialTxBufSize),
-				RxBuf:             make([]byte, s.dialRxBufSize),
-				TxPacketQueueSize: s.dialQueueSize,
+				TxBuf:             make([]byte, s.plcfg.TxBufSize),
+				RxBuf:             make([]byte, s.plcfg.RxBufSize),
+				TxPacketQueueSize: s.plcfg.QueueSize,
 			})
 			if err != nil {
 				return nil, err
