@@ -200,7 +200,7 @@ func run() error {
 
 	// Create blocking + Berkeley stack
 	blocking := stack.StackBlocking(5 * time.Millisecond)
-	berkeley := blocking.StackBerkeley(xnet.StackGoConfig{
+	berkeley := blocking.StackGo(xnet.StackGoConfig{
 		ListenerPoolConfig: xnet.TCPPoolConfig{
 			PoolSize:           flagPoolSize,
 			QueueSize:          3,

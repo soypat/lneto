@@ -20,7 +20,11 @@ type StackGoConfig struct {
 	ListenerPoolConfig TCPPoolConfig
 }
 
-func (s StackBlocking) StackBerkeley(cfg StackGoConfig) StackGo {
+func (s *StackAsync) StackGo(loopSleep time.Duration, cfg StackGoConfig) StackGo {
+	return s.StackBlocking(loopSleep).StackGo(cfg)
+}
+
+func (s StackBlocking) StackGo(cfg StackGoConfig) StackGo {
 	return StackGo{
 		blk:   s,
 		plcfg: cfg.ListenerPoolConfig,
