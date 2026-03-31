@@ -37,42 +37,23 @@ type socket[T any] struct {
 }
 
 type StackBerkeley struct {
-	nextFD     int
-	addr       netip.Addr
-	stack      gostack
-	hostbyname func(name string) (netip.Addr, error)
+	nextFD int
+	addr   netip.Addr
+	stack  gostack
 
 	pendingFDs   []socket[int]
 	tcpListeners []socket[net.Listener]
 	tcpConns     []socket[net.Conn]
 }
 
-func NewBerkeleyStack(addr netip.Addr, stack gostack, getHostByName func(name string) (netip.Addr, error)) *StackBerkeley {
+func NewBerkeleyStack(stack gostack) *StackBerkeley {
 	if stack == nil {
 		panic("nil gostack")
-	} else if getHostByName == nil {
-		panic("nil getHostByName")
-	} else if !addr.IsValid() {
-		panic("invalid address")
 	}
 	return &StackBerkeley{
-		stack:      stack,
-		nextFD:     4,
-		addr:       addr,
-		hostbyname: getHostByName,
+		stack:  stack,
+		nextFD: 4,
 	}
-}
-
-// GetHostByName returns the IP address of either a hostname or IPv4
-// address in standard dot notation.
-func (s *StackBerkeley) GetHostByName(name string) (netip.Addr, error) {
-	return s.hostbyname(name)
-}
-
-// Addr returns the IP address assigned to the interface, either by
-// DHCP or statically.
-func (s *StackBerkeley) Addr() (netip.Addr, error) {
-	return s.addr, nil
 }
 
 // Bind associates sockfd with the given local address and port.
