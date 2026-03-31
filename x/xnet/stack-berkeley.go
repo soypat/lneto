@@ -2,188 +2,236 @@ package xnet
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/netip"
-	"syscall"
+	"slices"
 	"time"
-
-	"github.com/soypat/lneto"
-	"github.com/soypat/lneto/tcp"
 )
 
-// Socket types
 const (
-	sockSTREAM = 0x1
+	_AF_INET       = 0x2
+	_SOCK_STREAM   = 0x1
+	_SOCK_DGRAM    = 0x2
+	_SOL_SOCKET    = 0x1
+	_SO_KEEPALIVE  = 0x9
+	_SOL_TCP       = 0x6
+	_TCP_KEEPINTVL = 0x5
+	_IPPROTO_TCP   = 0x6
+	_IPPROTO_UDP   = 0x11
+	// Made up, not a real IP protocol number.  This is used to create a
+	// TLS socket on the device, assuming the device supports mbed TLS.
+	_IPPROTO_TLS = 0xFE
+	_F_SETFL     = 0x4
 )
 
-type BerkeleyConfig struct {
-	ListenerPoolConfig TCPPoolConfig
-}
+// gostack is the stack abstraction for the baremetal proposal.
+// family must be syscall.AF_INET. SOCK_STREAM is only one supported for now since is TCP.
+// network supported for now is "tcp" or "tcp4". A nil remote address and defined local address means net.Listener is returned.
+// if remote address defined then is active connection, returns a net.Conn.
+type gostack = func(ctx context.Context, network string, family, sotype int, laddr, raddr net.Addr) (c interface{}, err error)
 
-func (s StackBlocking) StackBerkeley(cfg BerkeleyConfig) StackBerkeley {
-	return StackBerkeley{
-		blk:   s,
-		plcfg: cfg.ListenerPoolConfig,
-	}
+type socket[T any] struct {
+	sockfd int
+	sock   T
 }
 
 type StackBerkeley struct {
-	blk   StackBlocking
-	plcfg TCPPoolConfig
+	nextFD     int
+	addr       netip.Addr
+	stack      gostack
+	hostbyname func(name string) (netip.Addr, error)
+
+	pendingFDs   []socket[int]
+	tcpListeners []socket[net.Listener]
+	tcpConns     []socket[net.Conn]
 }
 
-func (s StackBerkeley) Socket(ctx context.Context, network string, family, sotype int, laddr, raddr net.Addr) (c interface{}, err error) {
-	switch family {
-	case syscall.AF_INET:
-	default:
-		return nil, lneto.ErrUnsupported
+func NewBerkeleyStack(addr netip.Addr, stack gostack, getHostByName func(name string) (netip.Addr, error)) *StackBerkeley {
+	if stack == nil {
+		panic("nil gostack")
+	} else if getHostByName == nil {
+		panic("nil getHostByName")
+	} else if !addr.IsValid() {
+		panic("invalid address")
 	}
-	var local, remote netip.AddrPort
-	if laddr != nil {
-		local, err = netip.ParseAddrPort(local.String())
-		if err != nil {
-			return nil, err
-		}
-	}
-	if raddr != nil {
-		remote, err = netip.ParseAddrPort(remote.String())
-		if err != nil {
-			return nil, err
-		}
-	}
-	return s.SocketNetip(ctx, network, family, sotype, local, remote)
-}
-
-func (s StackBerkeley) SocketNetip(ctx context.Context, network string, family, sotype int, laddr, raddr netip.AddrPort) (c interface{}, err error) {
-	switch family {
-	case syscall.AF_INET:
-	default:
-		return nil, lneto.ErrUnsupported
-	}
-	if laddr.Port() == 0 {
-		return nil, lneto.ErrZeroSource
-	} else if laddr.Addr() == netip.IPv4Unspecified() {
-		// Specify address.
-		laddr = netip.AddrPortFrom(s.blk.async.ip.Addr(), laddr.Port())
-	} else if laddr.Addr().Is6() {
-		return nil, lneto.ErrUnsupported
-	}
-	switch network {
-	case "udp", "udp4":
-		return nil, lneto.ErrUnsupported
-	case "tcp", "tcp4":
-		if sotype != sockSTREAM {
-			return nil, lneto.ErrUnsupported
-		}
-
-		if raddr.IsValid() && raddr.Addr() != netip.IPv4Unspecified() {
-			var conn tcp.Conn
-			// DIAL TCP: active connection a.k.a TCP Client branch.
-			err = s.blk.async.DialTCP(&conn, laddr.Port(), raddr)
-			if err != nil {
-				return nil, err
-			}
-			for {
-				time.Sleep(s.blk.loopSleep)
-				state := conn.State()
-				if state == tcp.StateEstablished {
-					tc := tcpconn{
-						Conn:      &conn,
-						localAddr: net.TCPAddrFromAddrPort(laddr),
-					}
-					return tc, nil
-				} else if state == tcp.StateSynSent || state == tcp.StateSynRcvd || conn.InternalHandler().AwaitingSynSend() {
-					if err = ctx.Err(); err != nil {
-						conn.Abort()
-						return nil, err
-					}
-				} else {
-					// Unexpected state, abort and terminate connection.
-					conn.Abort()
-					return errTCPFailedToConnect, nil
-				}
-			}
-		} else {
-			// LISTEN TCP: passive connection. fulfills net.Listener interface.
-			pool, err := NewTCPPool(s.plcfg)
-			if err != nil {
-				return nil, err
-			}
-			var l tcplistener
-			l.localAddr = net.TCPAddrFromAddrPort(laddr)
-			l.sleep = s.blk.loopSleep
-			err = l.l.Reset(laddr.Port(), pool)
-			if err != nil {
-				return nil, err
-			}
-			err = s.blk.async.RegisterListener(&l.l)
-			if err != nil {
-				return nil, err
-			}
-			return &l, nil
-		}
-	}
-	return nil, lneto.ErrUnsupported
-}
-
-type tcplistener struct {
-	l         tcp.Listener
-	closed    bool
-	sleep     time.Duration
-	localAddr net.Addr
-}
-
-var _ net.Listener = (*tcplistener)(nil)
-
-func (l *tcplistener) Addr() net.Addr {
-	return l.localAddr
-}
-
-func (l *tcplistener) Accept() (net.Conn, error) {
-	if l.closed {
-		return nil, net.ErrClosed
-	}
-	for {
-		n := l.l.NumberOfReadyToAccept()
-		if n == 0 {
-			time.Sleep(l.sleep)
-			continue
-		}
-		c, _, err := l.l.TryAccept()
-		if err != nil {
-			return nil, err
-		}
-		cc := tcpconn{
-			Conn:      c,
-			localAddr: l.localAddr,
-		}
-		return cc, nil
+	return &StackBerkeley{
+		stack:      stack,
+		nextFD:     4,
+		addr:       addr,
+		hostbyname: getHostByName,
 	}
 }
 
-func (l *tcplistener) Close() error {
-	if l.closed {
-		return net.ErrClosed
+// GetHostByName returns the IP address of either a hostname or IPv4
+// address in standard dot notation.
+func (s *StackBerkeley) GetHostByName(name string) (netip.Addr, error) {
+	return s.hostbyname(name)
+}
+
+// Addr returns the IP address assigned to the interface, either by
+// DHCP or statically.
+func (s *StackBerkeley) Addr() (netip.Addr, error) {
+	return s.addr, nil
+}
+
+// Bind associates sockfd with the given local address and port.
+func (s *StackBerkeley) Bind(sockfd int, ip netip.AddrPort) error {
+	return nil
+}
+
+// SetSockOpt sets a socket option on sockfd. Currently unimplemented.
+func (s *StackBerkeley) SetSockOpt(sockfd int, level int, opt int, value interface{}) error {
+	return nil
+}
+
+// Socket allocates a new socket and returns its file descriptor.
+// domain must be AF_INET. stype must be SOCK_STREAM or SOCK_DGRAM.
+// protocol must be IPPROTO_TCP, IPPROTO_UDP, or IPPROTO_TLS.
+func (s *StackBerkeley) Socket(domain int, stype int, protocol int) (sockfd int, _ error) {
+	if domain != _AF_INET {
+		return -1, fmt.Errorf("unsupported domain %d", domain)
 	}
-	err := l.l.Close()
-	l.closed = true
-	return err
+	sockfd = s.newFD()
+	s.pendingFDs = append(s.pendingFDs, socket[int]{sockfd: sockfd, sock: protocol})
+	return sockfd, nil
 }
 
-type tcpconn struct {
-	*tcp.Conn
-	localAddr net.Addr
-}
-
-var _ net.Conn = tcpconn{}
-
-func (c tcpconn) LocalAddr() net.Addr {
-	return c.localAddr
-}
-
-func (c tcpconn) RemoteAddr() net.Addr {
-	return &net.TCPAddr{
-		IP:   c.Conn.RemoteAddr(),
-		Port: int(c.Conn.RemotePort()),
+// Connect establishes an active connection to the given host and address.
+// host is used for TLS SNI; ip carries the numeric address and port.
+// Promotes sockfd from pending to an active connection.
+func (s *StackBerkeley) Connect(sockfd int, host string, ip netip.AddrPort) error {
+	pending := s.getPending(sockfd)
+	if pending == nil {
+		return fmt.Errorf("Connect: unknown sockfd %d", sockfd)
 	}
+	_ = pending.sock // protocol available here if needed (e.g. IPPROTO_TLS)
+
+	raddr := &net.TCPAddr{IP: ip.Addr().AsSlice(), Port: int(ip.Port())}
+	c, err := s.stack(context.Background(), "tcp4", _AF_INET, _SOCK_STREAM, nil, raddr)
+	if err != nil {
+		return err
+	}
+	conn, ok := c.(net.Conn)
+	if !ok {
+		return fmt.Errorf("Connect: stack returned non-Conn for protocol %d", pending.sock)
+	}
+
+	s.pendingFDs = deleteFD(s.pendingFDs, sockfd)
+	s.tcpConns = append(s.tcpConns, socket[net.Conn]{sockfd: sockfd, sock: conn})
+	return nil
+}
+
+// Listen marks sockfd as passive, ready to accept incoming connections.
+// backlog is the maximum length of the pending connection queue.
+func (s *StackBerkeley) Listen(sockfd int, backlog int) error {
+	pending := s.getPending(sockfd)
+	if pending == nil {
+		return fmt.Errorf("Listen: unknown sockfd %d", sockfd)
+	}
+
+	c, err := s.stack(context.Background(), "tcp4", _AF_INET, _SOCK_STREAM, nil, nil)
+	if err != nil {
+		return err
+	}
+	ln, ok := c.(net.Listener)
+	if !ok {
+		return fmt.Errorf("Listen: stack returned non-Listener")
+	}
+
+	s.pendingFDs = deleteFD(s.pendingFDs, sockfd)
+	s.tcpListeners = append(s.tcpListeners, socket[net.Listener]{sockfd: sockfd, sock: ln})
+	return nil
+}
+
+// Accept blocks until an incoming connection arrives on sockfd.
+// Returns a new file descriptor and the remote address of the peer.
+func (s *StackBerkeley) Accept(sockfd int) (int, netip.AddrPort, error) {
+	ln := s.getListener(sockfd)
+	if ln == nil {
+		return -1, netip.AddrPort{}, fmt.Errorf("Accept: unknown sockfd %d", sockfd)
+	}
+
+	conn, err := ln.sock.Accept()
+	if err != nil {
+		return -1, netip.AddrPort{}, err
+	}
+
+	addrPort, err := netip.ParseAddrPort(conn.RemoteAddr().String())
+	if err != nil {
+		conn.Close()
+		return -1, netip.AddrPort{}, err
+	}
+
+	fd := s.newFD()
+	s.tcpConns = append(s.tcpConns, socket[net.Conn]{sockfd: fd, sock: conn})
+	return fd, addrPort, nil
+}
+
+// Send transmits buf on sockfd. deadline is a zero Time for no timeout.
+// Returns the number of bytes written.
+func (s *StackBerkeley) Send(sockfd int, buf []byte, flags int, deadline time.Time) (int, error) {
+	conn := s.getConn(sockfd)
+	if conn == nil {
+		return 0, fmt.Errorf("Send: unknown sockfd %d", sockfd)
+	}
+	if !deadline.IsZero() {
+		conn.sock.SetWriteDeadline(deadline)
+	}
+	return conn.sock.Write(buf)
+}
+
+// Recv reads from sockfd into buf. deadline is a zero Time for no timeout.
+// Returns the number of bytes read.
+func (s *StackBerkeley) Recv(sockfd int, buf []byte, flags int, deadline time.Time) (int, error) {
+	conn := s.getConn(sockfd)
+	if conn == nil {
+		return 0, fmt.Errorf("Recv: unknown sockfd %d", sockfd)
+	}
+	if !deadline.IsZero() {
+		conn.sock.SetReadDeadline(deadline)
+	}
+	return conn.sock.Read(buf)
+}
+
+// Close shuts down sockfd and releases its resources.
+func (s *StackBerkeley) Close(sockfd int) error {
+	if conn := s.getConn(sockfd); conn != nil {
+		err := conn.sock.Close()
+		s.tcpConns = deleteFD(s.tcpConns, sockfd)
+		return err
+	}
+	if ln := s.getListener(sockfd); ln != nil {
+		err := ln.sock.Close()
+		s.tcpListeners = deleteFD(s.tcpListeners, sockfd)
+		return err
+	}
+	if s.getPending(sockfd) != nil {
+		s.pendingFDs = deleteFD(s.pendingFDs, sockfd)
+		return nil
+	}
+	return fmt.Errorf("Close: unknown sockfd %d", sockfd)
+}
+
+func (s *StackBerkeley) newFD() int {
+	fd := s.nextFD
+	s.nextFD++
+	return fd
+}
+
+func (s *StackBerkeley) getConn(fd int) *socket[net.Conn]         { return getFD(s.tcpConns, fd) }
+func (s *StackBerkeley) getListener(fd int) *socket[net.Listener] { return getFD(s.tcpListeners, fd) }
+func (s *StackBerkeley) getPending(fd int) *socket[int]           { return getFD(s.pendingFDs, fd) }
+
+// getFD finds a socket by fd in a slice, returns a pointer for in-place mutation or nil.
+func getFD[T any](socks []socket[T], fd int) *socket[T] {
+	idx := slices.IndexFunc(socks, func(s socket[T]) bool { return s.sockfd == fd })
+	if idx < 0 {
+		return nil
+	}
+	return &socks[idx]
+}
+
+func deleteFD[T any](socks []socket[T], fd int) []socket[T] {
+	return slices.DeleteFunc(socks, func(s socket[T]) bool { return s.sockfd == fd })
 }

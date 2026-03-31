@@ -93,7 +93,7 @@ func run(ctx context.Context, stack *xnet.StackAsync) error {
 		return fmt.Errorf("resolving router MAC: %w", err)
 	}
 	stack.SetGateway6(gateway)
-	berkstack := stack.StackBlocking(pollTime).StackBerkeley(xnet.BerkeleyConfig{
+	berkstack := stack.StackBlocking(pollTime).StackBerkeley(xnet.StackGoConfig{
 		ListenerPoolConfig: xnet.TCPPoolConfig{
 			PoolSize:           tcpConnPoolSize,
 			QueueSize:          tcpPacketQueueSize,
