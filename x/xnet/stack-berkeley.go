@@ -36,6 +36,10 @@ type socket[T any] struct {
 	sock   T
 }
 
+// StackBerkeley is a wrapper type for a gostack function to provide typical Berkeley networking stack
+// functionality from a Go-like API.
+// The Berkeley calling convention depends on file-descriptors returned by the stack which
+// the user must keep track of.
 type StackBerkeley struct {
 	nextFD int
 	addr   netip.Addr
@@ -46,13 +50,14 @@ type StackBerkeley struct {
 	tcpConns     []socket[net.Conn]
 }
 
+// NewBerkeleyStack wraps the gostack with Berkeley-style calling convention. See [StackBerkeley].
 func NewBerkeleyStack(stack gostack) *StackBerkeley {
 	if stack == nil {
 		panic("nil gostack")
 	}
 	return &StackBerkeley{
 		stack:  stack,
-		nextFD: 4,
+		nextFD: 3,
 	}
 }
 
@@ -83,7 +88,7 @@ func (s *StackBerkeley) Socket(domain int, stype int, protocol int) (sockfd int,
 // Promotes sockfd from pending to an active connection.
 func (s *StackBerkeley) Connect(sockfd int, host string, ip netip.AddrPort) error {
 	pending := s.getPending(sockfd)
-	if pending == nil {
+	if !pending.isvalid() {
 		return fmt.Errorf("Connect: unknown sockfd %d", sockfd)
 	}
 	_ = pending.sock // protocol available here if needed (e.g. IPPROTO_TLS)
@@ -107,7 +112,7 @@ func (s *StackBerkeley) Connect(sockfd int, host string, ip netip.AddrPort) erro
 // backlog is the maximum length of the pending connection queue.
 func (s *StackBerkeley) Listen(sockfd int, backlog int) error {
 	pending := s.getPending(sockfd)
-	if pending == nil {
+	if !pending.isvalid() {
 		return fmt.Errorf("Listen: unknown sockfd %d", sockfd)
 	}
 
@@ -129,7 +134,7 @@ func (s *StackBerkeley) Listen(sockfd int, backlog int) error {
 // Returns a new file descriptor and the remote address of the peer.
 func (s *StackBerkeley) Accept(sockfd int) (int, netip.AddrPort, error) {
 	ln := s.getListener(sockfd)
-	if ln == nil {
+	if !ln.isvalid() {
 		return -1, netip.AddrPort{}, fmt.Errorf("Accept: unknown sockfd %d", sockfd)
 	}
 
@@ -140,7 +145,7 @@ func (s *StackBerkeley) Accept(sockfd int) (int, netip.AddrPort, error) {
 
 	addrPort, err := netip.ParseAddrPort(conn.RemoteAddr().String())
 	if err != nil {
-		conn.Close()
+		_ = conn.Close() // Ignore error, more pertinent looking at other error.
 		return -1, netip.AddrPort{}, err
 	}
 
@@ -153,7 +158,7 @@ func (s *StackBerkeley) Accept(sockfd int) (int, netip.AddrPort, error) {
 // Returns the number of bytes written.
 func (s *StackBerkeley) Send(sockfd int, buf []byte, flags int, deadline time.Time) (int, error) {
 	conn := s.getConn(sockfd)
-	if conn == nil {
+	if !conn.isvalid() {
 		return 0, fmt.Errorf("Send: unknown sockfd %d", sockfd)
 	}
 	if !deadline.IsZero() {
@@ -166,7 +171,7 @@ func (s *StackBerkeley) Send(sockfd int, buf []byte, flags int, deadline time.Ti
 // Returns the number of bytes read.
 func (s *StackBerkeley) Recv(sockfd int, buf []byte, flags int, deadline time.Time) (int, error) {
 	conn := s.getConn(sockfd)
-	if conn == nil {
+	if !conn.isvalid() {
 		return 0, fmt.Errorf("Recv: unknown sockfd %d", sockfd)
 	}
 	if !deadline.IsZero() {
@@ -177,17 +182,17 @@ func (s *StackBerkeley) Recv(sockfd int, buf []byte, flags int, deadline time.Ti
 
 // Close shuts down sockfd and releases its resources.
 func (s *StackBerkeley) Close(sockfd int) error {
-	if conn := s.getConn(sockfd); conn != nil {
+	if conn := s.getConn(sockfd); !conn.isvalid() {
 		err := conn.sock.Close()
 		s.tcpConns = deleteFD(s.tcpConns, sockfd)
 		return err
 	}
-	if ln := s.getListener(sockfd); ln != nil {
+	if ln := s.getListener(sockfd); !ln.isvalid() {
 		err := ln.sock.Close()
 		s.tcpListeners = deleteFD(s.tcpListeners, sockfd)
 		return err
 	}
-	if s.getPending(sockfd) != nil {
+	if s.getPending(sockfd).isvalid() {
 		s.pendingFDs = deleteFD(s.pendingFDs, sockfd)
 		return nil
 	}
@@ -200,17 +205,21 @@ func (s *StackBerkeley) newFD() int {
 	return fd
 }
 
-func (s *StackBerkeley) getConn(fd int) *socket[net.Conn]         { return getFD(s.tcpConns, fd) }
-func (s *StackBerkeley) getListener(fd int) *socket[net.Listener] { return getFD(s.tcpListeners, fd) }
-func (s *StackBerkeley) getPending(fd int) *socket[int]           { return getFD(s.pendingFDs, fd) }
+func (s *StackBerkeley) getConn(fd int) socket[net.Conn]         { return getFD(s.tcpConns, fd) }
+func (s *StackBerkeley) getListener(fd int) socket[net.Listener] { return getFD(s.tcpListeners, fd) }
+func (s *StackBerkeley) getPending(fd int) socket[int]           { return getFD(s.pendingFDs, fd) }
+
+func (s socket[T]) isvalid() bool {
+	return s.sockfd > 2
+}
 
 // getFD finds a socket by fd in a slice, returns a pointer for in-place mutation or nil.
-func getFD[T any](socks []socket[T], fd int) *socket[T] {
+func getFD[T any](socks []socket[T], fd int) socket[T] {
 	idx := slices.IndexFunc(socks, func(s socket[T]) bool { return s.sockfd == fd })
 	if idx < 0 {
-		return nil
+		return socket[T]{}
 	}
-	return &socks[idx]
+	return socks[idx]
 }
 
 func deleteFD[T any](socks []socket[T], fd int) []socket[T] {
