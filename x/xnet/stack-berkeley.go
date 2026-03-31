@@ -3,9 +3,11 @@ package xnet
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"slices"
+	"sync"
 	"time"
 )
 
@@ -25,11 +27,11 @@ const (
 	_F_SETFL     = 0x4
 )
 
-// gostack is the stack abstraction for the baremetal proposal.
+// gosocket is the stack abstraction for the baremetal proposal.
 // family must be syscall.AF_INET. SOCK_STREAM is only one supported for now since is TCP.
 // network supported for now is "tcp" or "tcp4". A nil remote address and defined local address means net.Listener is returned.
 // if remote address defined then is active connection, returns a net.Conn.
-type gostack = func(ctx context.Context, network string, family, sotype int, laddr, raddr net.Addr) (c interface{}, err error)
+type gosocket = func(ctx context.Context, network string, family, sotype int, laddr, raddr net.Addr) (c interface{}, err error)
 
 type socket[T any] struct {
 	sockfd int
@@ -46,9 +48,10 @@ type pendingSocket struct {
 // The Berkeley calling convention depends on file-descriptors returned by the stack which
 // the user must keep track of.
 type StackBerkeley struct {
-	nextFD int
-	addr   netip.Addr
-	stack  gostack
+	mu       sync.Mutex
+	nextFD   int
+	addr     netip.Addr
+	gosocket gosocket
 
 	pendingFDs   []socket[pendingSocket]
 	tcpListeners []socket[net.Listener]
@@ -56,24 +59,28 @@ type StackBerkeley struct {
 }
 
 // NewBerkeleyStack wraps the gostack with Berkeley-style calling convention. See [StackBerkeley].
-func NewBerkeleyStack(stack gostack) *StackBerkeley {
+func NewBerkeleyStack(stack gosocket) *StackBerkeley {
 	if stack == nil {
 		panic("nil gostack")
 	}
 	return &StackBerkeley{
-		stack:  stack,
-		nextFD: 3,
+		gosocket: stack,
+		nextFD:   3, // 0, 1, 2 are stdout, stdin, stderr.
 	}
 }
 
 // Bind associates sockfd with the given local address and port.
 func (s *StackBerkeley) Bind(sockfd int, ip netip.AddrPort) error {
-	idx := slices.IndexFunc(s.pendingFDs, func(s socket[pendingSocket]) bool { return s.sockfd == sockfd })
-	if idx < 0 {
-		return fmt.Errorf("Bind: unknown sockfd %d", sockfd)
+	s.mu.Lock()
+	for i := range s.pendingFDs {
+		if s.pendingFDs[i].sockfd == sockfd {
+			s.pendingFDs[i].sock.boundAddr = ip
+			s.mu.Unlock()
+			return nil
+		}
 	}
-	s.pendingFDs[idx].sock.boundAddr = ip
-	return nil
+	s.mu.Unlock()
+	return fmt.Errorf("Bind: unknown sockfd %d", sockfd)
 }
 
 // SetSockOpt sets a socket option on sockfd. Currently unimplemented.
@@ -88,8 +95,10 @@ func (s *StackBerkeley) Socket(domain int, stype int, protocol int) (sockfd int,
 	if domain != _AF_INET {
 		return -1, fmt.Errorf("unsupported domain %d", domain)
 	}
+	s.mu.Lock()
 	sockfd = s.newFD()
 	s.pendingFDs = append(s.pendingFDs, socket[pendingSocket]{sockfd: sockfd, sock: pendingSocket{protocol: protocol}})
+	s.mu.Unlock()
 	return sockfd, nil
 }
 
@@ -97,7 +106,9 @@ func (s *StackBerkeley) Socket(domain int, stype int, protocol int) (sockfd int,
 // host is used for TLS SNI; ip carries the numeric address and port.
 // Promotes sockfd from pending to an active connection.
 func (s *StackBerkeley) Connect(sockfd int, host string, ip netip.AddrPort) error {
+	s.mu.Lock()
 	pending := s.getPending(sockfd)
+	s.mu.Unlock()
 	if !pending.isvalid() {
 		return fmt.Errorf("Connect: unknown sockfd %d", sockfd)
 	}
@@ -107,24 +118,27 @@ func (s *StackBerkeley) Connect(sockfd int, host string, ip netip.AddrPort) erro
 		laddr = &net.TCPAddr{IP: pending.sock.boundAddr.Addr().AsSlice(), Port: int(pending.sock.boundAddr.Port())}
 	}
 	raddr := &net.TCPAddr{IP: ip.Addr().AsSlice(), Port: int(ip.Port())}
-	c, err := s.stack(context.Background(), "tcp4", _AF_INET, _SOCK_STREAM, laddr, raddr)
+	c, err := s.gosocket(context.Background(), "tcp4", _AF_INET, _SOCK_STREAM, laddr, raddr)
 	if err != nil {
 		return err
 	}
 	conn, ok := c.(net.Conn)
 	if !ok {
-		return fmt.Errorf("Connect: stack returned non-Conn for protocol %d", pending.sock)
+		return fmt.Errorf("Connect: stack returned non-Conn for protocol %d", pending.sock.protocol)
 	}
-
+	s.mu.Lock()
 	s.pendingFDs = deleteFD(s.pendingFDs, sockfd)
 	s.tcpConns = append(s.tcpConns, socket[net.Conn]{sockfd: sockfd, sock: conn})
+	s.mu.Unlock()
 	return nil
 }
 
 // Listen marks sockfd as passive, ready to accept incoming connections.
 // backlog is the maximum length of the pending connection queue.
 func (s *StackBerkeley) Listen(sockfd int, backlog int) error {
+	s.mu.Lock()
 	pending := s.getPending(sockfd)
+	s.mu.Unlock()
 	if !pending.isvalid() {
 		return fmt.Errorf("Listen: unknown sockfd %d", sockfd)
 	}
@@ -133,7 +147,7 @@ func (s *StackBerkeley) Listen(sockfd int, backlog int) error {
 	if pending.sock.boundAddr.IsValid() && pending.sock.boundAddr.Port() > 0 {
 		laddr = &net.TCPAddr{IP: pending.sock.boundAddr.Addr().AsSlice(), Port: int(pending.sock.boundAddr.Port())}
 	}
-	c, err := s.stack(context.Background(), "tcp4", _AF_INET, _SOCK_STREAM, laddr, nil)
+	c, err := s.gosocket(context.Background(), "tcp4", _AF_INET, _SOCK_STREAM, laddr, nil)
 	if err != nil {
 		return err
 	}
@@ -141,16 +155,19 @@ func (s *StackBerkeley) Listen(sockfd int, backlog int) error {
 	if !ok {
 		return fmt.Errorf("Listen: stack returned non-Listener")
 	}
-
+	s.mu.Lock()
 	s.pendingFDs = deleteFD(s.pendingFDs, sockfd)
 	s.tcpListeners = append(s.tcpListeners, socket[net.Listener]{sockfd: sockfd, sock: ln})
+	s.mu.Unlock()
 	return nil
 }
 
 // Accept blocks until an incoming connection arrives on sockfd.
 // Returns a new file descriptor and the remote address of the peer.
 func (s *StackBerkeley) Accept(sockfd int) (int, netip.AddrPort, error) {
+	s.mu.Lock()
 	ln := s.getListener(sockfd)
+	s.mu.Unlock()
 	if !ln.isvalid() {
 		return -1, netip.AddrPort{}, fmt.Errorf("Accept: unknown sockfd %d", sockfd)
 	}
@@ -166,15 +183,19 @@ func (s *StackBerkeley) Accept(sockfd int) (int, netip.AddrPort, error) {
 		return -1, netip.AddrPort{}, err
 	}
 
+	s.mu.Lock()
 	fd := s.newFD()
 	s.tcpConns = append(s.tcpConns, socket[net.Conn]{sockfd: fd, sock: conn})
+	s.mu.Unlock()
 	return fd, addrPort, nil
 }
 
 // Send transmits buf on sockfd. deadline is a zero Time for no timeout.
 // Returns the number of bytes written.
 func (s *StackBerkeley) Send(sockfd int, buf []byte, flags int, deadline time.Time) (int, error) {
+	s.mu.Lock()
 	conn := s.getConn(sockfd)
+	s.mu.Unlock()
 	if !conn.isvalid() {
 		return 0, fmt.Errorf("Send: unknown sockfd %d", sockfd)
 	}
@@ -187,7 +208,9 @@ func (s *StackBerkeley) Send(sockfd int, buf []byte, flags int, deadline time.Ti
 // Recv reads from sockfd into buf. deadline is a zero Time for no timeout.
 // Returns the number of bytes read.
 func (s *StackBerkeley) Recv(sockfd int, buf []byte, flags int, deadline time.Time) (int, error) {
+	s.mu.Lock()
 	conn := s.getConn(sockfd)
+	s.mu.Unlock()
 	if !conn.isvalid() {
 		return 0, fmt.Errorf("Recv: unknown sockfd %d", sockfd)
 	}
@@ -199,26 +222,39 @@ func (s *StackBerkeley) Recv(sockfd int, buf []byte, flags int, deadline time.Ti
 
 // Close shuts down sockfd and releases its resources.
 func (s *StackBerkeley) Close(sockfd int) error {
+	// Do not lock on Close calls.
+	s.mu.Lock()
 	if conn := s.getConn(sockfd); conn.isvalid() {
+		s.mu.Unlock()
 		err := conn.sock.Close()
+		s.mu.Lock()
 		s.tcpConns = deleteFD(s.tcpConns, sockfd)
+		s.mu.Unlock()
 		return err
 	}
 	if ln := s.getListener(sockfd); ln.isvalid() {
+		s.mu.Unlock()
 		err := ln.sock.Close()
+		s.mu.Lock()
 		s.tcpListeners = deleteFD(s.tcpListeners, sockfd)
+		s.mu.Unlock()
 		return err
 	}
 	if s.getPending(sockfd).isvalid() {
 		s.pendingFDs = deleteFD(s.pendingFDs, sockfd)
+		s.mu.Unlock()
 		return nil
 	}
+	s.mu.Unlock()
 	return fmt.Errorf("Close: unknown sockfd %d", sockfd)
 }
 
 func (s *StackBerkeley) newFD() int {
 	fd := s.nextFD
 	s.nextFD++
+	if s.nextFD < 2 || s.nextFD >= math.MaxUint32 {
+		s.nextFD = 3
+	}
 	return fd
 }
 
