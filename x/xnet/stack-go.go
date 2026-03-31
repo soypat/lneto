@@ -44,13 +44,13 @@ func (s StackGo) Socket(ctx context.Context, network string, family, sotype int,
 	}
 	var local, remote netip.AddrPort
 	if laddr != nil {
-		local, err = netip.ParseAddrPort(local.String())
+		local, err = netip.ParseAddrPort(laddr.String())
 		if err != nil {
 			return nil, err
 		}
 	}
 	if raddr != nil {
-		remote, err = netip.ParseAddrPort(remote.String())
+		remote, err = netip.ParseAddrPort(raddr.String())
 		if err != nil {
 			return nil, err
 		}
