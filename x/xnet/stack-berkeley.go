@@ -252,7 +252,7 @@ func (s *StackBerkeley) Close(sockfd int) error {
 func (s *StackBerkeley) newFD() int {
 	fd := s.nextFD
 	s.nextFD++
-	if s.nextFD < 2 || s.nextFD >= math.MaxUint32 {
+	if s.nextFD < 2 || s.nextFD >= math.MaxInt {
 		s.nextFD = 3
 	}
 	return fd
