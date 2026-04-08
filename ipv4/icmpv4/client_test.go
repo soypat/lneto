@@ -54,7 +54,7 @@ func testSingleExchange(t *testing.T, sender, responder *Client, buf []byte, pat
 	ifrm, _ := NewFrame(buf[frameOff : frameOff+n])
 	efrm := FrameEcho{Frame: ifrm}
 	id, seq := efrm.Identifier(), efrm.SequenceNumber()
-	err1 := responder.Demux(buf, frameOff)
+	err1 := responder.Demux(buf[:frameOff+n], frameOff)
 	if err1 != nil {
 		t.Error("responder demux during single", err1)
 	}
@@ -101,7 +101,7 @@ func testSingleExchange(t *testing.T, sender, responder *Client, buf []byte, pat
 
 func testSendEcho(t *testing.T, sender *Client, buf []byte, pattern []byte, size uint16, ttl uint8) (key uint32, n int) {
 	t.Helper()
-	key, err := sender.PingStart(pattern, size, 64)
+	key, err := sender.PingStart(pattern, size, ttl)
 	if err != nil {
 		t.Fatal(err)
 	}

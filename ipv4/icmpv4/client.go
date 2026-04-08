@@ -170,14 +170,14 @@ func (client *Client) Encapsulate(carrierData []byte, ipOffset, frameOffset int)
 func (client *Client) magichash(pattern []byte, size int) (hash uint32) {
 	hash = client.magic
 	i := 0
-	n := len(pattern) / size
+	n := size / len(pattern)
 	for i < n {
 		for _, b := range pattern {
 			hash = hash*31 + uint32(b)
 		}
 		i++
 	}
-	n = len(pattern) % size
+	n = size % len(pattern)
 	for i = 0; i < n; i++ {
 		hash = hash*31 + uint32(pattern[i])
 	}
