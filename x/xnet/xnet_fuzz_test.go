@@ -34,12 +34,12 @@ func FuzzStackAsyncHTTP(f *testing.F) {
 	written := false
 	closed := false
 	for {
-		n1, err := s1.SendEthernet(buf[:])
+		n1, err := s1.EgressEthernet(buf[:])
 		if err != nil {
 			f.Fatal(err)
 		}
 		if n1 > 0 {
-			err = s2.RecvEthernet(buf[:n1])
+			err = s2.IngressEthernet(buf[:n1])
 			if err != nil {
 				f.Fatal(err)
 			}
@@ -53,10 +53,10 @@ func FuzzStackAsyncHTTP(f *testing.F) {
 				written = true
 			}
 		}
-		n2, err := s2.SendEthernet(buf[:])
+		n2, err := s2.EgressEthernet(buf[:])
 		if n2 > 0 {
 			pktnum++
-			err = s1.RecvEthernet(buf[:n2])
+			err = s1.IngressEthernet(buf[:n2])
 			if err != nil {
 				f.Fatal(err)
 			}
@@ -88,7 +88,7 @@ func FuzzStackAsyncHTTP(f *testing.F) {
 		closed := false
 		const maxpkts = 100
 		for {
-			n1, err := s1.SendEthernet(buf[:])
+			n1, err := s1.EgressEthernet(buf[:])
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -97,21 +97,21 @@ func FuzzStackAsyncHTTP(f *testing.F) {
 					n1 = copy(buf[:], a)
 					fixIPTCPCRCs(buf[:n1])
 				}
-				s2.RecvEthernet(buf[:n1])
+				s2.IngressEthernet(buf[:n1])
 				pkt++
 				if !written && c2.State() >= tcp.StateEstablished {
 					c2.Write(data)
 					written = true
 				}
 			}
-			n2, err := s2.SendEthernet(buf[:])
+			n2, err := s2.EgressEthernet(buf[:])
 			if n2 > 0 {
 				if pkt == pktnum {
 					n2 = copy(buf[:], a)
 					fixIPTCPCRCs(buf[:n2])
 				}
 				pkt++
-				s1.RecvEthernet(buf[:n2])
+				s1.IngressEthernet(buf[:n2])
 			}
 			if n1 == 0 && n2 == 0 {
 				if !closed {

@@ -49,7 +49,7 @@ func TestDNS_QueryReceivesAnswer(t *testing.T) {
 	// Client sends DNS query.
 	const carrierDataSize = MTU + ethernet.MaxOverheadSize
 	var buf [carrierDataSize]byte
-	n, err := client.SendEthernet(buf[:])
+	n, err := client.EgressEthernet(buf[:])
 	if err != nil {
 		t.Fatal("client Encapsulate failed:", err)
 	}
@@ -70,7 +70,7 @@ func TestDNS_QueryReceivesAnswer(t *testing.T) {
 	}
 
 	// Deliver response to client.
-	err = client.RecvEthernet(responsePkt)
+	err = client.IngressEthernet(responsePkt)
 	if err != nil {
 		t.Fatal("client Demux failed:", err)
 	}

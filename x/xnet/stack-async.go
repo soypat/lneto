@@ -84,17 +84,17 @@ func (s *StackAsync) Hostname() string {
 	return s.hostname
 }
 
-// RecvEthernet receives an Ethernet frame from the network and processes it through the stack. The frame should include the Ethernet header and payload and CRC if enabled.
-func (s *StackAsync) RecvEthernet(ethernetFrame []byte) error {
+// IngressEthernet receives an Ethernet frame from the network and processes it through the stack. The frame should include the Ethernet header and payload and CRC if enabled.
+func (s *StackAsync) IngressEthernet(ethernetFrame []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.totalrecv += uint64(len(ethernetFrame))
 	return s.link.Demux(ethernetFrame, 0)
 }
 
-// SendEthernet writes the next ethernet frame to send into dstEthernetFrame from the stack.
+// EgressEthernet writes the next ethernet frame to send into dstEthernetFrame from the stack.
 // The length of dstEthernetFrame should be at least MTU + Ethernet header (14) + CRC (4 if enabled).
-func (s *StackAsync) SendEthernet(dstEthernetFrame []byte) (int, error) {
+func (s *StackAsync) EgressEthernet(dstEthernetFrame []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n, err := s.link.Encapsulate(dstEthernetFrame, -1, 0)
@@ -102,16 +102,16 @@ func (s *StackAsync) SendEthernet(dstEthernetFrame []byte) (int, error) {
 	return n, err
 }
 
-// RecvIP processes an incoming IP frame through the stack and omits ethernet header processing.
-func (s *StackAsync) RecvIP(ipFrame []byte) error {
+// IngressIP processes an incoming IP frame through the stack and omits ethernet header processing.
+func (s *StackAsync) IngressIP(ipFrame []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.totalrecv += uint64(len(ipFrame))
 	return s.ip.Demux(ipFrame, 0)
 }
 
-// SendIP writes the next IP frame to send into dstIPFrame from the stack. The length of dstIPFrame should be at least MTU.
-func (s *StackAsync) SendIP(dstIPFrame []byte) (int, error) {
+// EgressIP writes the next IP frame to send into dstIPFrame from the stack. The length of dstIPFrame should be at least MTU.
+func (s *StackAsync) EgressIP(dstIPFrame []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(dstIPFrame) < s.link.MTU() {

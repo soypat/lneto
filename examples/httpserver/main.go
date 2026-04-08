@@ -144,7 +144,7 @@ func run() (err error) {
 			return err
 		}
 		for {
-			nwrite, err := stack.SendEthernet(buf[:])
+			nwrite, err := stack.EgressEthernet(buf[:])
 			if err != nil {
 				log.Println("ERR:ENCAPSULATE", err)
 			} else if nwrite > 0 {
@@ -172,7 +172,7 @@ func run() (err error) {
 			if err != nil {
 				log.Fatal("goroutine read:", err)
 			} else if nread > 0 {
-				err = stack.RecvEthernet(buf[:nread])
+				err = stack.IngressEthernet(buf[:nread])
 				if !errors.Is(err, lneto.ErrPacketDrop) {
 					err = logFrames("IN", buf[:nread])
 					if err != nil {

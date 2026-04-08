@@ -159,15 +159,15 @@ func kernelLoop(ctx context.Context, server *StackAsync, clients []StackAsync) {
 		}
 
 		// Process server outgoing -> route to appropriate client based on dest IP.
-		if n, _ := server.SendEthernet(buf); n > 0 {
+		if n, _ := server.EgressEthernet(buf); n > 0 {
 			routePacketToClient(buf[:n], clients)
 		}
 
 		// Process each client outgoing in randomized order.
 		rng.Shuffle(len(order), func(i, j int) { order[i], order[j] = order[j], order[i] })
 		for _, idx := range order {
-			if n, _ := clients[idx].SendEthernet(buf); n > 0 {
-				server.RecvEthernet(buf[:n]) // All clients talk to server.
+			if n, _ := clients[idx].EgressEthernet(buf); n > 0 {
+				server.IngressEthernet(buf[:n]) // All clients talk to server.
 			}
 		}
 
@@ -184,7 +184,7 @@ func routePacketToClient(pkt []byte, clients []StackAsync) {
 
 	for i := range clients {
 		if clients[i].Addr() == dstIP {
-			clients[i].RecvEthernet(pkt)
+			clients[i].IngressEthernet(pkt)
 			return
 		}
 	}

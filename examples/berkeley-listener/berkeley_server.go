@@ -145,7 +145,7 @@ func run() error {
 		}
 
 		for {
-			nwrite, err := stack.SendEthernet(buf[:])
+			nwrite, err := stack.EgressEthernet(buf[:])
 			if err != nil {
 				log.Println("ERR:ENCAPSULATE", err)
 			} else if nwrite > 0 {
@@ -159,13 +159,13 @@ func run() error {
 					log.Fatalf("mismatch written bytes %d!=%d", nwrite, n)
 				}
 				if flagMockClient && mockStack.Addr().IsValid() {
-					mockStack.RecvEthernet(buf[:nwrite])
+					mockStack.IngressEthernet(buf[:nwrite])
 				}
 			}
 			if flagMockClient && mockStack.Addr().IsValid() {
-				n, _ := mockStack.SendEthernet(buf[:])
+				n, _ := mockStack.EgressEthernet(buf[:])
 				if n > 0 {
-					stack.RecvEthernet(buf[:n])
+					stack.IngressEthernet(buf[:n])
 				}
 			}
 
@@ -181,7 +181,7 @@ func run() error {
 			if err != nil {
 				log.Fatal("goroutine read:", err)
 			} else if nread > 0 {
-				err = stack.RecvEthernet(buf[:nread])
+				err = stack.IngressEthernet(buf[:nread])
 				if !errors.Is(err, lneto.ErrPacketDrop) {
 					if err = logFrames("IN", buf[:nread]); err != nil {
 						log.Println("ERR:INLOG", err)
