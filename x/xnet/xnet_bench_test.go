@@ -46,23 +46,23 @@ func BenchmarkARPExchange(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		n, err := c1.Encapsulate(buf[:], -1, 0) // Send Request.
+		n, err := c1.SendEthernet(buf[:]) // Send Request.
 		if err != nil {
 			b.Fatal(err)
 		} else if n == 0 {
 			b.Fatal("expected send of data after first query")
 		}
-		err = c2.Demux(buf[:n], 0) // Receive request.
+		err = c2.RecvEthernet(buf[:n]) // Receive request.
 		if err != nil {
 			b.Fatal(err)
 		}
-		n, err = c2.Encapsulate(buf[:], -1, 0) // Send response.
+		n, err = c2.SendEthernet(buf[:]) // Send response.
 		if err != nil {
 			b.Fatal(err)
 		} else if n == 0 {
 			b.Fatal("got no response to request")
 		}
-		err = c1.Demux(buf[:n], 0) // Receive response.
+		err = c1.RecvEthernet(buf[:n]) // Receive response.
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -140,31 +140,31 @@ func BenchmarkTCPHandshake(b *testing.B) {
 		}
 
 		// SYN from client.
-		n, err := client.Encapsulate(pktbuf[:], -1, 0)
+		n, err := client.SendEthernet(pktbuf[:])
 		if err != nil {
 			b.Fatal(err)
 		}
-		err = sv.Demux(pktbuf[:n], 0)
+		err = sv.RecvEthernet(pktbuf[:n])
 		if err != nil {
 			b.Fatal(err)
 		}
 
 		// SYN-ACK from server.
-		n, err = sv.Encapsulate(pktbuf[:], -1, 0)
+		n, err = sv.SendEthernet(pktbuf[:])
 		if err != nil {
 			b.Fatal(err)
 		}
-		err = client.Demux(pktbuf[:n], 0)
+		err = client.RecvEthernet(pktbuf[:n])
 		if err != nil {
 			b.Fatal(err)
 		}
 
 		// ACK from client.
-		n, err = client.Encapsulate(pktbuf[:], -1, 0)
+		n, err = client.SendEthernet(pktbuf[:])
 		if err != nil {
 			b.Fatal(err)
 		}
-		err = sv.Demux(pktbuf[:n], 0)
+		err = sv.RecvEthernet(pktbuf[:n])
 		if err != nil {
 			b.Fatal(err)
 		}

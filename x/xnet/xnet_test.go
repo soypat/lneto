@@ -68,7 +68,7 @@ func TestTCPConn_ReadBlocksUntilDataAvailable(t *testing.T) {
 	// Perform packet exchange to deliver data.
 	tst.bufmu.Lock()
 	buf := tst.buf[:cap(tst.buf)]
-	n, err := client.Encapsulate(buf, -1, 0)
+	n, err := client.SendEthernet(buf)
 	if err != nil {
 		tst.bufmu.Unlock()
 		t.Fatal(err)
@@ -77,7 +77,7 @@ func TestTCPConn_ReadBlocksUntilDataAvailable(t *testing.T) {
 		tst.bufmu.Unlock()
 		t.Fatal("expected data packet from client")
 	}
-	err = sv.Demux(buf[:n], 0)
+	err = sv.RecvEthernet(buf[:n])
 	tst.bufmu.Unlock()
 	if err != nil {
 		t.Fatal(err)
@@ -418,7 +418,7 @@ func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAs
 		panic("OOB")
 	}
 
-	n, err := src.Encapsulate(buf[:], -1, 0)
+	n, err := src.SendEthernet(buf[:])
 	if err != nil {
 		t.Fatal(err)
 	} else if n == 0 {
@@ -466,7 +466,7 @@ func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAs
 	if seg.Flags != expect.WantFlags {
 		t.Errorf("expected flags %s, got %s", expect.WantFlags.String(), seg.Flags.String())
 	}
-	err = dst.Demux(buf[:n], 0)
+	err = dst.RecvEthernet(buf[:n])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +481,7 @@ func (tst *tester) ARPExchangeOnly(querying, target *StackAsync) {
 	buf := tst.buf[:cap(tst.buf)]
 
 	// === PHASE 1: ARP Request from querying stack ===
-	n, err := querying.Encapsulate(buf[:], -1, 0)
+	n, err := querying.SendEthernet(buf[:])
 	if err != nil {
 		t.Fatal(err)
 	} else if n == 0 {
@@ -526,7 +526,7 @@ func (tst *tester) ARPExchangeOnly(querying, target *StackAsync) {
 	}
 
 	// Deliver request to target
-	err = target.Demux(buf[:n], 0)
+	err = target.RecvEthernet(buf[:n])
 	if err != nil {
 		t.Fatal("target demux request:", err)
 	}
@@ -534,7 +534,7 @@ func (tst *tester) ARPExchangeOnly(querying, target *StackAsync) {
 
 	// === PHASE 2: ARP Reply from target stack ===
 	buf = tst.buf[:cap(tst.buf)]
-	n, err = target.Encapsulate(buf[:], -1, 0)
+	n, err = target.SendEthernet(buf[:])
 	if err != nil {
 		t.Fatal(err)
 	} else if n == 0 {
@@ -574,7 +574,7 @@ func (tst *tester) ARPExchangeOnly(querying, target *StackAsync) {
 	}
 
 	// Deliver reply to querying stack
-	err = querying.Demux(buf[:n], 0)
+	err = querying.RecvEthernet(buf[:n])
 	if err != nil {
 		t.Fatal("querying demux reply:", err)
 	}
@@ -748,7 +748,7 @@ func TestTCPConn_BufferNotClearedOnPassiveClose(t *testing.T) {
 	// Server sends DATA packet to client.
 	tst.bufmu.Lock()
 	buf := tst.buf[:cap(tst.buf)]
-	n, err := sv.Encapsulate(buf, -1, 0)
+	n, err := sv.SendEthernet(buf)
 	if err != nil {
 		tst.bufmu.Unlock()
 		t.Fatal("server encapsulate data:", err)
@@ -757,7 +757,7 @@ func TestTCPConn_BufferNotClearedOnPassiveClose(t *testing.T) {
 		tst.bufmu.Unlock()
 		t.Fatal("expected data packet from server")
 	}
-	err = client.Demux(buf[:n], 0)
+	err = client.RecvEthernet(buf[:n])
 	tst.bufmu.Unlock()
 	if err != nil {
 		t.Fatal("client demux data:", err)
@@ -771,13 +771,13 @@ func TestTCPConn_BufferNotClearedOnPassiveClose(t *testing.T) {
 	// Client sends ACK for data.
 	tst.bufmu.Lock()
 	buf = tst.buf[:cap(tst.buf)]
-	n, err = client.Encapsulate(buf, -1, 0)
+	n, err = client.SendEthernet(buf)
 	if err != nil {
 		tst.bufmu.Unlock()
 		t.Fatal("client encapsulate ACK:", err)
 	}
 	if n > 0 {
-		err = sv.Demux(buf[:n], 0)
+		err = sv.RecvEthernet(buf[:n])
 		if err != nil {
 			tst.bufmu.Unlock()
 			t.Fatal("server demux ACK:", err)
@@ -794,7 +794,7 @@ func TestTCPConn_BufferNotClearedOnPassiveClose(t *testing.T) {
 	// Server sends FIN (enters FIN_WAIT_1).
 	tst.bufmu.Lock()
 	buf = tst.buf[:cap(tst.buf)]
-	n, err = sv.Encapsulate(buf, -1, 0)
+	n, err = sv.SendEthernet(buf)
 	if err != nil {
 		tst.bufmu.Unlock()
 		t.Fatal("server encapsulate FIN:", err)
@@ -803,7 +803,7 @@ func TestTCPConn_BufferNotClearedOnPassiveClose(t *testing.T) {
 		tst.bufmu.Unlock()
 		t.Fatal("expected FIN packet from server")
 	}
-	err = client.Demux(buf[:n], 0)
+	err = client.RecvEthernet(buf[:n])
 	tst.bufmu.Unlock()
 	if err != nil {
 		t.Fatal("client demux FIN:", err)
@@ -819,13 +819,13 @@ func TestTCPConn_BufferNotClearedOnPassiveClose(t *testing.T) {
 	// Client sends ACK for FIN.
 	tst.bufmu.Lock()
 	buf = tst.buf[:cap(tst.buf)]
-	n, err = client.Encapsulate(buf, -1, 0)
+	n, err = client.SendEthernet(buf)
 	if err != nil {
 		tst.bufmu.Unlock()
 		t.Fatal("client encapsulate ACK:", err)
 	}
 	if n > 0 {
-		err = sv.Demux(buf[:n], 0)
+		err = sv.RecvEthernet(buf[:n])
 		if err != nil {
 			tst.bufmu.Unlock()
 			t.Fatal("server demux ACK:", err)
@@ -846,7 +846,7 @@ func TestTCPConn_BufferNotClearedOnPassiveClose(t *testing.T) {
 	// Client sends FIN (enters LAST_ACK).
 	tst.bufmu.Lock()
 	buf = tst.buf[:cap(tst.buf)]
-	n, err = client.Encapsulate(buf, -1, 0)
+	n, err = client.SendEthernet(buf)
 	if err != nil {
 		tst.bufmu.Unlock()
 		t.Fatal("client encapsulate FIN:", err)
@@ -855,7 +855,7 @@ func TestTCPConn_BufferNotClearedOnPassiveClose(t *testing.T) {
 		tst.bufmu.Unlock()
 		t.Fatal("expected FIN packet from client")
 	}
-	err = sv.Demux(buf[:n], 0)
+	err = sv.RecvEthernet(buf[:n])
 	tst.bufmu.Unlock()
 	if err != nil {
 		t.Fatal("server demux client FIN:", err)
@@ -871,7 +871,7 @@ func TestTCPConn_BufferNotClearedOnPassiveClose(t *testing.T) {
 	// Server sends final ACK.
 	tst.bufmu.Lock()
 	buf = tst.buf[:cap(tst.buf)]
-	n, err = sv.Encapsulate(buf, -1, 0)
+	n, err = sv.SendEthernet(buf)
 	if err != nil {
 		tst.bufmu.Unlock()
 		t.Fatal("server encapsulate final ACK:", err)
@@ -880,7 +880,7 @@ func TestTCPConn_BufferNotClearedOnPassiveClose(t *testing.T) {
 		tst.bufmu.Unlock()
 		t.Fatal("expected final ACK from server")
 	}
-	err = client.Demux(buf[:n], 0)
+	err = client.RecvEthernet(buf[:n])
 	tst.bufmu.Unlock()
 	if err != nil {
 		t.Fatal("client demux final ACK:", err)
@@ -944,7 +944,7 @@ func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
 		SequenceNumber: 1,
 		Payload:        icmpPayload,
 	})
-	err = stack.Demux(pkt, 0)
+	err = stack.RecvEthernet(pkt)
 	if err != nil {
 		t.Fatalf("valid ICMP echo rejected: %v", err)
 	}
@@ -958,7 +958,7 @@ func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
 		Payload:        icmpPayload,
 	})
 	pkt = append(pkt, 0xDE, 0xAD, 0xBE, 0xEF) // Simulate Ethernet FCS.
-	err = stack.Demux(pkt, 0)
+	err = stack.RecvEthernet(pkt)
 	if err != nil {
 		t.Fatalf("valid ICMP with trailing FCS rejected: %v", err)
 	}
@@ -970,7 +970,7 @@ func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
 		Payload:        icmpPayload,
 	})
 	pkt[len(pkt)-1] ^= 0xFF // Flip bits in last payload byte to corrupt ICMP checksum.
-	err = stack.Demux(pkt, 0)
+	err = stack.RecvEthernet(pkt)
 	if err == nil {
 		t.Fatal("corrupted ICMP accepted, expected CRC error")
 	}
@@ -983,7 +983,7 @@ func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
 	})
 	pkt[len(pkt)-1] ^= 0xFF                   // Corrupt ICMP payload.
 	pkt = append(pkt, 0xDE, 0xAD, 0xBE, 0xEF) // Simulate Ethernet FCS.
-	err = stack.Demux(pkt, 0)
+	err = stack.RecvEthernet(pkt)
 	if err == nil {
 		t.Fatal("corrupted ICMP with FCS accepted, expected CRC error")
 	}

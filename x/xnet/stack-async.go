@@ -84,22 +84,47 @@ func (s *StackAsync) Hostname() string {
 	return s.hostname
 }
 
-func (s *StackAsync) Demux(carrierData []byte, etherOff int) error {
+// RecvEthernet receives an Ethernet frame from the network and processes it through the stack. The frame should include the Ethernet header and payload and CRC if enabled.
+func (s *StackAsync) RecvEthernet(ethernetFrame []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.totalrecv += uint64(len(carrierData) - etherOff)
-	return s.link.Demux(carrierData, etherOff)
+	s.totalrecv += uint64(len(ethernetFrame))
+	return s.link.Demux(ethernetFrame, 0)
 }
 
-func (s *StackAsync) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
+// SendEthernet writes the next ethernet frame to send into dstEthernetFrame from the stack.
+// The length of dstEthernetFrame should be at least MTU + Ethernet header (14) + CRC (4 if enabled).
+func (s *StackAsync) SendEthernet(dstEthernetFrame []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	n, err := s.link.Encapsulate(carrierData, offsetToIP, offsetToFrame)
+	n, err := s.link.Encapsulate(dstEthernetFrame, -1, 0)
 	s.totalsent += uint64(n)
 	return n, err
 }
 
+// RecvIP processes an incoming IP frame through the stack and omits ethernet header processing.
+func (s *StackAsync) RecvIP(ipFrame []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.totalrecv += uint64(len(ipFrame))
+	return s.ip.Demux(ipFrame, 0)
+}
+
+// SendIP writes the next IP frame to send into dstIPFrame from the stack. The length of dstIPFrame should be at least MTU.
+func (s *StackAsync) SendIP(dstIPFrame []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(dstIPFrame) < s.link.MTU() {
+		return 0, lneto.ErrShortBuffer
+	}
+	n, err := s.ip.Encapsulate(dstIPFrame, 0, 0)
+	s.totalsent += uint64(n)
+	return n, err
+}
+
+// MTU is the Maximum Transmission Unit of the stack corresponding
+// to the maximum payload size of an ethernet frame that can be sent through the stack.
+// Important to note that the actual ethernet frame size is MTU + Ethernet header (14) + CRC (4 if enabled), this is known as the Maximum Frame Length.
 func (s *StackAsync) MTU() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -247,10 +272,7 @@ func (s *StackAsync) Prand32() (randval uint32) {
 
 func (s *StackAsync) prand32() uint32 {
 	/* Algorithm "xor" from p. 4 of Marsaglia, "Xorshift RNGs" */
-	seed := s.prng
-	seed ^= seed << 13
-	seed ^= seed >> 17
-	seed ^= seed << 5
+	seed := internal.Prand32(s.prng)
 	s.prng = seed
 	return seed
 }

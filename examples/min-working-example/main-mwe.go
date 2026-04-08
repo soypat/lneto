@@ -142,7 +142,7 @@ func stackLoop(ctx context.Context, stack *xnet.StackAsync) {
 	frameLength, _ := network.MaxFrameLength()
 	buf := make([]byte, frameLength)
 	for ctx.Err() == nil {
-		nwrite, err := stack.Encapsulate(buf[:], -1, 0)
+		nwrite, err := stack.SendEthernet(buf[:])
 		if err != nil {
 			fmt.Println("encaps err:", err)
 		} else if nwrite > 0 {
@@ -153,7 +153,7 @@ func stackLoop(ctx context.Context, stack *xnet.StackAsync) {
 		if err != nil {
 			fmt.Println("network read err:", err)
 		} else if nread > 0 {
-			err = stack.Demux(buf[:nread], 0)
+			err = stack.RecvEthernet(buf[:nread])
 			if err != nil && err != lneto.ErrPacketDrop {
 				fmt.Println("demux err:", err)
 			} else {

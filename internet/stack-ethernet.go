@@ -101,6 +101,19 @@ func (ls *StackEthernet) Configure(cfg StackEthernetConfig) error {
 	return nil
 }
 
+// MaxFrameLength returns the maximum ethernet frame length in bytes, which is the MTU plus the Ethernet header (14 bytes) and CRC (4 bytes if enabled).
+// This is the maximum size of an Ethernet frame that can be sent from the stack.
+func (ls *StackEthernet) MaxFrameLength() int {
+	base := int(ls.mtu) + 14
+	if ls.crcupdate != nil {
+		base += 4
+	}
+	return base
+}
+
+// MTU is the Maximum Transmission Unit of the stack corresponding
+// to the maximum payload size of an ethernet frame that can be sent through the stack.
+// Important to note that the actual ethernet frame size is MTU + Ethernet header (14) + CRC (4 if enabled), this is known as the Maximum Frame Length.
 func (ls *StackEthernet) MTU() int { return int(ls.mtu) }
 
 func (ls *StackEthernet) ConnectionID() *uint64 { return &ls.connID }

@@ -114,7 +114,7 @@ func TestMDNS_QueryResponse(t *testing.T) {
 	var buf [carrierDataSize]byte
 
 	// Querier encapsulates query through full stack (Ethernet+IP+UDP+mDNS).
-	n, err := querierStack.Encapsulate(buf[:], -1, 0)
+	n, err := querierStack.SendEthernet(buf[:])
 	if err != nil || n == 0 {
 		t.Fatal("querier encapsulate:", err, n)
 	}
@@ -135,13 +135,13 @@ func TestMDNS_QueryResponse(t *testing.T) {
 	}
 
 	// Responder demuxes the query (multicast MAC+IP accepted via AcceptMulticast).
-	err = responderStack.Demux(buf[:n], 0)
+	err = responderStack.RecvEthernet(buf[:n])
 	if err != nil {
 		t.Fatal("responder demux:", err)
 	}
 
 	// Responder encapsulates response.
-	n, err = responderStack.Encapsulate(buf[:], -1, 0)
+	n, err = responderStack.SendEthernet(buf[:])
 	if err != nil || n == 0 {
 		t.Fatal("responder encapsulate:", err, n)
 	}
@@ -165,7 +165,7 @@ func TestMDNS_QueryResponse(t *testing.T) {
 	}
 
 	// Querier demuxes response.
-	err = querierStack.Demux(buf[:n], 0)
+	err = querierStack.RecvEthernet(buf[:n])
 	if err != nil {
 		t.Fatal("querier demux:", err)
 	}
@@ -310,25 +310,25 @@ func mdnsQueryRespond(t *testing.T, querier, responder *StackAsync, buf []byte) 
 	t.Helper()
 
 	// Querier encapsulates query.
-	n, err := querier.Encapsulate(buf, -1, 0)
+	n, err := querier.SendEthernet(buf)
 	if err != nil || n == 0 {
 		t.Fatal("querier encapsulate:", err, n)
 	}
 
 	// Responder demuxes multicast query directly.
-	err = responder.Demux(buf[:n], 0)
+	err = responder.RecvEthernet(buf[:n])
 	if err != nil {
 		t.Fatal("responder demux:", err)
 	}
 
 	// Responder encapsulates response.
-	n, err = responder.Encapsulate(buf, -1, 0)
+	n, err = responder.SendEthernet(buf)
 	if err != nil || n == 0 {
 		t.Fatal("responder encapsulate:", err, n)
 	}
 
 	// Querier demuxes multicast response.
-	err = querier.Demux(buf[:n], 0)
+	err = querier.RecvEthernet(buf[:n])
 	if err != nil {
 		t.Fatal("querier demux:", err)
 	}
@@ -382,7 +382,7 @@ func TestMDNS_RealWorldQueries(t *testing.T) {
 	var buf [MTU + ethernet.MaxOverheadSize]byte
 	checkNoData := func(msg string) {
 		t.Helper()
-		n, err := responderStack.Encapsulate(buf[:], -1, 0)
+		n, err := responderStack.SendEthernet(buf[:])
 		if err != nil {
 			t.Fatal(err)
 		} else if n != 0 {
@@ -434,18 +434,18 @@ func TestMDNS_RealWorldQueries(t *testing.T) {
 		ifrm.CRCWriteUDPPseudo(&crc, ufrm.Length())
 		got := crc.PayloadSum16(ifrm.Payload())
 		ufrm.SetCRC(got)
-		err := responderStack.Demux(buf[:14+20+8+msg.Len()], 0)
+		err := responderStack.RecvEthernet(buf[:14+20+8+msg.Len()])
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	n, err := responderStack.Encapsulate(buf[:], -1, 0)
+	n, err := responderStack.SendEthernet(buf[:])
 	if err != nil {
 		t.Fatal(err)
 	} else if n < 14+20+8+dns.SizeHeader {
 		t.Error("expected response", n)
 	}
-	n, err = responderStack.Encapsulate(buf[:], -1, 0)
+	n, err = responderStack.SendEthernet(buf[:])
 	if err != nil {
 		t.Fatal(err)
 	} else if n != 0 {
