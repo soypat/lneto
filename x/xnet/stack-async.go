@@ -1,6 +1,7 @@
 package xnet
 
 import (
+	"encoding/binary"
 	"errors"
 	"log/slog"
 	"net/netip"
@@ -222,6 +223,18 @@ func (s *StackAsync) resetARP() error {
 		return err
 	}
 	return nil
+}
+
+func (s *StackAsync) prandRead(buf []byte) {
+	i := 0
+	for ; i+3 < len(buf); i += 4 {
+		binary.LittleEndian.PutUint32(buf[i:], s.prand32())
+	}
+	v := s.prand32()
+	for i < len(buf) {
+		buf[i] = byte(v >> (8 * (i % 4)))
+		i++
+	}
 }
 
 // Prand32 generates a pseudo random 32-bit unsigned integer from the internal state and advances the seed.

@@ -33,16 +33,16 @@ func TestClients(t *testing.T) {
 	pattern := []byte("ab12")
 	size := 8
 	var buf [64]byte
-	key1 := testSingleExchange(t, &sender, &responder, buf[:], pattern, uint16(size), 64)
+	key1 := testSingleExchange(t, &sender, &responder, buf[:], pattern, uint16(size))
 	completed, ok := sender.PingPop(key1)
 	if !completed || !ok {
 		t.Fatal("ping did not complete or not exist")
 	}
 }
 
-func testSingleExchange(t *testing.T, sender, responder *Client, buf []byte, pattern []byte, size uint16, ttl uint8) (senderKey uint32) {
+func testSingleExchange(t *testing.T, sender, responder *Client, buf []byte, pattern []byte, size uint16) (senderKey uint32) {
 	var n int
-	senderKey, n = testSendEcho(t, sender, buf, pattern, size, ttl)
+	senderKey, n = testSendEcho(t, sender, buf, pattern, size)
 	const frameOff = 0
 	const ipOff = 0
 	completed, ok := sender.PingPeek(senderKey)
@@ -99,9 +99,9 @@ func testSingleExchange(t *testing.T, sender, responder *Client, buf []byte, pat
 	return senderKey
 }
 
-func testSendEcho(t *testing.T, sender *Client, buf []byte, pattern []byte, size uint16, ttl uint8) (key uint32, n int) {
+func testSendEcho(t *testing.T, sender *Client, buf []byte, pattern []byte, size uint16) (key uint32, n int) {
 	t.Helper()
-	key, err := sender.PingStart(pattern, size, ttl)
+	key, err := sender.PingStart([4]byte{1}, pattern, size)
 	if err != nil {
 		t.Fatal(err)
 	}

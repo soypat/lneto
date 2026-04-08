@@ -2,9 +2,11 @@ package xnet
 
 import (
 	"errors"
+	"net"
 	"net/netip"
 	"time"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/dhcpv4"
 	"github.com/soypat/lneto/tcp"
 )
@@ -56,6 +58,33 @@ func (s StackBlocking) DoDHCPv4(reqAddr [4]byte, timeout time.Duration) (*DHCPRe
 		time.Sleep(sleep)
 	}
 	return s.async.ResultDHCP()
+}
+
+func (s StackBlocking) DoPing(hostAddr netip.Addr, timeout time.Duration) (roundtrip time.Duration, err error) {
+	if !hostAddr.Is4() {
+		return 0, lneto.ErrInvalidAddr
+	}
+	var buf [16]byte
+	s.async.prandRead(buf[:])
+	key, err := s.async.icmp.PingStart(hostAddr.As4(), buf[:], 56) // size=56 so ICMP size is 64, like linux.
+	if err != nil {
+		return 0, err
+	}
+	start := time.Now()
+	sleep := timeout / maxIter
+	for i := 0; i < maxIter; i++ {
+		time.Sleep(sleep)
+		elapsed := time.Since(start)
+		completed, exists := s.async.icmp.PingPop(key)
+		if !exists {
+			return 0, net.ErrClosed // lneto.ErrAborted
+		} else if completed {
+			return elapsed, nil
+		} else if elapsed > timeout {
+			break
+		}
+	}
+	return 0, errDeadlineExceed
 }
 
 func (s StackBlocking) DoNTP(hostAddr netip.Addr, timeout time.Duration) (offset time.Duration, err error) {

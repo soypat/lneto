@@ -18,13 +18,15 @@ const (
 type Client struct {
 	connid uint64
 	magic  uint32
+	_seq   uint16
+	id     uint16
 
 	outgoingEcho []struct {
 		// For every ping we send out stores hashes of the data (should include IP likely).
 		pattern []byte
 		key     uint32
 		size    uint16
-		ttl     uint8
+		raddr   [4]byte
 	}
 
 	// responseLengths stores the length of responses received.
@@ -33,6 +35,7 @@ type Client struct {
 		length uint16
 		id     uint16
 		seq    uint16
+		raddr  [4]byte
 	}
 	responseRing internal.Ring
 }
@@ -41,6 +44,8 @@ type ClientConfig struct {
 	ResponseQueueBuffer []byte
 	ResponseQueueLimit  int
 	HashSeed            uint32
+	// ID is used for Echo (ping) ID field setting.
+	ID uint16
 }
 
 func (client *Client) Configure(cfg ClientConfig) error {
@@ -51,6 +56,7 @@ func (client *Client) Configure(cfg ClientConfig) error {
 	internal.SliceReuse(&client.outgoingEcho, cfg.ResponseQueueLimit)
 	client.responseRing = internal.Ring{Buf: cfg.ResponseQueueBuffer}
 	client.magic = cfg.HashSeed
+	client.id = cfg.ID
 	return nil
 }
 
@@ -85,6 +91,14 @@ func (client *Client) Demux(carrierData []byte, frameOffset int) error {
 	if crc.PayloadSum16(rawdata) != 0 {
 		return lneto.ErrBadCRC
 	}
+	var raddr [4]byte
+	ipEnabled := frameOffset >= 20
+	if ipEnabled {
+		src, _, _, _, _ := internal.GetIPAddr(carrierData)
+		if len(src) == 4 {
+			raddr = [4]byte(src)
+		}
+	}
 	switch tp {
 	case TypeEcho:
 		// We received a ping request; not handled client-side.
@@ -99,12 +113,14 @@ func (client *Client) Demux(carrierData []byte, frameOffset int) error {
 		v.length = uint16(n)
 		v.id = efrm.Identifier()
 		v.seq = efrm.SequenceNumber()
+		v.raddr = raddr
+
 	case TypeEchoReply:
 		efrm := FrameEcho{Frame: ifrm}
 		data := efrm.Data()
 		hash := client.magichash(data, len(data)) & keyHashBits
 		idx := client.pingidx(hash)
-		if idx < 0 {
+		if idx < 0 || (ipEnabled && client.outgoingEcho[idx].raddr != raddr) {
 			err = lneto.ErrPacketDrop
 			break
 		}
@@ -124,8 +140,9 @@ func (client *Client) Encapsulate(carrierData []byte, ipOffset, frameOffset int)
 
 	// Put n bytes of ICMP data.
 	var n int
+	var raddr [4]byte
 	if len(client.incomingEcho) > 0 {
-		// Priority: send echo reply.
+		// Priority: send echo reply.1
 		inc := client.incomingEcho[0]
 		efrm := FrameEcho{Frame: ifrm}
 		efrm.SetType(TypeEchoReply)
@@ -138,7 +155,7 @@ func (client *Client) Encapsulate(carrierData []byte, ipOffset, frameOffset int)
 		}
 		client.incomingEcho = slices.Delete(client.incomingEcho, 0, 1)
 		n = sizeHeader + dataLen
-
+		raddr = inc.raddr
 	} else if len(client.outgoingEcho) > 0 {
 		idx := 0
 		for idx < len(client.outgoingEcho) {
@@ -154,8 +171,8 @@ func (client *Client) Encapsulate(carrierData []byte, ipOffset, frameOffset int)
 		out := &client.outgoingEcho[idx]
 		efrm := FrameEcho{Frame: ifrm}
 		efrm.SetType(TypeEcho)
-		efrm.SetIdentifier(0)
-		efrm.SetSequenceNumber(0)
+		efrm.SetIdentifier(client.id)
+		efrm.SetSequenceNumber(client.seq())
 		pattern := out.pattern
 		data := efrm.Data()
 		size := int(out.size)
@@ -166,6 +183,7 @@ func (client *Client) Encapsulate(carrierData []byte, ipOffset, frameOffset int)
 		}
 		copy(data[written:written+size%len(pattern)], pattern)
 		n = sizeHeader + size
+		raddr = out.raddr
 	} else {
 		return 0, nil
 	}
@@ -175,7 +193,15 @@ func (client *Client) Encapsulate(carrierData []byte, ipOffset, frameOffset int)
 	var crc lneto.CRC791
 	sum := crc.PayloadSum16(carrierData[frameOffset : frameOffset+n])
 	ifrm.SetCRC(sum)
-	return n, nil
+	if frameOffset >= 20 {
+		err = internal.SetIPAddrs(carrierData, 0, nil, raddr[:])
+	}
+	return n, err
+}
+
+func (client *Client) seq() uint16 {
+	client._seq++
+	return client._seq
 }
 
 func (client *Client) magichash(pattern []byte, size int) (hash uint32) {
@@ -195,16 +221,18 @@ func (client *Client) magichash(pattern []byte, size int) (hash uint32) {
 	return hash
 }
 
-func (client *Client) PingStart(pattern []byte, size uint16, ttl uint8) (key uint32, err error) {
+func (client *Client) PingStart(remoteAddr [4]byte, pattern []byte, size uint16) (key uint32, err error) {
 	if int(size) < len(pattern) {
 		return 0, lneto.ErrInvalidConfig
+	} else if remoteAddr == [4]byte{} {
+		return 0, lneto.ErrZeroDestination
 	}
 	key = client.magichash(pattern, int(size)) & keyHashBits
 	v := internal.SliceReclaim(&client.outgoingEcho)
 	v.key = key
 	v.size = size
-	v.ttl = ttl
 	v.pattern = append(v.pattern[:0], pattern...)
+	v.raddr = remoteAddr
 	return key, nil
 }
 

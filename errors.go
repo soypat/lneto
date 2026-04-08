@@ -21,6 +21,12 @@ const (
 	ErrInvalidLengthField                   // invalid length field
 	ErrExhausted                            // resource exhausted
 	ErrAlreadyRegistered                    // protocol already registered
+
+	// Below are potentially good future error additions
+	// based on one or two encountered use cases, example use case included.
+	/*
+		- ErrUnregistered/ErrAborted // connection unregistered. i.e: ICMP client aborted during active ping, ping process returns this.
+	*/
 )
 
 func (err errGeneric) Error() string {
