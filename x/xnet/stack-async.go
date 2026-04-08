@@ -401,7 +401,7 @@ func (s *StackAsync) RegisterListener(listener *tcp.Listener) (err error) {
 // RegisterUDP registers a StackNode on a UDP port with the given remote address and port.
 // The StackUDPPort wrapping is handled internally. The number of user-registered UDP ports
 // is limited by [StackConfig.MaxUDPConns].
-func (s *StackAsync) RegisterUDP(node internet.StackNode, remoteAddr []byte, remotePort uint16) error {
+func (s *StackAsync) RegisterUDP(node lneto.StackNode, remoteAddr []byte, remotePort uint16) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	idx := len(s.userUDPs)

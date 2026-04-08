@@ -122,7 +122,7 @@ func (ls *StackEthernet) LocalPort() uint16 { return 0 }
 
 func (ls *StackEthernet) Protocol() uint64 { return 1 }
 
-func (ls *StackEthernet) Register(h StackNode) error {
+func (ls *StackEthernet) Register(h lneto.StackNode) error {
 	proto := h.Protocol()
 	if proto > math.MaxUint16 || proto <= 1500 {
 		return lneto.ErrInvalidConfig

@@ -13,7 +13,7 @@ import (
 	"github.com/soypat/lneto/udp"
 )
 
-var _ StackNode = (*StackIP)(nil)
+var _ lneto.StackNode = (*StackIP)(nil)
 
 type StackIP struct {
 	connID          uint64
@@ -205,7 +205,7 @@ func (sb *StackIP) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int
 	return totalLen, err
 }
 
-func (sb *StackIP) Register(h StackNode) error {
+func (sb *StackIP) Register(h lneto.StackNode) error {
 	proto := h.Protocol()
 	if proto > 255 {
 		return lneto.ErrInvalidConfig

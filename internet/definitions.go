@@ -9,11 +9,6 @@ import (
 	"github.com/soypat/lneto"
 )
 
-// StackNode is [lneto.StackNode].
-//
-// Deprecated: Use lneto.StackNode instead.
-type StackNode = lneto.StackNode
-
 // node is a concrete StackNode as stored in Stacks. Methods are devirtualized for performance benefits, especially on TinyGo.
 type node struct {
 	currConnID uint64
@@ -187,7 +182,7 @@ func checkNodeErr(node *node, err error) (discard bool) {
 	return node.IsInvalid() || (err != nil && err == net.ErrClosed)
 }
 
-func nodeFromStackNode(s StackNode, port uint16, protocol uint64, remoteAddr []byte) node {
+func nodeFromStackNode(s lneto.StackNode, port uint16, protocol uint64, remoteAddr []byte) node {
 	if protocol > math.MaxUint16 {
 		panic(">16bit protocol number unsupported")
 	}
