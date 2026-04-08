@@ -213,6 +213,10 @@ func (sb *StackIP) Register(h StackNode) error {
 	return sb.handlers.registerByPortProto(nodeFromStackNode(h, h.LocalPort(), proto, nil))
 }
 
+func (sb *StackIP) IsRegistered(proto lneto.IPProto) bool {
+	return sb.handlers.nodeByProto(uint16(proto)) != nil
+}
+
 func (sb *StackIP) recvicmp(icmpData []byte) error {
 	var crc lneto.CRC791
 	if crc.PayloadSum16(icmpData) != 0 {

@@ -60,6 +60,17 @@ func (client *Client) LocalPort() uint16 { return 0 }
 
 func (client *Client) ConnectionID() *uint64 { return &client.connid }
 
+func (client *Client) Abort() {
+	client.Reset()
+	client.connid++
+}
+
+func (client *Client) Reset() {
+	client.incomingEcho = client.incomingEcho[:0]
+	client.outgoingEcho = client.outgoingEcho[:0]
+	client.responseRing.Reset()
+}
+
 func (client *Client) Demux(carrierData []byte, frameOffset int) error {
 	rawdata := carrierData[frameOffset:]
 	ifrm, err := NewFrame(rawdata)

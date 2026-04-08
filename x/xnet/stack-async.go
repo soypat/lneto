@@ -14,6 +14,7 @@ import (
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internet"
+	"github.com/soypat/lneto/ipv4/icmpv4"
 	"github.com/soypat/lneto/ntp"
 	"github.com/soypat/lneto/tcp"
 )
@@ -29,6 +30,7 @@ type StackAsync struct {
 	link     internet.StackEthernet
 	ip       internet.StackIP
 	arp      arp.Handler
+	icmp     icmpv4.Client
 	udps     internet.StackPorts
 	tcps     internet.StackPortsMACFiltered
 
@@ -72,6 +74,9 @@ type StackConfig struct {
 	MTU             uint16
 	// Accept multicast ethernet and IP packets. Needed for MDNS.
 	AcceptMulticast bool
+	// ICMPQueueLimit sets maximum number of input/output packets queued for processing.
+	// If set to zero ICMP cannot be enabled on the stack.
+	ICMPQueueLimit int
 }
 
 func (s *StackAsync) Hostname() string {
@@ -95,18 +100,20 @@ func (s *StackAsync) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame i
 }
 
 func (s *StackAsync) MTU() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.link.MTU()
 }
 
 func (s *StackAsync) Reset(cfg StackConfig) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	mac := cfg.HardwareAddress
-	addr := cfg.StaticAddress
-	s.prng = uint32(cfg.RandSeed)
-	if s.prng == 0 {
+	if cfg.RandSeed == 0 {
 		return lneto.ErrInvalidConfig
 	}
+	mac := cfg.HardwareAddress
+	addr := cfg.StaticAddress
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prng = uint32(cfg.RandSeed)
 	s.hostname = cfg.Hostname
 	if !addr.IsValid() {
 		addr = netip.AddrFrom4([4]byte{}) // If static not set DHCP will be performed and address will be zero.
@@ -133,7 +140,6 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 		return err
 	}
 	s.ip.SetAcceptMulticast(cfg.AcceptMulticast)
-	//
 	err = s.resetARP()
 	if err != nil {
 		return err
@@ -144,9 +150,6 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 		return err
 	}
 	internal.SliceReuse(&s.userUDPs, cfg.MaxUDPConns)
-	if err != nil {
-		return err
-	}
 
 	// Enable TCP if connections present.
 	if cfg.MaxTCPConns > 0 {
@@ -169,6 +172,16 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	err = s.ip.Register(&s.udps)
 	if err != nil {
 		return err
+	}
+	if cfg.ICMPQueueLimit > 0 {
+		err = s.icmp.Configure(icmpv4.ClientConfig{
+			ResponseQueueBuffer: make([]byte, cfg.ICMPQueueLimit*64),
+			ResponseQueueLimit:  cfg.ICMPQueueLimit,
+			HashSeed:            s.Prand32(),
+		})
+		if err != nil {
+			return err
+		}
 	}
 	var timebuf [32]time.Time
 	s.sysprec = ntp.CalculateSystemPrecision(time.Now, timebuf[:])
@@ -280,6 +293,22 @@ func (s *StackAsync) Gateway6() [6]byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.link.Gateway6()
+}
+
+// EnableICMP registers an ICMP handler to the stack when enabled is true.
+// If enabled=false the currently registered ICMP handler is unregistered and state reset.
+func (s *StackAsync) EnableICMP(enabled bool) (err error) {
+	if enabled {
+		if s.ip.IsRegistered(lneto.IPProtoICMP) {
+			err = lneto.ErrAlreadyRegistered
+		} else {
+			err = s.ip.Register(&s.icmp)
+		}
+
+	} else {
+		s.icmp.Abort()
+	}
+	return err
 }
 
 func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrPort) (err error) {

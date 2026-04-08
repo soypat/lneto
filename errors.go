@@ -20,6 +20,7 @@ const (
 	ErrInvalidField                         // invalid field
 	ErrInvalidLengthField                   // invalid length field
 	ErrExhausted                            // resource exhausted
+	ErrAlreadyRegistered                    // protocol already registered
 )
 
 func (err errGeneric) Error() string {

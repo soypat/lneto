@@ -1,7 +1,6 @@
 package internet
 
 import (
-	"errors"
 	"log/slog"
 	"math"
 	"net"
@@ -48,7 +47,7 @@ func (h *handlers) registerByProto(n node) error {
 		return err
 	}
 	if h.nodeByProto(n.proto) != nil {
-		return errProtoRegistered
+		return lneto.ErrAlreadyRegistered
 	}
 	h.nodes = append(h.nodes, n)
 	return nil
@@ -60,7 +59,7 @@ func (h *handlers) registerByPortProto(n node) error {
 		return err
 	}
 	if h.nodeByPortProto(n.port, n.proto) != nil {
-		return errProtoRegistered
+		return lneto.ErrAlreadyRegistered
 	}
 	h.nodes = append(h.nodes, n)
 	return nil
@@ -177,8 +176,7 @@ func (h *handlers) encapsulateAny(buf []byte, offsetIP, offsetThisFrame int) (_ 
 }
 
 var (
-	errProtoRegistered = errors.New("protocol already registered")
-	_                  = net.ErrClosed
+	_ = net.ErrClosed
 )
 
 func (node *node) IsInvalid() bool {
