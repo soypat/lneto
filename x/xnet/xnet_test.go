@@ -925,11 +925,15 @@ func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
 		StaticAddress:   stackAddr,
 		HardwareAddress: stackMAC,
 		MTU:             MTU,
+		ICMPQueueLimit:  2,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-
+	err = stack.EnableICMP(true)
+	if err != nil {
+		t.Error("enabling ICMP:", err)
+	}
 	gen := ltesto.PacketGen{
 		SrcMAC:  routerMAC,
 		DstMAC:  stackMAC,
@@ -948,7 +952,10 @@ func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
 	if err != nil {
 		t.Fatalf("valid ICMP echo rejected: %v", err)
 	}
-
+	n, err := stack.EgressEthernet(pkt)
+	if err != nil || n == 0 {
+		t.Error("expected ICMP response:", n, err)
+	}
 	// Test 2: Valid ICMP with trailing FCS bytes (simulates real PIO hardware capture).
 	// This is a regression test for the bug where recvicmp checksummed ifrm.RawData()
 	// instead of ifrm.Payload(), causing the 4 trailing FCS bytes to corrupt the checksum.

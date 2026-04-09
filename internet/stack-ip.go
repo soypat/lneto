@@ -105,9 +105,6 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 	off := ifrm.HeaderLength()
 	totalLen := ifrm.TotalLength()
 	proto := ifrm.Protocol()
-	if proto == lneto.IPProtoICMP {
-		return sb.recvicmp(ifrm.Payload())
-	}
 	node := sb.handlers.nodeByProto(uint16(proto))
 	// nodeIdx := getNodeByProto(sb.handlers, uint16(proto))
 	if node == nil {
