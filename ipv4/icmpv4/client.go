@@ -78,6 +78,10 @@ func (client *Client) Reset() {
 	client.responseRing.Reset()
 }
 
+func (client *Client) IncomingEchoCapacity() int {
+	return cap(client.incomingEcho)
+}
+
 func (client *Client) Demux(carrierData []byte, frameOffset int) error {
 	rawdata := carrierData[frameOffset:]
 	ifrm, err := NewFrame(rawdata)
