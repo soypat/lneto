@@ -23,7 +23,9 @@ jobs:
 
     - name: Build
       run: go build -v ./...
-
+    
+    - name: TinyGo vet
+      run: go vet -tags=tinygo ./...
     # - name: govulncheck # Getting false positives all the time.
     #   uses: golang/govulncheck-action@v1
     #   with:
