@@ -250,17 +250,6 @@ func TestExchange_rfc9293_figure12(t *testing.T) {
 	tcbA.HelperInitState(tcp.StateEstablished, issA, issA, windowA)
 	tcbA.HelperInitRcv(issB, issB, windowB)
 	tcbA.HelperExchange(t, exchangeA)
-	// tcbA.HelperExchange(t, exchangeA[:1])
-	// tcbA.HelperExchange(t, exchangeA[1:2])
-	// tcbA.HelperExchange(t, exchangeA[2:])
-
-	return
-	exchangeB := reverseExchange(exchangeA)
-	exchangeB[1].WantPending = &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: FINACK, WND: windowB}
-	var tcbB tcp.ControlBlock
-	tcbB.HelperInitState(tcp.StateEstablished, issB, issB, windowB)
-	tcbB.HelperInitRcv(issA, issA, windowA)
-	tcbB.HelperExchange(t, exchangeB)
 }
 
 /*
@@ -607,65 +596,4 @@ func TestUnexpectedStateClosing(t *testing.T) {
 		},
 	}
 	tcb.HelperExchange(t, ex[:])
-}
-
-func TestExchange_helloworld_client(t *testing.T) {
-	return
-	// Client Transmission Control Block.
-	var tcb tcp.ControlBlock
-	// The client starts in the SYN_SENT state with a random sequence number.
-	gotClientSeg, _ := parseSegment(t, exchangeHelloWorld[0])
-
-	// We add the SYN state to the client.
-	tcb.HelperInitState(tcp.StateSynSent, gotClientSeg.SEQ, gotClientSeg.SEQ, gotClientSeg.WND)
-	err := tcb.Send(gotClientSeg)
-	if err != nil {
-
-		t.Fatal(err)
-	}
-	tcb.HelperPrintSegment(t, false, gotClientSeg)
-
-	segString := func(seg tcp.Segment) string {
-		return tcb.RelativeAutoSegment(seg).RelativeGoString(0, 0)
-	}
-	for i, packet := range exchangeHelloWorld {
-		if i == 0 {
-			continue // we already processed first packet.
-		}
-		seg, payload := parseSegment(t, packet)
-		if seg.DATALEN > 0 {
-			t.Logf("seg[%d] <%s> payload: %q", i, tcb.State(), string(payload))
-		} else {
-			t.Logf("seg[%d] <%s>", i, tcb.State())
-		}
-		isClient := packet[0] == 0x28
-		if isClient {
-			isPSH := seg.Flags&tcp.FlagPSH != 0
-			gotClientSeg.Flags |= seg.Flags & (tcp.FlagPSH | tcp.FlagFIN) // Can't predict when client will send FIN.
-			if isPSH {
-				gotClientSeg.DATALEN = seg.DATALEN
-			}
-
-			gotClientSeg.WND = seg.WND // Ignore window field, not a core part of control flow.
-			if gotClientSeg != seg {
-				t.Fatalf("client:\n got=%+v\nwant=%+v", segString(gotClientSeg), segString(seg))
-			}
-			err := tcb.Send(gotClientSeg)
-			if err != nil {
-				t.Fatalf("incoming %s:\nseg[%d]=%s\nrcv=%+v\nsnd=%+v", err, i, segString(gotClientSeg), tcb.RelativeRecvSpace(), tcb.RelativeSendSpace())
-			}
-			tcb.HelperPrintSegment(t, false, gotClientSeg)
-			continue // we only pass server packets to the client.
-		}
-		err = tcb.Recv(seg)
-		if err != nil {
-			t.Fatalf("%s:\nseg[%d]=%s\nrcv=%+v\nsnd=%+v", err, i, segString(seg), tcb.RelativeRecvSpace(), tcb.RelativeSendSpace())
-		}
-		tcb.HelperPrintSegment(t, true, seg)
-		var ok bool
-		gotClientSeg, ok = tcb.PendingSegment(0)
-		if !ok {
-			t.Fatalf("[%d]: got no segment state=%s", i, tcb.State())
-		}
-	}
 }

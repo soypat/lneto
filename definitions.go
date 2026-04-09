@@ -1,5 +1,42 @@
 package lneto
 
+// StackNode is an abstraction of a packet exchanging protocol controller. This is the building block for all protocols,
+// from Ethernet to IP to TCP, practically any protocol can be expressed as a StackNode and function completely.
+// Today protocols represented by StackNode also include NTP, DNS, DHCP, ARP, ICMP, UDP, mDNS.
+// Do note stream based protocols like HTTP are NOT well represented with a StackNode.
+type StackNode interface {
+	// Encapsulate writes the stack node's frame into carrierData[offsetToFrame:]
+	// along with any other frame or payload the stack node encapsulates.
+	// The returned integer is amount of bytes written such that carrierData[offsetToFrame:offsetToFrame+n]
+	// contains written data. Data inside carrierData[:offsetToFrame] usually contains data necessary for
+	// a StackNode to correctly emit valid frame data: such is the case for TCP packets which require IP
+	// frame data for checksum calculation. Thus StackNodes must provide fields in their own frame
+	// required by sub-stacknodes for correct encapsulation; in the case of IPv4/6 this means including fields
+	// used in pseudo-header checksum like local IP (see [ipv4.CRCWriteUDPPseudo]).
+	//
+	// offsetToIP is the offset to the IP frame, if present, else its value should be -1.
+	// The relation offsetToIP<=offsetToFrame MUST hold.
+	//
+	// When [net.ErrClosed] is returned the StackNode should be discarded and any written data passed up normally.
+	// Errors returned by Encapsulate are "extraordinary" and should not be returned unless the StackNode is receiving invalid carrierData/frameOffset.
+	Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error)
+	// Demux reads from the argument buffer where frameOffset is the offset of this StackNode's frame first byte.
+	// The stack node then dispatches(demuxes) the encapsulated frames to its corresponding substack or subnode.
+	Demux(carrierData []byte, frameOffset int) error
+	// LocalPort returns the local port of this StackNode or zero if not set/relevant.
+	LocalPort() uint16
+	// Protocol returns a number identifying the protocol used by this [StackNode].
+	// Can be an [IPProto] among other types of protocols, i.e: ethernet.Protocol for a link layer [StackNode].
+	Protocol() uint64
+	// ConnectionID returns the pointer to the connection context number or ConnectionID.
+	// Stacks should store the original value of ConnectionID (dereference the pointer) on
+	// registering a [StackNode]. When the value changes this means the registered [StackNode]
+	// should be discarded since its lifetime has terminated.
+	ConnectionID() *uint64
+	// TODO(pato,ddirect): Do we eventually want to trigger writes to buffers asynchronously?
+	// SetFlagPending(flagPending func(numPendingEncapsulations int))
+}
+
 //go:generate stringer -type=IPProto,errGeneric -linecomment -output stringers.go .
 
 // IPProto represents the IP protocol number.

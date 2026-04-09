@@ -87,7 +87,7 @@ func (ps *StackPorts) Demux(b []byte, offset int) (err error) {
 
 // Register registers a port StackNode on StackPorts.
 // If dstMAC is set to non-nil, length six buffer then
-func (ps *StackPorts) Register(h StackNode) error {
+func (ps *StackPorts) Register(h lneto.StackNode) error {
 	port := h.LocalPort()
 	proto := h.Protocol()
 	if port <= 0 {
@@ -105,7 +105,7 @@ type StackPortsMACFiltered struct {
 	sp StackPorts
 }
 
-func (mfsp *StackPortsMACFiltered) Register(h StackNode, addr []byte) error {
+func (mfsp *StackPortsMACFiltered) Register(h lneto.StackNode, addr []byte) error {
 	port := h.LocalPort()
 	proto := h.Protocol()
 	if port <= 0 {

@@ -2,7 +2,9 @@
 
 package internet
 
-func makecbnode(s StackNode) cbnode {
+import "github.com/soypat/lneto"
+
+func makecbnode(s lneto.StackNode) cbnode {
 	return cbnode{
 		_s: s,
 	}
@@ -10,7 +12,7 @@ func makecbnode(s StackNode) cbnode {
 
 type cbnode struct {
 	// Do not access outside of handlers/node logic.
-	_s StackNode
+	_s lneto.StackNode
 }
 
 func (s cbnode) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
