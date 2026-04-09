@@ -83,23 +83,23 @@ func BenchmarkTCPHandshake(b *testing.B) {
 	clconn, svconn := new(tcp.Conn), new(tcp.Conn)
 
 	err := sv.Reset(StackConfig{
-		Hostname:        "Server",
-		RandSeed:        1,
-		StaticAddress:   netip.AddrFrom4([4]byte{10, 0, 0, 1}),
-		MaxTCPConns:     1,
-		HardwareAddress: [6]byte{0xbe, 0xef, 0, 0, 0, 1},
-		MTU:             MTU,
+		Hostname:          "Server",
+		RandSeed:          1,
+		StaticAddress:     netip.AddrFrom4([4]byte{10, 0, 0, 1}),
+		MaxActiveTCPPorts: 1,
+		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 1},
+		MTU:               MTU,
 	})
 	if err != nil {
 		b.Fatal(err)
 	}
 	err = client.Reset(StackConfig{
-		Hostname:        "Client",
-		RandSeed:        2,
-		StaticAddress:   netip.AddrFrom4([4]byte{10, 0, 0, 2}),
-		MaxTCPConns:     1,
-		HardwareAddress: [6]byte{0xbe, 0xef, 0, 0, 0, 2},
-		MTU:             MTU,
+		Hostname:          "Client",
+		RandSeed:          2,
+		StaticAddress:     netip.AddrFrom4([4]byte{10, 0, 0, 2}),
+		MaxActiveTCPPorts: 1,
+		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 2},
+		MTU:               MTU,
 	})
 	if err != nil {
 		b.Fatal(err)

@@ -19,23 +19,23 @@ func TestStackAsyncListener_SingleConnection(t *testing.T) {
 	// Create two stacks.
 	client, sv := new(StackAsync), new(StackAsync)
 	err := client.Reset(StackConfig{
-		Hostname:        "Client",
-		RandSeed:        seed,
-		StaticAddress:   netip.AddrFrom4([4]byte{10, 0, 0, 1}),
-		MaxTCPConns:     1,
-		HardwareAddress: [6]byte{0xbe, 0xef, 0, 0, 0, 1},
-		MTU:             MTU,
+		Hostname:          "Client",
+		RandSeed:          seed,
+		StaticAddress:     netip.AddrFrom4([4]byte{10, 0, 0, 1}),
+		MaxActiveTCPPorts: 1,
+		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 1},
+		MTU:               MTU,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	err = sv.Reset(StackConfig{
-		Hostname:        "Server",
-		RandSeed:        ^seed,
-		StaticAddress:   netip.AddrFrom4([4]byte{10, 0, 0, 2}),
-		MaxTCPConns:     1, // Note: We use listener, not direct TCP conn registration.
-		HardwareAddress: [6]byte{0xbe, 0xef, 0, 0, 0, 2},
-		MTU:             MTU,
+		Hostname:          "Server",
+		RandSeed:          ^seed,
+		StaticAddress:     netip.AddrFrom4([4]byte{10, 0, 0, 2}),
+		MaxActiveTCPPorts: 1, // Note: We use listener, not direct TCP conn registration.
+		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 2},
+		MTU:               MTU,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -131,12 +131,12 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 	// Create two stacks.
 	sv := new(StackAsync)
 	err := sv.Reset(StackConfig{
-		Hostname:        "Server",
-		RandSeed:        ^seed,
-		StaticAddress:   netip.AddrFrom4([4]byte{10, 0, 0, 2}),
-		MaxTCPConns:     1, // Note: We use listener, not direct TCP conn registration.
-		HardwareAddress: [6]byte{0xbe, 0xef, 0, 0, 0, 2},
-		MTU:             MTU,
+		Hostname:          "Server",
+		RandSeed:          ^seed,
+		StaticAddress:     netip.AddrFrom4([4]byte{10, 0, 0, 2}),
+		MaxActiveTCPPorts: 1, // Note: We use listener, not direct TCP conn registration.
+		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 2},
+		MTU:               MTU,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -171,12 +171,12 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 	doRequest := func(caddrp netip.AddrPort, sleep time.Duration, data []byte) {
 		var client StackAsync
 		err := client.Reset(StackConfig{
-			Hostname:        "Client",
-			RandSeed:        seed,
-			StaticAddress:   caddrp.Addr(),
-			MaxTCPConns:     1,
-			HardwareAddress: chw,
-			MTU:             MTU,
+			Hostname:          "Client",
+			RandSeed:          seed,
+			StaticAddress:     caddrp.Addr(),
+			MaxActiveTCPPorts: 1,
+			HardwareAddress:   chw,
+			MTU:               MTU,
 		})
 		if err != nil {
 			panic(err)

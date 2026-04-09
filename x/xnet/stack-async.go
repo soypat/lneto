@@ -62,13 +62,17 @@ type StackAsync struct {
 }
 
 type StackConfig struct {
-	StaticAddress         netip.Addr
-	DNSServer             netip.Addr
-	NTPServer             netip.Addr
-	RandSeed              int64
-	Hostname              string
-	MaxTCPConns           int
-	MaxUDPConns           int
+	StaticAddress netip.Addr
+	DNSServer     netip.Addr
+	NTPServer     netip.Addr
+	RandSeed      int64
+	Hostname      string
+
+	// MaxActiveTCPPorts and MaxActiveUDPPorts are a memory guardrail to limit
+	// number of simultaneous open TCP/UDP ports. The memory impact at the stack level
+	// of a port corresponds to ~64 bytes excluding the registered StackNode i.e: [tcp.Conn] or [udp.Conn].
+	MaxActiveTCPPorts, MaxActiveUDPPorts uint16
+
 	EthernetTxCRC32Update func(crc uint32, b []byte) uint32
 
 	HardwareAddress [6]byte
@@ -170,16 +174,16 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	if err != nil {
 		return err
 	}
-	udpConns := 3 + cfg.MaxUDPConns // DHCP, DNS, NTP + user-registered.
+	udpConns := 3 + cfg.MaxActiveUDPPorts // DHCP, DNS, NTP + user-registered.
 	err = s.udps.ResetUDP(udpConns)
 	if err != nil {
 		return err
 	}
-	internal.SliceReuse(&s.userUDPs, cfg.MaxUDPConns)
+	internal.SliceReuse(&s.userUDPs, int(cfg.MaxActiveUDPPorts))
 
 	// Enable TCP if connections present.
-	if cfg.MaxTCPConns > 0 {
-		err = s.tcps.ResetTCP(cfg.MaxTCPConns)
+	if cfg.MaxActiveTCPPorts > 0 {
+		err = s.tcps.ResetTCP(cfg.MaxActiveTCPPorts)
 		if err != nil {
 			return err
 		}

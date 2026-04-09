@@ -43,13 +43,13 @@ func TestMDNS_QueryResponse(t *testing.T) {
 	// Setup responder stack with mDNS service.
 	responderStack := new(StackAsync)
 	err = responderStack.Reset(StackConfig{
-		Hostname:        "responder",
-		RandSeed:        1234,
-		StaticAddress:   responderAddr,
-		HardwareAddress: responderMAC,
-		MTU:             MTU,
-		MaxUDPConns:     1,
-		AcceptMulticast: true,
+		Hostname:          "responder",
+		RandSeed:          1234,
+		StaticAddress:     responderAddr,
+		HardwareAddress:   responderMAC,
+		MTU:               MTU,
+		MaxActiveUDPPorts: 1,
+		AcceptMulticast:   true,
 	})
 	if err != nil {
 		t.Fatal("responder reset:", err)
@@ -73,13 +73,13 @@ func TestMDNS_QueryResponse(t *testing.T) {
 	// Setup querier stack.
 	querierStack := new(StackAsync)
 	err = querierStack.Reset(StackConfig{
-		Hostname:        "querier",
-		RandSeed:        5678,
-		StaticAddress:   querierAddr,
-		HardwareAddress: querierMAC,
-		MTU:             MTU,
-		MaxUDPConns:     1,
-		AcceptMulticast: true,
+		Hostname:          "querier",
+		RandSeed:          5678,
+		StaticAddress:     querierAddr,
+		HardwareAddress:   querierMAC,
+		MTU:               MTU,
+		MaxActiveUDPPorts: 1,
+		AcceptMulticast:   true,
 	})
 	if err != nil {
 		t.Fatal("querier reset:", err)
@@ -278,13 +278,13 @@ func newMDNSStack(t *testing.T, hostname string, seed int64,
 	const MTU = 1500
 	stack := new(StackAsync)
 	err := stack.Reset(StackConfig{
-		Hostname:        hostname,
-		RandSeed:        seed,
-		StaticAddress:   addr,
-		HardwareAddress: mac,
-		MTU:             MTU,
-		MaxUDPConns:     1,
-		AcceptMulticast: true,
+		Hostname:          hostname,
+		RandSeed:          seed,
+		StaticAddress:     addr,
+		HardwareAddress:   mac,
+		MTU:               MTU,
+		MaxActiveUDPPorts: 1,
+		AcceptMulticast:   true,
 	})
 	if err != nil {
 		t.Fatal(hostname, "reset:", err)

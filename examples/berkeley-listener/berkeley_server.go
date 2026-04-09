@@ -104,11 +104,11 @@ func run() error {
 
 	var stack xnet.StackAsync
 	if err := stack.Reset(xnet.StackConfig{
-		Hostname:        "berkeley-http",
-		RandSeed:        softRand,
-		HardwareAddress: nicHW,
-		MTU:             uint16(mtu),
-		MaxTCPConns:     1024,
+		Hostname:          "berkeley-http",
+		RandSeed:          softRand,
+		HardwareAddress:   nicHW,
+		MTU:               uint16(mtu),
+		MaxActiveTCPPorts: 1024,
 	}); err != nil {
 		return err
 	}
@@ -202,7 +202,7 @@ func run() error {
 	blocking := stack.StackBlocking(5 * time.Millisecond)
 	berkeley := blocking.StackGo(xnet.StackGoConfig{
 		ListenerPoolConfig: xnet.TCPPoolConfig{
-			PoolSize:           flagPoolSize,
+			PoolSize:           uint16(flagPoolSize),
 			QueueSize:          3,
 			TxBufSize:          mtu,
 			RxBufSize:          mtu,
@@ -328,12 +328,12 @@ func tryPoll(iface ltesto.Interface, poll time.Duration) (dataMayBeReady bool, _
 func mockClient(stack *xnet.StackAsync, port uint16, subnet netip.Prefix) {
 	target := netip.AddrPortFrom(stack.Addr(), port)
 	err := mockStack.Reset(xnet.StackConfig{
-		StaticAddress:   subnet.Addr().Next(),
-		MaxTCPConns:     1,
-		HardwareAddress: stack.Gateway6(),
-		Hostname:        "the-other",
-		MTU:             uint16(stack.MTU()),
-		RandSeed:        int64(stack.Prand32()),
+		StaticAddress:     subnet.Addr().Next(),
+		MaxActiveTCPPorts: 1,
+		HardwareAddress:   stack.Gateway6(),
+		Hostname:          "the-other",
+		MTU:               uint16(stack.MTU()),
+		RandSeed:          int64(stack.Prand32()),
 	})
 	if err != nil {
 		panic(err.Error())

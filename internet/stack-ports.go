@@ -22,21 +22,21 @@ type StackPorts struct {
 	rstQueue tcp.RSTQueue
 }
 
-func (ps *StackPorts) ResetUDP(maxNodes int) error {
+func (ps *StackPorts) ResetUDP(maxNodes uint16) error {
 	return ps.Reset(uint64(lneto.IPProtoUDP), 2, maxNodes)
 }
 
-func (ps *StackPorts) ResetTCP(maxNodes int) error {
+func (ps *StackPorts) ResetTCP(maxNodes uint16) error {
 	return ps.Reset(uint64(lneto.IPProtoTCP), 2, maxNodes)
 }
 
-func (ps *StackPorts) Reset(protocol uint64, dstPortOffset uint16, maxNodes int) error {
+func (ps *StackPorts) Reset(protocol uint64, dstPortOffset, maxNodes uint16) error {
 	if protocol > math.MaxUint16 {
 		return lneto.ErrInvalidConfig
 	} else if maxNodes <= 0 {
 		return lneto.ErrInvalidConfig
 	}
-	ps.handlers.reset("StackPorts(proto="+strconv.Itoa(int(protocol))+")", maxNodes)
+	ps.handlers.reset("StackPorts(proto="+strconv.Itoa(int(protocol))+")", int(maxNodes))
 	*ps = StackPorts{
 		connID:     ps.connID + 1,
 		handlers:   ps.handlers,
@@ -118,15 +118,15 @@ func (mfsp *StackPortsMACFiltered) Register(h lneto.StackNode, addr []byte) erro
 	return mfsp.sp.handlers.registerByPortProto(nodeFromStackNode(h, port, proto, addr))
 }
 
-func (ps *StackPortsMACFiltered) ResetUDP(maxNodes int) error {
+func (ps *StackPortsMACFiltered) ResetUDP(maxNodes uint16) error {
 	return ps.sp.ResetUDP(maxNodes)
 }
 
-func (ps *StackPortsMACFiltered) ResetTCP(maxNodes int) error {
+func (ps *StackPortsMACFiltered) ResetTCP(maxNodes uint16) error {
 	return ps.sp.ResetTCP(maxNodes)
 }
 
-func (ps *StackPortsMACFiltered) Reset(protocol uint64, dstPortOffset uint16, maxNodes int) error {
+func (ps *StackPortsMACFiltered) Reset(protocol uint64, dstPortOffset, maxNodes uint16) error {
 	return ps.sp.Reset(protocol, dstPortOffset, maxNodes)
 }
 

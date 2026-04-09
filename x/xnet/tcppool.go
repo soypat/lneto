@@ -32,7 +32,8 @@ func _() {
 }
 
 type TCPPoolConfig struct {
-	PoolSize  int
+	// PoolSize determines the maximum number of active incoming TCP connections to the pool.
+	PoolSize  uint16
 	QueueSize int
 	TxBufSize int
 	RxBufSize int
@@ -58,7 +59,7 @@ func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
 	if cfg.EstablishedTimeout <= 0 || cfg.ClosingTimeout <= 0 {
 		return nil, lneto.ErrInvalidConfig
 	}
-	n := cfg.PoolSize
+	n := int(cfg.PoolSize)
 	pool := &TCPPool{
 		acquiredAt:     make([]int64, n),
 		closingAt:      make([]int64, n),

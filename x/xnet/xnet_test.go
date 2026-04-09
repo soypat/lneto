@@ -175,12 +175,12 @@ func newTCPStacks(t testing.TB, randSeed int64, mtu int) (s1, s2 *StackAsync, c1
 	c1, c2 = new(tcp.Conn), new(tcp.Conn)
 	byte1 := byte(randSeed)/4 - 1
 	err := s1.Reset(StackConfig{
-		Hostname:        "Stack1",
-		RandSeed:        randSeed,
-		StaticAddress:   netip.AddrFrom4([4]byte{10, 0, 0, byte1}),
-		MaxTCPConns:     1,
-		HardwareAddress: [6]byte{0xbe, 0xef, 0, 0, 0, byte1},
-		MTU:             uint16(mtu),
+		Hostname:          "Stack1",
+		RandSeed:          randSeed,
+		StaticAddress:     netip.AddrFrom4([4]byte{10, 0, 0, byte1}),
+		MaxActiveTCPPorts: 1,
+		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, byte1},
+		MTU:               uint16(mtu),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -188,12 +188,12 @@ func newTCPStacks(t testing.TB, randSeed int64, mtu int) (s1, s2 *StackAsync, c1
 
 	byte2 := byte1 + 1
 	err = s2.Reset(StackConfig{
-		Hostname:        "Stack2",
-		RandSeed:        ^randSeed,
-		StaticAddress:   netip.AddrFrom4([4]byte{10, 0, 0, byte2}),
-		MaxTCPConns:     1,
-		HardwareAddress: [6]byte{0xbe, 0xef, 0, 0, 0, byte2},
-		MTU:             uint16(mtu),
+		Hostname:          "Stack2",
+		RandSeed:          ^randSeed,
+		StaticAddress:     netip.AddrFrom4([4]byte{10, 0, 0, byte2}),
+		MaxActiveTCPPorts: 1,
+		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, byte2},
+		MTU:               uint16(mtu),
 	})
 	if err != nil {
 		t.Fatal(err)

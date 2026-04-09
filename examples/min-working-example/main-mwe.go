@@ -64,7 +64,7 @@ func run(ctx context.Context, stack *xnet.StackAsync) error {
 		Hostname: "lneto-mwe",
 		RandSeed: time.Now().UnixNano(),
 		// A passive TCP listener to many remote ports takes up one spot, active TCP clients to one remote port take up a spot.
-		MaxTCPConns: 1,
+		MaxActiveTCPPorts: 1,
 		// MaxUDPConns: 1 , // For MDNS support.
 		// AcceptMulticast: true, // For MDNS.
 		MTU:             uint16(framelen - ethernet.MaxOverheadSize),

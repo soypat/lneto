@@ -121,11 +121,11 @@ func run() (err error) {
 	var stack xnet.StackAsync
 
 	err = stack.Reset(xnet.StackConfig{
-		Hostname:        "xnet-test",
-		RandSeed:        softRand,
-		HardwareAddress: brHW,
-		MTU:             uint16(mtu),
-		MaxTCPConns:     1,
+		Hostname:          "xnet-test",
+		RandSeed:          softRand,
+		HardwareAddress:   brHW,
+		MTU:               uint16(mtu),
+		MaxActiveTCPPorts: 1,
 	})
 	if err != nil {
 		return err
