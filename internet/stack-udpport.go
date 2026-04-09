@@ -24,7 +24,7 @@ func (sudp *StackUDPPort) SetStackNode(node lneto.StackNode, raddr []byte, rmpor
 
 func (sudp *StackUDPPort) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
 
-func (sudp *StackUDPPort) LocalPort() uint16 { return sudp.h.port }
+func (sudp *StackUDPPort) LocalPort() uint16 { return sudp.h.lport }
 
 func (sudp *StackUDPPort) ConnectionID() *uint64 { return sudp.h.connID }
 
@@ -42,7 +42,7 @@ func (sudp *StackUDPPort) Demux(carrierData []byte, frameOffset int) error {
 		return sudp.vld.ErrPop()
 	}
 	dst := ufrm.DestinationPort()
-	if dst != sudp.h.port {
+	if dst != sudp.h.lport {
 		return lneto.ErrPacketDrop // Not meant for us.
 	}
 	// TODO remote ip address handling.
@@ -70,7 +70,7 @@ func (sudp *StackUDPPort) Encapsulate(carrierData []byte, offsetToIP, offsetToFr
 	if err != nil {
 		return 0, err
 	}
-	ufrm.SetSourcePort(sudp.h.port)
+	ufrm.SetSourcePort(sudp.h.lport)
 	ufrm.SetDestinationPort(sudp.rmport)
 	if len(sudp.raddr) > 0 && offsetToIP >= 0 {
 		err = internal.SetIPAddrs(carrierData[offsetToIP:], 0, nil, sudp.raddr)

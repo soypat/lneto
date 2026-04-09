@@ -12,7 +12,7 @@ import (
 // with payload/options of frames to avoid panics.
 func NewFrame(buf []byte) (Frame, error) {
 	if len(buf) < sizeHeaderNoVLAN {
-		return Frame{buf: nil}, lneto.ErrShortBuffer
+		return Frame{buf: nil}, lneto.ErrTruncatedFrame
 	}
 	return Frame{buf: buf}, nil
 }
@@ -122,6 +122,6 @@ func (efrm Frame) ValidateSize(v *lneto.Validator) {
 		v.AddError(lneto.ErrInvalidLengthField)
 	}
 	if sz == TypeVLAN && len(efrm.buf) < 18 {
-		v.AddError(lneto.ErrShortBuffer)
+		v.AddError(lneto.ErrTruncatedFrame)
 	}
 }

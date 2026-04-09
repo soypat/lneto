@@ -10,13 +10,13 @@ import (
 	"github.com/soypat/lneto/ethernet"
 )
 
-// NewARPFrame returns a ARPFrame with data set to buf.
+// NewFrame returns a Frame with data set to buf.
 // An error is returned if the buffer size is smaller than 28 (IPv4 min size).
-// Users should still call [ARPFrame.ValidateSize] before working
+// Users should still call [Frame.ValidateSize] before working
 // with payload/options of frames to avoid panics.
 func NewFrame(buf []byte) (Frame, error) {
 	if len(buf) < sizeHeaderv4 {
-		return Frame{buf: nil}, lneto.ErrShortBuffer
+		return Frame{buf: nil}, lneto.ErrTruncatedFrame
 	}
 	return Frame{buf: buf}, nil
 }

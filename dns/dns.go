@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
 )
 
@@ -196,7 +197,7 @@ func skipQuestion(msg []byte, off uint16) (_ uint16, err error) {
 		return off, err
 	}
 	if off+4 > uint16(len(msg)) {
-		return off, errBaseLen
+		return off, lneto.ErrTruncatedFrame
 	}
 	return off + 4, nil
 }
@@ -210,7 +211,7 @@ func skipResource(msg []byte, off uint16) (_ uint16, err error) {
 	datalen := binary.BigEndian.Uint16(msg[off+8:])
 	off += datalen + 10
 	if off > uint16(len(msg)) {
-		return off, errBaseLen
+		return off, lneto.ErrTruncatedFrame
 	}
 	return off, nil
 }
@@ -610,7 +611,7 @@ func visitAllLabels(msg []byte, off uint16, fn func(b []byte), allowCompression 
 LOOP:
 	for {
 		if currOff >= uint16(len(msg)) {
-			return off, errBaseLen
+			return off, lneto.ErrTruncatedFrame
 		}
 		c := uint16(msg[currOff])
 		currOff++

@@ -21,6 +21,7 @@ const (
 	ErrInvalidLengthField                   // invalid length field
 	ErrExhausted                            // resource exhausted
 	ErrAlreadyRegistered                    // protocol already registered
+	ErrTruncatedFrame                       // truncated frame
 
 	// Below are potentially good future error additions
 	// based on one or two encountered use cases, example use case included.

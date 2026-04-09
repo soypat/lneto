@@ -12,7 +12,7 @@ import (
 // with payload/options of frames to avoid panics.
 func NewFrame(buf []byte) (Frame, error) {
 	if len(buf) < sizeHeader {
-		return Frame{buf: buf}, lneto.ErrShortBuffer
+		return Frame{buf: buf}, lneto.ErrTruncatedFrame
 	}
 	return Frame{buf: buf}, nil
 }
@@ -97,6 +97,6 @@ func (ufrm Frame) ValidateSize(v *lneto.Validator) {
 		v.AddError(lneto.ErrInvalidLengthField)
 	}
 	if int(ul) > len(ufrm.RawData()) {
-		v.AddError(lneto.ErrShortBuffer)
+		v.AddError(lneto.ErrTruncatedFrame)
 	}
 }

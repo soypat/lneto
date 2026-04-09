@@ -406,7 +406,7 @@ func (s *StackAsync) RegisterUDP(node lneto.StackNode, remoteAddr []byte, remote
 	defer s.mu.Unlock()
 	idx := len(s.userUDPs)
 	if idx >= cap(s.userUDPs) {
-		return lneto.ErrBufferFull
+		return lneto.ErrExhausted
 	}
 	s.userUDPs = s.userUDPs[:idx+1]
 	s.userUDPs[idx].SetStackNode(node, remoteAddr, remotePort)
