@@ -79,3 +79,11 @@ func BytesEqual(a, b []byte) bool {
 	}
 	return unsafe.String(&a[0], len(a)) == unsafe.String(&b[0], len(b))
 }
+
+func SliceDequeueFront[T any](a *[]T) T {
+	s := *a
+	v := s[0]
+	n := copy(s, s[1:])
+	*a = s[:n]
+	return v
+}

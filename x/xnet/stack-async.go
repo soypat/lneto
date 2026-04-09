@@ -1,6 +1,7 @@
 package xnet
 
 import (
+	"encoding/binary"
 	"errors"
 	"log/slog"
 	"net/netip"
@@ -14,6 +15,7 @@ import (
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internet"
+	"github.com/soypat/lneto/ipv4/icmpv4"
 	"github.com/soypat/lneto/ntp"
 	"github.com/soypat/lneto/tcp"
 )
@@ -29,6 +31,7 @@ type StackAsync struct {
 	link     internet.StackEthernet
 	ip       internet.StackIP
 	arp      arp.Handler
+	icmp     icmpv4.Client
 	udps     internet.StackPorts
 	tcps     internet.StackPortsMACFiltered
 
@@ -72,41 +75,71 @@ type StackConfig struct {
 	MTU             uint16
 	// Accept multicast ethernet and IP packets. Needed for MDNS.
 	AcceptMulticast bool
+	// ICMPQueueLimit sets maximum number of input/output packets queued for processing.
+	// If set to zero ICMP cannot be enabled on the stack.
+	ICMPQueueLimit int
 }
 
 func (s *StackAsync) Hostname() string {
 	return s.hostname
 }
 
-func (s *StackAsync) Demux(carrierData []byte, etherOff int) error {
+// IngressEthernet receives an Ethernet frame from the network and processes it through the stack. The frame should include the Ethernet header and payload and CRC if enabled.
+func (s *StackAsync) IngressEthernet(ethernetFrame []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.totalrecv += uint64(len(carrierData) - etherOff)
-	return s.link.Demux(carrierData, etherOff)
+	s.totalrecv += uint64(len(ethernetFrame))
+	return s.link.Demux(ethernetFrame, 0)
 }
 
-func (s *StackAsync) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
+// EgressEthernet writes the next ethernet frame to send into dstEthernetFrame from the stack.
+// The length of dstEthernetFrame should be at least MTU + Ethernet header (14) + CRC (4 if enabled).
+func (s *StackAsync) EgressEthernet(dstEthernetFrame []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	n, err := s.link.Encapsulate(carrierData, offsetToIP, offsetToFrame)
+	n, err := s.link.Encapsulate(dstEthernetFrame, -1, 0)
 	s.totalsent += uint64(n)
 	return n, err
 }
 
+// IngressIP processes an incoming IP frame through the stack and omits ethernet header processing.
+func (s *StackAsync) IngressIP(ipFrame []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.totalrecv += uint64(len(ipFrame))
+	return s.ip.Demux(ipFrame, 0)
+}
+
+// EgressIP writes the next IP frame to send into dstIPFrame from the stack. The length of dstIPFrame should be at least MTU.
+func (s *StackAsync) EgressIP(dstIPFrame []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(dstIPFrame) < s.link.MTU() {
+		return 0, lneto.ErrShortBuffer
+	}
+	n, err := s.ip.Encapsulate(dstIPFrame, 0, 0)
+	s.totalsent += uint64(n)
+	return n, err
+}
+
+// MTU is the Maximum Transmission Unit of the stack corresponding
+// to the maximum payload size of an ethernet frame that can be sent through the stack.
+// Important to note that the actual ethernet frame size is MTU + Ethernet header (14) + CRC (4 if enabled), this is known as the Maximum Frame Length.
 func (s *StackAsync) MTU() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.link.MTU()
 }
 
 func (s *StackAsync) Reset(cfg StackConfig) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	mac := cfg.HardwareAddress
-	addr := cfg.StaticAddress
-	s.prng = uint32(cfg.RandSeed)
-	if s.prng == 0 {
+	if cfg.RandSeed == 0 {
 		return lneto.ErrInvalidConfig
 	}
+	mac := cfg.HardwareAddress
+	addr := cfg.StaticAddress
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prng = uint32(cfg.RandSeed)
 	s.hostname = cfg.Hostname
 	if !addr.IsValid() {
 		addr = netip.AddrFrom4([4]byte{}) // If static not set DHCP will be performed and address will be zero.
@@ -133,7 +166,6 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 		return err
 	}
 	s.ip.SetAcceptMulticast(cfg.AcceptMulticast)
-	//
 	err = s.resetARP()
 	if err != nil {
 		return err
@@ -144,9 +176,6 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 		return err
 	}
 	internal.SliceReuse(&s.userUDPs, cfg.MaxUDPConns)
-	if err != nil {
-		return err
-	}
 
 	// Enable TCP if connections present.
 	if cfg.MaxTCPConns > 0 {
@@ -169,6 +198,16 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	err = s.ip.Register(&s.udps)
 	if err != nil {
 		return err
+	}
+	if cfg.ICMPQueueLimit > 0 {
+		err = s.icmp.Configure(icmpv4.ClientConfig{
+			ResponseQueueBuffer: make([]byte, cfg.ICMPQueueLimit*64),
+			ResponseQueueLimit:  cfg.ICMPQueueLimit,
+			HashSeed:            s.Prand32(),
+		})
+		if err != nil {
+			return err
+		}
 	}
 	var timebuf [32]time.Time
 	s.sysprec = ntp.CalculateSystemPrecision(time.Now, timebuf[:])
@@ -211,6 +250,18 @@ func (s *StackAsync) resetARP() error {
 	return nil
 }
 
+func (s *StackAsync) prandRead(buf []byte) {
+	i := 0
+	for ; i+3 < len(buf); i += 4 {
+		binary.LittleEndian.PutUint32(buf[i:], s.prand32())
+	}
+	v := s.prand32()
+	for i < len(buf) {
+		buf[i] = byte(v >> (8 * (i % 4)))
+		i++
+	}
+}
+
 // Prand32 generates a pseudo random 32-bit unsigned integer from the internal state and advances the seed.
 func (s *StackAsync) Prand32() (randval uint32) {
 	s.mu.Lock()
@@ -221,10 +272,7 @@ func (s *StackAsync) Prand32() (randval uint32) {
 
 func (s *StackAsync) prand32() uint32 {
 	/* Algorithm "xor" from p. 4 of Marsaglia, "Xorshift RNGs" */
-	seed := s.prng
-	seed ^= seed << 13
-	seed ^= seed >> 17
-	seed ^= seed << 5
+	seed := internal.Prand32(s.prng)
 	s.prng = seed
 	return seed
 }
@@ -282,6 +330,22 @@ func (s *StackAsync) Gateway6() [6]byte {
 	return s.link.Gateway6()
 }
 
+// EnableICMP registers an ICMP handler to the stack when enabled is true.
+// If enabled=false the currently registered ICMP handler is unregistered and state reset.
+func (s *StackAsync) EnableICMP(enabled bool) (err error) {
+	if enabled {
+		if s.ip.IsRegistered(lneto.IPProtoICMP) {
+			err = lneto.ErrAlreadyRegistered
+		} else {
+			err = s.ip.Register(&s.icmp)
+		}
+
+	} else {
+		s.icmp.Abort()
+	}
+	return err
+}
+
 func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrPort) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -337,7 +401,7 @@ func (s *StackAsync) RegisterListener(listener *tcp.Listener) (err error) {
 // RegisterUDP registers a StackNode on a UDP port with the given remote address and port.
 // The StackUDPPort wrapping is handled internally. The number of user-registered UDP ports
 // is limited by [StackConfig.MaxUDPConns].
-func (s *StackAsync) RegisterUDP(node internet.StackNode, remoteAddr []byte, remotePort uint16) error {
+func (s *StackAsync) RegisterUDP(node lneto.StackNode, remoteAddr []byte, remotePort uint16) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	idx := len(s.userUDPs)

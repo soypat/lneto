@@ -6,6 +6,10 @@ import (
 	"github.com/soypat/lneto"
 )
 
+const (
+	sizeHeader = 8
+)
+
 type Type uint8
 
 const (
@@ -54,7 +58,7 @@ const (
 )
 
 func NewFrame(buf []byte) (Frame, error) {
-	if len(buf) < 8 {
+	if len(buf) < sizeHeader {
 		return Frame{}, lneto.ErrShortBuffer
 	}
 	return Frame{buf: buf}, nil

@@ -1,7 +1,6 @@
 package internet
 
 import (
-	"errors"
 	"log/slog"
 	"math"
 	"net"
@@ -9,34 +8,6 @@ import (
 
 	"github.com/soypat/lneto"
 )
-
-// StackNode is an abstraction of a packet exchanging protocol controller. This is the building block for all protocols,
-// from Ethernet to IP to TCP, practically any protocol can be expressed as a StackNode and function completely.
-type StackNode interface {
-	// Encapsulate writes the stack node's frame into carrierData[offsetToFrame:]
-	// along with any other frame or payload the stack node encapsulates.
-	// The returned integer is amount of bytes written such that carrierData[offsetToFrame:offsetToFrame+n]
-	// contains written data. Data inside carrierData[:offsetToFrame] usually contains data necessary for
-	// a StackNode to correctly emit valid frame data: such is the case for TCP packets which require IP
-	// frame data for checksum calculation. Thus StackNodes must provide fields in their own frame
-	// required by sub-stacknodes for correct encapsulation; in the case of IPv4/6 this means including fields
-	// used in pseudo-header checksum like local IP (see [ipv4.CRCWriteUDPPseudo]).
-	//
-	// offsetToIP is the offset to the IP frame, if present, else its value should be -1.
-	// The relation offsetToIP<=offsetToFrame should always hold.
-	//
-	// When [net.ErrClosed] is returned the StackNode should be discarded and any written data passed up normally.
-	// Errors returned by Encapsulate are "extraordinary" and should not be returned unless the StackNode is receiving invalid carrierData/frameOffset.
-	Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error)
-	// Demux reads from the argument buffer where frameOffset is the offset of this StackNode's frame first byte.
-	// The stack node then dispatches(demuxes) the encapsulated frames to its corresponding sub-stack-node(s).
-	Demux(carrierData []byte, frameOffset int) error
-	LocalPort() uint16
-	Protocol() uint64
-	// Connect
-	ConnectionID() *uint64
-	// SetFlagPending(flagPending func(numPendingEncapsulations int))
-}
 
 // node is a concrete StackNode as stored in Stacks. Methods are devirtualized for performance benefits, especially on TinyGo.
 type node struct {
@@ -74,7 +45,7 @@ func (h *handlers) registerByProto(n node) error {
 		return err
 	}
 	if h.nodeByProto(n.proto) != nil {
-		return errProtoRegistered
+		return lneto.ErrAlreadyRegistered
 	}
 	h.nodes = append(h.nodes, n)
 	return nil
@@ -85,8 +56,8 @@ func (h *handlers) registerByPortProto(n node) error {
 	if err != nil {
 		return err
 	}
-	if h.nodeByPortProto(n.lport, n.proto) != nil {
-		return errProtoRegistered
+	if h.nodeByPortProto(n.port, n.proto) != nil {
+		return lneto.ErrAlreadyRegistered
 	}
 	h.nodes = append(h.nodes, n)
 	return nil
@@ -216,8 +187,7 @@ func (h *handlers) encapsulateAny(buf []byte, offsetIP, offsetThisFrame int) (hn
 }
 
 var (
-	errProtoRegistered = errors.New("protocol already registered")
-	_                  = net.ErrClosed
+	_ = net.ErrClosed
 )
 
 func (node *node) IsInvalid() bool {
@@ -228,7 +198,7 @@ func checkNodeErr(node *node, err error) (discard bool) {
 	return node.IsInvalid() || (err != nil && err == net.ErrClosed)
 }
 
-func nodeFromStackNode(s StackNode, port uint16, protocol uint64, remoteAddr []byte) node {
+func nodeFromStackNode(s lneto.StackNode, port uint16, protocol uint64, remoteAddr []byte) node {
 	if protocol > math.MaxUint16 {
 		panic(">16bit protocol number unsupported")
 	}
