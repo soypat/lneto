@@ -198,12 +198,23 @@ func (h *handlers) encapsulateNode(node *node, buf []byte, offsetIP, offsetThisF
 
 // encapsulateAny finds a node suitable to write and encapsulates the package.
 // If no data is sent it returns the last error encountered.
-func (h *handlers) encapsulateAny(buf []byte, offsetIP, offsetThisFrame int) (_ *node, n int, err error) {
-	for i := range h.nodes {
-		node := &h.nodes[i]
-		n, err := h.encapsulateNode(node, buf, offsetIP, offsetThisFrame)
+func (h *handlers) encapsulateAny(buf []byte, offsetIP, offsetThisFrame int) (hn *node, n int, err error) {
+	// Round robin approach to encapsulation..
+	firstIdx := h.encapsIdx
+	for i := firstIdx; i < len(h.nodes); i++ {
+		hn = &h.nodes[i]
+		n, err := h.encapsulateNode(hn, buf, offsetIP, offsetThisFrame)
 		if n > 0 || err != nil {
-			return node, n, err
+			h.encapsIdx = (i + 1) % len(h.nodes)
+			return hn, n, err
+		}
+	}
+	for i := 0; i < firstIdx; i++ {
+		hn = &h.nodes[i]
+		n, err := h.encapsulateNode(hn, buf, offsetIP, offsetThisFrame)
+		if n > 0 || err != nil {
+			h.encapsIdx = i + 1
+			return hn, n, err
 		}
 	}
 	return nil, 0, err // Return last written error.
