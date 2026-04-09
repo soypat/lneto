@@ -58,6 +58,8 @@ type handlers struct {
 	context string
 	logger
 	nodes []node
+	// encapsIdx stores the index of next node to check for encapsulation.
+	encapsIdx int
 }
 
 func (h *handlers) reset(context string, maxNodes int) {
@@ -176,24 +178,32 @@ func (h *handlers) demuxByPort(buf []byte, offset int, port uint16) (*node, erro
 	return node, err
 }
 
+func (h *handlers) encapsulateNode(node *node, buf []byte, offsetIP, offsetThisFrame int) (n int, err error) {
+	if node.IsInvalid() {
+		return 0, nil
+	}
+	n, err = node.callbacks.Encapsulate(buf, offsetIP, offsetThisFrame)
+	if h.tryHandleError(node, err) {
+		err = nil  // CLOSE error handled gracefully by deleting node.
+		node = nil // Node is destroyed in tryHandleError and invalidated.
+	}
+	if n > 0 {
+		return n, err
+	} else if err != nil {
+		// Make sure not to hang on one handler that keeps returning an error.
+		h.error("handlers:encapsulate", slog.String("func", "encapsulateAny"), slog.String("ctx", h.context), slog.String("err", err.Error()))
+	}
+	return 0, nil
+}
+
 // encapsulateAny finds a node suitable to write and encapsulates the package.
 // If no data is sent it returns the last error encountered.
 func (h *handlers) encapsulateAny(buf []byte, offsetIP, offsetThisFrame int) (_ *node, n int, err error) {
 	for i := range h.nodes {
 		node := &h.nodes[i]
-		if node.IsInvalid() {
-			continue
-		}
-		n, err = node.callbacks.Encapsulate(buf, offsetIP, offsetThisFrame)
-		if h.tryHandleError(node, err) {
-			err = nil  // CLOSE error handled gracefully by deleting node.
-			node = nil // Node is destroyed in tryHandleError and invalidated.
-		}
-		if n > 0 {
+		n, err := h.encapsulateNode(node, buf, offsetIP, offsetThisFrame)
+		if n > 0 || err != nil {
 			return node, n, err
-		} else if err != nil {
-			// Make sure not to hang on one handler that keeps returning an error.
-			h.error("handlers:encapsulate", slog.String("func", "encapsulateAny"), slog.String("ctx", h.context), slog.String("err", err.Error()))
 		}
 	}
 	return nil, 0, err // Return last written error.
