@@ -111,13 +111,13 @@ func (op OptionCodec) ForEachOption(opts []byte, fn func(OptionKind, []byte) err
 			continue
 		}
 		if len(opts[off:]) < 1 {
-			return lneto.ErrShortBuffer
+			return lneto.ErrTruncatedFrame
 		}
 		size := int(opts[off]) // Total option length including kind and length bytes.
 		off++
 		dataLen := size - 2 // Data bytes after kind and length.
 		if dataLen < 0 || len(opts[off:]) < dataLen {
-			return lneto.ErrShortBuffer
+			return lneto.ErrTruncatedFrame
 		}
 
 		if !skipSizeValidation {

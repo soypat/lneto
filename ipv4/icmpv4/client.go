@@ -54,6 +54,7 @@ func (client *Client) Configure(cfg ClientConfig) error {
 	}
 	client.connid++
 	internal.SliceReuse(&client.outgoingEcho, cfg.ResponseQueueLimit)
+	internal.SliceReuse(&client.incomingEcho, cfg.ResponseQueueLimit)
 	client.responseRing = internal.Ring{Buf: cfg.ResponseQueueBuffer}
 	client.magic = cfg.HashSeed
 	client.id = cfg.ID
@@ -101,6 +102,10 @@ func (client *Client) Demux(carrierData []byte, frameOffset int) error {
 	}
 	switch tp {
 	case TypeEcho:
+		free := cap(client.incomingEcho) - len(client.incomingEcho)
+		if free == 0 {
+			return lneto.ErrExhausted
+		}
 		// We received a ping request; not handled client-side.
 		efrm := FrameEcho{Frame: ifrm}
 		data := efrm.Data()
@@ -226,6 +231,10 @@ func (client *Client) PingStart(remoteAddr [4]byte, pattern []byte, size uint16)
 		return 0, lneto.ErrInvalidConfig
 	} else if remoteAddr == [4]byte{} {
 		return 0, lneto.ErrZeroDestination
+	}
+	free := cap(client.outgoingEcho) - len(client.outgoingEcho)
+	if free == 0 {
+		return 0, lneto.ErrExhausted
 	}
 	key = client.magichash(pattern, int(size)) & keyHashBits
 	v := internal.SliceReclaim(&client.outgoingEcho)

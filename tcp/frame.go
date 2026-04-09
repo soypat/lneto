@@ -12,13 +12,13 @@ const (
 	sizeHeaderTCP = 20
 )
 
-// NewFrame returns a new TCPFrame with data set to buf.
+// NewFrame returns a new [Frame] with data set to buf.
 // An error is returned if the buffer size is smaller than 20.
 // Users should still call [Frame.ValidateSize] before working
 // with payload/options of frames to avoid panics.
 func NewFrame(buf []byte) (Frame, error) {
 	if len(buf) < sizeHeaderTCP {
-		return Frame{buf: nil}, lneto.ErrShortBuffer
+		return Frame{buf: nil}, lneto.ErrTruncatedFrame
 	}
 	return Frame{buf: buf}, nil
 }
@@ -190,7 +190,7 @@ func (tfrm Frame) ValidateSize(v *lneto.Validator) {
 		v.AddError(lneto.ErrInvalidLengthField)
 	}
 	if off > len(tfrm.RawData()) {
-		v.AddError(lneto.ErrShortBuffer)
+		v.AddError(lneto.ErrTruncatedFrame)
 	}
 }
 

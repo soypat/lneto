@@ -67,7 +67,7 @@ func (h *handlers) prepAdd() error {
 	if h.full() {
 		h.compact()
 		if h.full() {
-			return lneto.ErrBufferFull
+			return lneto.ErrExhausted
 		}
 	}
 	return nil

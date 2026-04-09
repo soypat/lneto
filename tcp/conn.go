@@ -329,7 +329,7 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	if off >= len(buf) {
-		return lneto.ErrShortBuffer
+		return lneto.ErrTruncatedFrame // TODO: this check is bad.
 	}
 	raddr, _, id, _, err := internal.GetIPAddr(buf[:off])
 	if err != nil {

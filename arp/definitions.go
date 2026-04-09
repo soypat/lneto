@@ -19,8 +19,7 @@ var (
 	errQueryNotFound = errors.New("arp: query not found")
 
 	// errGeneric aliases for common ARP errors.
-	errARPBufferFull  = lneto.ErrBufferFull
-	errShortARP       = lneto.ErrShortBuffer
+	errShortARP       = lneto.ErrTruncatedFrame
 	errARPUnsupported = lneto.ErrUnsupported
 	errLargeSizes     = lneto.ErrPacketDrop
 )

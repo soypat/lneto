@@ -149,7 +149,7 @@ func (h *Handler) StartQuery(dstHWAddr, proto []byte) error {
 	if len(h.queries) == cap(h.queries) {
 		h.compactQueries()
 		if len(h.queries) == cap(h.queries) {
-			return lneto.ErrBufferFull
+			return lneto.ErrExhausted
 		}
 	}
 	if len(proto) != len(h.ourProtoAddr) {
@@ -214,7 +214,7 @@ func (h *Handler) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 
 func (h *Handler) Demux(ethFrame []byte, frameOffset int) error {
 	if len(h.pendingResponse) == cap(h.pendingResponse) {
-		return errARPBufferFull
+		return lneto.ErrExhausted
 	}
 
 	b := ethFrame[frameOffset:]

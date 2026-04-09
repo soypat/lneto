@@ -8,13 +8,13 @@ import (
 	"github.com/soypat/lneto"
 )
 
-// NewIPv4Frame returns a new IPv4Frame with data set to buf.
+// NewFrame returns a new [Frame] with data set to buf.
 // An error is returned if the buffer size is smaller than 20.
-// Users should still call [IPv4Frame.ValidateSize] before working
+// Users should still call [Frame.ValidateSize] before working
 // with payload/options of frames to avoid panics.
 func NewFrame(buf []byte) (Frame, error) {
 	if len(buf) < sizeHeader {
-		return Frame{buf: nil}, lneto.ErrShortBuffer
+		return Frame{buf: nil}, lneto.ErrTruncatedFrame
 	}
 	return Frame{buf: buf}, nil
 }
@@ -218,7 +218,7 @@ func (ifrm Frame) ValidateSize(v *lneto.Validator) {
 		v.AddError(lneto.ErrInvalidLengthField)
 	}
 	if int(tl) > len(ifrm.RawData()) {
-		v.AddError(lneto.ErrShortBuffer)
+		v.AddError(lneto.ErrTruncatedFrame)
 	}
 	if ihl < 5 || uint16(ihl)*4 > tl {
 		v.AddError(lneto.ErrInvalidLengthField)

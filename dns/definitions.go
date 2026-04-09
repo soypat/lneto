@@ -16,7 +16,6 @@ var (
 	errNoNullTerm     = errors.New("DNS name missing null terminator")
 	errCalcLen        = errors.New("DNS calculated name label length exceeds remaining buffer length")
 	errCantAddLabel   = errors.New("long/empty/zterm/escape DNS label or not enough space")
-	errBaseLen        = lneto.ErrShortBuffer
 	errReserved       = errors.New("segment prefix is reserved")
 	errTooManyPtr     = errors.New("too many pointers (>10)")
 	errInvalidPtr     = errors.New("invalid pointer")
@@ -27,10 +26,10 @@ var (
 	errZeroSegLen     = errors.New("zero length segment")
 	errResTooLong     = errors.New("resource length too long")
 
-	errTooManyQuestions   = lneto.ErrBufferFull
-	errTooManyAnswers     = lneto.ErrBufferFull
-	errTooManyAuthorities = lneto.ErrBufferFull
-	errTooManyAdditionals = lneto.ErrBufferFull
+	errTooManyQuestions   = lneto.ErrExhausted
+	errTooManyAnswers     = lneto.ErrExhausted
+	errTooManyAuthorities = lneto.ErrExhausted
+	errTooManyAdditionals = lneto.ErrExhausted
 
 	errNonCanonicalName = errors.New("name is not in canonical format (it must end with a .)")
 	errStringTooLong    = errors.New("character string exceeds maximum length (255)")
@@ -49,7 +48,7 @@ type Frame struct {
 
 func NewFrame(buf []byte) (Frame, error) {
 	if len(buf) < SizeHeader {
-		return Frame{}, errBaseLen
+		return Frame{}, lneto.ErrTruncatedFrame
 	}
 	return Frame{buf: buf}, nil
 }

@@ -26,7 +26,7 @@ const (
 // An error is returned if the buffer size is smaller than 240.
 func NewFrame(buf []byte) (Frame, error) {
 	if len(buf) < OptionsOffset {
-		return Frame{}, lneto.ErrShortBuffer
+		return Frame{}, lneto.ErrTruncatedFrame
 	}
 	return Frame{buf: buf}, nil
 }
@@ -125,7 +125,7 @@ func (frm Frame) ForEachOption(fn func(off int, opt OptNum, data []byte) error) 
 	// Parse DHCP options.
 	ptr := OptionsOffset
 	if ptr > len(frm.buf) {
-		return lneto.ErrShortBuffer
+		return lneto.ErrTruncatedFrame
 	} else if len(frm.buf[ptr:]) == 0 {
 		return lneto.ErrInvalidField
 	}

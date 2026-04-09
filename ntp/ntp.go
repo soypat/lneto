@@ -27,7 +27,7 @@ const (
 
 func NewFrame(buf []byte) (Frame, error) {
 	if len(buf) < SizeHeader {
-		return Frame{buf: nil}, lneto.ErrShortBuffer
+		return Frame{buf: nil}, lneto.ErrTruncatedFrame
 	}
 	return Frame{buf: buf}, nil
 }
