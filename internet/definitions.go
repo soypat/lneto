@@ -56,7 +56,7 @@ func (h *handlers) registerByPortProto(n node) error {
 	if err != nil {
 		return err
 	}
-	if h.nodeByPortProto(n.port, n.proto) != nil {
+	if h.nodeByPortProto(n.lport, n.proto) != nil {
 		return lneto.ErrAlreadyRegistered
 	}
 	h.nodes = append(h.nodes, n)
