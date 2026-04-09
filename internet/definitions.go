@@ -40,18 +40,18 @@ type StackNode interface {
 
 // node is a concrete StackNode as stored in Stacks. Methods are devirtualized for performance benefits, especially on TinyGo.
 type node struct {
+	// currConnID stores the stack node *connID value on registration.
 	currConnID uint64
-	connID     *uint64
+	// connID is StackNode.ConnectionID() return value.
+	connID *uint64
 	// cbnode has different definitions in tinygo and normal Go compiled programs
 	// for performance and heap control reasons.
 	callbacks cbnode
-	// demux       func([]byte, int) error
-	// encapsulate func([]byte, int, int) (int, error)
-	proto uint16
-	port  uint16
 	// remoteAddr will be set on active(outbound) port connections
 	// that require an ARP to set the remoteAddr beforehand.
 	remoteAddr []byte
+	proto      uint16 // StackNode.Protocol()
+	lport      uint16 // StackNode.LocalPort()
 }
 
 type handlers struct {
@@ -85,7 +85,7 @@ func (h *handlers) registerByPortProto(n node) error {
 	if err != nil {
 		return err
 	}
-	if h.nodeByPortProto(n.port, n.proto) != nil {
+	if h.nodeByPortProto(n.lport, n.proto) != nil {
 		return errProtoRegistered
 	}
 	h.nodes = append(h.nodes, n)
@@ -136,7 +136,7 @@ func (h *handlers) nodeByProto(proto uint16) *node {
 func (h *handlers) nodeByPort(port uint16) *node {
 	for i := range h.nodes {
 		node := &h.nodes[i]
-		if node.port == port && !node.IsInvalid() {
+		if node.lport == port && !node.IsInvalid() {
 			return node
 		}
 	}
@@ -146,7 +146,7 @@ func (h *handlers) nodeByPort(port uint16) *node {
 func (h *handlers) nodeByPortProto(port uint16, protocol uint16) *node {
 	for i := range h.nodes {
 		node := &h.nodes[i]
-		if node.port == port && node.proto == protocol && !node.IsInvalid() {
+		if node.lport == port && node.proto == protocol && !node.IsInvalid() {
 			return node
 		}
 	}
@@ -242,7 +242,7 @@ func nodeFromStackNode(s StackNode, port uint16, protocol uint64, remoteAddr []b
 		connID:     connIDPtr,
 		callbacks:  makecbnode(s),
 		proto:      uint16(protocol),
-		port:       port,
+		lport:      port,
 		remoteAddr: remoteAddr, // SHARED MEMORY- used to signal.
 	}
 }
