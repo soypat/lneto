@@ -188,6 +188,7 @@ func (client *Client) Encapsulate(carrierData []byte, ipOffset, frameOffset int)
 		}
 		copy(data[written:written+size%len(pattern)], pattern)
 		n = sizeHeader + size
+		out.key |= keyHashSentBit
 		raddr = out.raddr
 	} else {
 		return 0, nil
@@ -198,8 +199,8 @@ func (client *Client) Encapsulate(carrierData []byte, ipOffset, frameOffset int)
 	var crc lneto.CRC791
 	sum := crc.PayloadSum16(carrierData[frameOffset : frameOffset+n])
 	ifrm.SetCRC(sum)
-	if frameOffset >= 20 {
-		err = internal.SetIPAddrs(carrierData, 0, nil, raddr[:])
+	if ipOffset >= 0 {
+		err = internal.SetIPAddrs(carrierData[ipOffset:], 0, nil, raddr[:])
 	}
 	return n, err
 }

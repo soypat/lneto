@@ -11,9 +11,11 @@ import (
 
 	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/internet/pcap"
 	"github.com/soypat/lneto/ipv4"
+	"github.com/soypat/lneto/ipv4/icmpv4"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -913,11 +915,12 @@ func TestTCPConn_BufferNotClearedOnPassiveClose(t *testing.T) {
 
 func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
 	const MTU = 1500
+	const MaxFrameLength = MTU + 14 + 4 // Ethernet header+FCS.
 	stackAddr := netip.AddrFrom4([4]byte{192, 168, 1, 99})
 	stackMAC := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
 	routerAddr := [4]byte{192, 168, 1, 1}
 	routerMAC := [6]byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}
-
+	var rawbuf [MaxFrameLength]byte
 	stack := new(StackAsync)
 	err := stack.Reset(StackConfig{
 		Hostname:        "ICMPTest",
@@ -925,11 +928,15 @@ func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
 		StaticAddress:   stackAddr,
 		HardwareAddress: stackMAC,
 		MTU:             MTU,
+		ICMPQueueLimit:  2,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-
+	err = stack.EnableICMP(true)
+	if err != nil {
+		t.Error("enabling ICMP:", err)
+	}
 	gen := ltesto.PacketGen{
 		SrcMAC:  routerMAC,
 		DstMAC:  stackMAC,
@@ -937,22 +944,35 @@ func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
 		DstIPv4: stackAddr.As4(),
 	}
 	icmpPayload := []byte("abcdefghijklmnopqrstuvwxyz012345") // 32 bytes, typical ping payload.
-
+	const (
+		id  = 0x1234
+		seq = 1
+	)
 	// Test 1: Valid ICMP echo request should be accepted.
-	pkt := gen.AppendIPv4ICMPEcho(nil, ltesto.ICMPEchoConfig{
-		Identifier:     0x1234,
-		SequenceNumber: 1,
+	pkt := gen.AppendIPv4ICMPEcho(rawbuf[:0], ltesto.ICMPEchoConfig{
+		Identifier:     id,
+		SequenceNumber: seq,
 		Payload:        icmpPayload,
 	})
 	err = stack.IngressEthernet(pkt)
 	if err != nil {
 		t.Fatalf("valid ICMP echo rejected: %v", err)
 	}
-
+	n, err := stack.EgressEthernet(rawbuf[:])
+	if err != nil || n == 0 {
+		t.Error("expected ICMP response:", n, err)
+	}
+	ifrm, err := icmpv4.NewFrame(rawbuf[14+20 : n])
+	efrm := icmpv4.FrameEcho{Frame: ifrm}
+	if err != nil {
+		t.Fatal(err)
+	} else if efrm.Identifier() != id || efrm.SequenceNumber() != seq || !internal.BytesEqual(icmpPayload, efrm.Data()) {
+		t.Errorf("id want %d, got %d; seq want %d, got %d, payload want %q, got %q", id, efrm.Identifier(), seq, efrm.SequenceNumber(), icmpPayload, efrm.Data())
+	}
 	// Test 2: Valid ICMP with trailing FCS bytes (simulates real PIO hardware capture).
 	// This is a regression test for the bug where recvicmp checksummed ifrm.RawData()
 	// instead of ifrm.Payload(), causing the 4 trailing FCS bytes to corrupt the checksum.
-	pkt = gen.AppendIPv4ICMPEcho(nil, ltesto.ICMPEchoConfig{
+	pkt = gen.AppendIPv4ICMPEcho(rawbuf[:0], ltesto.ICMPEchoConfig{
 		Identifier:     0x1234,
 		SequenceNumber: 2,
 		Payload:        icmpPayload,
@@ -964,7 +984,7 @@ func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
 	}
 
 	// Test 3: Corrupted ICMP checksum should be rejected.
-	pkt = gen.AppendIPv4ICMPEcho(nil, ltesto.ICMPEchoConfig{
+	pkt = gen.AppendIPv4ICMPEcho(rawbuf[:0], ltesto.ICMPEchoConfig{
 		Identifier:     0x1234,
 		SequenceNumber: 3,
 		Payload:        icmpPayload,
@@ -976,7 +996,7 @@ func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
 	}
 
 	// Test 4: Corrupted ICMP with trailing FCS should also be rejected.
-	pkt = gen.AppendIPv4ICMPEcho(nil, ltesto.ICMPEchoConfig{
+	pkt = gen.AppendIPv4ICMPEcho(rawbuf[:0], ltesto.ICMPEchoConfig{
 		Identifier:     0x1234,
 		SequenceNumber: 4,
 		Payload:        icmpPayload,

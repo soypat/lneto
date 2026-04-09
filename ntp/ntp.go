@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"math"
 	"math/bits"
-	"sync"
 	"time"
 
 	"github.com/soypat/lneto"
@@ -265,24 +264,21 @@ func (d Date) Time() (time.Time, error) {
 	return baseTime.Add(off), nil
 }
 
-var (
-	ntpOnceSystemClock sync.Once
-	sysPrec            int8
-)
-
 // CalculateSystemPrecision calculates the NTP system precision for a time source.
-// If the time source is nil the default static call to [time.Now] is used.
-func CalculateSystemPrecision(now func() time.Time, iters []time.Time) int8 {
+// If the time source is nil the default static call to [time.Now]->[time.Time.UnixNano] is used.
+func CalculateSystemPrecision(nowNano func() int64, iters []int64) int8 {
 	maxIter := len(iters)
-	if now == nil {
+	if nowNano == nil {
 		for i := 0; i < maxIter; i++ {
-			iters[i] = time.Now()
+			iters[i] = time.Now().UnixNano()
 		}
 	} else {
 		for i := 0; i < maxIter; i++ {
-			iters[i] = now()
+			iters[i] = nowNano()
 		}
 	}
-	avg := iters[maxIter-1].Sub(iters[0]) / time.Duration(maxIter)
-	return int8(math.Log2(avg.Seconds()))
+	const seconds = 1_000_000_000 // nanoseconds
+	avg := (iters[maxIter-1] - iters[0]) / int64(maxIter)
+	avgSeconds := float64(avg) / seconds
+	return int8(math.Log2(avgSeconds))
 }

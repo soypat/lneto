@@ -132,7 +132,7 @@ func (s *StackAsync) MTU() int {
 }
 
 func (s *StackAsync) Reset(cfg StackConfig) error {
-	if cfg.RandSeed == 0 {
+	if cfg.RandSeed == 0 || cfg.Hostname == "" {
 		return lneto.ErrInvalidConfig
 	}
 	mac := cfg.HardwareAddress
@@ -203,14 +203,15 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 		err = s.icmp.Configure(icmpv4.ClientConfig{
 			ResponseQueueBuffer: make([]byte, cfg.ICMPQueueLimit*64),
 			ResponseQueueLimit:  cfg.ICMPQueueLimit,
-			HashSeed:            s.Prand32(),
+			HashSeed:            s.prand32(),
+			ID:                  uint16(cfg.Hostname[len(cfg.Hostname)-1]) - '0', // Treat last character of hostname as number.
 		})
 		if err != nil {
 			return err
 		}
 	}
-	var timebuf [32]time.Time
-	s.sysprec = ntp.CalculateSystemPrecision(time.Now, timebuf[:])
+	var timebuf [4]int64
+	s.sysprec = ntp.CalculateSystemPrecision(nil, timebuf[:])
 	if s.clientID == "" {
 		s.clientID = "lneto-" + s.hostname
 	}
@@ -335,11 +336,9 @@ func (s *StackAsync) Gateway6() [6]byte {
 func (s *StackAsync) EnableICMP(enabled bool) (err error) {
 	if enabled {
 		if s.ip.IsRegistered(lneto.IPProtoICMP) {
-			err = lneto.ErrAlreadyRegistered
-		} else {
-			err = s.ip.Register(&s.icmp)
+			return nil
 		}
-
+		err = s.ip.Register(&s.icmp)
 	} else {
 		s.icmp.Abort()
 	}

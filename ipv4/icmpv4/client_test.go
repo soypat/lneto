@@ -18,6 +18,7 @@ func TestClients(t *testing.T) {
 		ResponseQueueBuffer: make([]byte, sizebuffer),
 		ResponseQueueLimit:  queuesize,
 		HashSeed:            testHashSeed,
+		ID:                  1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -26,6 +27,7 @@ func TestClients(t *testing.T) {
 		ResponseQueueBuffer: make([]byte, sizebuffer),
 		ResponseQueueLimit:  queuesize,
 		HashSeed:            testHashSeed,
+		ID:                  2,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -38,13 +40,30 @@ func TestClients(t *testing.T) {
 	if !completed || !ok {
 		t.Fatal("ping did not complete or not exist")
 	}
+	n, err := sender.Encapsulate(buf[:], -1, 0)
+	if err != nil {
+		t.Error(err)
+	} else if n > 0 {
+		t.Error("sender: expected no more data to be sent")
+	}
+	n, err = responder.Encapsulate(buf[:], -1, 0)
+	if err != nil {
+		t.Error(err)
+	} else if n > 0 {
+		t.Error("responder: expected no more data to be sent")
+	}
 }
 
 func testSingleExchange(t *testing.T, sender, responder *Client, buf []byte, pattern []byte, size uint16) (senderKey uint32) {
-	var n int
-	senderKey, n = testSendEcho(t, sender, buf, pattern, size)
 	const frameOff = 0
-	const ipOff = 0
+	const ipOff = -1
+	n, err := responder.Encapsulate(buf, ipOff, frameOff)
+	if err != nil {
+		t.Fatal(err)
+	} else if n > 0 {
+		t.Fatal("expected no data pending to be sent from responder")
+	}
+	senderKey, n = testSendEcho(t, sender, buf, pattern, size)
 	completed, ok := sender.PingPeek(senderKey)
 	if !ok {
 		t.Error("ping key not exist")
@@ -58,7 +77,7 @@ func testSingleExchange(t *testing.T, sender, responder *Client, buf []byte, pat
 	if err1 != nil {
 		t.Error("responder demux during single", err1)
 	}
-	n, err := responder.Encapsulate(buf, ipOff, frameOff)
+	n, err = responder.Encapsulate(buf, ipOff, frameOff)
 	if err != nil {
 		t.Error("responder encaps during single", err)
 		return
@@ -96,17 +115,31 @@ func testSingleExchange(t *testing.T, sender, responder *Client, buf []byte, pat
 	if completed2, ok2 := sender.PingPeek(senderKey); completed != completed2 || ok != ok2 {
 		t.Error("change in status after peek")
 	}
+	n, err = sender.Encapsulate(buf, ipOff, frameOff)
+	if err != nil {
+		t.Error("error after done")
+	}
+	if n > 0 {
+		t.Error("expected no data to be sent after ping completion", n)
+	}
 	return senderKey
 }
 
 func testSendEcho(t *testing.T, sender *Client, buf []byte, pattern []byte, size uint16) (key uint32, n int) {
 	t.Helper()
-	key, err := sender.PingStart([4]byte{1}, pattern, size)
+	const frameOff = 0
+	const ipOff = -1
+	n, err := sender.Encapsulate(buf, ipOff, frameOff)
+	if err != nil {
+		t.Fatal(err)
+	} else if n > 0 {
+		t.Fatal("expected no data pending to send on testSendEcho start")
+	}
+	key, err = sender.PingStart([4]byte{1}, pattern, size)
 	if err != nil {
 		t.Fatal(err)
 	}
-	const frameOff = 0
-	const ipOff = 0
+
 	n, err = sender.Encapsulate(buf[:], ipOff, frameOff)
 	if err != nil {
 		t.Errorf("sender encapsulate: %v", err)
