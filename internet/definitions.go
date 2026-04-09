@@ -200,7 +200,8 @@ func (h *handlers) encapsulateNode(node *node, buf []byte, offsetIP, offsetThisF
 // encapsulateAny finds a node suitable to write and encapsulates the package.
 // If no data is sent it returns the last error encountered.
 func (h *handlers) encapsulateAny(buf []byte, offsetIP, offsetThisFrame int) (hn *node, n int, err error) {
-	// Round robin approach to encapsulation..
+	// Round robin approach to encapsulation.
+	// TODO(soypat): benchmark impact of round robin. Consider removing fields from handlers to make it more lean and potentially get perf improvements that way.
 	i := h.encapsIdx
 	for range h.nodes {
 		hn := &h.nodes[i]
