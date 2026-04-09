@@ -55,11 +55,12 @@ type node struct {
 }
 
 type handlers struct {
-	context string
-	logger
 	nodes []node
 	// encapsIdx stores the index of next node to check for encapsulation.
 	encapsIdx int
+
+	context string
+	logger
 }
 
 func (h *handlers) reset(context string, maxNodes int) {
@@ -200,20 +201,13 @@ func (h *handlers) encapsulateNode(node *node, buf []byte, offsetIP, offsetThisF
 // If no data is sent it returns the last error encountered.
 func (h *handlers) encapsulateAny(buf []byte, offsetIP, offsetThisFrame int) (hn *node, n int, err error) {
 	// Round robin approach to encapsulation..
-	firstIdx := h.encapsIdx
-	for i := firstIdx; i < len(h.nodes); i++ {
-		hn = &h.nodes[i]
-		n, err := h.encapsulateNode(hn, buf, offsetIP, offsetThisFrame)
+	i := h.encapsIdx
+	for range h.nodes {
+		hn := &h.nodes[i]
+		n, err = h.encapsulateNode(hn, buf, offsetIP, offsetThisFrame)
+		i = incLim(i, len(h.nodes))
 		if n > 0 || err != nil {
-			h.encapsIdx = (i + 1) % len(h.nodes)
-			return hn, n, err
-		}
-	}
-	for i := 0; i < firstIdx; i++ {
-		hn = &h.nodes[i]
-		n, err := h.encapsulateNode(hn, buf, offsetIP, offsetThisFrame)
-		if n > 0 || err != nil {
-			h.encapsIdx = i + 1
+			h.encapsIdx = i
 			return hn, n, err
 		}
 	}
@@ -255,4 +249,12 @@ func nodeFromStackNode(s StackNode, port uint16, protocol uint64, remoteAddr []b
 // destroy removes all references to underlying StackNode. Allows garbage collection of node if possible.
 func (n *node) destroy() {
 	*n = node{}
+}
+
+func incLim(v, max int) int {
+	v++
+	if v == max {
+		v = 0
+	}
+	return v
 }
