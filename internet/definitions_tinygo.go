@@ -2,7 +2,9 @@
 
 package internet
 
-func makecbnode(s StackNode) cbnode {
+import "github.com/soypat/lneto"
+
+func makecbnode(s lneto.StackNode) cbnode {
 	return cbnode{
 		_demux:       s.Demux,
 		_encapsulate: s.Encapsulate,

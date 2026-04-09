@@ -1,3 +1,5 @@
+//go:build !tinygo && linux
+
 package main
 
 import (
