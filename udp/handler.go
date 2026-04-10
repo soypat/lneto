@@ -128,8 +128,7 @@ func (h *Handler) Write(b []byte) (int, error) {
 }
 
 func (h *Handler) Read(b []byte) (int, error) {
-	avail := cap(h.rxDgrams) - len(h.rxDgrams)
-	if avail == 0 {
+	if len(h.rxDgrams) == 0 {
 		return 0, nil
 	}
 	// SOCK_DGRAM semantics. Read up to len(b) bytes and discard unread portion of datagram.

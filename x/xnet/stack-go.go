@@ -100,7 +100,7 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			return nil, err
 		}
 		raddr4 := raddr.Addr().As4()
-		err = conn.Open(laddr.Port(), raddr4[:])
+		err = conn.Open(laddr.Port(), raddr.Port(), raddr4[:])
 		if err != nil {
 			return nil, err
 		}

@@ -1,10 +1,21 @@
 package udp
 
 import (
+	"encoding/binary"
 	"testing"
 
 	"github.com/soypat/lneto/internal"
 )
+
+// makeUDPFrame builds a minimal UDP frame with the given ports and payload.
+func makeUDPFrame(src, dst uint16, payload []byte) []byte {
+	buf := make([]byte, 8+len(payload))
+	binary.BigEndian.PutUint16(buf[0:2], src)
+	binary.BigEndian.PutUint16(buf[2:4], dst)
+	binary.BigEndian.PutUint16(buf[4:6], uint16(8+len(payload)))
+	copy(buf[8:], payload)
+	return buf
+}
 
 func newTestConn(t *testing.T) *Conn {
 	t.Helper()
@@ -41,11 +52,16 @@ func TestConn_WriteEncapsulateRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != len(payload) {
-		t.Fatalf("encapsulated %d, want %d", n, len(payload))
+	wantLen := 8 + len(payload) // UDP header + payload
+	if n != wantLen {
+		t.Fatalf("encapsulated %d, want %d", n, wantLen)
 	}
-	if !internal.BytesEqual(buf[:n], payload) {
-		t.Fatalf("encapsulated data mismatch")
+	ufrm, err := NewFrame(buf[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !internal.BytesEqual(ufrm.Payload(), payload) {
+		t.Fatalf("encapsulated payload mismatch")
 	}
 
 	// No more data pending.
@@ -61,7 +77,8 @@ func TestConn_WriteEncapsulateRoundtrip(t *testing.T) {
 func TestConn_DemuxReadRoundtrip(t *testing.T) {
 	conn := newTestConn(t)
 	payload := []byte("incoming datagram")
-	err := conn.Demux(payload, 0)
+	frame := makeUDPFrame(8080, 1234, payload) // remote:8080 -> local:1234
+	err := conn.Demux(frame, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +100,8 @@ func TestConn_MultipleDatagrams(t *testing.T) {
 	conn := newTestConn(t)
 	messages := []string{"first", "second", "third"}
 	for _, msg := range messages {
-		err := conn.Demux([]byte(msg), 0)
+		frame := makeUDPFrame(8080, 1234, []byte(msg))
+		err := conn.Demux(frame, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -105,8 +123,9 @@ func TestConn_MultipleDatagrams(t *testing.T) {
 
 func TestConn_ReadTruncates(t *testing.T) {
 	conn := newTestConn(t)
-	payload := []byte("a]longer_datagram")
-	err := conn.Demux(payload, 0)
+	payload := []byte("a_longer_datagram")
+	frame := makeUDPFrame(8080, 1234, payload)
+	err := conn.Demux(frame, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +145,8 @@ func TestConn_ReadTruncates(t *testing.T) {
 
 	// Next Demux+Read should work cleanly after truncation.
 	payload2 := []byte("ok")
-	err = conn.Demux(payload2, 0)
+	frame2 := makeUDPFrame(8080, 1234, payload2)
+	err = conn.Demux(frame2, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,13 +163,15 @@ func TestConn_ReadTruncates(t *testing.T) {
 func TestConn_DemuxExhausted(t *testing.T) {
 	conn := newTestConn(t) // queue size 4
 	for i := 0; i < 4; i++ {
-		err := conn.Demux([]byte{byte(i)}, 0)
+		frame := makeUDPFrame(8080, 1234, []byte{byte(i)})
+		err := conn.Demux(frame, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
 	// 5th should fail.
-	err := conn.Demux([]byte{0xff}, 0)
+	frame := makeUDPFrame(8080, 1234, []byte{0xff})
+	err := conn.Demux(frame, 0)
 	if err == nil {
 		t.Fatal("expected error on exhausted rx queue")
 	}
@@ -186,7 +208,11 @@ func TestConn_EncapsulateMultiple(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got := string(buf[:n])
+		ufrm, err := NewFrame(buf[:n])
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := string(ufrm.Payload())
 		if got != want {
 			t.Fatalf("got %q, want %q", got, want)
 		}
@@ -195,8 +221,10 @@ func TestConn_EncapsulateMultiple(t *testing.T) {
 
 func TestConn_FrameOffset(t *testing.T) {
 	conn := newTestConn(t)
-	// Demux with an offset simulating a UDP header already parsed.
-	carrier := []byte{0, 0, 0, 0, 0, 0, 0, 0, 'h', 'i'}
+	// Demux with an offset simulating IP header before the UDP frame.
+	udpFrame := makeUDPFrame(8080, 1234, []byte("hi"))
+	carrier := make([]byte, 8+len(udpFrame)) // 8 bytes of "IP header" prefix
+	copy(carrier[8:], udpFrame)
 	err := conn.Demux(carrier, 8)
 	if err != nil {
 		t.Fatal(err)
