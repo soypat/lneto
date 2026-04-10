@@ -98,11 +98,11 @@ func (h *Handler) Send(buf []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	dgram := internal.SliceDequeueFront(&h.txDgrams)
 	avail := len(buf) - 8
-	if avail < int(dgram.length) {
+	if avail < int(h.txDgrams[0].length) {
 		return 0, lneto.ErrShortBuffer
 	}
+	dgram := internal.SliceDequeueFront(&h.txDgrams)
 	n, err := h.txRing.Read(buf[8 : 8+dgram.length])
 	if err != nil || n != int(dgram.length) {
 		panic(fmt.Sprintf("udp send handler failure %d %s", n, err))
@@ -159,7 +159,7 @@ func (h *Handler) Abort() {
 		rxRing:   h.rxRing,
 		rxDgrams: h.rxDgrams[:0],
 		txRing:   h.txRing,
-		txDgrams: h.txDgrams,
+		txDgrams: h.txDgrams[:0],
 	}
 	h.txRing.Reset()
 	h.rxRing.Reset()

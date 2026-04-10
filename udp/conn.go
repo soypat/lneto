@@ -163,6 +163,9 @@ func (conn *Conn) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 		return 0, net.ErrClosed
 	}
 	n, err := conn.h.Send(carrierData[offsetToFrame:])
+	if err != nil || n == 0 {
+		return 0, err
+	}
 	if offsetToIP >= 0 && len(conn.remoteAddr) > 0 {
 		err = internal.SetIPAddrs(carrierData[offsetToIP:], conn.ipID, nil, conn.remoteAddr)
 		if err != nil {
