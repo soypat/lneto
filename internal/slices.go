@@ -2,6 +2,18 @@ package internal
 
 import "unsafe"
 
+// BytesEqual is heapless replacement of [bytes.Equal] since it allocates in tinygo.
+// https://github.com/tinygo-org/tinygo/issues/4045
+func BytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	if len(a) == 0 {
+		return true
+	}
+	return unsafe.String(&a[0], len(a)) == unsafe.String(&b[0], len(b))
+}
+
 // IsZeroed returns true if all arguments are set to their zero value.
 func IsZeroed[T comparable](a ...T) bool {
 	var z T
@@ -68,18 +80,15 @@ func SliceReclaim[T any](ptr *[]T) *T {
 	return &(*ptr)[n]
 }
 
-// BytesEqual is heapless replacement of [bytes.Equal] since it allocates in tinygo.
-// https://github.com/tinygo-org/tinygo/issues/4045
-func BytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	if len(a) == 0 {
-		return true
-	}
-	return unsafe.String(&a[0], len(a)) == unsafe.String(&b[0], len(b))
-}
-
+// SliceDequeueFront removes and returns the first element of the slice.
+// It shifts all remaining elements left by one index and truncates the slice.
+// The underlying array capacity remains unchanged; the last element's slot
+// is not zeroed before truncation.
+//
+// Complexity: O(n) where n is the length of the slice, due to the element shift.
+//
+// Warning: Calling this function on an empty slice will panic (index out of range).
+// The caller must ensure len(*a) > 0 before calling.
 func SliceDequeueFront[T any](a *[]T) T {
 	s := *a
 	v := s[0]

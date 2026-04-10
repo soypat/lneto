@@ -21,7 +21,7 @@ Userspace networking primitives.
     - Can produce **very** small binaries. Ideal for embedded systems.
 - Extremely simple networking stack construction. Can be used to teach basics of networking
     - Only one networking interface fulfilled by all implementations. See [abstractions](#abstractions).
-- Stack can be fuzz tested very fast: 
+- Stack can be fuzz tested efficiently, see benchmarks below: 
     - `go test ./x/xnet/ -run FuzzStackAsyncHTTP -fuzz=.` fuzzes Ethernet/IP/TCP/HTTP stack with 170k HTTP exchanges per second on 12 core machine: `fuzz: elapsed: 4m9s, execs: 42649941 (169428/sec), new interesting: 5 (total: 52)`
 
 ## [`min-working-example`](./examples/min-working-example/) - Quick lneto showcase
