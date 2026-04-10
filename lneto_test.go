@@ -1,12 +1,12 @@
 package lneto_test
 
 import (
-	"bytes"
 	"math/rand"
 	"testing"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
@@ -29,7 +29,7 @@ func TestTCPMarshalUnmarshal(t *testing.T) {
 		})
 		dst = dst[:len(src)]
 		testMoveTCPPacket(t, src, dst)
-		if !bytes.Equal(src, dst) {
+		if !internal.BytesEqual(src, dst) {
 			t.Fatal("mismatching data")
 		}
 	}
@@ -88,15 +88,15 @@ func testMoveTCPPacket(t *testing.T, src, dst []byte) {
 	copy(tfrm2.Payload(), tfrm.Payload())
 
 	elen := efrm.HeaderLength()
-	if !bytes.Equal(src[:elen], dst[:elen]) {
+	if !internal.BytesEqual(src[:elen], dst[:elen]) {
 		t.Fatalf("Ethernet header mismatch\n%x\n%x", src[:elen], dst[:elen])
 	}
 	ilen := ifrm.HeaderLength()
-	if !bytes.Equal(src[elen:elen+20], dst[elen:elen+20]) {
+	if !internal.BytesEqual(src[elen:elen+20], dst[elen:elen+20]) {
 		t.Fatalf("IPv4 header mismatch\n%x\n%x", src[elen:elen+20], dst[elen:elen+20])
 	}
 	ipoptLen := len(ifrm.Options())
-	if !bytes.Equal(ifrm.Options(), ifrm2.Options()) {
+	if !internal.BytesEqual(ifrm.Options(), ifrm2.Options()) {
 		t.Fatalf("IPv4 options mismatch\n%x\n%x", ifrm.Options(), ifrm2.Options())
 	} else if ipoptLen > 0 && &ifrm.Options()[0] != &src[elen+20] {
 		t.Fatal("IPv4 options start pointer mismatch")
@@ -104,12 +104,12 @@ func testMoveTCPPacket(t *testing.T, src, dst []byte) {
 
 	tlen := tfrm.HeaderLength()
 	toff := elen + ilen + ipoptLen
-	if !bytes.Equal(src[toff:toff+tlen], dst[toff:toff+tlen]) {
+	if !internal.BytesEqual(src[toff:toff+tlen], dst[toff:toff+tlen]) {
 		t.Fatalf("TCP header mismatch\n%x\n%x", src[toff:toff+tlen], dst[toff:toff+tlen])
 	}
 	payload := tfrm.Payload()
 
-	if !bytes.Equal(payload, tfrm2.Payload()) {
+	if !internal.BytesEqual(payload, tfrm2.Payload()) {
 		t.Fatalf("payload mismatch %d %d", len(payload), len(tfrm2.Payload()))
 	}
 }

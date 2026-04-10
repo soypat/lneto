@@ -585,9 +585,8 @@ func (tst *tester) ARPExchangeOnly(querying, target *StackAsync) {
 	// === PHASE 3: Verify querying stack learned target's MAC ===
 	resolvedHw, err := querying.ResultResolveHardwareAddress6(tgtIP)
 	if err != nil {
-		t.Fatalf("ARP query result failed: %v", err)
-	}
-	if resolvedHw != tgtHw {
+		t.Errorf("ARP query result failed: %v", err)
+	} else if resolvedHw != tgtHw {
 		t.Errorf("ARP resolved wrong MAC: got %x, want %x", resolvedHw, tgtHw)
 	}
 }

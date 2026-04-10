@@ -358,14 +358,20 @@ func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrP
 	defer s.mu.Unlock()
 	var mac []byte
 	if s.subnet.Contains(addrp.Addr()) {
-		mac = make([]byte, 6)
 		ip := addrp.Addr().As4()
-		// StartQuery starts an ARP query for addresses in this network.
-		// On finishing query MAC is set and thus the StackPort will allow encapsulating
-		// data on that connection.
-		err = s.arp.StartQuery(mac, ip[:])
-		if err != nil {
-			return err
+		hw, err := s.arp.QueryResult(ip[:])
+		mac = make([]byte, 6)
+		if err == nil {
+			// Query exists, use pre-existing result.
+			copy(mac, hw)
+		} else {
+			// StartQuery starts an ARP query for addresses in this network.
+			// On finishing query MAC is set and thus the StackPort will allow encapsulating
+			// data on that connection.
+			err = s.arp.StartQuery(mac, ip[:])
+			if err != nil {
+				return err
+			}
 		}
 	}
 	err = conn.OpenActive(localPort, addrp, tcp.Value(s.prand32()))

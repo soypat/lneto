@@ -1,9 +1,10 @@
 package dhcpv4
 
 import (
-	"bytes"
 	"net/netip"
 	"testing"
+
+	"github.com/soypat/lneto/internal"
 )
 
 func TestClientServer(t *testing.T) {
@@ -516,7 +517,7 @@ func TestRequestedIPNotSentWhenInvalid(t *testing.T) {
 	// it should be included. This test documents expected behavior.
 	if foundRequestedIP {
 		// Verify the value matches what was requested
-		if !bytes.Equal(ipValue[:], []byte{0, 0, 0, 0}) {
+		if !internal.BytesEqual(ipValue[:], []byte{0, 0, 0, 0}) {
 			t.Errorf("unexpected requested IP value: %v", ipValue)
 		}
 	}
