@@ -8,6 +8,9 @@ import (
 	"github.com/soypat/lneto/internal"
 )
 
+// Handler implements the stateless UDP frame processing logic. It manages
+// rx/tx ring buffers and datagram queues without locking or deadlines.
+// [Conn] wraps Handler to provide a goroutine-safe socket API.
 type Handler struct {
 	connid   uint64
 	rxRing   internal.Ring
@@ -24,6 +27,8 @@ type Handler struct {
 	rport       uint16
 }
 
+// Configure initializes the handler with the given buffer and queue configuration.
+// Increments the connection ID, invalidating any prior stack registration.
 func (h *Handler) Configure(cfg ConnConfig) error {
 	if len(cfg.RxBuf) < sizeHeader || len(cfg.TxBuf) < sizeHeader || cfg.RxQueueSize <= 0 || cfg.TxQueueSize <= 0 {
 		return lneto.ErrInvalidConfig
@@ -39,7 +44,8 @@ func (h *Handler) Configure(cfg ConnConfig) error {
 	return nil
 }
 
-// Open sets the local port and remote address for the connection.
+// SetPorts sets the local and remote ports for the connection.
+// Both ports must be non-zero.
 func (h *Handler) SetPorts(localPort, remotePort uint16) error {
 	if localPort == 0 {
 		return lneto.ErrZeroSource
@@ -51,10 +57,14 @@ func (h *Handler) SetPorts(localPort, remotePort uint16) error {
 	return nil
 }
 
+// LocalPort returns the local port set by [Handler.SetPorts].
 func (h *Handler) LocalPort() uint16 {
 	return h.lport
 }
 
+// Recv parses a UDP frame from buf, validates the ports and length fields,
+// and enqueues the payload into the rx ring buffer. Returns [lneto.ErrMismatch]
+// if source/destination ports don't match the configured ports.
 func (h *Handler) Recv(buf []byte) error {
 	if h.closeCalled {
 		return net.ErrClosed
@@ -88,6 +98,8 @@ func (h *Handler) Recv(buf []byte) error {
 	return nil
 }
 
+// Send dequeues the next pending datagram and writes a complete UDP frame
+// (header + payload) into buf. Returns 0, nil if no datagrams are queued.
 func (h *Handler) Send(buf []byte) (int, error) {
 	if h.closeCalled {
 		return 0, net.ErrClosed
@@ -113,6 +125,8 @@ func (h *Handler) Send(buf []byte) (int, error) {
 	return int(8 + dgram.length), nil
 }
 
+// Write enqueues a datagram payload for later transmission via [Handler.Send].
+// Returns [lneto.ErrExhausted] if the tx datagram queue is full.
 func (h *Handler) Write(b []byte) (int, error) {
 	free := cap(h.txDgrams) - len(h.txDgrams)
 	if free == 0 {
@@ -127,6 +141,9 @@ func (h *Handler) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
+// Read dequeues the next received datagram into b. If b is smaller than the
+// datagram, the remaining bytes are discarded (SOCK_DGRAM semantics).
+// Returns 0, nil if no datagrams are available.
 func (h *Handler) Read(b []byte) (int, error) {
 	if len(h.rxDgrams) == 0 {
 		return 0, nil
@@ -153,6 +170,8 @@ func (h *Handler) Close() {
 	h.closeCalled = true
 }
 
+// Abort resets the handler, discarding all buffered data and incrementing the
+// connection ID. Buffers are retained for reuse.
 func (h *Handler) Abort() {
 	*h = Handler{
 		connid:   h.connid + 1,

@@ -6,6 +6,8 @@ import (
 	"github.com/soypat/lneto"
 )
 
+const sizeHeader = 8
+
 // NewFrame returns a new udp.Frame with data set to buf.
 // An error is returned if the buffer size is smaller than 8.
 // Users should still call [Frame.ValidateSize] before working

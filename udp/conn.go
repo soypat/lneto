@@ -26,6 +26,7 @@ type Conn struct {
 	ipID uint16
 }
 
+// ConnConfig configures a [Conn] or [Handler] with pre-allocated buffers and queue sizes.
 type ConnConfig struct {
 	// RxBuf is the buffer for incoming datagrams.
 	RxBuf []byte
@@ -37,6 +38,8 @@ type ConnConfig struct {
 	TxQueueSize int
 }
 
+// Configure initializes the connection with the given buffer and queue configuration.
+// Must be called before [Conn.Open]. Calling Configure on an active connection aborts it.
 func (conn *Conn) Configure(cfg ConnConfig) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
@@ -48,6 +51,7 @@ func (conn *Conn) Configure(cfg ConnConfig) error {
 	return nil
 }
 
+// Abort resets the connection, discarding all buffered data and clearing deadlines.
 func (conn *Conn) Abort() {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
@@ -74,22 +78,29 @@ func (conn *Conn) Open(localPort, remotePort uint16, remoteAddr []byte) error {
 	return nil
 }
 
+// LocalPort returns the local port set by [Conn.Open].
 func (conn *Conn) LocalPort() uint16 {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	return conn.h.lport
 }
 
+// RemotePort returns the remote port set by [Conn.Open].
 func (conn *Conn) RemotePort() uint16 { return conn.h.rport }
 
+// RemoteAddr returns the remote address set by [Conn.Open].
 func (conn *Conn) RemoteAddr() []byte {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	return conn.remoteAddr
 }
 
+// Protocol returns [lneto.IPProtoUDP].
 func (conn *Conn) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
 
+// ConnectionID returns a pointer to the connection ID. The value changes on
+// each [Conn.Configure] or [Conn.Abort] call, signaling to the stack that the
+// previous registration is no longer valid.
 func (conn *Conn) ConnectionID() *uint64 { return &conn.h.connid }
 
 // Write enqueues a single datagram to be sent. The entire payload is queued atomically.
@@ -138,6 +149,9 @@ func (conn *Conn) Read(b []byte) (int, error) {
 	}
 }
 
+// Close marks the connection as closed. Subsequent calls to [Conn.Write] and
+// [Conn.Demux] return [net.ErrClosed]. [Conn.Read] continues to return buffered
+// data until exhausted, then returns [net.ErrClosed].
 func (conn *Conn) Close() error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
@@ -176,6 +190,7 @@ func (conn *Conn) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 	return n, nil
 }
 
+// SetDeadline sets both the read and write deadlines. A zero value disables the deadline.
 func (conn *Conn) SetDeadline(t time.Time) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
@@ -187,6 +202,7 @@ func (conn *Conn) SetDeadline(t time.Time) error {
 	return nil
 }
 
+// SetReadDeadline sets the read deadline. A zero value disables the deadline.
 func (conn *Conn) SetReadDeadline(t time.Time) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
@@ -197,6 +213,7 @@ func (conn *Conn) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
+// SetWriteDeadline sets the write deadline. A zero value disables the deadline.
 func (conn *Conn) SetWriteDeadline(t time.Time) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
