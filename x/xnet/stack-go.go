@@ -9,11 +9,13 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/tcp"
+	"github.com/soypat/lneto/udp"
 )
 
 // Socket types
 const (
 	sockSTREAM = 0x1
+	sockDGRAM  = 0x2
 )
 
 type StackGoConfig struct {
@@ -81,7 +83,37 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 	}
 	switch network {
 	case "udp", "udp4":
-		return nil, lneto.ErrUnsupported
+		if sotype != sockDGRAM {
+			return nil, lneto.ErrUnsupported
+		}
+		if !raddr.IsValid() || raddr.Addr() == netip.IPv4Unspecified() {
+			return nil, lneto.ErrZeroDestination
+		}
+		var conn udp.Conn
+		err = conn.Configure(udp.ConnConfig{
+			TxBuf:       make([]byte, s.plcfg.TxBufSize),
+			RxBuf:       make([]byte, s.plcfg.RxBufSize),
+			TxQueueSize: s.plcfg.QueueSize,
+			RxQueueSize: s.plcfg.QueueSize,
+		})
+		if err != nil {
+			return nil, err
+		}
+		raddr4 := raddr.Addr().As4()
+		err = conn.Open(laddr.Port(), raddr.Port(), raddr4[:])
+		if err != nil {
+			return nil, err
+		}
+		err = s.blk.async.RegisterUDP(&conn, raddr4[:], raddr.Port())
+		if err != nil {
+			return nil, err
+		}
+		uc := udpconn{
+			Conn:      &conn,
+			localAddr: net.UDPAddrFromAddrPort(laddr),
+			raddr:     net.UDPAddrFromAddrPort(raddr),
+		}
+		return uc, nil
 	case "tcp", "tcp4":
 		if sotype != sockSTREAM {
 			return nil, lneto.ErrUnsupported
@@ -206,3 +238,14 @@ func (c tcpconn) RemoteAddr() net.Addr {
 		Port: int(c.Conn.RemotePort()),
 	}
 }
+
+type udpconn struct {
+	*udp.Conn
+	localAddr net.Addr
+	raddr     net.Addr
+}
+
+var _ net.Conn = udpconn{}
+
+func (c udpconn) LocalAddr() net.Addr  { return c.localAddr }
+func (c udpconn) RemoteAddr() net.Addr { return c.raddr }
