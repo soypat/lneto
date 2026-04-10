@@ -164,7 +164,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 		return err
 	}
 	s.link.SetAcceptMulticast(cfg.AcceptMulticast)
-	const ipNodes = 2 // UDP, TCP ports.
+	const ipNodes = 3 // 3 IP protocols possible: UDP, TCP, ICMP.
 	err = s.ip.Reset(addr, ipNodes)
 	if err != nil {
 		return err

@@ -36,6 +36,7 @@ vendor/
 # IDE
 .vscode/
 agents.md
+*skill.md
 
 # For local development and testing create `local` directories.
 local

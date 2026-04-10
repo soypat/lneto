@@ -181,6 +181,7 @@ func newTCPStacks(t testing.TB, randSeed int64, mtu int) (s1, s2 *StackAsync, c1
 		MaxActiveTCPPorts: 1,
 		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, byte1},
 		MTU:               uint16(mtu),
+		ICMPQueueLimit:    2,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -194,6 +195,7 @@ func newTCPStacks(t testing.TB, randSeed int64, mtu int) (s1, s2 *StackAsync, c1
 		MaxActiveTCPPorts: 1,
 		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, byte2},
 		MTU:               uint16(mtu),
+		ICMPQueueLimit:    2,
 	})
 	if err != nil {
 		t.Fatal(err)

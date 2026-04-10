@@ -75,6 +75,14 @@ func FuzzStackAsyncHTTP(f *testing.F) {
 	f.Fuzz(func(t *testing.T, pktnum int, a []byte) {
 		var buf [MTU + ethernet.MaxOverheadSize]byte
 		s1, s2, c1, c2 := newTCPStacks(t, seed, MTU)
+		err = s1.EnableICMP(true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = s2.EnableICMP(true)
+		if err != nil {
+			t.Fatal(err)
+		}
 		err := s1.ListenTCP(c1, 80)
 		if err != nil {
 			t.Fatal(err)
