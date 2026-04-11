@@ -194,9 +194,14 @@ func FuzzStackSeeded(f *testing.F) {
 	var pmut ltesto.PacketMut
 	var ppr CapturePrinter
 	printWriter := os.Stdout
-	ppr.Configure(printWriter, CapturePrinterConfig{})
+	ppr.Configure(printWriter, CapturePrinterConfig{
+		NamespaceWidth: 3,
+	})
+
+	// Set to the values of the fuzz case that is crashing to enable verbose debugging logs.
 	const (
-		printSeed1, printSeed2 = 676827762285163398, 1141027023543727980
+		printSeed1 = 676827762285163398
+		printSeed2 = 1141027023543727980
 	)
 	f.Fuzz(func(t *testing.T, seed1, seed2 int64) {
 		if seed1 == 0 {
@@ -232,7 +237,7 @@ func FuzzStackSeeded(f *testing.F) {
 		{
 			rng := rand.New(rand.NewPCG(uint64(seed1), uint64(seed2)))
 			for i := range actions {
-				// DO NOT ADD RANDOM CALLS IN HERE! Read comment above.
+				// DO NOT ADD CALLS TO rng API IN HERE! Read comment above.
 				actions[i].Action = rng.Int64() % actionLim
 				actions[i].Rand = rng.Int64()
 				for k := range maxConsecutivePackets {
@@ -469,17 +474,19 @@ func FuzzStackSeeded(f *testing.F) {
 				} else if n > 0 {
 					if mut.IsMut&1 != 0 {
 						if verbose {
-							fmt.Fprintln(printWriter, "mutate (1)")
+							fmt.Fprintln(printWriter, "mutate tx", first.Hostname())
 						}
 						pmut.MutateEthernet(buf[:n], mut.Seed1, mut.MutBits1)
 						betsAreOff = true
 					}
 					if verbose {
-						ppr.PrintPacket("(1) ", buf[:n])
+						ppr.PrintPacket(first.Hostname(), buf[:n])
 					}
 					err = second.IngressEthernet(buf[:n])
 					if err != nil && !betsAreOff && err != lneto.ErrPacketDrop && err != lneto.ErrExhausted {
 						t.Fatal(i, k, err)
+					} else if verbose && err != nil {
+						fmt.Fprintln(printWriter, "err rx", second.Hostname(), err.Error())
 					}
 				}
 				n, err = second.EgressEthernet(buf[:])
@@ -488,17 +495,19 @@ func FuzzStackSeeded(f *testing.F) {
 				} else if n > 0 {
 					if mut.IsMut&1 != 0 {
 						if verbose {
-							fmt.Fprintln(printWriter, "mutate (2)")
+							fmt.Fprintln(printWriter, "mutate tx", second.Hostname())
 						}
 						pmut.MutateEthernet(buf[:n], mut.Seed2, mut.MutBits2)
 						betsAreOff = true
 					}
 					if verbose {
-						ppr.PrintPacket("(2) ", buf[:n])
+						ppr.PrintPacket(second.Hostname(), buf[:n])
 					}
 					err = first.IngressEthernet(buf[:n])
 					if err != nil && !betsAreOff && err != lneto.ErrPacketDrop && err != lneto.ErrExhausted {
 						t.Fatal(i, k, err)
+					} else if verbose && err != nil {
+						fmt.Fprintln(printWriter, "err rx", first.Hostname(), err.Error())
 					}
 				}
 			}
@@ -510,21 +519,21 @@ func FuzzStackSeeded(f *testing.F) {
 				limit := d == drainLimit-1
 				n, err := first.EgressEthernet(buf[:])
 				if (err != nil || n > 0) && limit {
-					ppr.PrintPacket("(1) ", buf[:n])
-					t.Fatal(i, "expected no errors/data after maxconsecutive err:", err)
+					ppr.PrintPacket(first.Hostname(), buf[:n])
+					t.Fatal(i, "stuck in data/error loop:", err)
 				} else if n > 0 {
 					if verbose {
-						ppr.PrintPacket("(1) ", buf[:n])
+						ppr.PrintPacket(first.Hostname(), buf[:n])
 					}
 					second.IngressEthernet(buf[:n])
 				}
 				n, err = second.EgressEthernet(buf[:])
 				if (err != nil || n > 0) && limit {
 					ppr.PrintPacket("(2) ", buf[:n])
-					t.Fatal(i, "expected no errors/data after maxconsecutive err:", err)
+					t.Fatal(i, "stuck in data/error loop:", err)
 				} else if n > 0 {
 					if verbose {
-						ppr.PrintPacket("(2) ", buf[:n])
+						ppr.PrintPacket(second.Hostname(), buf[:n])
 					}
 					first.IngressEthernet(buf[:n])
 				}

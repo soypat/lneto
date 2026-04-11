@@ -91,15 +91,14 @@ func (stack *CapturePrinter) PrintPacket(prefix string, pkt []byte) {
 			}
 			fmtbuf = append(fmtbuf, ' ')
 		}
+
 		fmtbuf = append(fmtbuf, prefix...)
-		// Ensure minimum width of packet length display for less jitter in log viewline.
-		prevlen := len(prefix)
-		fmtbuf = strconv.AppendInt(fmtbuf, int64(len(pkt)), 10)
-		numLength := len(fmtbuf) - prevlen
-		appendSpaces := max(0, stack.namespaceminwidth-numLength) + 1 // add single space to separate actual format from packet length.
+		appendSpaces := max(0, stack.namespaceminwidth-len(prefix)) + 1 // add single space to separate actual format from packet length.
 		for range appendSpaces {
 			fmtbuf = append(fmtbuf, ' ')
 		}
+		fmtbuf = strconv.AppendInt(fmtbuf, int64(len(pkt)), 10)
+		fmtbuf = append(fmtbuf, ' ')
 		fmtbuf, err = stack.pfmt.FormatFrames(fmtbuf, stack.frms, pkt)
 	}
 	fmtbuf = append(fmtbuf, '\n')
