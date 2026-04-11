@@ -1,7 +1,9 @@
 package xnet
 
 import (
+	"math/rand/v2"
 	"net/netip"
+	"os"
 	"testing"
 
 	"github.com/soypat/lneto"
@@ -183,7 +185,14 @@ func fixIPTCPCRCs(pkt []byte) (fixable bool) {
 
 func FuzzStackSeeded(f *testing.F) {
 	f.Add(int64(1), int64(2), int64(3))
+	// Numbers below taken from ANU QRNG https://qrng.anu.edu.au/random-hex/
+	f.Add(int64(0x5b38810084b73b78), int64(0xfbc7243ac2c4a84), int64(0x62138b35b7745fca))
+	f.Add(int64(0x78b75e43c6fb1336), int64(0x09f9c425438dd42a), int64(0xd65e65613b032be))
+	f.Add(int64(0xf63789e3a0750ed), int64(0xd4d3df265f09358), int64(0x5e404163a7fe4889))
+	f.Add(int64(0x9649343892132dc), int64(0xfd5be085171f904), int64(0x565faeb82080921c))
 	var pmut ltesto.PacketMut
+	var ppr CapturePrinter
+	ppr.Configure(os.Stdout, CapturePrinterConfig{})
 	f.Fuzz(func(t *testing.T, seed1, seed2, seedAction int64) {
 		if seed1 == 0 {
 			seed1++
@@ -191,6 +200,46 @@ func FuzzStackSeeded(f *testing.F) {
 		if seed2 == 0 {
 			seed2++
 		}
+		const (
+			actionUDP = iota
+			actionTCP
+			actionICMP
+			actionARP
+			actionLim
+		)
+		const maxActions = 100
+		const maxConsecutivePackets = 6
+		var actions [maxActions]struct {
+			Action   int64
+			Rand     int64
+			Mutation [maxConsecutivePackets]struct {
+				Seed1, Seed2       int64
+				MutBits1, MutBits2 int64
+				IsMut              int64
+			}
+		}
+		// Fuzz tests are supposed to be predictable and repeatable.
+		// We only generate the randomness in one place and in same order of
+		// rng.Int64 calls. We cannot add new calls into the for loop but we
+		// can add a new for loops when we need more fields filled in.
+		// Be wary of invalidating the entire fuzz corpus we have.
+		{
+			rng := rand.New(rand.NewPCG(uint64(seed1), uint64(seed2)))
+			for i := range actions {
+				// DO NOT ADD RANDOM CALLS IN HERE! Read comment above.
+				actions[i].Action = rng.Int64() % actionLim
+				actions[i].Rand = rng.Int64()
+				for k := range maxConsecutivePackets {
+					mut := &actions[i].Mutation[k]
+					mut.IsMut = rng.Int64()
+					mut.Seed1 = rng.Int64()
+					mut.Seed2 = rng.Int64()
+					mut.MutBits1 = rng.Int64()
+					mut.MutBits2 = rng.Int64()
+				}
+			}
+		}
+
 		const mtu = 1500
 		const mfl = mtu + 14 // frame length includes ethernet header
 		var buf [mfl]byte
@@ -226,15 +275,7 @@ func FuzzStackSeeded(f *testing.F) {
 		if err != nil {
 			t.Fatal(err, cfg2)
 		}
-		const maxActions = 100
-		const (
-			actionUDP = iota
-			actionTCP
-			actionICMP
-			actionARP
-			actionNone
-			actionLim
-		)
+
 		const (
 			pingMinPayload = 8
 			port1          = 8080
@@ -246,7 +287,7 @@ func FuzzStackSeeded(f *testing.F) {
 		err = tcp1.Configure(tcp.ConnConfig{
 			RxBuf:             make([]byte, bufsize),
 			TxBuf:             make([]byte, bufsize),
-			TxPacketQueueSize: 1 + int(s1.Prand32())%10,
+			TxPacketQueueSize: 1 + int(uint16(seed1)%10),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -254,7 +295,7 @@ func FuzzStackSeeded(f *testing.F) {
 		err = tcp2.Configure(tcp.ConnConfig{
 			RxBuf:             make([]byte, bufsize),
 			TxBuf:             make([]byte, bufsize),
-			TxPacketQueueSize: 1 + int(s2.Prand32())%10,
+			TxPacketQueueSize: 1 + int(uint16(seed2)%10),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -262,8 +303,8 @@ func FuzzStackSeeded(f *testing.F) {
 		err = udp1.Configure(udp.ConnConfig{
 			RxBuf:       make([]byte, bufsize),
 			TxBuf:       make([]byte, bufsize),
-			RxQueueSize: int(1 + s1.Prand32()%10),
-			TxQueueSize: int(1 + s1.Prand32()%10),
+			RxQueueSize: int(1 + uint16(seed1>>32)%10),
+			TxQueueSize: int(1 + uint16(seed1>>32)%10),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -271,8 +312,8 @@ func FuzzStackSeeded(f *testing.F) {
 		err = udp2.Configure(udp.ConnConfig{
 			RxBuf:       make([]byte, bufsize),
 			TxBuf:       make([]byte, bufsize),
-			RxQueueSize: int(1 + s2.Prand32()%10),
-			TxQueueSize: int(1 + s2.Prand32()%10),
+			RxQueueSize: int(1 + uint16(seed2>>32)%10),
+			TxQueueSize: int(1 + uint16(seed2>>32)%10),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -280,9 +321,8 @@ func FuzzStackSeeded(f *testing.F) {
 		icmpEnabled := false
 		udpOrder := 0
 		betsAreOff := false // When a packet is mutated all bets on which error can be returned are off.
-		for i := 0; i < maxActions; i++ {
-			action1 := s1.Prand32()
-			switch action1 % actionLim {
+		for i, action := range actions {
+			switch action.Action {
 			case actionTCP:
 				state1 := tcp1.State()
 				state2 := tcp2.State()
@@ -297,7 +337,7 @@ func FuzzStackSeeded(f *testing.F) {
 					}
 				} else if state1 == tcp.StateEstablished && state2 == tcp.StateEstablished {
 					// For now just close after established.
-					if s1.Prand32()%2 == 0 {
+					if action.Rand%2 == 0 {
 						tcp1.Close()
 					} else {
 						tcp2.Close()
@@ -318,7 +358,7 @@ func FuzzStackSeeded(f *testing.F) {
 					}
 				}
 				udpOrder++
-				action := s1.Prand32() % 8
+				action := action.Rand % 8
 				switch action {
 				case 0:
 					if udp1.FreeOutput() > 0 {
@@ -353,21 +393,21 @@ func FuzzStackSeeded(f *testing.F) {
 					}
 					icmpEnabled = true
 				}
-				if s1.Prand32()%2 == 0 {
+				if action.Rand%2 == 0 {
 					s1.icmp.Reset()
-					_, err = s1.icmp.PingStart(s2.Addr().As4(), buf[:pingMinPayload], pingMinPayload+uint16(s1.Prand32())%pingMinPayload)
+					_, err = s1.icmp.PingStart(s2.Addr().As4(), buf[:pingMinPayload], pingMinPayload+uint16(action.Rand)%pingMinPayload)
 					if err != nil {
 						t.Fatal(i, err)
 					}
 				} else {
 					s2.icmp.Reset()
-					_, err = s2.icmp.PingStart(s1.Addr().As4(), buf[:pingMinPayload], pingMinPayload+uint16(s2.Prand32())%pingMinPayload)
+					_, err = s2.icmp.PingStart(s1.Addr().As4(), buf[:pingMinPayload], pingMinPayload+uint16(action.Rand)%pingMinPayload)
 					if err != nil {
 						t.Fatal(i, err)
 					}
 				}
 			case actionARP:
-				action := s1.Prand32() % 6
+				action := action.Rand % 6
 				switch action {
 				case 0: // s1 queries s2 address.
 					s1.StartResolveHardwareAddress6(s2.Addr())
@@ -385,37 +425,33 @@ func FuzzStackSeeded(f *testing.F) {
 			}
 			// Exchange data while checking stack does not enter runaway infinite frame send loop.
 			first, second := &s1, &s2
-			if s1.Prand32()%2 == 0 {
+			if (action.Rand>>32)%2 == 0 {
 				first, second = second, first
 			}
 			// TODO(soypat): add specialized packet mutation by detecting protocol and modifying specific packet fields.
-			const maxConsecutivePackets = 6
-			mut := s1.Prand32()
 
-			for k := 0; k < maxConsecutivePackets; k++ {
+			for k, mut := range action.Mutation {
 				n, err := first.EgressEthernet(buf[:])
 				if err != nil {
 					t.Fatal(i, k, err)
 				} else if n > 0 {
-					if mut&1 == 1 {
-						pmut.MutateEthernet(buf[:n], int64(s1.Prand32())|int64(s1.Prand32())<<32, int64(s1.Prand32())|int64(s1.Prand32())<<32)
+					if mut.IsMut&1 != 0 {
+						pmut.MutateEthernet(buf[:n], mut.Seed1, mut.MutBits1)
 						betsAreOff = true
 					}
 					err = second.IngressEthernet(buf[:n])
 					if err != nil && !betsAreOff && err != lneto.ErrPacketDrop && err != lneto.ErrExhausted {
 						t.Fatal(i, k, err)
 					}
-					mut >>= 1
 				}
 				n, err = second.EgressEthernet(buf[:])
 				if err != nil {
 					t.Fatal(i, k, err)
 				} else if n > 0 {
-					if mut&1 == 1 {
-						pmut.MutateEthernet(buf[:n], int64(s1.Prand32())|int64(s1.Prand32())<<32, int64(s1.Prand32())|int64(s1.Prand32())<<32)
+					if mut.IsMut&1 != 0 {
+						pmut.MutateEthernet(buf[:n], mut.Seed2, mut.MutBits2)
 						betsAreOff = true
 					}
-					mut >>= 1
 					err = first.IngressEthernet(buf[:n])
 					if err != nil && !betsAreOff && err != lneto.ErrPacketDrop && err != lneto.ErrExhausted {
 						t.Fatal(i, k, err)
@@ -423,16 +459,14 @@ func FuzzStackSeeded(f *testing.F) {
 				}
 			}
 			n, err := first.EgressEthernet(buf[:])
-			if err != nil {
-				t.Fatal(i, "expected no errors after maxconsecutive", err)
-			} else if n > 0 {
-				t.Fatal(i, "expected no more data after max consecutive")
+			if err != nil || n > 0 {
+				ppr.PrintPacket("(1) ", buf[:n])
+				t.Fatal(i, "expected no errors/data after maxconsecutive err:", err)
 			}
 			n, err = second.EgressEthernet(buf[:])
-			if err != nil {
-				t.Fatal(i, "expected no errors after maxconsecutive", err)
-			} else if n > 0 {
-				t.Fatal(i, "expected no more data after max consecutive")
+			if err != nil || n > 0 {
+				ppr.PrintPacket("(2) ", buf[:n])
+				t.Fatal(i, "expected no errors/data after maxconsecutive err:", err)
 			}
 		}
 	})
