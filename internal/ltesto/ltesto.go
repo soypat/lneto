@@ -275,7 +275,7 @@ func (pm PacketMut) MutateIPv4(ipBuf []byte, seed, bitmapMut int64) (fields int,
 	fields = 5
 
 	// IP option injection: 2 bits consumed (inject + variant selector).
-	if bitmapMut&1 != 0 {
+	if bitmapMut&1 != 0 && ifrm.HeaderLength() >= 20 && ifrm.HeaderLength() <= len(ipBuf) {
 		opts := ifrm.Options()
 		if len(opts) > 0 {
 			seed = mutateIPOptions(opts, seed, bitmapMut>>1)
@@ -407,7 +407,7 @@ func (pm PacketMut) MutateTCP(transportBuf []byte, ifrm ipv4.Frame, seed, bitmap
 	fields = 5
 
 	// TCP option injection: 2 bits consumed (inject + variant selector).
-	if bitmapMut&1 != 0 {
+	if bitmapMut&1 != 0 && tfrm.HeaderLength() >= 20 && tfrm.HeaderLength() <= len(transportBuf) {
 		opts := tfrm.Options()
 		if len(opts) > 0 {
 			seed = mutateTCPOptions(opts, seed, bitmapMut>>1)

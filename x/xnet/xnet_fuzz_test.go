@@ -278,6 +278,7 @@ func FuzzTwoStack(f *testing.F) {
 		}
 		icmpEnabled := false
 		udpOrder := 0
+		betsAreOff := false // When a packet is mutated all bets on which error can be returned are off.
 		for i := 0; i < maxActions; i++ {
 			action1 := s1.Prand32()
 			switch action1 % actionLim {
@@ -373,6 +374,7 @@ func FuzzTwoStack(f *testing.F) {
 			// TODO(soypat): add specialized packet mutation by detecting protocol and modifying specific packet fields.
 			const maxConsecutivePackets = 6
 			mut := s1.Prand32()
+
 			for k := 0; k < maxConsecutivePackets; k++ {
 				n, err := first.EgressEthernet(buf[:])
 				if err != nil {
@@ -380,9 +382,10 @@ func FuzzTwoStack(f *testing.F) {
 				} else if n > 0 {
 					if mut&1 == 1 {
 						pmut.MutateEthernet(buf[:n], int64(s1.Prand32())|int64(s1.Prand32())<<32, int64(s1.Prand32())|int64(s1.Prand32())<<32)
+						betsAreOff = true
 					}
 					err = second.IngressEthernet(buf[:n])
-					if err != nil && err != lneto.ErrPacketDrop && err != lneto.ErrExhausted {
+					if err != nil && !betsAreOff && err != lneto.ErrPacketDrop && err != lneto.ErrExhausted {
 						t.Fatal(i, k, err)
 					}
 					mut >>= 1
@@ -393,10 +396,11 @@ func FuzzTwoStack(f *testing.F) {
 				} else if n > 0 {
 					if mut&1 == 1 {
 						pmut.MutateEthernet(buf[:n], int64(s1.Prand32())|int64(s1.Prand32())<<32, int64(s1.Prand32())|int64(s1.Prand32())<<32)
+						betsAreOff = true
 					}
 					mut >>= 1
 					err = first.IngressEthernet(buf[:n])
-					if err != nil && err != lneto.ErrPacketDrop && err != lneto.ErrExhausted {
+					if err != nil && !betsAreOff && err != lneto.ErrPacketDrop && err != lneto.ErrExhausted {
 						t.Fatal(i, k, err)
 					}
 				}
