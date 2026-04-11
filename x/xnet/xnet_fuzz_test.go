@@ -210,6 +210,7 @@ func init() {
 }
 
 const (
+	printFuzz  = false
 	printSeed1 = 676827762285163398
 	printSeed2 = 1141027023543727980
 )
@@ -226,7 +227,7 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 	if seed2 == 0 {
 		seed2++
 	}
-	verbose := printSeed1 == seed1 && printSeed2 == seed2
+	verbose := printFuzz && printSeed1 == seed1 && printSeed2 == seed2
 	const (
 		actionUDP = iota
 		actionTCP
