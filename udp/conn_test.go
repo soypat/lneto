@@ -2,6 +2,7 @@ package udp
 
 import (
 	"encoding/binary"
+	"net/netip"
 	"testing"
 
 	"github.com/soypat/lneto/internal"
@@ -29,7 +30,7 @@ func newTestConn(t *testing.T) *Conn {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = conn.Open(1234, 8080, []byte{10, 0, 0, 1})
+	err = conn.Open(1234, netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 0, 0, 1}), 8080))
 	if err != nil {
 		t.Fatal(err)
 	}

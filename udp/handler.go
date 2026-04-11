@@ -164,6 +164,11 @@ func (h *Handler) Read(b []byte) (int, error) {
 	return n, nil
 }
 
+// IsOpen returns true if the handler can send/receive data.
+func (h *Handler) IsOpen() bool {
+	return !h.closeCalled && h.lport > 0
+}
+
 // Close closes the connection. Calls to [Handler.Send] and [Handler.Recv] will
 // return [net.ErrClosed] after Close is called.
 func (h *Handler) Close() {
@@ -211,4 +216,15 @@ func (h *Handler) SizeInput() int {
 // SizeOutput returns the total size of the transmit ring buffer.
 func (h *Handler) SizeOutput() int {
 	return h.txRing.Size()
+}
+
+// FreeOutput returns the number of free bytes in the transmit buffer.
+// This tells the user how many bytes can be written with Write method before write failing.
+func (h *Handler) FreeOutput() int {
+	return h.txRing.Free()
+}
+
+// FreeInput returns the number of free bytes in the receive buffer.
+func (h *Handler) FreeInput() int {
+	return h.rxRing.Free()
 }

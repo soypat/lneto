@@ -113,6 +113,9 @@ func (client *Client) Demux(carrierData []byte, frameOffset int) error {
 		// We received a ping request; not handled client-side.
 		efrm := FrameEcho{Frame: ifrm}
 		data := efrm.Data()
+		if len(data) == 0 {
+			return lneto.ErrPacketDrop
+		}
 		n, werr := client.responseRing.Write(data)
 		if werr != nil {
 			err = werr
@@ -127,6 +130,9 @@ func (client *Client) Demux(carrierData []byte, frameOffset int) error {
 	case TypeEchoReply:
 		efrm := FrameEcho{Frame: ifrm}
 		data := efrm.Data()
+		if len(data) == 0 {
+			return lneto.ErrPacketDrop
+		}
 		hash := client.magichash(data, len(data)) & keyHashBits
 		idx := client.pingidx(hash)
 		if idx < 0 || (ipEnabled && client.outgoingEcho[idx].raddr != raddr) {
@@ -232,7 +238,7 @@ func (client *Client) magichash(pattern []byte, size int) (hash uint32) {
 }
 
 func (client *Client) PingStart(remoteAddr [4]byte, pattern []byte, size uint16) (key uint32, err error) {
-	if int(size) < len(pattern) {
+	if int(size) < len(pattern) || len(pattern) == 0 {
 		return 0, lneto.ErrInvalidConfig
 	} else if remoteAddr == [4]byte{} {
 		return 0, lneto.ErrZeroDestination

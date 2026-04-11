@@ -1,7 +1,9 @@
 package udp
 
 import (
+	"errors"
 	"net"
+	"net/netip"
 	"os"
 	"sync"
 	"time"
@@ -55,27 +57,37 @@ func (conn *Conn) Configure(cfg ConnConfig) error {
 func (conn *Conn) Abort() {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	conn.h.Abort()
 	conn.abort()
 }
 
 func (conn *Conn) abort() {
+	conn.h.Abort()
 	conn.rdead = time.Time{}
 	conn.wdead = time.Time{}
 	conn.remoteAddr = conn.remoteAddr[:0]
 }
 
+var errStillOpen = errors.New("close udp conn before opening")
+
 // Open sets the local port and remote address for the connection.
-func (conn *Conn) Open(localPort, remotePort uint16, remoteAddr []byte) error {
+func (conn *Conn) Open(localPort uint16, remoteAddr netip.AddrPort) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	conn.abort()
-	err := conn.h.SetPorts(localPort, remotePort)
+	if conn.h.IsOpen() {
+		return errStillOpen
+	}
+	err := conn.h.SetPorts(localPort, remoteAddr.Port())
 	if err != nil {
 		return err
 	}
-	conn.remoteAddr = append(conn.remoteAddr[:0], remoteAddr...)
+	conn.remoteAddr = append(conn.remoteAddr[:0], remoteAddr.Addr().AsSlice()...)
 	return nil
+}
+
+func (conn *Conn) IsOpen() bool {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.h.IsOpen()
 }
 
 // LocalPort returns the local port set by [Conn.Open].
@@ -228,4 +240,47 @@ func (conn *Conn) deadlineExceeded(deadline *time.Time) bool {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	return !deadline.IsZero() && time.Since(*deadline) > 0
+}
+
+// BufferedInput returns the number of unread bytes in the receive buffer.
+func (conn *Conn) BufferedInput() int {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.h.BufferedInput()
+}
+
+// BufferedUnsent returns the number of written but unsent bytes in the transmit buffer.
+func (conn *Conn) BufferedOutput() int {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.h.BufferedOutput()
+}
+
+// SizeInput returns the total size of the receive ring buffer.
+func (conn *Conn) SizeInput() int {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.h.SizeInput()
+}
+
+// SizeOutput returns the total size of the transmit ring buffer.
+func (conn *Conn) SizeOutput() int {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.h.SizeOutput()
+}
+
+// FreeOutput returns the number of free bytes in the transmit buffer.
+// This tells the user how many bytes can be written with Write method before write failing.
+func (conn *Conn) FreeOutput() int {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.h.FreeOutput()
+}
+
+// FreeInput returns the number of free bytes in the receive buffer.
+func (conn *Conn) FreeInput() int {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.h.FreeInput()
 }
