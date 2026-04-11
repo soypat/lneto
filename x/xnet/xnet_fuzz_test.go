@@ -1,6 +1,7 @@
 package xnet
 
 import (
+	"fmt"
 	"math/rand/v2"
 	"net/netip"
 	"os"
@@ -184,22 +185,27 @@ func fixIPTCPCRCs(pkt []byte) (fixable bool) {
 }
 
 func FuzzStackSeeded(f *testing.F) {
-	f.Add(int64(1), int64(2), int64(3))
+	f.Add(int64(1), int64(2))
 	// Numbers below taken from ANU QRNG https://qrng.anu.edu.au/random-hex/
-	f.Add(int64(0x5b38810084b73b78), int64(0xfbc7243ac2c4a84), int64(0x62138b35b7745fca))
-	f.Add(int64(0x78b75e43c6fb1336), int64(0x09f9c425438dd42a), int64(0xd65e65613b032be))
-	f.Add(int64(0xf63789e3a0750ed), int64(0xd4d3df265f09358), int64(0x5e404163a7fe4889))
-	f.Add(int64(0x9649343892132dc), int64(0xfd5be085171f904), int64(0x565faeb82080921c))
+	f.Add(int64(0x5b38810084b73b78), int64(0xfbc7243ac2c4a84))
+	f.Add(int64(0x78b75e43c6fb1336), int64(0x09f9c425438dd42a))
+	f.Add(int64(0xf63789e3a0750ed), int64(0xd4d3df265f09358))
+	f.Add(int64(0x9649343892132dc), int64(0xfd5be085171f904))
 	var pmut ltesto.PacketMut
 	var ppr CapturePrinter
-	ppr.Configure(os.Stdout, CapturePrinterConfig{})
-	f.Fuzz(func(t *testing.T, seed1, seed2, seedAction int64) {
+	printWriter := os.Stdout
+	ppr.Configure(printWriter, CapturePrinterConfig{})
+	const (
+		printSeed1, printSeed2 = 676827762285163398, 1141027023543727980
+	)
+	f.Fuzz(func(t *testing.T, seed1, seed2 int64) {
 		if seed1 == 0 {
 			seed1++
 		}
 		if seed2 == 0 {
 			seed2++
 		}
+		verbose := printSeed1 == seed1 && printSeed2 == seed2
 		const (
 			actionUDP = iota
 			actionTCP
@@ -327,6 +333,9 @@ func FuzzStackSeeded(f *testing.F) {
 				state1 := tcp1.State()
 				state2 := tcp2.State()
 				if state1 == 0 && state2 == 0 {
+					if verbose {
+						fmt.Fprintln(printWriter, "TCP dial")
+					}
 					err = s1.DialTCP(&tcp1, port1, netip.AddrPortFrom(s2.Addr(), port2))
 					if err != nil {
 						t.Fatal(i, err)
@@ -337,21 +346,32 @@ func FuzzStackSeeded(f *testing.F) {
 					}
 				} else if state1 == tcp.StateEstablished && state2 == tcp.StateEstablished {
 					// For now just close after established.
-					if action.Rand%2 == 0 {
+					closeNum := 1 + action.Rand%2
+					if verbose {
+						fmt.Fprintln(printWriter, "TCP close", closeNum)
+					}
+					switch closeNum {
+					case 1:
 						tcp1.Close()
-					} else {
+					case 2:
 						tcp2.Close()
 					}
 				}
 			case actionUDP:
 				// Ensure connections open.
 				if !udp1.IsOpen() {
+					if verbose {
+						fmt.Fprintln(printWriter, "UDP dial 1")
+					}
 					err = s1.DialUDP(&udp1, port1, netip.AddrPortFrom(s2.Addr(), port2))
 					if err != nil {
 						t.Fatal(i, err)
 					}
 				}
 				if !udp2.IsOpen() {
+					if verbose {
+						fmt.Fprintln(printWriter, "UDP dial 2")
+					}
 					err = s2.DialUDP(&udp2, port2, netip.AddrPortFrom(s1.Addr(), port1))
 					if err != nil {
 						t.Fatal(i, err)
@@ -359,6 +379,9 @@ func FuzzStackSeeded(f *testing.F) {
 				}
 				udpOrder++
 				action := action.Rand % 8
+				if verbose {
+					fmt.Fprintln(printWriter, "UDP action", action)
+				}
 				switch action {
 				case 0:
 					if udp1.FreeOutput() > 0 {
@@ -382,6 +405,10 @@ func FuzzStackSeeded(f *testing.F) {
 					udp2.Close()
 				}
 			case actionICMP:
+				icmpaction := action.Rand % 2
+				if verbose {
+					fmt.Fprintln(printWriter, "ICMP action", icmpaction, "enabled", icmpEnabled)
+				}
 				if !icmpEnabled {
 					err = s1.EnableICMP(true)
 					if err != nil {
@@ -393,21 +420,26 @@ func FuzzStackSeeded(f *testing.F) {
 					}
 					icmpEnabled = true
 				}
-				if action.Rand%2 == 0 {
+				switch icmpaction {
+				case 0:
 					s1.icmp.Reset()
 					_, err = s1.icmp.PingStart(s2.Addr().As4(), buf[:pingMinPayload], pingMinPayload+uint16(action.Rand)%pingMinPayload)
 					if err != nil {
 						t.Fatal(i, err)
 					}
-				} else {
+				case 1:
 					s2.icmp.Reset()
 					_, err = s2.icmp.PingStart(s1.Addr().As4(), buf[:pingMinPayload], pingMinPayload+uint16(action.Rand)%pingMinPayload)
 					if err != nil {
 						t.Fatal(i, err)
 					}
 				}
+
 			case actionARP:
 				action := action.Rand % 6
+				if verbose {
+					fmt.Fprintln(printWriter, "ARP action", action)
+				}
 				switch action {
 				case 0: // s1 queries s2 address.
 					s1.StartResolveHardwareAddress6(s2.Addr())
@@ -436,8 +468,14 @@ func FuzzStackSeeded(f *testing.F) {
 					t.Fatal(i, k, err)
 				} else if n > 0 {
 					if mut.IsMut&1 != 0 {
+						if verbose {
+							fmt.Fprintln(printWriter, "mutate (1)")
+						}
 						pmut.MutateEthernet(buf[:n], mut.Seed1, mut.MutBits1)
 						betsAreOff = true
+					}
+					if verbose {
+						ppr.PrintPacket("(1) ", buf[:n])
 					}
 					err = second.IngressEthernet(buf[:n])
 					if err != nil && !betsAreOff && err != lneto.ErrPacketDrop && err != lneto.ErrExhausted {
@@ -449,8 +487,14 @@ func FuzzStackSeeded(f *testing.F) {
 					t.Fatal(i, k, err)
 				} else if n > 0 {
 					if mut.IsMut&1 != 0 {
+						if verbose {
+							fmt.Fprintln(printWriter, "mutate (2)")
+						}
 						pmut.MutateEthernet(buf[:n], mut.Seed2, mut.MutBits2)
 						betsAreOff = true
+					}
+					if verbose {
+						ppr.PrintPacket("(2) ", buf[:n])
 					}
 					err = first.IngressEthernet(buf[:n])
 					if err != nil && !betsAreOff && err != lneto.ErrPacketDrop && err != lneto.ErrExhausted {
@@ -461,7 +505,7 @@ func FuzzStackSeeded(f *testing.F) {
 			// Drain any remaining packets (retransmits from mutation).
 			// Hard ceiling prevents infinite send loops from passing silently.
 			// Also send drained packet to other stack to also catch infinite feedback loops.
-			const drainLimit = 4
+			const drainLimit = 2
 			for d := 0; d < drainLimit; d++ {
 				limit := d == drainLimit-1
 				n, err := first.EgressEthernet(buf[:])
@@ -469,7 +513,9 @@ func FuzzStackSeeded(f *testing.F) {
 					ppr.PrintPacket("(1) ", buf[:n])
 					t.Fatal(i, "expected no errors/data after maxconsecutive err:", err)
 				} else if n > 0 {
-					ppr.PrintPacket("(1) ", buf[:n])
+					if verbose {
+						ppr.PrintPacket("(1) ", buf[:n])
+					}
 					second.IngressEthernet(buf[:n])
 				}
 				n, err = second.EgressEthernet(buf[:])
@@ -477,7 +523,9 @@ func FuzzStackSeeded(f *testing.F) {
 					ppr.PrintPacket("(2) ", buf[:n])
 					t.Fatal(i, "expected no errors/data after maxconsecutive err:", err)
 				} else if n > 0 {
-					ppr.PrintPacket("(2) ", buf[:n])
+					if verbose {
+						ppr.PrintPacket("(2) ", buf[:n])
+					}
 					first.IngressEthernet(buf[:n])
 				}
 			}
