@@ -5,6 +5,7 @@ import (
 	"math/rand"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/ipv4"
@@ -248,9 +249,16 @@ func (pm PacketMut) MutateEthernet(pkt []byte, seed, bitmapMut int64) int {
 		return 0
 	}
 	fields := 0
-	seed, bitmapMut = mutate16(seed, bitmapMut, func(v uint16) { efrm.SetEtherType(ethernet.Type(v)) }, uint16(efrm.EtherTypeOrSize()))
+	etype := efrm.EtherTypeOrSize()
+	seed, bitmapMut = mutate16(seed, bitmapMut, func(v uint16) { efrm.SetEtherType(ethernet.Type(v)) }, uint16(etype))
 	fields++
-	n, _, _ := pm.MutateIPv4(efrm.Payload(), seed, bitmapMut)
+	var n int
+	switch etype {
+	case ethernet.TypeIPv4:
+		n, _, _ = pm.MutateIPv4(efrm.Payload(), seed, bitmapMut)
+	case ethernet.TypeARP:
+		n, _, _ = pm.MutateARP(efrm.Payload(), seed, bitmapMut)
+	}
 	return fields + n
 }
 
@@ -555,6 +563,53 @@ func (pm PacketMut) MutateICMP(transportBuf []byte, seed, bitmapMut int64) (fiel
 	var crc lneto.CRC791
 	frm.SetCRC(crc.PayloadSum16(transportBuf))
 	return 2, seed, bitmapMut
+}
+
+// MutateARP mutates ARP frame fields: Operation, hardware type/length,
+// protocol type/length, and sender/target addresses.
+func (pm PacketMut) MutateARP(arpBuf []byte, seed, bitmapMut int64) (fields int, seedOut, bitmapOut int64) {
+	afrm, err := arp.NewFrame(arpBuf)
+	if err != nil {
+		return 0, seed, bitmapMut
+	}
+
+	// Field: Operation (Request/Reply/garbage).
+	seed, bitmapMut = mutate16(seed, bitmapMut, func(v uint16) { afrm.SetOperation(arp.Operation(v)) }, uint16(afrm.Operation()))
+
+	htype, hlen := afrm.Hardware()
+	ptype, plen := afrm.Protocol()
+
+	// Mutate sender/target protocol addresses BEFORE length fields,
+	// since length mutations shift where Sender/Target point.
+	_, senderProto := afrm.Sender()
+	if len(senderProto) > 0 && bitmapMut&1 != 0 {
+		for i := range senderProto {
+			senderProto[i] = byte(seed)
+			seed = internal.Prand64(seed)
+		}
+	}
+	bitmapMut >>= 1
+
+	_, targetProto := afrm.Target()
+	if len(targetProto) > 0 && bitmapMut&1 != 0 {
+		for i := range targetProto {
+			targetProto[i] = byte(seed)
+			seed = internal.Prand64(seed)
+		}
+	}
+	bitmapMut >>= 1
+
+	// Field: Hardware type (wrong htype → mismatch).
+	seed, bitmapMut = mutate16(seed, bitmapMut, func(v uint16) { afrm.SetHardware(v, hlen) }, htype)
+	// Field: Hardware length (wrong hlen shifts all subsequent field offsets).
+	seed, bitmapMut = mutate8(seed, bitmapMut, func(v uint8) { afrm.SetHardware(htype, v) }, hlen)
+	// Field: Protocol type (wrong proto → mismatch).
+	seed, bitmapMut = mutate16(seed, bitmapMut, func(v uint16) { afrm.SetProtocol(ethernet.Type(v), plen) }, uint16(ptype))
+	// Field: Protocol length (wrong plen shifts target field offsets).
+	seed, bitmapMut = mutate8(seed, bitmapMut, func(v uint8) { afrm.SetProtocol(ptype, v) }, plen)
+	fields = 7
+
+	return fields, seed, bitmapMut
 }
 
 func mutate8(seed, bitmapMut int64, set func(uint8), cur uint8) (int64, int64) {

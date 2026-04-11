@@ -13,7 +13,7 @@ import (
 	"github.com/soypat/lneto/udp"
 )
 
-func FuzzStackAsyncHTTP(f *testing.F) {
+func FuzzStackPacketHTTP(f *testing.F) {
 	const MTU = 1500
 	const seed = 1
 	var buf [MTU + ethernet.MaxOverheadSize]byte
@@ -181,7 +181,7 @@ func fixIPTCPCRCs(pkt []byte) (fixable bool) {
 	return true
 }
 
-func FuzzTwoStack(f *testing.F) {
+func FuzzStackSeeded(f *testing.F) {
 	f.Add(int64(1), int64(2), int64(3))
 	var pmut ltesto.PacketMut
 	f.Fuzz(func(t *testing.T, seed1, seed2, seedAction int64) {
@@ -231,6 +231,7 @@ func FuzzTwoStack(f *testing.F) {
 			actionUDP = iota
 			actionTCP
 			actionICMP
+			actionARP
 			actionNone
 			actionLim
 		)
@@ -364,6 +365,22 @@ func FuzzTwoStack(f *testing.F) {
 					if err != nil {
 						t.Fatal(i, err)
 					}
+				}
+			case actionARP:
+				action := s1.Prand32() % 6
+				switch action {
+				case 0: // s1 queries s2 address.
+					s1.StartResolveHardwareAddress6(s2.Addr())
+				case 1: // s2 queries s1 address.
+					s2.StartResolveHardwareAddress6(s1.Addr())
+				case 2: // s1 checks query result for s2.
+					s1.ResultResolveHardwareAddress6(s2.Addr())
+				case 3: // s2 checks query result for s1.
+					s2.ResultResolveHardwareAddress6(s1.Addr())
+				case 4: // s1 discards pending query.
+					s1.DiscardResolveHardwareAddress6(s2.Addr())
+				case 5: // s2 discards pending query.
+					s2.DiscardResolveHardwareAddress6(s1.Addr())
 				}
 			}
 			// Exchange data while checking stack does not enter runaway infinite frame send loop.
