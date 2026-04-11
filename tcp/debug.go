@@ -46,7 +46,7 @@ func (tcb *ControlBlock) traceRcv(msg string) {
 		slog.String("state", tcb._state.String()),
 		slog.Uint64("rcv.nxt", uint64(tcb.rcv.NXT)),
 		slog.Uint64("rcv.wnd", uint64(tcb.rcv.WND)),
-		slog.Bool("challenge", tcb.challengeAck),
+		slog.Bool("challenge", tcb.pendingChallengeAck()),
 	)
 }
 

@@ -187,7 +187,7 @@ func TestPendingSegment_ChallengeACK_Idempotent(t *testing.T) {
 	var tcb ControlBlock
 	tcb.HelperInitState(StateEstablished, 100, 101, 1024)
 	tcb.HelperInitRcv(500, 501, 1024)
-	tcb.challengeAck = true
+	tcb.triggerChallengeAckEmit()
 
 	seg1, ok1 := tcb.PendingSegment(0)
 	if !ok1 {
@@ -196,7 +196,7 @@ func TestPendingSegment_ChallengeACK_Idempotent(t *testing.T) {
 
 	// PendingSegment must not consume challengeAck (read-only contract).
 	// Currently FAILS: challengeAck is set to false on the first call.
-	if !tcb.challengeAck {
+	if !tcb.pendingChallengeAck() {
 		t.Error("PendingSegment cleared challengeAck flag; violates documented read-only contract")
 	}
 
@@ -374,4 +374,55 @@ func TestPendingSegment_RetransmitAfter3DupACKs(t *testing.T) {
 	if tcb.nRetransmit != 0 {
 		t.Fatalf("nRetransmit after progress = %d; want 0", tcb.nRetransmit)
 	}
+}
+
+// TestACKLoop_MutualOutOfWindow verifies that two TCBs with diverged state
+// (simulating post-mutation) don't enter an infinite challenge-ACK ping-pong.
+// Each side sees the other's segment as out-of-window → challenge ACK → loop.
+func TestACKLoop_MutualOutOfWindow(t *testing.T) {
+	const wnd Size = 64
+
+	// Setup: A.snd.NXT=101, B.rcv.NXT=5000 → A's segments are outside B's window.
+	//        B.snd.NXT=501, A.rcv.NXT=8000 → B's segments are outside A's window.
+	// Both will reject each other's challenge ACKs forever without a limit.
+	var tcbA ControlBlock
+	tcbA.HelperInitState(StateEstablished, 100, 101, wnd)
+	tcbA.HelperInitRcv(8000, 8001, wnd) // A expects seq from B around 8001
+	tcbA.snd.UNA = 101
+	tcbA.snd.WND = wnd
+	tcbA.snd.WL1 = 8001
+	tcbA.snd.WL2 = 101
+
+	var tcbB ControlBlock
+	tcbB.HelperInitState(StateEstablished, 500, 501, wnd)
+	tcbB.HelperInitRcv(5000, 5001, wnd) // B expects seq from A around 5001
+	tcbB.snd.UNA = 501
+	tcbB.snd.WND = wnd
+	tcbB.snd.WL1 = 5001
+	tcbB.snd.WL2 = 501
+
+	// Kick off: A has a pending ACK (simulating normal data exchange trigger).
+	tcbA.pending[0] = FlagACK
+
+	const maxRounds = 50
+	for round := 0; round < maxRounds; round++ {
+		segA, okA := tcbA.PendingSegment(0)
+		if okA {
+			tcbA.Send(segA)
+			// A sends seq=101, but B expects [5001, 5001+64) → out of window → challenge ACK
+			tcbB.Recv(segA)
+		}
+
+		segB, okB := tcbB.PendingSegment(0)
+		if okB {
+			tcbB.Send(segB)
+			// B sends seq=501, but A expects [8001, 8001+64) → out of window → challenge ACK
+			tcbA.Recv(segB)
+		}
+
+		if !okA && !okB {
+			return // Converged.
+		}
+	}
+	t.Fatal("ACK ping-pong did not converge after", maxRounds, "rounds — infinite loop bug")
 }
