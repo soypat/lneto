@@ -73,6 +73,9 @@ type queryResult struct {
 	hwaddr    []byte
 	dstHw     []byte
 	querysent bool
+	// inc tracks amount of times the query survived compaction.
+	// The queries with higher inc will be discarded first.
+	inc uint16
 }
 
 func (qr *queryResult) destroy() {
@@ -126,8 +129,16 @@ func (h *Handler) DiscardQuery(protoAddr []byte) error {
 
 func (h *Handler) compactQueries() {
 	validOff := 0
+	maxIdx := -1
+	maxInc := uint16(0)
 	for i := 0; i < len(h.queries); i++ {
-		if !h.queries[i].isInvalid() {
+		discard := h.queries[i].isInvalid()
+		if !discard {
+			h.queries[i].inc++
+			if h.queries[i].inc > maxInc {
+				maxInc = h.queries[i].inc
+				maxIdx = i
+			}
 			if i != validOff {
 				// We swap the queries here so that when `StartQuery` extends
 				// queries slice, we don't have sharing of the internal structures.
@@ -137,6 +148,9 @@ func (h *Handler) compactQueries() {
 			}
 			validOff++
 		}
+	}
+	if validOff == len(h.queries) && maxIdx >= 0 {
+		h.queries[maxIdx].destroy() // Destroy oldest query if unable to compact.
 	}
 	h.queries = h.queries[:validOff]
 }
@@ -149,7 +163,7 @@ func (h *Handler) StartQuery(dstHWAddr, proto []byte) error {
 	if len(h.queries) == cap(h.queries) {
 		h.compactQueries()
 		if len(h.queries) == cap(h.queries) {
-			return lneto.ErrExhausted
+			return lneto.ErrExhausted // Should never fail.
 		}
 	}
 	if len(proto) != len(h.ourProtoAddr) {
@@ -159,8 +173,7 @@ func (h *Handler) StartQuery(dstHWAddr, proto []byte) error {
 	} else if dstHWAddr != nil && !internal.IsZeroed(dstHWAddr...) {
 		return lneto.ErrInvalidConfig
 	}
-	h.queries = h.queries[:len(h.queries)+1]
-	q := &h.queries[len(h.queries)-1]
+	q := internal.SliceReclaim(&h.queries)
 	*q = queryResult{
 		protoaddr: append(q.protoaddr[:0], proto...),
 		hwaddr:    q.hwaddr[:0],
@@ -255,7 +268,10 @@ func (h *Handler) Demux(ethFrame []byte, frameOffset int) error {
 					if !internal.IsZeroed(q.dstHw...) {
 						internal.LogAttrs(nil, slog.LevelError, "race-condition:ARP-reused-buffer")
 					}
-					copy(q.dstHw, hwaddr) // External write to user buffer.
+					// External write to user buffer.
+					// Copy data and free up this memory.
+					copy(q.dstHw, hwaddr)
+					q.inc = 10000
 				}
 				return nil
 			}
