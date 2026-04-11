@@ -934,7 +934,7 @@ func TestChallengeACKWithBufferedData(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from out-of-order segment")
 	}
-	if !server.scb.challengeAck {
+	if !server.scb.pendingChallengeAck() {
 		t.Fatal("challengeAck flag not set after out-of-order segment")
 	}
 	if server.State() != StateEstablished {

@@ -14,6 +14,10 @@ const (
 	retransmitAfterDupacks = 3
 	// retransmitMaxQueued sets maximum amount of retransmits to queue while receiving dupacks.
 	retransmitMaxQueued = 2
+	// maxChallengeRejects is the number of consecutive challenge ACKs sent without
+	// a successful Recv before aborting. Prevents infinite ACK ping-pong when both
+	// sides have diverged state (e.g. after packet mutation).
+	maxChallengeRejects = 8
 )
 
 // ControlBlock is a partial Transmission Control Block (TCB) implementation as
@@ -63,9 +67,14 @@ type ControlBlock struct {
 	// pending is the queue of pending flags to be sent in the next 2 segments.
 	// On a call to Send the queue is advanced and flags set in the segment are unset.
 	// The second position of the queue is used for FIN segments.
-	pending      [2]Flags
-	_state       State // leading underscore so field not suggested on top of exported State method when developing.
-	challengeAck bool
+	pending [2]Flags
+	_state  State // leading underscore so field not suggested on top of exported State method when developing.
+
+	// challengeAcks counts consecutive challenge acks queued on receiving out of window segment.
+	// challengeAcks signedness indicates whether the challengeAck is pending being sent.
+	// A negative value of challengeAcks means a challenge ack is pending being sent.
+	challengeAcks int8
+
 	// dupack counts received ACK==snd.UNA && ACK<snd.NXT received. Does not count ack that set UNA.
 	dupack uint8
 	// nRetransmit counts number of retransmits sent since last UNA update.
@@ -152,6 +161,20 @@ func (tcb *ControlBlock) MakeDupACK() Segment {
 	}
 }
 
+// MakeChallengeAck returns a challenge ACK segment for the current ControlBlock state
+// used to respond to unexpected or ambiguous segments that require the remote peer to confirm
+// its connection state. A challenge ACK does not acknowledge new data,
+// consume sequence space, or carry a payload.
+func (tcb *ControlBlock) MakeChallengeACK() Segment {
+	return Segment{
+		SEQ:     tcb.snd.NXT, // Current sequence number (no data)
+		ACK:     tcb.rcv.NXT, // Acknowledging expected next byte
+		Flags:   FlagACK,     // Pure ACK, no SYN/FIN/RST
+		WND:     tcb.rcv.WND, // Current receive window size
+		DATALEN: 0,           // No payload
+	}
+}
+
 // sendSpace contains Send Sequence Space data. Its sequence numbers correspond to local data.
 type sendSpace struct {
 	ISS Value // initial send sequence number, defined locally on connection start
@@ -215,7 +238,7 @@ func (tcb *ControlBlock) prepareToHandshake(iss Value, wnd Size, newState State)
 
 // HasPending returns true if there is a pending control segment to send. Calls to Send will advance the pending queue.
 func (tcb *ControlBlock) HasPending() bool {
-	return tcb.pending[0] != 0 || tcb.challengeAck || tcb.HasPendingRetransmit()
+	return tcb.pending[0] != 0 || tcb.pendingChallengeAck() || tcb.HasPendingRetransmit()
 }
 
 // HasPending returns true if the control block is pending a retransmit according to simple optmist
@@ -229,10 +252,10 @@ func (tcb *ControlBlock) HasPendingRetransmit() bool {
 // It does not modify the ControlBlock state or pending segment queue.
 func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	pending := tcb.pending[0]
-	if tcb.challengeAck {
+	if tcb.pendingChallengeAck() {
 		// Do not clear challengeAck here: PendingSegment is documented as read-only.
 		// The flag is consumed in Send when the ACK segment is actually transmitted.
-		return Segment{SEQ: tcb.snd.NXT, ACK: tcb.rcv.NXT, Flags: FlagACK, WND: tcb.rcv.WND}, true
+		return tcb.MakeChallengeACK(), true
 	} else if !pending.HasAny(flagctl) && tcb.HasPendingRetransmit() {
 		// Optimist Strategy: retransmit oldest data once.
 		return Segment{SEQ: tcb.snd.UNA, DATALEN: Size(payloadLen), ACK: tcb.rcv.NXT, WND: tcb.rcv.WND, Flags: FlagACK}, true
@@ -305,7 +328,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 
 	// RFC 9293 §3.10.7.4: SYN on synchronized connection → challenge ACK.
 	if seg.Flags.HasAny(FlagSYN) && !tcb._state.IsPreestablished() {
-		tcb.challengeAck = true
+		tcb.triggerChallengeAckEmit()
 		tcb.pending[0] |= FlagACK
 		return errDropSegment
 	}
@@ -341,6 +364,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	if err != nil {
 		return err
 	}
+	tcb.challengeAcks = 0 // Successful Recv — reset challenge counter.
 
 	tcb.pending[0] |= pending
 	if prevNxt != 0 && tcb.snd.NXT != prevNxt && tcb.logenabled(slog.LevelDebug) {
@@ -430,8 +454,8 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 	tcb.pending[0] |= newPending
 
 	// Sending an ACK satisfies any outstanding challenge-ACK obligation.
-	if tcb.challengeAck && seg.Flags.HasAny(FlagACK) {
-		tcb.challengeAck = false
+	if tcb.pendingChallengeAck() && seg.Flags.HasAny(FlagACK) {
+		tcb.triggerChallengeAckSent()
 	}
 
 	// The segment is valid, we can update TCB state.
@@ -530,8 +554,10 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 		switch err {
 		case errSeqNotInWindow, errLastNotInWindow, errRequireSequential, errZeroWindow:
 			if !flags.HasAny(FlagRST) {
-				tcb.challengeAck = true
-				tcb.pending[0] |= FlagACK
+				if tcb.tooManyChallengeAcks() {
+					return net.ErrClosed
+				}
+				tcb.triggerChallengeAckEmit()
 			}
 		}
 		return err
@@ -614,7 +640,7 @@ func (tcb *ControlBlock) handleRST(seq Value) error {
 	}
 	// Synchronized states: exact SEQ match required; challenge ACK for in-window non-exact.
 	if seq != tcb.rcv.NXT {
-		tcb.challengeAck = true
+		tcb.triggerChallengeAckEmit()
 		tcb.pending[0] |= FlagACK
 		return errDropSegment
 	}
@@ -679,4 +705,26 @@ func (tcb *ControlBlock) Close() (err error) {
 		tcb.logerr("tcb:close", slog.String("err", err.Error()))
 	}
 	return err
+}
+
+func (tcb *ControlBlock) triggerChallengeAckEmit() {
+	if tcb.challengeAcks >= 0 {
+		// Only increment challenge ack counter if last challenge ack already sent.
+		tcb.challengeAcks = -tcb.challengeAcks - 1
+	}
+}
+func (tcb *ControlBlock) triggerChallengeAckSent() {
+	if tcb.challengeAcks < 0 {
+		tcb.challengeAcks = -tcb.challengeAcks // Make positive.
+	}
+}
+func (tcb *ControlBlock) pendingChallengeAck() bool {
+	return tcb.challengeAcks < 0
+}
+func (tcb *ControlBlock) tooManyChallengeAcks() bool {
+	if tcb.challengeAcks >= 0 {
+		return tcb.challengeAcks > maxChallengeRejects
+	} else {
+		return tcb.challengeAcks < -maxChallengeRejects
+	}
 }
