@@ -40,6 +40,8 @@ agents.md
 
 # For local development and testing create `local` directories.
 local
+*.local
+*local.md
 
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
