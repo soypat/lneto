@@ -1,4 +1,0 @@
-go test fuzz v1
-int64(106)
-int64(23)
-int64(3)
