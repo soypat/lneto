@@ -7,6 +7,7 @@ import (
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/http/httpraw"
+	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
 	"github.com/soypat/lneto/udp"
@@ -182,6 +183,7 @@ func fixIPTCPCRCs(pkt []byte) (fixable bool) {
 
 func FuzzTwoStack(f *testing.F) {
 	f.Add(int64(1), int64(2), int64(3))
+	var pmut ltesto.PacketMut
 	f.Fuzz(func(t *testing.T, seed1, seed2, seedAction int64) {
 		if seed1 == 0 {
 			seed1++
@@ -370,20 +372,29 @@ func FuzzTwoStack(f *testing.F) {
 			}
 			// TODO(soypat): add specialized packet mutation by detecting protocol and modifying specific packet fields.
 			const maxConsecutivePackets = 6
+			mut := s1.Prand32()
 			for k := 0; k < maxConsecutivePackets; k++ {
 				n, err := first.EgressEthernet(buf[:])
 				if err != nil {
 					t.Fatal(i, k, err)
 				} else if n > 0 {
+					if mut&1 == 1 {
+						pmut.MutateEthernet(buf[:n], int64(s1.Prand32())|int64(s1.Prand32())<<32, int64(s1.Prand32())|int64(s1.Prand32())<<32)
+					}
 					err = second.IngressEthernet(buf[:n])
 					if err != nil && err != lneto.ErrPacketDrop && err != lneto.ErrExhausted {
 						t.Fatal(i, k, err)
 					}
+					mut >>= 1
 				}
 				n, err = second.EgressEthernet(buf[:])
 				if err != nil {
 					t.Fatal(i, k, err)
 				} else if n > 0 {
+					if mut&1 == 1 {
+						pmut.MutateEthernet(buf[:n], int64(s1.Prand32())|int64(s1.Prand32())<<32, int64(s1.Prand32())|int64(s1.Prand32())<<32)
+					}
+					mut >>= 1
 					err = first.IngressEthernet(buf[:n])
 					if err != nil && err != lneto.ErrPacketDrop && err != lneto.ErrExhausted {
 						t.Fatal(i, k, err)
