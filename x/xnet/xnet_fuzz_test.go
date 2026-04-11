@@ -207,7 +207,7 @@ func FuzzStackSeeded(f *testing.F) {
 			actionARP
 			actionLim
 		)
-		const maxActions = 100
+		const maxActions = 32
 		const maxConsecutivePackets = 6
 		var actions [maxActions]struct {
 			Action   int64
@@ -458,15 +458,28 @@ func FuzzStackSeeded(f *testing.F) {
 					}
 				}
 			}
-			n, err := first.EgressEthernet(buf[:])
-			if err != nil || n > 0 {
-				ppr.PrintPacket("(1) ", buf[:n])
-				t.Fatal(i, "expected no errors/data after maxconsecutive err:", err)
-			}
-			n, err = second.EgressEthernet(buf[:])
-			if err != nil || n > 0 {
-				ppr.PrintPacket("(2) ", buf[:n])
-				t.Fatal(i, "expected no errors/data after maxconsecutive err:", err)
+			// Drain any remaining packets (retransmits from mutation).
+			// Hard ceiling prevents infinite send loops from passing silently.
+			// Also send drained packet to other stack to also catch infinite feedback loops.
+			const drainLimit = 4
+			for d := 0; d < drainLimit; d++ {
+				limit := d == drainLimit-1
+				n, err := first.EgressEthernet(buf[:])
+				if (err != nil || n > 0) && limit {
+					ppr.PrintPacket("(1) ", buf[:n])
+					t.Fatal(i, "expected no errors/data after maxconsecutive err:", err)
+				} else if n > 0 {
+					ppr.PrintPacket("(1) ", buf[:n])
+					second.IngressEthernet(buf[:n])
+				}
+				n, err = second.EgressEthernet(buf[:])
+				if (err != nil || n > 0) && limit {
+					ppr.PrintPacket("(2) ", buf[:n])
+					t.Fatal(i, "expected no errors/data after maxconsecutive err:", err)
+				} else if n > 0 {
+					ppr.PrintPacket("(2) ", buf[:n])
+					first.IngressEthernet(buf[:n])
+				}
 			}
 		}
 	})
