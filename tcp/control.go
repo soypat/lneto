@@ -364,7 +364,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	if err != nil {
 		return err
 	}
-	tcb.challengeAcks = 0 // Successful Recv — reset challenge counter.
+	tcb.triggerChallengeAckSatisfied() // Successful Recv — reset challenge counter.
 
 	tcb.pending[0] |= pending
 	if prevNxt != 0 && tcb.snd.NXT != prevNxt && tcb.logenabled(slog.LevelDebug) {
@@ -707,6 +707,9 @@ func (tcb *ControlBlock) Close() (err error) {
 	return err
 }
 
+func (tcb *ControlBlock) triggerChallengeAckSatisfied() {
+	tcb.challengeAcks = 0
+}
 func (tcb *ControlBlock) triggerChallengeAckEmit() {
 	if tcb.challengeAcks >= 0 {
 		// Only increment challenge ack counter if last challenge ack already sent.
