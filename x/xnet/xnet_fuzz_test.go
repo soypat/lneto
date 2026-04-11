@@ -183,38 +183,46 @@ func fixIPTCPCRCs(pkt []byte) (fixable bool) {
 func FuzzTwoStack(f *testing.F) {
 	f.Add(int64(1), int64(2), int64(3))
 	f.Fuzz(func(t *testing.T, seed1, seed2, seedAction int64) {
+		if seed1 == 0 {
+			seed1++
+		}
+		if seed2 == 0 {
+			seed2++
+		}
 		const mtu = 1500
 		const mfl = mtu + 14 // frame length includes ethernet header
 		var buf [mfl]byte
 		var s1, s2 StackAsync
 		v1, v2 := byte(seed1), byte(seed2)
-		err := s1.Reset(StackConfig{
+		cfg1 := StackConfig{
 			Hostname:          "s1",
 			StaticAddress:     netip.AddrFrom4([4]byte{1, 0, 0, v1}),
 			RandSeed:          seed1,
 			MaxActiveTCPPorts: 1,
 			MaxActiveUDPPorts: 1,
-			ICMPQueueLimit:    int(v1 % 4),
+			ICMPQueueLimit:    1 + int(v1%4),
 			MTU:               mtu,
 			HardwareAddress:   [6]byte{0x1, 0, 0, 0, 0, v1},
 			AcceptMulticast:   v1%2 == 0,
-		})
-		if err != nil {
-			t.Fatal(err)
 		}
-		err = s2.Reset(StackConfig{
+		err := s1.Reset(cfg1)
+		if err != nil {
+			t.Fatal(err, cfg1)
+		}
+		cfg2 := StackConfig{
 			Hostname:          "s2",
 			StaticAddress:     netip.AddrFrom4([4]byte{1, 0, 0, v2}),
 			RandSeed:          seed2,
 			MaxActiveTCPPorts: 1,
 			MaxActiveUDPPorts: 1,
-			ICMPQueueLimit:    int(v2 % 4),
+			ICMPQueueLimit:    1 + int(v2%4),
 			MTU:               mtu,
 			HardwareAddress:   [6]byte{0x2, 0, 0, 0, 0, v2},
 			AcceptMulticast:   v2%2 == 0,
-		})
+		}
+		err = s2.Reset(cfg2)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatal(err, cfg2)
 		}
 		const maxActions = 100
 		const (
@@ -277,11 +285,11 @@ func FuzzTwoStack(f *testing.F) {
 				if state1 == 0 && state2 == 0 {
 					err = s1.DialTCP(&tcp1, port1, netip.AddrPortFrom(s2.Addr(), port2))
 					if err != nil {
-						t.Fatal(err)
+						t.Fatal(i, err)
 					}
 					err = s2.ListenTCP(&tcp2, port2)
 					if err != nil {
-						t.Fatal(err)
+						t.Fatal(i, err)
 					}
 				} else if state1 == tcp.StateEstablished && state2 == tcp.StateEstablished {
 					// For now just close after established.
@@ -296,13 +304,13 @@ func FuzzTwoStack(f *testing.F) {
 				if !udp1.IsOpen() {
 					err = s1.DialUDP(&udp1, port1, netip.AddrPortFrom(s2.Addr(), port2))
 					if err != nil {
-						t.Fatal(err)
+						t.Fatal(i, err)
 					}
 				}
 				if !udp2.IsOpen() {
 					err = s2.DialUDP(&udp2, port2, netip.AddrPortFrom(s1.Addr(), port1))
 					if err != nil {
-						t.Fatal(err)
+						t.Fatal(i, err)
 					}
 				}
 				udpOrder++
@@ -333,11 +341,11 @@ func FuzzTwoStack(f *testing.F) {
 				if !icmpEnabled {
 					err = s1.EnableICMP(true)
 					if err != nil {
-						t.Fatal(err)
+						t.Fatal(i, err)
 					}
 					err = s2.EnableICMP(true)
 					if err != nil {
-						t.Fatal(err)
+						t.Fatal(i, err)
 					}
 					icmpEnabled = true
 				}
@@ -345,13 +353,13 @@ func FuzzTwoStack(f *testing.F) {
 					s1.icmp.Reset()
 					_, err = s1.icmp.PingStart(s2.Addr().As4(), buf[:pingMinPayload], pingMinPayload+uint16(s1.Prand32())%pingMinPayload)
 					if err != nil {
-						t.Fatal(err)
+						t.Fatal(i, err)
 					}
 				} else {
 					s2.icmp.Reset()
 					_, err = s2.icmp.PingStart(s1.Addr().As4(), buf[:pingMinPayload], pingMinPayload+uint16(s2.Prand32())%pingMinPayload)
 					if err != nil {
-						t.Fatal(err)
+						t.Fatal(i, err)
 					}
 				}
 			}
@@ -360,38 +368,39 @@ func FuzzTwoStack(f *testing.F) {
 			if s1.Prand32()%2 == 0 {
 				first, second = second, first
 			}
+			// TODO(soypat): add specialized packet mutation by detecting protocol and modifying specific packet fields.
 			const maxConsecutivePackets = 6
 			for k := 0; k < maxConsecutivePackets; k++ {
 				n, err := first.EgressEthernet(buf[:])
 				if err != nil {
-					t.Fatal(err)
+					t.Fatal(i, k, err)
 				} else if n > 0 {
 					err = second.IngressEthernet(buf[:n])
-					if err != nil {
-						t.Fatal(err)
+					if err != nil && err != lneto.ErrPacketDrop && err != lneto.ErrExhausted {
+						t.Fatal(i, k, err)
 					}
 				}
 				n, err = second.EgressEthernet(buf[:])
 				if err != nil {
-					t.Fatal(err)
+					t.Fatal(i, k, err)
 				} else if n > 0 {
 					err = first.IngressEthernet(buf[:n])
-					if err != nil {
-						t.Fatal(err)
+					if err != nil && err != lneto.ErrPacketDrop && err != lneto.ErrExhausted {
+						t.Fatal(i, k, err)
 					}
 				}
 			}
 			n, err := first.EgressEthernet(buf[:])
 			if err != nil {
-				t.Fatal("expected no errors after maxconsecutive", err)
+				t.Fatal(i, "expected no errors after maxconsecutive", err)
 			} else if n > 0 {
-				t.Fatal("expected no more data after max consecutive")
+				t.Fatal(i, "expected no more data after max consecutive")
 			}
 			n, err = second.EgressEthernet(buf[:])
 			if err != nil {
-				t.Fatal("expected no errors after maxconsecutive", err)
+				t.Fatal(i, "expected no errors after maxconsecutive", err)
 			} else if n > 0 {
-				t.Fatal("expected no more data after max consecutive")
+				t.Fatal(i, "expected no more data after max consecutive")
 			}
 		}
 	})
