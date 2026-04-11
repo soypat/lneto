@@ -555,6 +555,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 		case errSeqNotInWindow, errLastNotInWindow, errRequireSequential, errZeroWindow:
 			if !flags.HasAny(FlagRST) {
 				if tcb.tooManyChallengeAcks() {
+					tcb.Abort()
 					return net.ErrClosed
 				}
 				tcb.triggerChallengeAckEmit()
