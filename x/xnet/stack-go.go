@@ -104,9 +104,11 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			return nil, err
 		}
 		uc := udpconn{
-			Conn:      &conn,
-			localAddr: net.UDPAddrFromAddrPort(laddr),
-			raddr:     net.UDPAddrFromAddrPort(raddr),
+			Conn: &conn,
+			// TODO: use udpaddr until UDPAddrFromAddrPort added to tinygo.
+			// https://github.com/tinygo-org/net/issues/45
+			localAddr: udpaddr(laddr),
+			raddr:     udpaddr(raddr),
 		}
 		return uc, nil
 	case "tcp", "tcp4":
@@ -244,3 +246,11 @@ var _ net.Conn = udpconn{}
 
 func (c udpconn) LocalAddr() net.Addr  { return c.localAddr }
 func (c udpconn) RemoteAddr() net.Addr { return c.raddr }
+
+func udpaddr(addr netip.AddrPort) net.Addr {
+	return &net.UDPAddr{
+		IP:   addr.Addr().AsSlice(),
+		Zone: addr.Addr().Zone(),
+		Port: int(addr.Port()),
+	}
+}
