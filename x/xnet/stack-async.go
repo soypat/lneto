@@ -18,6 +18,7 @@ import (
 	"github.com/soypat/lneto/ipv4/icmpv4"
 	"github.com/soypat/lneto/ntp"
 	"github.com/soypat/lneto/tcp"
+	"github.com/soypat/lneto/udp"
 )
 
 const (
@@ -32,7 +33,7 @@ type StackAsync struct {
 	ip       internet.StackIP
 	arp      arp.Handler
 	icmp     icmpv4.Client
-	udps     internet.StackPorts
+	udps     internet.StackPortsMACFiltered
 	tcps     internet.StackPortsMACFiltered
 
 	dhcpUDP     internet.StackUDPPort
@@ -353,6 +354,35 @@ func (s *StackAsync) EnableICMP(enabled bool) (err error) {
 	return err
 }
 
+func (s *StackAsync) DialUDP(conn *udp.Conn, localPort uint16, addrp netip.AddrPort) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var mac []byte
+	if s.subnet.Contains(addrp.Addr()) {
+		mac = make([]byte, 6)
+		ip := addrp.Addr().As4()
+		hw, err := s.arp.QueryResult(ip[:])
+		if err == nil {
+			// MAC already contained in results.
+			copy(mac, hw)
+		} else {
+			// StartQuery starts an ARP query for addresses in this network.
+			// On finishing query MAC is set and thus the StackPort will allow encapsulating
+			// data on that connection.
+			err = s.arp.StartQuery(mac, ip[:])
+			if err != nil {
+				return err
+			}
+		}
+	}
+	err = conn.Open(localPort, addrp)
+	if err != nil {
+		return err
+	}
+	err = s.udps.Register(conn, mac)
+	return nil
+}
+
 func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrPort) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -417,7 +447,7 @@ func (s *StackAsync) RegisterUDP(node lneto.StackNode, remoteAddr []byte, remote
 	}
 	s.userUDPs = s.userUDPs[:idx+1]
 	s.userUDPs[idx].SetStackNode(node, remoteAddr, remotePort)
-	return s.udps.Register(&s.userUDPs[idx])
+	return s.udps.Register(&s.userUDPs[idx], nil)
 }
 
 var errNoDNSServer = errors.New("no DNS server- did DHCP complete? You can set a predetermined DNS server in Stack configuration")
@@ -455,7 +485,7 @@ func (s *StackAsync) StartLookupIP(host string) error {
 	}
 	*(*[4]byte)(s.addrBuf[:4]) = s.dnssv.As4()
 	s.dnsUDP.SetStackNode(&s.dns, s.addrBuf[:4], dns.ServerPort)
-	err = s.udps.Register(&s.dnsUDP)
+	err = s.udps.Register(&s.dnsUDP, nil)
 	return err
 }
 
@@ -505,7 +535,7 @@ func (s *StackAsync) StartDHCPv4Request(request [4]byte) error {
 	}
 
 	s.dhcpUDP.SetStackNode(&s.dhcp, nil, dhcpv4.DefaultServerPort)
-	err = s.udps.Register(&s.dhcpUDP)
+	err = s.udps.Register(&s.dhcpUDP, nil)
 	if err != nil {
 		return err
 	}
@@ -519,7 +549,7 @@ func (s *StackAsync) StartNTP(addr netip.Addr) error {
 
 	*(*[4]byte)(s.addrBuf[:4]) = addr.As4()
 	s.ntpUDP.SetStackNode(&s.ntp, s.addrBuf[:4], ntp.ServerPort)
-	err := s.udps.Register(&s.ntpUDP)
+	err := s.udps.Register(&s.ntpUDP, nil)
 	return err
 }
 

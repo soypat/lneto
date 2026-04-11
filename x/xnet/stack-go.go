@@ -99,12 +99,7 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 		if err != nil {
 			return nil, err
 		}
-		raddr4 := raddr.Addr().As4()
-		err = conn.Open(laddr.Port(), raddr.Port(), raddr4[:])
-		if err != nil {
-			return nil, err
-		}
-		err = s.blk.async.RegisterUDP(&conn, raddr4[:], raddr.Port())
+		err = s.blk.async.DialUDP(&conn, laddr.Port(), raddr)
 		if err != nil {
 			return nil, err
 		}
