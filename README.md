@@ -43,7 +43,7 @@ See Developing section below for more information.
 lneto is currently being used primarily by embedded developers and those who need a lighter alternative to gVisor in terms of memory usage and binary size.
 
 - [**soypat/cyw43439**](https://github.com/soypat/cyw43439): Enabling internet access on [Raspberry Pi Pico W](https://www.raspberrypi.com/products/raspberry-pi-pico/). See [`examples`](https://github.com/soypat/cyw43439/tree/main/examples).
-- [**tinygo-org/espradio**](https://github.com/tinygo-rog/espradio): Enabling internet access on [Espressif's ESP32s](https://www.espressif.com/en/products/socs/esp32)
+- [**tinygo-org/espradio**](https://github.com/tinygo-org/espradio): Enabling internet access on [Espressif's ESP32s](https://www.espressif.com/en/products/socs/esp32)
 - [**TamaGo**](https://github.com/usbarmory/tamago): Enabling networking on Go baremetal projects. See [go-net project](https://github.com/usbarmory/go-net).
 - [**netbird.io**](https://netbird.io/)(planned): Secure remote P2P access.
 - [**soypat/lan8720**](https://github.com/soypat/lan8720): Enabling internet access with 100M ethernet PHY devices. 
