@@ -1,5 +1,7 @@
 package lneto
 
+import "time"
+
 // StackNode is an abstraction of a packet exchanging protocol controller. This is the building block for all protocols,
 // from Ethernet to IP to TCP, practically any protocol can be expressed as a StackNode and function completely.
 // Today protocols represented by StackNode also include NTP, DNS, DHCP, ARP, ICMP, UDP, mDNS.
@@ -37,12 +39,18 @@ type StackNode interface {
 	// SetFlagPending(flagPending func(numPendingEncapsulations int))
 }
 
-//go:generate stringer -type=IPProto,errGeneric -linecomment -output stringers.go .
+// BackoffStrategy is the abstraction of a backoff strategy for retrying an operation.
+// It returns the amount of time to sleep for. If returned value is 0 then runtime.Gosched is called.
+// A negative value results in no action taken.
+// consecutiveBackoffs starts at 1 and increments by 1 every time the operation is retried.
+type BackoffStrategy func(consecutiveBackoffs int) (sleep time.Duration)
 
 // IPProto represents the IP protocol number.
 type IPProto uint8
 
 // IP protocol numbers.
+//
+//go:generate stringer -type=IPProto,errGeneric -linecomment -output stringers.go .
 const (
 	IPProtoHopByHop        IPProto = 0   // IPv6 Hop-by-Hop Option [RFC8200]
 	IPProtoICMP            IPProto = 1   // ICMP [RFC792]

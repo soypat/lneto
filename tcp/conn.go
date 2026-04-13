@@ -29,6 +29,7 @@ type Conn struct {
 	h          Handler
 	remoteAddr []byte
 
+	_backoff lneto.BackoffStrategy
 	rdead    time.Time
 	wdead    time.Time
 	abortErr error
@@ -54,7 +55,10 @@ type ConnConfig struct {
 	RxBuf             []byte
 	TxBuf             []byte
 	TxPacketQueueSize int
-	Logger            *slog.Logger
+	// RWBackoff sets the backoff policy for backoff when data unavailable on Read or buffer full on Write.
+	// If not set a default backoff strategy will be used. See [internal.ConnRWBackoff].
+	RWBackoff lneto.BackoffStrategy
+	Logger    *slog.Logger
 }
 
 func (conn *Conn) Configure(config ConnConfig) (err error) {
@@ -64,6 +68,7 @@ func (conn *Conn) Configure(config ConnConfig) (err error) {
 	if err != nil {
 		return err
 	}
+	conn._backoff = config.RWBackoff
 	conn.logger.log = config.Logger
 	return nil
 }
@@ -206,8 +211,8 @@ func (conn *Conn) Write(b []byte) (int, error) {
 	} else if plen == 0 {
 		return 0, nil
 	}
-	backoff := internal.NewBackoff(internal.BackoffTCPConn)
 	n := 0
+	backoffs := 0
 	for {
 		if err := conn.checkPipe(connid, &conn.wdead); err != nil {
 			return 0, err
@@ -221,10 +226,11 @@ func (conn *Conn) Write(b []byte) (int, error) {
 		if (err != nil && err != internal.ErrRingBufferFull) || n == plen {
 			break
 		} else if ngot > 0 {
-			backoff.Hit()
+			backoffs = 0
 			runtime.Gosched() // Do a little yield since we won't have data for sure otherwise.
 		} else {
-			backoff.Miss()
+			backoffs++
+			conn.backoff(backoffs)
 		}
 		conn.trace("TCPConn.Write:insuf-buf", slog.Int("missing", plen-n), slog.Uint64("lport", uint64(lport)), slog.Uint64("rport", uint64(rport)))
 		if conn.deadlineExceeded(&conn.wdead) {
@@ -239,17 +245,13 @@ func (conn *Conn) Flush() error {
 	if err != nil {
 		return err
 	}
-	if conn.deadlineExceeded(&conn.wdead) {
-		return errDeadlineExceeded
-	} else if conn.BufferedUnsent() == 0 {
-		return nil
-	}
-	backoff := internal.NewBackoff(internal.BackoffTCPConn)
+	backoffs := 0
 	for conn.BufferedUnsent() != 0 {
 		if err := conn.checkPipe(connid, &conn.wdead); err != nil {
 			return err
 		}
-		backoff.Miss()
+		backoffs++
+		conn.backoff(backoffs)
 	}
 	return nil
 }
@@ -268,7 +270,7 @@ func (conn *Conn) Read(b []byte) (int, error) {
 	lport := conn.LocalPort()
 	rport := conn.RemotePort()
 	conn.trace("TCPConn.Read:start", slog.Uint64("lport", uint64(lport)), slog.Uint64("rport", uint64(rport)))
-	backoff := internal.NewBackoff(internal.BackoffTCPConn)
+	backoffs := 0
 	for conn.BufferedInput() == 0 {
 		state := conn.State()
 		if !state.RxDataOpen() {
@@ -280,7 +282,8 @@ func (conn *Conn) Read(b []byte) (int, error) {
 			}
 			return 0, err
 		}
-		backoff.Miss()
+		backoffs++
+		conn.backoff(backoffs)
 	}
 	return conn.handlerRead(b)
 }
@@ -445,4 +448,12 @@ func (conn *Conn) deadlineExceeded(deadline *time.Time) bool {
 
 func (conn *Conn) ConnectionID() *uint64 {
 	return conn.h.ConnectionID()
+}
+
+func (conn *Conn) backoff(consecutiveBackoffs int) {
+	if conn._backoff != nil {
+		conn._backoff(consecutiveBackoffs)
+	} else {
+		internal.ConnRWBackoff(consecutiveBackoffs)
+	}
 }
