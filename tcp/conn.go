@@ -2,6 +2,7 @@ package tcp
 
 import (
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -264,38 +265,48 @@ func (conn *Conn) Flush() error {
 // Read will block until data is available or connection closes.
 // Returns io.EOF when the remote has closed the connection and all buffered data has been read.
 func (conn *Conn) Read(b []byte) (int, error) {
-	connid, err := conn.lockPipeConnID()
-	if err != nil {
-		if conn.BufferedInput() > 0 {
-			return conn.handlerRead(b) // Ensure remaining buffered data is read.
-		}
-		return 0, err
-	}
-	lport := conn.LocalPort()
-	rport := conn.RemotePort()
+	conn.mu.Lock()
+	connID := conn.h.connid
+	lport := conn.h.localPort
+	rport := conn.h.remotePort
+	conn.mu.Unlock()
 	conn.trace("TCPConn.Read:start", slog.Uint64("lport", uint64(lport)), slog.Uint64("rport", uint64(rport)))
 	backoffs := 0
-	for conn.BufferedInput() == 0 {
-		state := conn.State()
-		if !state.RxDataOpen() {
-			// No use waiting for data, jump to read and return corresponding error from there.
-			break
-		} else if err := conn.checkPipe(connid, &conn.rdead); err != nil {
-			if conn.BufferedInput() > 0 {
-				return conn.handlerRead(b) // Ensure remaining buffered data is read.
-			}
-			return 0, err
+	n := 0
+	for len(b) > 0 {
+		conn.mu.Lock()
+		if connID != conn.h.connid {
+			conn.mu.Unlock()
+			return n, net.ErrClosed
 		}
-		backoffs++
-		conn.backoff(backoffs)
+		avail := conn.h.BufferedInput()
+		if avail > 0 {
+			// Read branch.
+			ngot, err := conn.h.Read(b)
+			conn.mu.Unlock()
+			n += ngot
+			if err != nil {
+				return n, err
+			}
+			b = b[ngot:]
+		} else if n > 0 {
+			conn.mu.Unlock()
+			break
+		} else {
+			state := conn.h.State()
+			conn.mu.Unlock()
+			if state.IsClosed() {
+				return n, net.ErrClosed
+			} else if !state.RxDataOpen() {
+				return n, io.EOF
+			} else if conn.deadlineExceeded(&conn.rdead) {
+				return n, errDeadlineExceeded
+			}
+			backoffs++
+			conn.backoff(backoffs)
+		}
 	}
-	return conn.handlerRead(b)
-}
-
-func (conn *Conn) handlerRead(b []byte) (int, error) {
-	conn.mu.Lock()
-	defer conn.mu.Unlock()
-	return conn.h.Read(b)
+	return n, nil
 }
 
 func (conn *Conn) lockPipeConnID() (uint64, error) {
