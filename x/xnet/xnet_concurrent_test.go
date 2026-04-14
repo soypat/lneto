@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
@@ -327,24 +328,44 @@ func testCloseTransmitsPendingData(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.
 	if err != nil {
 		t.Fatal(err)
 	}
-	tcpDataPerPkt := len(buf) - 14 - 20 - 20                      // Ethernet=14, IPv4=20, TCP=20
-	expectedPkts := (datalen + tcpDataPerPkt - 1) / tcpDataPerPkt // Round integer division up.
 	exchanges := -1
 	exchanging := 1
-	tcpDataEstimate := 0
+	tcpData := 0
 	for exchanging > 0 {
 		exchanges++
 		runtime.Gosched() // Yield to let c1 write via goroutine.
-		exchanging = exchangeEthernetOnce(t, s1, s2, buf[:])
-		tcpDataEstimate += tcpDataPerPkt
+		exchanging = exchangeEthernetOnce(t, s1, s2, buf)
+		frm, ok := getTCPFrame(buf[:exchanging])
+		if ok {
+			tcpData += len(frm.Payload())
+		}
 	}
 	if c1.BufferedUnsent() != 0 {
-		t.Errorf("done %s: expected no data left unsent got %d/%d", c1.State(), c1.BufferedUnsent(), len(data))
+		t.Errorf("done %s: want no data left unsent got %d/%d", c1.State(), c1.BufferedUnsent(), len(data))
 	}
-	if expectedPkts != exchanges {
-		t.Errorf("done %s: expected %d packets, got %d (~%d bytes of %d)", c1.State(), expectedPkts, exchanges, tcpDataEstimate, len(data))
+	if tcpData != datalen {
+		t.Errorf("done %s: want %d bytes sent, got %d", c1.State(), len(data), tcpData)
+	}
+	if t.Failed() {
+		t.Logf("test params: data=%d txsz1=%d rxsz2=%d queuesize=%d tcpsent=%d", datalen, tx1Buf, rx2Buf, queueSize, tcpData)
 	}
 
 	c1.Abort()
 	c2.Abort()
+}
+
+func getTCPFrame(etherFrame []byte) (tcp.Frame, bool) {
+	efrm, err := ethernet.NewFrame(etherFrame)
+	if err != nil || efrm.EtherTypeOrSize() != ethernet.TypeIPv4 {
+		return tcp.Frame{}, false
+	}
+	ifrm, err := ipv4.NewFrame(efrm.Payload())
+	if err != nil || ifrm.Protocol() != lneto.IPProtoTCP {
+		return tcp.Frame{}, false
+	}
+	tfrm, err := tcp.NewFrame(ifrm.Payload())
+	if err != nil {
+		return tcp.Frame{}, false
+	}
+	return tfrm, true
 }
