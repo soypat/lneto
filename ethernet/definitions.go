@@ -5,13 +5,24 @@ import (
 )
 
 const (
+	// MaxMTU defines the maximum payload of a standard ethernet frame. Does NOT include ethernet header, FCS and VLAN tag.
+	// Ethernet frames can be larger but this is out of the 802.3 standard and going into jumbo frame territory.
+	MaxMTU = 1500
+	// MaxFrameLength (1522) defines the maximum length of a standard ethernet frame including headers, FCS and VLAN if present.
+	MaxFrameLength = MaxMTU + MaxOverheadSize
 	// MaxOverheadSize is the maximum overhead a packet can incur
 	// from transmitting an ethernet frame. Includes:
 	//  - 14 bytes of Ethernet header containing MAC addresses and ethernet type, always present
-	//  - 4 bytes of VLAN tag, if present.
+	//  - 4 bytes of VLAN tag, if present. See 802.1Q.
 	//  - 4 bytes of the 32 bit trailing CRC, if required by PHY.
-	MaxOverheadSize  = 14 + 4 + 4
+	MaxOverheadSize  = sizeHeaderNoVLAN + fcsOverhead + vlanOverhead
+	vlanOverhead     = 4
+	fcsOverhead      = 4
 	sizeHeaderNoVLAN = 14
+	// MinimumFrameLength as defined by IEEE 802.3 standards. Includes ethernet header.
+	MinimumFrameLength = 64
+	// Does not include VLAN/FCS for more conservative minimum MTU.
+	MinimumMTU = MinimumFrameLength - sizeHeaderNoVLAN
 )
 
 // AppendAddr appends the text representation of the hardware address to the destination buffer.

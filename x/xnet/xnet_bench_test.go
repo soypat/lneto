@@ -9,8 +9,8 @@ import (
 )
 
 func BenchmarkARPExchange(b *testing.B) {
-	const MTU = 1500
-	const frameSize = MTU + ethernet.MaxOverheadSize
+	const MTU = ethernet.MaxMTU
+	const frameSize = ethernet.MaxFrameLength
 	c1, c2 := new(StackAsync), new(StackAsync)
 	queryAddr := netip.AddrFrom4([4]byte{192, 168, 1, 2})
 
@@ -76,8 +76,8 @@ func BenchmarkARPExchange(b *testing.B) {
 }
 
 func BenchmarkTCPHandshake(b *testing.B) {
-	const MTU = 1500
-	const frameSize = MTU + ethernet.MaxOverheadSize
+	const MTU = ethernet.MaxMTU
+	const frameSize = ethernet.MaxFrameLength
 	const svPort = 8080
 	client, sv := new(StackAsync), new(StackAsync)
 	clconn, svconn := new(tcp.Conn), new(tcp.Conn)

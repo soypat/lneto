@@ -29,7 +29,7 @@ const (
 
 func TestTCPConn_ReadBlocksUntilDataAvailable(t *testing.T) {
 	const seed = 5678
-	const MTU = 1500
+	const MTU = ethernet.MaxMTU
 	const svPort = 8080
 	client, sv, clconn, svconn := newTCPStacks(t, seed, MTU)
 	tst := testerFrom(t, MTU)
@@ -151,7 +151,7 @@ func TestStackAsyncTCP_multipacket(t *testing.T) {
 
 func TestStackAsyncTCP_singlepacket(t *testing.T) {
 	const seed = 1234
-	const MTU = 1500
+	const MTU = ethernet.MaxMTU
 	const svPort = 80
 	client, sv, clconn, svconn := newTCPStacks(t, seed, MTU)
 	tst := testerFrom(t, MTU)
@@ -283,8 +283,19 @@ func (tst *tester) TestTCPHandshake(stack1, stack2 *StackAsync) {
 		noExchange(0),
 		noExchange(1),
 	}
-	for _, wants := range exch {
-		tst.TCPExchange(wants, stack1, stack2)
+	var got [len(exch)]struct {
+		seg tcp.Segment
+	}
+	for i, wants := range exch {
+		haveFailed := tst.t.Failed()
+		got[i].seg = tst.TCPExchange(wants, stack1, stack2)
+		if haveFailed != tst.t.Failed() {
+			tst.t.Logf("print out sent segments (%d):\n", i+1)
+			for k := range i + 1 {
+				str := tcp.StringExchange(got[k].seg, 255, 255, exch[k].SourceIdx == 0) // states unknown.
+				tst.t.Log(str)
+			}
+		}
 	}
 }
 
@@ -734,7 +745,7 @@ func (tst *tester) getARPOperation() arp.Operation {
 // The bug was that reset() cleared bufRx when state became CLOSED.
 func TestTCPConn_BufferNotClearedOnPassiveClose(t *testing.T) {
 	const seed = 9999
-	const MTU = 1500
+	const MTU = ethernet.MaxMTU
 	const svPort = 8080
 	client, sv, clconn, svconn := newTCPStacks(t, seed, MTU)
 	tst := testerFrom(t, MTU)
@@ -915,8 +926,8 @@ func TestTCPConn_BufferNotClearedOnPassiveClose(t *testing.T) {
 }
 
 func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
-	const MTU = 1500
-	const MaxFrameLength = MTU + 14 + 4 // Ethernet header+FCS.
+	const MTU = ethernet.MaxMTU
+	const MaxFrameLength = MTU + ethernet.MaxOverheadSize // Ethernet header+FCS+VLAN.
 	stackAddr := netip.AddrFrom4([4]byte{192, 168, 1, 99})
 	stackMAC := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
 	routerAddr := [4]byte{192, 168, 1, 1}

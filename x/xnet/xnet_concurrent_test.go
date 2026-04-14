@@ -142,8 +142,8 @@ func TestTCPListener_ConcurrentEcho(t *testing.T) {
 }
 
 func kernelLoop(ctx context.Context, server *StackAsync, clients []StackAsync) {
-	const MTU = 1500
-	const carrierDataSize = MTU + ethernet.MaxOverheadSize
+	const MTU = ethernet.MaxMTU
+	const carrierDataSize = ethernet.MaxFrameLength
 	buf := make([]byte, carrierDataSize)
 	rng := rand.New(rand.NewSource(1)) // Seed 1 for deterministic but randomized order
 	order := make([]int, len(clients))
@@ -284,4 +284,30 @@ func runClient(t *testing.T, id int, stack *StackAsync, conn *tcp.Conn,
 		return false
 	}
 	return true
+}
+
+func TestCloseTransmitsPendingDataLarge(t *testing.T) {
+	const mtu = ethernet.MinimumMTU
+	const tcpbufsize = mtu / 2
+	const queueSize = 5
+	const port1, port2 = 10, 20
+	s1, s2, c1, c2 := newTCPStacks(t, 0x1337_c0de, mtu)
+	err := c1.Configure(tcp.ConnConfig{
+		RxBuf:             make([]byte, tcpbufsize),
+		TxBuf:             make([]byte, tcpbufsize),
+		TxPacketQueueSize: queueSize,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c2.Configure(tcp.ConnConfig{
+		RxBuf:             make([]byte, tcpbufsize),
+		TxBuf:             make([]byte, tcpbufsize),
+		TxPacketQueueSize: queueSize,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tst := testerFrom(t, mtu)
+	tst.TestTCPSetupAndEstablish(s1, s2, c1, c2, port1, port2)
 }

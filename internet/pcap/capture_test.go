@@ -35,7 +35,7 @@ func makeHttpPayload(body string) ([]byte, error) {
 }
 
 func TestCap(t *testing.T) {
-	const mtu = 1500
+	const mtu = ethernet.MaxMTU
 	const httpBody = "{200,ok}"
 	var buf [mtu]byte
 	var gen ltesto.PacketGen
