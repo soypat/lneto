@@ -289,27 +289,62 @@ func runClient(t *testing.T, id int, stack *StackAsync, conn *tcp.Conn,
 
 func TestCloseTransmitsPendingDataLarge(t *testing.T) {
 	const mtu = ipv4.MinimumMTU
-	const tcpbufsize = mtu / 2
+	const tcpbufsize = mtu * 2
+	const tcpDataPerPkt = mtu - 14 - 20 - 20 // Ethernet=14, IPv4=20, TCP=20
+	const expectPkts = 2*tcpbufsize/tcpDataPerPkt + 1
 	const queueSize = 5
 	const port1, port2 = 10, 20
-	s1, s2, c1, c2 := newTCPStacks(t, 0x1337_c0de, mtu)
-	err := c1.Configure(tcp.ConnConfig{
-		RxBuf:             make([]byte, tcpbufsize),
-		TxBuf:             make([]byte, tcpbufsize),
-		TxPacketQueueSize: queueSize,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = c2.Configure(tcp.ConnConfig{
-		RxBuf:             make([]byte, tcpbufsize),
-		TxBuf:             make([]byte, tcpbufsize),
-		TxPacketQueueSize: queueSize,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	tst := testerFrom(t, mtu)
-	tst.TestTCPSetupAndEstablish(s1, s2, c1, c2, port1, port2)
+	tst.buf = tst.buf[:mtu+14]
+	s1, s2, c1, c2 := newTCPStacks(t, 0x1337_c0de, mtu)
+	testCloseTransmitsPendingData(tst, s1, s2, c1, c2, queueSize, tcpbufsize, tcpbufsize, tcpbufsize)
+}
 
+func testCloseTransmitsPendingData(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn, queueSize, tx1Buf, rx2Buf, datalen int) {
+	t := tst.t
+	err := c1.InternalHandler().SetBuffers(make([]byte, tx1Buf), nil, queueSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c2.InternalHandler().SetBuffers(nil, make([]byte, rx2Buf), queueSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		port1, port2 = 10, 20
+	)
+	buf := tst.buf
+	tst.TestTCPSetupAndEstablish(s1, s2, c1, c2, port1, port2)
+	if c1.FreeOutput() != tx1Buf {
+		t.Fatalf("want %d free bytes, got %d", tx1Buf, c1.FreeOutput())
+	}
+	data := make([]byte, datalen)
+	for i := range datalen {
+		data[i] = byte(i)
+	}
+	c1.Write(data) // Will write all data succesfully.
+	err = c1.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tcpDataPerPkt := len(buf) - 14 - 20 - 20                      // Ethernet=14, IPv4=20, TCP=20
+	expectedPkts := (datalen + tcpDataPerPkt - 1) / tcpDataPerPkt // Round integer division up.
+	exchanges := -1
+	exchanging := 1
+	tcpDataEstimate := 0
+	for exchanging > 0 {
+		exchanges++
+		runtime.Gosched() // Yield to let c1 write via goroutine.
+		exchanging = exchangeEthernetOnce(t, s1, s2, buf[:])
+		tcpDataEstimate += tcpDataPerPkt
+	}
+	if c1.BufferedUnsent() != 0 {
+		t.Errorf("done %s: expected no data left unsent got %d/%d", c1.State(), c1.BufferedUnsent(), len(data))
+	}
+	if expectedPkts != exchanges {
+		t.Errorf("done %s: expected %d packets, got %d (~%d bytes of %d)", c1.State(), expectedPkts, exchanges, tcpDataEstimate, len(data))
+	}
+
+	c1.Abort()
+	c2.Abort()
 }
