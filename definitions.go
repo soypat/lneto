@@ -1,7 +1,5 @@
 package lneto
 
-import "time"
-
 // StackNode is an abstraction of a packet exchanging protocol controller. This is the building block for all protocols,
 // from Ethernet to IP to TCP, practically any protocol can be expressed as a StackNode and function completely.
 // Today protocols represented by StackNode also include NTP, DNS, DHCP, ARP, ICMP, UDP, mDNS.
@@ -38,12 +36,6 @@ type StackNode interface {
 	// TODO(pato,ddirect): Do we eventually want to trigger writes to buffers asynchronously?
 	// SetFlagPending(flagPending func(numPendingEncapsulations int))
 }
-
-// BackoffStrategy is the abstraction of a backoff strategy for retrying an operation.
-// It returns the amount of time to sleep for. If returned value is 0 then runtime.Gosched is called.
-// A negative value results in no action taken.
-// consecutiveBackoffs starts at 1 and increments by 1 every time the operation is retried.
-type BackoffStrategy func(consecutiveBackoffs int) (sleep time.Duration)
 
 // IPProto represents the IP protocol number.
 type IPProto uint8

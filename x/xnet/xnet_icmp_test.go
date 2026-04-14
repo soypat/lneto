@@ -42,11 +42,11 @@ func TestStackAsync_ICMPEcho(t *testing.T) {
 				t.Fatal(err)
 			}
 			echoSent := exchangeEthernetOnce(t, sender, receiver, buf)
-			if !echoSent {
+			if echoSent == 0 {
 				t.Error("ECHO not sent")
 			}
 			echoReplySent := exchangeEthernetOnce(t, receiver, sender, buf)
-			if !echoReplySent {
+			if echoReplySent == 0 {
 				t.Error("ECHOREPLY not sent")
 			}
 			n, err = sender.EgressEthernet(buf)
@@ -70,19 +70,19 @@ func TestStackAsync_ICMPEcho(t *testing.T) {
 }
 
 // exchangeEthernetOnce sends one Ethernet frame from src to dst if available.
-func exchangeEthernetOnce(t *testing.T, src, dst *StackAsync, buf []byte) bool {
+func exchangeEthernetOnce(t *testing.T, src, dst *StackAsync, buf []byte) int {
 	t.Helper()
 	n, err := src.EgressEthernet(buf)
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
 	}
 	if n == 0 {
-		return false
+		return 0
 	}
 	if err := dst.IngressEthernet(buf[:n]); err != nil {
-		t.Fatal(err)
+		t.Error(err)
 	}
-	return true
+	return n
 }
 
 // newICMPStacks creates two test stacks with distinct static addresses and hardware addresses.

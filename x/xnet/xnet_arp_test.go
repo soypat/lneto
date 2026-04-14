@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"net/netip"
 	"testing"
+
+	"github.com/soypat/lneto/ethernet"
 )
 
 func TestARPLocal(t *testing.T) {
-	const mtu = 1500
+	const mtu = ethernet.MaxMTU
 	const seed = 1
 	s1, s2, c1, c2 := newTCPStacks(t, seed, mtu)
 	routerHw := [6]byte{1, 2, 3, 4, 5, 6}

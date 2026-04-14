@@ -14,7 +14,7 @@ import (
 
 func TestDNS_QueryReceivesAnswer(t *testing.T) {
 	const seed = 9876
-	const MTU = 1500
+	const MTU = ethernet.MaxMTU
 
 	// Create client stack with DNS server configured.
 	client := new(StackAsync)
@@ -47,7 +47,7 @@ func TestDNS_QueryReceivesAnswer(t *testing.T) {
 	}
 
 	// Client sends DNS query.
-	const carrierDataSize = MTU + ethernet.MaxOverheadSize
+	const carrierDataSize = ethernet.MaxFrameLength
 	var buf [carrierDataSize]byte
 	n, err := client.EgressEthernet(buf[:])
 	if err != nil {

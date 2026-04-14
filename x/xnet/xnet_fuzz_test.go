@@ -17,9 +17,9 @@ import (
 )
 
 func FuzzStackPacketHTTP(f *testing.F) {
-	const MTU = 1500
+	const MTU = ethernet.MaxMTU
 	const seed = 1
-	var buf [MTU + ethernet.MaxOverheadSize]byte
+	var buf [ethernet.MaxFrameLength]byte
 	s1, s2, c1, c2 := newTCPStacks(f, seed, MTU)
 	var hdr httpraw.Header
 	err := s1.ListenTCP(c1, 80)
@@ -78,7 +78,7 @@ func FuzzStackPacketHTTP(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, pktnum int, a []byte) {
-		var buf [MTU + ethernet.MaxOverheadSize]byte
+		var buf [ethernet.MaxFrameLength]byte
 		s1, s2, c1, c2 := newTCPStacks(t, seed, MTU)
 		err = s1.EnableICMP(true)
 		if err != nil {
@@ -268,8 +268,8 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 		}
 	}
 
-	const mtu = 1500
-	const mfl = mtu + 14 // frame length includes ethernet header
+	const mtu = ethernet.MaxMTU
+	const mfl = mtu + ethernet.MaxOverheadSize // frame length includes ethernet header
 	var buf [mfl]byte
 	var s1, s2 StackAsync
 	v1, v2 := byte(seed1), byte(seed2)

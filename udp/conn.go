@@ -303,7 +303,7 @@ func (conn *Conn) FreeInput() int {
 
 func (conn *Conn) backoff(consecutiveBackoffs int) {
 	if conn._backoff != nil {
-		conn._backoff(consecutiveBackoffs)
+		conn._backoff.Do(consecutiveBackoffs)
 	} else {
 		internal.ConnRWBackoff(consecutiveBackoffs)
 	}

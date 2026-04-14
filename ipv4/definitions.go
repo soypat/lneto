@@ -3,6 +3,8 @@ package ipv4
 import "strconv"
 
 const (
+	// RFC791 defines the minimum MTU for an IPv4 packet as 68, meaning a payload of 48 bytes when no IPv4 options included.
+	MinimumMTU = 68
 	sizeHeader = 20
 )
 

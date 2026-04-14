@@ -149,7 +149,7 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 
 func (sb *StackIP) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
 	frame := carrierData[offsetToFrame:]
-	if len(frame) < 256 {
+	if len(frame) < ipv4.MinimumMTU {
 		return 0, io.ErrShortBuffer
 	}
 	ifrm, _ := ipv4.NewFrame(frame)

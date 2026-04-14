@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"math/rand"
 	"testing"
+
+	"github.com/soypat/lneto/ethernet"
 )
 
 func TestHandler(t *testing.T) {
-	const mtu = 1500
+	const mtu = ethernet.MaxMTU
 	const maxpackets = 3
 	rng := rand.New(rand.NewSource(0))
 	client, server := newHandler(t, mtu, maxpackets), newHandler(t, mtu, maxpackets)
@@ -147,7 +149,7 @@ func establish(t *testing.T, client, server *Handler, packetBuf []byte) {
 // buffer for its SYN (advertising MSS=100), and the server should not send
 // segments with more than 100 bytes of payload.
 func TestHandler_MSSHonored(t *testing.T) {
-	const mtu = 1500
+	const mtu = ethernet.MaxMTU
 	rng := rand.New(rand.NewSource(0))
 	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
 	setupClientServer(t, rng, client, server)
@@ -356,7 +358,7 @@ func TestTxBufferFreedOnACK(t *testing.T) {
 // stuck at Window=0 indefinitely after the app frees buffer space via Read().
 func TestWindowUpdateAfterRead(t *testing.T) {
 	const rxBufSize = 256
-	const mtu = 1500
+	const mtu = ethernet.MaxMTU
 	const maxpackets = 4
 	rng := rand.New(rand.NewSource(99))
 
@@ -459,7 +461,7 @@ func TestWindowUpdateAfterRead(t *testing.T) {
 // half the buffer do NOT trigger a window update (Silly Window Syndrome avoidance).
 func TestWindowUpdateSWSAvoidance(t *testing.T) {
 	const rxBufSize = 256
-	const mtu = 1500
+	const mtu = ethernet.MaxMTU
 	const maxpackets = 4
 	rng := rand.New(rand.NewSource(77))
 
@@ -566,7 +568,7 @@ func TestWindowUpdateSWSAvoidance(t *testing.T) {
 //  6. Handler.Send() called again → same thing → AddPacket panics because
 //     off=0 but lastPkt.end=0 != bufsize
 func TestWriteAfterRemoteFIN(t *testing.T) {
-	const mtu = 1500
+	const mtu = ethernet.MaxMTU
 	const maxpackets = 3
 	rng := rand.New(rand.NewSource(11))
 	client, server := newHandler(t, mtu, maxpackets), newHandler(t, mtu, maxpackets)
@@ -635,7 +637,7 @@ func TestWriteAfterRemoteFIN(t *testing.T) {
 // This is a regression test for a bug where RST segments in non-synchronized
 // states were blocked by errRequireSequential, causing connection pool leaks.
 func TestRSTinSynReceived(t *testing.T) {
-	const mtu = 1500
+	const mtu = ethernet.MaxMTU
 	const maxpackets = 3
 	rng := rand.New(rand.NewSource(2))
 	client, server := newHandler(t, mtu, maxpackets), newHandler(t, mtu, maxpackets)
@@ -717,7 +719,7 @@ func TestRSTinSynReceived(t *testing.T) {
 //
 // The bug was that reset() cleared bufRx when state became CLOSED.
 func TestBufferNotClearedOnPassiveClose(t *testing.T) {
-	const mtu = 1500
+	const mtu = ethernet.MaxMTU
 	const maxpackets = 3
 	rng := rand.New(rand.NewSource(1))
 	client, server := newHandler(t, mtu, maxpackets), newHandler(t, mtu, maxpackets)
@@ -881,7 +883,7 @@ func TestBufferNotClearedOnPassiveClose(t *testing.T) {
 //  5. Handler.Send() called again → AddPacket panics because off=0 but
 //     lastPkt.end=0 != bufsize
 func TestChallengeACKWithBufferedData(t *testing.T) {
-	const mtu = 1500
+	const mtu = ethernet.MaxMTU
 	const maxpackets = 3
 	rng := rand.New(rand.NewSource(42))
 	client, server := newHandler(t, mtu, maxpackets), newHandler(t, mtu, maxpackets)

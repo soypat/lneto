@@ -14,7 +14,7 @@ import (
 )
 
 func TestMDNS_QueryResponse(t *testing.T) {
-	const MTU = 1500
+	const MTU = ethernet.MaxMTU
 	svcName, err := dns.NewName("My Web._http._tcp.local")
 	if err != nil {
 		t.Fatal(err)
@@ -196,7 +196,7 @@ func TestMDNS_QueryResponse(t *testing.T) {
 }
 
 func TestMDNS_SRVThroughStack(t *testing.T) {
-	const MTU = 1500
+	const MTU = ethernet.MaxMTU
 	svcName, err := dns.NewName("My Web._http._tcp.local")
 	if err != nil {
 		t.Fatal(err)
@@ -275,7 +275,7 @@ func newMDNSStack(t *testing.T, hostname string, seed int64,
 	mdnsCfg mdns.ClientConfig,
 ) (*StackAsync, *mdns.Client) {
 	t.Helper()
-	const MTU = 1500
+	const MTU = ethernet.MaxMTU
 	stack := new(StackAsync)
 	err := stack.Reset(StackConfig{
 		Hostname:          hostname,
@@ -335,7 +335,7 @@ func mdnsQueryRespond(t *testing.T, querier, responder *StackAsync, buf []byte) 
 }
 
 func TestMDNS_RealWorldQueries(t *testing.T) {
-	const MTU = 1500
+	const MTU = ethernet.MaxMTU
 
 	responderMAC := [6]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x01}
 	querierMAC := [6]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x02}

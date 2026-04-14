@@ -5,12 +5,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/tcp"
 )
 
 func TestTCPConn_SetDeadline_Established(t *testing.T) {
 	const seed = 9999
-	const MTU = 1500
+	const MTU = ethernet.MaxMTU
 	const svPort = 8080
 	client, sv, clconn, svconn := newTCPStacks(t, seed, MTU)
 	tst := testerFrom(t, MTU)
@@ -37,7 +38,7 @@ func TestTCPConn_SetDeadline_Established(t *testing.T) {
 
 func TestTCPConn_ReadDeadlineExceeded(t *testing.T) {
 	const seed = 10001
-	const MTU = 1500
+	const MTU = ethernet.MaxMTU
 	const svPort = 8080
 	client, sv, clconn, svconn := newTCPStacks(t, seed, MTU)
 	tst := testerFrom(t, MTU)
@@ -63,7 +64,7 @@ func TestTCPConn_ReadDeadlineExceeded(t *testing.T) {
 
 func TestTCPConn_WriteDeadlineExceeded(t *testing.T) {
 	const seed = 10002
-	const MTU = 1500
+	const MTU = ethernet.MaxMTU
 	const svPort = 8080
 	client, sv, clconn, svconn := newTCPStacks(t, seed, MTU)
 	tst := testerFrom(t, MTU)
@@ -88,7 +89,7 @@ func TestTCPConn_WriteDeadlineExceeded(t *testing.T) {
 
 func TestTCPConn_FlushEmptyNoop(t *testing.T) {
 	const seed = 10003
-	const MTU = 1500
+	const MTU = ethernet.MaxMTU
 	const svPort = 8080
 	client, sv, clconn, svconn := newTCPStacks(t, seed, MTU)
 	tst := testerFrom(t, MTU)

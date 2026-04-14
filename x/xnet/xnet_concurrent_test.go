@@ -4,14 +4,19 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"net/netip"
+	"os"
 	"runtime"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/internal"
+	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -142,8 +147,8 @@ func TestTCPListener_ConcurrentEcho(t *testing.T) {
 }
 
 func kernelLoop(ctx context.Context, server *StackAsync, clients []StackAsync) {
-	const MTU = 1500
-	const carrierDataSize = MTU + ethernet.MaxOverheadSize
+	const MTU = ethernet.MaxMTU
+	const carrierDataSize = ethernet.MaxFrameLength
 	buf := make([]byte, carrierDataSize)
 	rng := rand.New(rand.NewSource(1)) // Seed 1 for deterministic but randomized order
 	order := make([]int, len(clients))
@@ -284,4 +289,149 @@ func runClient(t *testing.T, id int, stack *StackAsync, conn *tcp.Conn,
 		return false
 	}
 	return true
+}
+
+func TestCloseTransmitsPending(t *testing.T) {
+	const mtu = ipv4.MinimumMTU
+	const tcpbufsize = mtu * 2
+	const tcpDataPerPkt = mtu - 14 - 20 - 20 // Ethernet=14, IPv4=20, TCP=20
+	const expectPkts = 2*tcpbufsize/tcpDataPerPkt + 1
+	const queueSize = 5
+	const port1, port2 = 10, 20
+	tst := testerFrom(t, mtu)
+	tst.buf = tst.buf[:mtu+14]
+	s1, s2, c1, c2 := newTCPStacks(t, 0x1337_c0de, mtu)
+	t.Run("sync", func(t *testing.T) {
+		// testCloseTransmitsPending(tst, s1, s2, c1, c2, queueSize, tcpbufsize, tcpbufsize, tcpbufsize)
+	})
+	t.Run("async", func(t *testing.T) {
+		testCloseTransmitsPending(tst, s1, s2, c1, c2, queueSize, tcpbufsize, tcpbufsize, 2*tcpbufsize)
+	})
+
+}
+
+func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn, queueSize, tx1Buf, rx2Buf, datalen int) {
+	t := tst.t
+	buf := tst.buf
+	defer func() {
+		c1.Abort()
+		c2.Abort()
+		// Ensure they are unregistered.
+		s1.EgressIP(buf)
+		s2.EgressIP(buf)
+	}()
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelDebug - 99,
+	}))
+	err := c1.Configure(tcp.ConnConfig{
+		RxBuf:             nil,
+		TxBuf:             make([]byte, tx1Buf),
+		TxPacketQueueSize: queueSize,
+		RWBackoff:         backoffGosched,
+		Logger:            logger,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c2.InternalHandler().SetBuffers(nil, make([]byte, rx2Buf), queueSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		port1, port2 = 10, 20
+	)
+	tst.TestTCPSetupAndEstablish(s1, s2, c1, c2, port1, port2)
+	if c1.FreeOutput() != tx1Buf {
+		t.Fatalf("want %d free bytes, got %d", tx1Buf, c1.FreeOutput())
+	}
+	data := make([]byte, datalen)
+	for i := range datalen {
+		data[i] = byte(i)
+	}
+	deadline := time.Now().Add(3600 * time.Second)
+	err = c1.SetDeadline(deadline)
+	err2 := c2.SetDeadline(deadline)
+	if err != nil || err2 != nil {
+		t.Fatal(err)
+	}
+
+	async := datalen > tx1Buf
+	if async {
+		// Since data does not fit in TCP Tx buffer the test must be run asynchronously.
+		c1.InternalHandler().SetLoggers(logger, logger)
+		// c1.InternalHandler().SetLoggers(nil, nil)
+		go func() {
+			n, err := c1.Write(data)
+			if err != nil {
+				t.Error("async write", err)
+			} else if n != len(data) {
+				t.Error("io.Writer faulty implementation")
+			}
+			err = c1.Close()
+			if err != nil {
+				t.Fatal("async close", err)
+			}
+		}()
+	} else {
+		n, err := c1.Write(data)
+		if err != nil || n != len(data) {
+			t.Fatal(err, n)
+		}
+		err = c1.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	exchanges := -1
+	exchanging := 1
+	tcpData := 0
+	totalRead := 0
+	for exchanging > 0 || c1.State().TxDataOpen() {
+		exchanges++
+		exchanging = exchangeEthernetOnce(t, s1, s2, buf)
+		frm, ok := getTCPFrame(buf[:exchanging])
+		if ok {
+			n := len(frm.Payload())
+			tcpData += n
+			if async && tcpData > 0 {
+				ngot, err := c2.Read(buf[:n])
+				if err != nil {
+					t.Error(err)
+				} else if ngot != n {
+					t.Errorf("want %d data read c1->c1, got %d", n, ngot)
+				} else if !internal.BytesEqual(buf[:n], data[totalRead:totalRead+n]) {
+					t.Errorf("exch%d data rx mismatch, want:\n%q\ngot:\n%q\n", exchanges, data[totalRead:totalRead+n], buf[:n])
+				}
+				totalRead += ngot
+				runtime.Gosched()                            // Yield to let c1 write via goroutine.
+				acks := exchangeEthernetOnce(t, s2, s1, buf) // Send ACK s1's way.
+				if acks == 0 {
+					t.Error("no data sent back to s1")
+				}
+			}
+		}
+	}
+	if c1.BufferedUnsent() != 0 {
+		t.Errorf("done %s: want no data left unsent got %d/%d", c1.State(), c1.BufferedUnsent(), len(data))
+	}
+	if tcpData != datalen {
+		t.Errorf("done %s: want %d bytes sent, got %d", c1.State(), len(data), tcpData)
+	}
+	if t.Failed() {
+		t.Logf("test params: txsz1=%d rxsz2=%d queuesize=%d data(sent/had)=%d/%d", tx1Buf, rx2Buf, queueSize, tcpData, datalen)
+	}
+	if totalRead < datalen {
+		n, err := c2.Read(buf)
+		if err != nil {
+			t.Error(err)
+		} else if !internal.BytesEqual(buf[:n], data[totalRead:]) {
+			t.Errorf("expected last bytes equal: want:\n%q\ngot:\n%q\n", data[totalRead:], buf[:n])
+		}
+	}
+
+}
+
+func backoffGosched(consecutiveBackoffs int) (sleep time.Duration) {
+	return lneto.BackoffFlagGosched
 }

@@ -2,11 +2,11 @@ package tcp
 
 import (
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
 	"os"
-	"runtime"
 	"sync"
 	"time"
 
@@ -213,28 +213,33 @@ func (conn *Conn) Write(b []byte) (int, error) {
 	}
 	n := 0
 	backoffs := 0
-	for {
+	for len(b) > 0 {
 		if err := conn.checkPipe(connid, &conn.wdead); err != nil {
-			return 0, err
+			return n, err
 		}
 		conn.mu.Lock()
+		towrite := min(conn.h.FreeOutput(), len(b))
 		var ngot int
-		ngot, err = conn.h.Write(b)
-		conn.mu.Unlock()
-		n += ngot
-		b = b[ngot:]
-		if (err != nil && err != internal.ErrRingBufferFull) || n == plen {
-			break
-		} else if ngot > 0 {
+		if towrite > 0 {
+			ngot, err = conn.h.Write(b[:towrite])
+			conn.mu.Unlock()
+			if err != nil && err != internal.ErrRingBufferFull {
+				break
+			} else if ngot != towrite {
+				panic("unreachable")
+			}
+			n += ngot
+			b = b[ngot:]
 			backoffs = 0
-			runtime.Gosched() // Do a little yield since we won't have data for sure otherwise.
 		} else {
+			// No data can be written.
+			conn.mu.Unlock()
+			conn.trace("TCPConn.Write:insuf-buf", slog.Int("missing", plen-n), slog.Uint64("lport", uint64(lport)), slog.Uint64("rport", uint64(rport)))
+			if conn.deadlineExceeded(&conn.wdead) {
+				return n, errDeadlineExceeded
+			}
 			backoffs++
 			conn.backoff(backoffs)
-		}
-		conn.trace("TCPConn.Write:insuf-buf", slog.Int("missing", plen-n), slog.Uint64("lport", uint64(lport)), slog.Uint64("rport", uint64(rport)))
-		if conn.deadlineExceeded(&conn.wdead) {
-			return n, errDeadlineExceeded
 		}
 	}
 	return n, err
@@ -260,38 +265,48 @@ func (conn *Conn) Flush() error {
 // Read will block until data is available or connection closes.
 // Returns io.EOF when the remote has closed the connection and all buffered data has been read.
 func (conn *Conn) Read(b []byte) (int, error) {
-	connid, err := conn.lockPipeConnID()
-	if err != nil {
-		if conn.BufferedInput() > 0 {
-			return conn.handlerRead(b) // Ensure remaining buffered data is read.
-		}
-		return 0, err
-	}
-	lport := conn.LocalPort()
-	rport := conn.RemotePort()
+	conn.mu.Lock()
+	connID := conn.h.connid
+	lport := conn.h.localPort
+	rport := conn.h.remotePort
+	conn.mu.Unlock()
 	conn.trace("TCPConn.Read:start", slog.Uint64("lport", uint64(lport)), slog.Uint64("rport", uint64(rport)))
 	backoffs := 0
-	for conn.BufferedInput() == 0 {
-		state := conn.State()
-		if !state.RxDataOpen() {
-			// No use waiting for data, jump to read and return corresponding error from there.
-			break
-		} else if err := conn.checkPipe(connid, &conn.rdead); err != nil {
-			if conn.BufferedInput() > 0 {
-				return conn.handlerRead(b) // Ensure remaining buffered data is read.
-			}
-			return 0, err
+	n := 0
+	for len(b) > 0 {
+		conn.mu.Lock()
+		if connID != conn.h.connid {
+			conn.mu.Unlock()
+			return n, net.ErrClosed
 		}
-		backoffs++
-		conn.backoff(backoffs)
+		avail := conn.h.BufferedInput()
+		if avail > 0 {
+			// Read branch.
+			ngot, err := conn.h.Read(b)
+			conn.mu.Unlock()
+			n += ngot
+			if err != nil {
+				return n, err
+			}
+			b = b[ngot:]
+		} else if n > 0 {
+			conn.mu.Unlock()
+			break
+		} else {
+			state := conn.h.State()
+			conn.mu.Unlock()
+			if state.IsClosed() {
+				return n, net.ErrClosed
+			} else if !state.RxDataOpen() {
+				return n, io.EOF
+			} else if conn.deadlineExceeded(&conn.rdead) {
+				return n, errDeadlineExceeded
+			}
+			backoffs++
+			conn.backoff(backoffs)
+		}
 	}
-	return conn.handlerRead(b)
-}
-
-func (conn *Conn) handlerRead(b []byte) (int, error) {
-	conn.mu.Lock()
-	defer conn.mu.Unlock()
-	return conn.h.Read(b)
+	return n, nil
 }
 
 func (conn *Conn) lockPipeConnID() (uint64, error) {
@@ -452,7 +467,7 @@ func (conn *Conn) ConnectionID() *uint64 {
 
 func (conn *Conn) backoff(consecutiveBackoffs int) {
 	if conn._backoff != nil {
-		conn._backoff(consecutiveBackoffs)
+		conn._backoff.Do(consecutiveBackoffs)
 	} else {
 		internal.ConnRWBackoff(consecutiveBackoffs)
 	}

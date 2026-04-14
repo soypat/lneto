@@ -11,7 +11,7 @@ import (
 
 func TestStackAsyncListener_SingleConnection(t *testing.T) {
 	const seed int64 = 1234
-	const MTU = 1500
+	const MTU = ethernet.MaxMTU
 	const carrierSize = MTU + ethernet.MaxOverheadSize
 	const svPort = 80
 	const clPort = 1337
@@ -122,7 +122,7 @@ func TestStackAsyncListener_SingleConnection(t *testing.T) {
 
 func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 	const seed int64 = 1234
-	const MTU = 1500
+	const MTU = ethernet.MaxMTU
 	const carrierSize = MTU + ethernet.MaxOverheadSize
 	const svPort = 80
 	const clPort = 1337
