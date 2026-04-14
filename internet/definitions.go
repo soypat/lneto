@@ -159,6 +159,8 @@ func (h *handlers) encapsulateNode(node *node, buf []byte, offsetIP, offsetThisF
 		err = nil  // CLOSE error handled gracefully by deleting node.
 		node = nil // Node is destroyed in tryHandleError and invalidated.
 	}
+	// TODO(soypat): We have fuzz tests in place, maybe we can start returning the error up the chain to catch invalid settings at application level so that users don't have to have logs in place to understand invalid config/buffer size.
+	// Encapsulate should only fail with error on programmer errors.
 	if n > 0 {
 		return n, err
 	} else if err != nil {

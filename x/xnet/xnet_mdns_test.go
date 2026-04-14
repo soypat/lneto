@@ -14,7 +14,7 @@ import (
 )
 
 func TestMDNS_QueryResponse(t *testing.T) {
-	const MTU = ethernet.MaxFrameLength
+	const MTU = ethernet.MaxMTU
 	svcName, err := dns.NewName("My Web._http._tcp.local")
 	if err != nil {
 		t.Fatal(err)

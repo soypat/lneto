@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -287,7 +288,7 @@ func runClient(t *testing.T, id int, stack *StackAsync, conn *tcp.Conn,
 }
 
 func TestCloseTransmitsPendingDataLarge(t *testing.T) {
-	const mtu = ethernet.MinimumMTU
+	const mtu = ipv4.MinimumMTU
 	const tcpbufsize = mtu / 2
 	const queueSize = 5
 	const port1, port2 = 10, 20
@@ -310,4 +311,5 @@ func TestCloseTransmitsPendingDataLarge(t *testing.T) {
 	}
 	tst := testerFrom(t, mtu)
 	tst.TestTCPSetupAndEstablish(s1, s2, c1, c2, port1, port2)
+
 }
