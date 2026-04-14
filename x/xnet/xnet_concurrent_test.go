@@ -327,11 +327,8 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 		RxBuf:             nil,
 		TxBuf:             make([]byte, tx1Buf),
 		TxPacketQueueSize: queueSize,
-		RWBackoff: func(consecutiveBackoffs int) (sleep time.Duration) {
-			panic("sadasd")
-			return lneto.BackoffFlagNop
-		},
-		Logger: logger,
+		RWBackoff:         backoffGosched,
+		Logger:            logger,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -351,7 +348,7 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 	for i := range datalen {
 		data[i] = byte(i)
 	}
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(3600 * time.Second)
 	err = c1.SetDeadline(deadline)
 	err2 := c2.SetDeadline(deadline)
 	if err != nil || err2 != nil {
@@ -366,9 +363,13 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 		go func() {
 			n, err := c1.Write(data)
 			if err != nil {
-				t.Error(err)
+				t.Error("async write", err)
 			} else if n != len(data) {
 				t.Error("io.Writer faulty implementation")
+			}
+			err = c1.Close()
+			if err != nil {
+				t.Fatal("async close", err)
 			}
 		}()
 	} else {
@@ -376,17 +377,17 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 		if err != nil || n != len(data) {
 			t.Fatal(err, n)
 		}
+		err = c1.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	err = c1.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
 	exchanges := -1
 	exchanging := 1
 	tcpData := 0
 	totalRead := 0
-	for exchanging > 0 {
+	for exchanging > 0 || c1.State().TxDataOpen() {
 		exchanges++
 		exchanging = exchangeEthernetOnce(t, s1, s2, buf)
 		frm, ok := getTCPFrame(buf[:exchanging])
@@ -418,7 +419,19 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 		t.Errorf("done %s: want %d bytes sent, got %d", c1.State(), len(data), tcpData)
 	}
 	if t.Failed() {
-		t.Logf("test params: data=%d txsz1=%d rxsz2=%d queuesize=%d tcpsent=%d", datalen, tx1Buf, rx2Buf, queueSize, tcpData)
+		t.Logf("test params: txsz1=%d rxsz2=%d queuesize=%d data(sent/had)=%d/%d", tx1Buf, rx2Buf, queueSize, tcpData, datalen)
+	}
+	if totalRead < datalen {
+		n, err := c2.Read(buf)
+		if err != nil {
+			t.Error(err)
+		} else if !internal.BytesEqual(buf[:n], data[totalRead:]) {
+			t.Errorf("expected last bytes equal: want:\n%q\ngot:\n%q\n", data[totalRead:], buf[:n])
+		}
 	}
 
+}
+
+func backoffGosched(consecutiveBackoffs int) (sleep time.Duration) {
+	return lneto.BackoffFlagGosched
 }
