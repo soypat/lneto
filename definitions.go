@@ -1,7 +1,5 @@
 package lneto
 
-import "time"
-
 // StackNode is an abstraction of a packet exchanging protocol controller. This is the building block for all protocols,
 // from Ethernet to IP to TCP, practically any protocol can be expressed as a StackNode and function completely.
 // Today protocols represented by StackNode also include NTP, DNS, DHCP, ARP, ICMP, UDP, mDNS.

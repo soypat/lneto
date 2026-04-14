@@ -8,12 +8,14 @@ import (
 // read/write polling. It starts at 1us and caps at 5ms, doubling on each consecutive backoff.
 func ConnRWBackoff(consecutiveBackoffs int) {
 	const (
-		minWait = time.Microsecond >> 1
-		maxWait = 5 * time.Millisecond
+		minWait        = uint32(time.Microsecond) >> 1
+		maxWait        = 5 * uint32(time.Millisecond)
+		maxShift       = 23
+		_overflowCheck = minWait << maxShift
 	)
-	wait := minWait << consecutiveBackoffs
+	wait := minWait << min(consecutiveBackoffs, maxShift)
 	if wait > maxWait {
 		wait = maxWait
 	}
-	time.Sleep(wait)
+	time.Sleep(time.Duration(wait))
 }

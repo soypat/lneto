@@ -18,6 +18,7 @@ const (
 //   - Returns [BackoffFlagGosched]: Signal [runtime.Gosched] should be called.
 //
 // consecutiveBackoffs starts at 1 and increments by 1 every time the operation is retried.
+// See internal/backoff.go for a implementation example.
 type BackoffStrategy func(consecutiveBackoffs int) (sleepOrFlag time.Duration)
 
 // Do applies the backoff strategy by calling backoff(consecutiveBackoffs)
