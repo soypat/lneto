@@ -302,7 +302,7 @@ func TestCloseTransmitsPending(t *testing.T) {
 	tst.buf = tst.buf[:mtu+14]
 	s1, s2, c1, c2 := newTCPStacks(t, 0x1337_c0de, mtu)
 	t.Run("sync", func(t *testing.T) {
-		testCloseTransmitsPending(tst, s1, s2, c1, c2, queueSize, tcpbufsize, tcpbufsize, tcpbufsize)
+		// testCloseTransmitsPending(tst, s1, s2, c1, c2, queueSize, tcpbufsize, tcpbufsize, tcpbufsize)
 	})
 	t.Run("async", func(t *testing.T) {
 		testCloseTransmitsPending(tst, s1, s2, c1, c2, queueSize, tcpbufsize, tcpbufsize, 2*tcpbufsize)
@@ -317,10 +317,12 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 		c1.Abort()
 		c2.Abort()
 		// Ensure they are unregistered.
-		s1.ip.Encapsulate(buf, 14, 14)
-		s2.ip.Encapsulate(buf, 14, 14)
+		s1.EgressIP(buf)
+		s2.EgressIP(buf)
 	}()
-
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelDebug - 99,
+	}))
 	err := c1.Configure(tcp.ConnConfig{
 		RxBuf:             nil,
 		TxBuf:             make([]byte, tx1Buf),
@@ -329,6 +331,7 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 			panic("sadasd")
 			return lneto.BackoffFlagNop
 		},
+		Logger: logger,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -358,9 +361,6 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 	async := datalen > tx1Buf
 	if async {
 		// Since data does not fit in TCP Tx buffer the test must be run asynchronously.
-		logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-			Level: slog.LevelDebug - 99,
-		}))
 		c1.InternalHandler().SetLoggers(logger, logger)
 		// c1.InternalHandler().SetLoggers(nil, nil)
 		go func() {

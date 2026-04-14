@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"runtime"
 	"sync"
 	"time"
 
@@ -213,28 +212,33 @@ func (conn *Conn) Write(b []byte) (int, error) {
 	}
 	n := 0
 	backoffs := 0
-	for {
+	for len(b) > 0 {
 		if err := conn.checkPipe(connid, &conn.wdead); err != nil {
-			return 0, err
+			return n, err
 		}
 		conn.mu.Lock()
+		towrite := min(conn.h.FreeOutput(), len(b))
 		var ngot int
-		ngot, err = conn.h.Write(b)
-		conn.mu.Unlock()
-		n += ngot
-		b = b[ngot:]
-		if (err != nil && err != internal.ErrRingBufferFull) || n == plen {
-			break
-		} else if ngot > 0 {
+		if towrite > 0 {
+			ngot, err = conn.h.Write(b[:towrite])
+			conn.mu.Unlock()
+			if err != nil && err != internal.ErrRingBufferFull {
+				break
+			} else if ngot != towrite {
+				panic("unreachable")
+			}
+			n += ngot
+			b = b[ngot:]
 			backoffs = 0
-			runtime.Gosched() // Do a little yield since we won't have data for sure otherwise.
 		} else {
+			// No data can be written.
+			conn.mu.Unlock()
+			conn.trace("TCPConn.Write:insuf-buf", slog.Int("missing", plen-n), slog.Uint64("lport", uint64(lport)), slog.Uint64("rport", uint64(rport)))
+			if conn.deadlineExceeded(&conn.wdead) {
+				return n, errDeadlineExceeded
+			}
 			backoffs++
 			conn.backoff(backoffs)
-		}
-		conn.trace("TCPConn.Write:insuf-buf", slog.Int("missing", plen-n), slog.Uint64("lport", uint64(lport)), slog.Uint64("rport", uint64(rport)))
-		if conn.deadlineExceeded(&conn.wdead) {
-			return n, errDeadlineExceeded
 		}
 	}
 	return n, err
