@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/ipv4"
@@ -324,6 +325,10 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 		RxBuf:             nil,
 		TxBuf:             make([]byte, tx1Buf),
 		TxPacketQueueSize: queueSize,
+		RWBackoff: func(consecutiveBackoffs int) (sleep time.Duration) {
+			panic("sadasd")
+			return lneto.BackoffFlagNop
+		},
 	})
 	if err != nil {
 		t.Fatal(err)

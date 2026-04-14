@@ -1,6 +1,8 @@
 package internal
 
-import "time"
+import (
+	"time"
+)
 
 // ConnRWBackoff implements exponential backoff suitable for TCP connection
 // read/write polling. It starts at 1us and caps at 5ms, doubling on each consecutive backoff.
