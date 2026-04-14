@@ -271,20 +271,6 @@ func (r *Ring) addOff(a, b int) int {
 	return result
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func (r *Ring) string() string {
 	var b bytes.Buffer
 	r2 := *r

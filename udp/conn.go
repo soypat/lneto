@@ -41,7 +41,7 @@ type ConnConfig struct {
 	TxQueueSize int
 	// RWBackoff sets the backoff policy for backoff when data unavailable on Read or buffer full on Write.
 	// This field is ineffective on configuring a [Handler].
-	// If not set a default backoff strategy will be used. See [internal.ConnRWBackoff].
+	// If not set a default backoff strategy will be used. See [internal.BackoffConnRW].
 	RWBackoff lneto.BackoffStrategy
 }
 
@@ -130,7 +130,7 @@ func (conn *Conn) Write(b []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	backoffs := 0
+	var backoffs uint
 	for {
 		conn.mu.Lock()
 		if conn.h.closeCalled || connID != conn.h.connid {
@@ -145,8 +145,8 @@ func (conn *Conn) Write(b []byte) (int, error) {
 		if conn.deadlineExceeded(&conn.wdead) {
 			return 0, os.ErrDeadlineExceeded
 		}
-		backoffs++
 		conn.backoff(backoffs)
+		backoffs++
 	}
 }
 
@@ -157,7 +157,7 @@ func (conn *Conn) Read(b []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	backoffs := 0
+	var backoffs uint
 	for {
 		conn.mu.Lock()
 		if conn.h.closeCalled && conn.h.BufferedInput() == 0 || connID != conn.h.connid {
@@ -172,8 +172,8 @@ func (conn *Conn) Read(b []byte) (int, error) {
 		if conn.deadlineExceeded(&conn.rdead) {
 			return 0, os.ErrDeadlineExceeded
 		}
-		backoffs++
 		conn.backoff(backoffs)
+		backoffs++
 	}
 }
 
@@ -301,11 +301,11 @@ func (conn *Conn) FreeInput() int {
 	return conn.h.FreeInput()
 }
 
-func (conn *Conn) backoff(consecutiveBackoffs int) {
+func (conn *Conn) backoff(consecutiveBackoffs uint) {
 	if conn._backoff != nil {
 		conn._backoff.Do(consecutiveBackoffs)
 	} else {
-		internal.ConnRWBackoff(consecutiveBackoffs)
+		internal.BackoffConnRW(consecutiveBackoffs)
 	}
 }
 

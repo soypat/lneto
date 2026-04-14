@@ -79,7 +79,7 @@ func run(ctx context.Context, stack *xnet.StackAsync) error {
 	// Other option is to instead use async API which leads to more verbose
 	// and more stateful code.
 	go stackLoop(ctx, stack)
-	rstack := stack.StackRetrying(pollTime)
+	rstack := stack.StackRetrying(stackBackoff)
 	results, err := rstack.DoDHCPv4([4]byte{}, protoTimeout, protoRetries)
 	if err != nil {
 		return fmt.Errorf("doing DHCP: %w", err)
@@ -93,7 +93,7 @@ func run(ctx context.Context, stack *xnet.StackAsync) error {
 		return fmt.Errorf("resolving router MAC: %w", err)
 	}
 	stack.SetGateway6(gateway)
-	berkstack := stack.StackBlocking(pollTime).StackGo(xnet.StackGoConfig{
+	berkstack := stack.StackBlocking(stackBackoff).StackGo(xnet.StackGoConfig{
 		ListenerPoolConfig: xnet.TCPPoolConfig{
 			PoolSize:           tcpConnPoolSize,
 			QueueSize:          tcpPacketQueueSize,
@@ -170,4 +170,11 @@ func must(err error) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func stackBackoff(consecutiveBackoffs uint) time.Duration {
+	if consecutiveBackoffs < 10 {
+		return time.Millisecond
+	}
+	return 10 * time.Millisecond
 }

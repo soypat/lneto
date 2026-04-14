@@ -8,6 +8,7 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/dhcpv4"
+	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -19,22 +20,16 @@ var (
 	errDeadlineExceed = errors.New("cywnet: deadline exceeded")
 )
 
-func (s *StackAsync) StackBlocking(loopSleep time.Duration) StackBlocking {
-	if loopSleep < 0 {
-		panic("invalid sleep")
-	} else if loopSleep > 3*time.Second {
-		// loopSleep should be a very small amount of time for stack to remain responsive.
-		panic("StackBlocking sleep too large")
-	}
+func (s *StackAsync) StackBlocking(stackProtoBackoff lneto.BackoffStrategy) StackBlocking {
 	return StackBlocking{
-		async:     s,
-		loopSleep: loopSleep,
+		async:    s,
+		_backoff: stackProtoBackoff,
 	}
 }
 
 type StackBlocking struct {
-	async     *StackAsync
-	loopSleep time.Duration
+	async    *StackAsync
+	_backoff lneto.BackoffStrategy
 }
 
 func (s StackBlocking) DoDHCPv4(reqAddr [4]byte, timeout time.Duration) (*DHCPResults, error) {
@@ -42,20 +37,30 @@ func (s StackBlocking) DoDHCPv4(reqAddr [4]byte, timeout time.Duration) (*DHCPRe
 	if err != nil {
 		return nil, err
 	}
-	sleep := s.loopSleep
+	var backoffs uint
 	deadline := time.Now().Add(timeout)
 	requested := false
+	var lastState dhcpv4.ClientState
 	for i := 0; i < maxIter; i++ {
+		s.async.mu.Lock()
 		state := s.async.dhcp.State()
-		requested = requested || state > dhcpv4.StateInit
-		if requested && state == dhcpv4.StateInit {
-			return nil, errors.New("DHCP NACK")
-		} else if state == dhcpv4.StateBound {
-			break // DHCP done succesfully.
-		} else if err = s.checkDeadline(deadline); err != nil {
-			return nil, err
+		s.async.mu.Unlock()
+		if state == lastState {
+			if err = s.checkDeadline(deadline); err != nil {
+				return nil, err
+			}
+			s.backoff(backoffs)
+			backoffs++
+		} else {
+			// State change indicates something happened.
+			backoffs = 0
+			requested = requested || state > dhcpv4.StateInit
+			if requested && state == dhcpv4.StateInit {
+				return nil, errors.New("DHCP NACK")
+			} else if state == dhcpv4.StateBound {
+				break // DHCP done succesfully.
+			}
 		}
-		time.Sleep(sleep)
 	}
 	return s.async.ResultDHCP()
 }
@@ -65,24 +70,30 @@ func (s StackBlocking) DoPing(hostAddr netip.Addr, timeout time.Duration) (round
 		return 0, lneto.ErrInvalidAddr
 	}
 	var buf [16]byte
+	s.async.mu.Lock()
 	s.async.prandRead(buf[:])
 	key, err := s.async.icmp.PingStart(hostAddr.As4(), buf[:], 56) // size=56 so ICMP size is 64, like linux.
+	s.async.mu.Unlock()
 	if err != nil {
 		return 0, err
 	}
 	start := time.Now()
-	sleep := timeout / maxIter
+	var backoffs uint
 	for i := 0; i < maxIter; i++ {
-		time.Sleep(sleep)
-		elapsed := time.Since(start)
+		s.async.mu.Lock()
 		completed, exists := s.async.icmp.PingPop(key)
+		s.async.mu.Unlock()
 		if !exists {
 			return 0, net.ErrClosed // lneto.ErrAborted
-		} else if completed {
+		}
+		elapsed := time.Since(start)
+		if completed {
 			return elapsed, nil
 		} else if elapsed > timeout {
 			break
 		}
+		s.backoff(backoffs)
+		backoffs++
 	}
 	return 0, errDeadlineExceed
 }
@@ -92,9 +103,10 @@ func (s StackBlocking) DoNTP(hostAddr netip.Addr, timeout time.Duration) (offset
 	if err != nil {
 		return -1, err
 	}
-	sleep := s.loopSleep
+
 	deadline := time.Now().Add(timeout)
 	var done bool
+	var backoffs uint
 	for i := 0; i < maxIter; i++ {
 		offset, done = s.async.ResultNTPOffset()
 		if done {
@@ -102,7 +114,8 @@ func (s StackBlocking) DoNTP(hostAddr netip.Addr, timeout time.Duration) (offset
 		} else if err = s.checkDeadline(deadline); err != nil {
 			return -1, err
 		}
-		time.Sleep(sleep)
+		s.backoff(backoffs)
+		backoffs++
 	}
 	return -1, errDeadlineExceed
 }
@@ -112,7 +125,7 @@ func (s StackBlocking) DoResolveHardwareAddress6(addr netip.Addr, timeout time.D
 	if err != nil {
 		return hw, err
 	}
-	sleep := s.loopSleep
+	var backoffs uint
 	deadline := time.Now().Add(timeout)
 	for i := 0; i < maxIter; i++ {
 		hw, err = s.async.ResultResolveHardwareAddress6(addr)
@@ -121,7 +134,8 @@ func (s StackBlocking) DoResolveHardwareAddress6(addr netip.Addr, timeout time.D
 		} else if err = s.checkDeadline(deadline); err != nil {
 			break
 		}
-		time.Sleep(sleep)
+		s.backoff(backoffs)
+		backoffs++
 		err = errDeadlineExceed // Ensure that if iterations done error is returned.
 	}
 	ip4 := addr.As4()
@@ -134,8 +148,9 @@ func (s StackBlocking) DoLookupIP(host string, timeout time.Duration) (addrs []n
 	if err != nil {
 		return nil, err
 	}
-	sleep := s.loopSleep
+
 	deadline := time.Now().Add(timeout)
+	var backoffs uint
 	for i := 0; i < maxIter; i++ {
 		addrs, completed, err := s.async.ResultLookupIP(host)
 		if completed {
@@ -143,7 +158,8 @@ func (s StackBlocking) DoLookupIP(host string, timeout time.Duration) (addrs []n
 		} else if err = s.checkDeadline(deadline); err != nil {
 			return nil, err
 		}
-		time.Sleep(sleep)
+		s.backoff(backoffs)
+		backoffs++
 	}
 	return nil, errDeadlineExceed
 }
@@ -155,8 +171,8 @@ func (s StackBlocking) DoDialTCP(conn *tcp.Conn, localPort uint16, addrp netip.A
 	if err != nil {
 		return err
 	}
-	sleep := s.loopSleep
 	deadline := time.Now().Add(timeout)
+	var backoffs uint
 	for i := 0; i < maxIter; i++ {
 		state := conn.State()
 		if state == tcp.StateEstablished {
@@ -166,7 +182,8 @@ func (s StackBlocking) DoDialTCP(conn *tcp.Conn, localPort uint16, addrp netip.A
 				conn.Abort()
 				return err
 			}
-			time.Sleep(sleep)
+			s.backoff(backoffs)
+			backoffs++
 		} else {
 			// Unexpected state, abort and terminate connection.
 			conn.Abort()
@@ -181,4 +198,16 @@ func (s StackBlocking) checkDeadline(deadline time.Time) error {
 		return errDeadlineExceed
 	}
 	return nil
+}
+
+func (s StackBlocking) backoff(consecutiveBackoffs uint) {
+	backoff(s._backoff, consecutiveBackoffs)
+}
+
+func backoff(bo lneto.BackoffStrategy, consecutiveBackoffs uint) {
+	if bo != nil {
+		bo.Do(consecutiveBackoffs)
+	} else {
+		internal.BackoffStackProto(consecutiveBackoffs)
+	}
 }

@@ -56,7 +56,7 @@ type ConnConfig struct {
 	TxBuf             []byte
 	TxPacketQueueSize int
 	// RWBackoff sets the backoff policy for backoff when data unavailable on Read or buffer full on Write.
-	// If not set a default backoff strategy will be used. See [internal.ConnRWBackoff].
+	// If not set a default backoff strategy will be used. See [internal.BackoffConnRW].
 	RWBackoff lneto.BackoffStrategy
 	Logger    *slog.Logger
 }
@@ -212,7 +212,7 @@ func (conn *Conn) Write(b []byte) (int, error) {
 		return 0, nil
 	}
 	n := 0
-	backoffs := 0
+	var backoffs uint
 	for len(b) > 0 {
 		if err := conn.checkPipe(connid, &conn.wdead); err != nil {
 			return n, err
@@ -238,8 +238,8 @@ func (conn *Conn) Write(b []byte) (int, error) {
 			if conn.deadlineExceeded(&conn.wdead) {
 				return n, errDeadlineExceeded
 			}
-			backoffs++
 			conn.backoff(backoffs)
+			backoffs++
 		}
 	}
 	return n, err
@@ -250,13 +250,13 @@ func (conn *Conn) Flush() error {
 	if err != nil {
 		return err
 	}
-	backoffs := 0
+	var backoffs uint
 	for conn.BufferedUnsent() != 0 {
 		if err := conn.checkPipe(connid, &conn.wdead); err != nil {
 			return err
 		}
-		backoffs++
 		conn.backoff(backoffs)
+		backoffs++
 	}
 	return nil
 }
@@ -271,7 +271,7 @@ func (conn *Conn) Read(b []byte) (int, error) {
 	rport := conn.h.remotePort
 	conn.mu.Unlock()
 	conn.trace("TCPConn.Read:start", slog.Uint64("lport", uint64(lport)), slog.Uint64("rport", uint64(rport)))
-	backoffs := 0
+	var backoffs uint
 	n := 0
 	for len(b) > 0 {
 		conn.mu.Lock()
@@ -302,8 +302,8 @@ func (conn *Conn) Read(b []byte) (int, error) {
 			} else if conn.deadlineExceeded(&conn.rdead) {
 				return n, errDeadlineExceeded
 			}
-			backoffs++
 			conn.backoff(backoffs)
+			backoffs++
 		}
 	}
 	return n, nil
@@ -465,10 +465,10 @@ func (conn *Conn) ConnectionID() *uint64 {
 	return conn.h.ConnectionID()
 }
 
-func (conn *Conn) backoff(consecutiveBackoffs int) {
+func (conn *Conn) backoff(consecutiveBackoffs uint) {
 	if conn._backoff != nil {
 		conn._backoff.Do(consecutiveBackoffs)
 	} else {
-		internal.ConnRWBackoff(consecutiveBackoffs)
+		internal.BackoffConnRW(consecutiveBackoffs)
 	}
 }
