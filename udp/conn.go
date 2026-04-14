@@ -22,8 +22,9 @@ type Conn struct {
 
 	remoteAddr []byte
 
-	rdead time.Time
-	wdead time.Time
+	_backoff lneto.BackoffStrategy
+	rdead    time.Time
+	wdead    time.Time
 
 	ipID uint16
 }
@@ -38,6 +39,10 @@ type ConnConfig struct {
 	RxQueueSize int
 	// TxQueueSize is the maximum number of outgoing datagrams that can be queued.
 	TxQueueSize int
+	// RWBackoff sets the backoff policy for backoff when data unavailable on Read or buffer full on Write.
+	// This field is ineffective on configuring a [Handler].
+	// If not set a default backoff strategy will be used. See [internal.ConnRWBackoff].
+	RWBackoff lneto.BackoffStrategy
 }
 
 // Configure initializes the connection with the given buffer and queue configuration.
@@ -50,6 +55,7 @@ func (conn *Conn) Configure(cfg ConnConfig) error {
 	if err != nil {
 		return err
 	}
+	conn._backoff = cfg.RWBackoff
 	return nil
 }
 
@@ -120,13 +126,14 @@ func (conn *Conn) Write(b []byte) (int, error) {
 	if len(b) == 0 {
 		return 0, nil
 	}
-	backoff := internal.NewBackoff(internal.BackoffTCPConn)
+	connID, err := conn.lockPipeConnID()
+	if err != nil {
+		return 0, err
+	}
+	backoffs := 0
 	for {
-		if conn.deadlineExceeded(&conn.wdead) {
-			return 0, os.ErrDeadlineExceeded
-		}
 		conn.mu.Lock()
-		if conn.h.closeCalled {
+		if conn.h.closeCalled || connID != conn.h.connid {
 			conn.mu.Unlock()
 			return 0, net.ErrClosed
 		}
@@ -135,20 +142,25 @@ func (conn *Conn) Write(b []byte) (int, error) {
 		if n > 0 {
 			return n, err
 		}
-		backoff.Miss()
+		if conn.deadlineExceeded(&conn.wdead) {
+			return 0, os.ErrDeadlineExceeded
+		}
+		backoffs++
+		conn.backoff(backoffs)
 	}
 }
 
 // Read dequeues a single datagram. If the buffer is smaller than the datagram,
 // the remaining bytes are discarded (SOCK_DGRAM semantics).
 func (conn *Conn) Read(b []byte) (int, error) {
-	backoff := internal.NewBackoff(internal.BackoffTCPConn)
+	connID, err := conn.lockPipeConnID()
+	if err != nil {
+		return 0, err
+	}
+	backoffs := 0
 	for {
-		if conn.deadlineExceeded(&conn.rdead) {
-			return 0, os.ErrDeadlineExceeded
-		}
 		conn.mu.Lock()
-		if conn.h.closeCalled && conn.h.BufferedInput() == 0 {
+		if conn.h.closeCalled && conn.h.BufferedInput() == 0 || connID != conn.h.connid {
 			conn.mu.Unlock()
 			return 0, net.ErrClosed
 		}
@@ -157,7 +169,11 @@ func (conn *Conn) Read(b []byte) (int, error) {
 		if n > 0 {
 			return n, err
 		}
-		backoff.Miss()
+		if conn.deadlineExceeded(&conn.rdead) {
+			return 0, os.ErrDeadlineExceeded
+		}
+		backoffs++
+		conn.backoff(backoffs)
 	}
 }
 
@@ -283,4 +299,21 @@ func (conn *Conn) FreeInput() int {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	return conn.h.FreeInput()
+}
+
+func (conn *Conn) backoff(consecutiveBackoffs int) {
+	if conn._backoff != nil {
+		conn._backoff(consecutiveBackoffs)
+	} else {
+		internal.ConnRWBackoff(consecutiveBackoffs)
+	}
+}
+
+func (conn *Conn) lockPipeConnID() (uint64, error) {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if conn.h.closeCalled && len(conn.h.rxDgrams) == 0 {
+		return 0, net.ErrClosed
+	}
+	return conn.h.connid, nil
 }
