@@ -74,13 +74,13 @@ func exchangeEthernetOnce(t *testing.T, src, dst *StackAsync, buf []byte) int {
 	t.Helper()
 	n, err := src.EgressEthernet(buf)
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
 	}
 	if n == 0 {
 		return 0
 	}
 	if err := dst.IngressEthernet(buf[:n]); err != nil {
-		t.Fatal(err)
+		t.Error(err)
 	}
 	return n
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
@@ -1028,3 +1029,19 @@ const (
 	protoIPv4     = "IPv4"
 	protoTCP      = "TCP"
 )
+
+func getTCPFrame(etherFrame []byte) (tcp.Frame, bool) {
+	efrm, err := ethernet.NewFrame(etherFrame)
+	if err != nil || efrm.EtherTypeOrSize() != ethernet.TypeIPv4 {
+		return tcp.Frame{}, false
+	}
+	ifrm, err := ipv4.NewFrame(efrm.Payload())
+	if err != nil || ifrm.Protocol() != lneto.IPProtoTCP {
+		return tcp.Frame{}, false
+	}
+	tfrm, err := tcp.NewFrame(ifrm.Payload())
+	if err != nil {
+		return tcp.Frame{}, false
+	}
+	return tfrm, true
+}
