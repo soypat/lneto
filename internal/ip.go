@@ -26,6 +26,18 @@ func GetIPAddr(buf []byte) (src, dst []byte, id, ipEndOff uint16, err error) {
 	return src, dst, id, ipEndOff, err
 }
 
+// IsMulticastIPAddr reports whether addr is an IPv4 or IPv6 multicast address.
+func IsMulticastIPAddr(addr []byte) bool {
+	switch len(addr) {
+	case 4:
+		return addr[0]&0xf0 == 0xe0
+	case 16:
+		return addr[0] == 0xff
+	default:
+		return false
+	}
+}
+
 func SetIPAddrs(buf []byte, id uint16, src, dst []byte) (err error) {
 	var dstaddr, srcaddr []byte
 	version := buf[0] >> 4

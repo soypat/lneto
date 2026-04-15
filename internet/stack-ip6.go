@@ -5,6 +5,7 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/ipv6"
 	"github.com/soypat/lneto/tcp"
 	"github.com/soypat/lneto/udp"
@@ -89,7 +90,7 @@ func (si6 *stackip6) demux6(carrierData []byte, offset int) error {
 	}
 	dst := ifrm.DestinationAddr()
 	if si6.ip6 != ([16]byte{}) && *dst != si6.ip6 {
-		if !si6.acceptMulticast || dst[0] != 0xFF {
+		if !si6.acceptMulticast || !internal.IsMulticastIPAddr(dst[:]) {
 			si6.handlers.debug("ip6:not-for-us")
 			return lneto.ErrPacketDrop
 		}

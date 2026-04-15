@@ -45,7 +45,15 @@ func (sudp *StackUDPPort) Demux(carrierData []byte, frameOffset int) error {
 	if dst != sudp.h.lport {
 		return lneto.ErrPacketDrop // Not meant for us.
 	}
-	// TODO remote ip address handling.
+	if len(sudp.raddr) > 0 && !internal.IsMulticastIPAddr(sudp.raddr) {
+		srcIP, _, _, _, err := internal.GetIPAddr(carrierData[:frameOffset])
+		if err != nil {
+			return err
+		}
+		if !internal.BytesEqual(srcIP, sudp.raddr) {
+			return lneto.ErrPacketDrop
+		}
+	}
 
 	src := ufrm.SourcePort()
 	if sudp.rmport != 0 && src != sudp.rmport {
