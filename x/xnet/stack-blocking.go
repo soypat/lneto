@@ -54,6 +54,7 @@ func (s StackBlocking) DoDHCPv4(reqAddr [4]byte, timeout time.Duration) (*DHCPRe
 		} else {
 			// State change indicates something happened.
 			backoffs = 0
+			lastState = state
 			requested = requested || state > dhcpv4.StateInit
 			if requested && state == dhcpv4.StateInit {
 				return nil, errors.New("DHCP NACK")
@@ -182,13 +183,13 @@ func (s StackBlocking) DoDialTCP(conn *tcp.Conn, localPort uint16, addrp netip.A
 				conn.Abort()
 				return err
 			}
-			s.backoff(backoffs)
-			backoffs++
 		} else {
 			// Unexpected state, abort and terminate connection.
 			conn.Abort()
 			return errTCPFailedToConnect
 		}
+		s.backoff(backoffs)
+		backoffs++
 	}
 	return errDeadlineExceed
 }
