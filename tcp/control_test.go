@@ -307,7 +307,7 @@ func TestPendingSegment_RetransmitAfter3DupACKs(t *testing.T) {
 	tcb.HelperInitRcv(remoteISS, remoteISS+1, wnd)
 
 	// Three duplicate ACKs against UNA must trigger retransmit state
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		dup := Segment{
 			SEQ:   remoteISS + 1,
 			ACK:   iss, // UNA (duplicate, no progress)
@@ -405,7 +405,7 @@ func TestACKLoop_MutualOutOfWindow(t *testing.T) {
 	tcbA.pending[0] = FlagACK
 
 	const maxRounds = 50
-	for round := 0; round < maxRounds; round++ {
+	for range maxRounds {
 		segA, okA := tcbA.PendingSegment(0)
 		if okA {
 			tcbA.Send(segA)

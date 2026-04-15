@@ -25,7 +25,7 @@ type StackRetrying struct {
 
 func (s StackRetrying) DoDHCPv4(reqAddr [4]byte, timeout time.Duration, retries int) (results *DHCPResults, err error) {
 	expectEnd := time.Now().Add(timeout * time.Duration(retries))
-	for i := 0; i < retries; i++ {
+	for i := range retries {
 		if i > 0 {
 			println("Retrying DHCP")
 		}
@@ -42,7 +42,7 @@ func (s StackRetrying) DoDHCPv4(reqAddr [4]byte, timeout time.Duration, retries 
 
 func (s StackRetrying) DoNTP(ntpHost netip.Addr, timeout time.Duration, retries int) (offset time.Duration, err error) {
 	expectEnd := time.Now().Add(timeout * time.Duration(retries))
-	for i := 0; i < retries; i++ {
+	for i := range retries {
 		if i > 0 {
 			println("Retrying NTP")
 		}
@@ -61,7 +61,7 @@ func (s StackRetrying) DoLookupIP(host string, timeout time.Duration, retries in
 		return nil, errNoDNSServer
 	}
 	expectEnd := time.Now().Add(timeout * time.Duration(retries))
-	for i := 0; i < retries; i++ {
+	for range retries {
 		addrs, err = s.block.DoLookupIP(host, timeout)
 		if err == nil {
 			return addrs, nil
@@ -75,7 +75,7 @@ func (s StackRetrying) DoLookupIP(host string, timeout time.Duration, retries in
 
 func (s StackRetrying) DoResolveHardwareAddress6(addr netip.Addr, timeout time.Duration, retries int) (hw [6]byte, err error) {
 	expectEnd := time.Now().Add(timeout * time.Duration(retries))
-	for i := 0; i < retries; i++ {
+	for range retries {
 		hw, err = s.block.DoResolveHardwareAddress6(addr, timeout)
 		if err == nil {
 			return hw, nil
@@ -90,7 +90,7 @@ func (s StackRetrying) DoResolveHardwareAddress6(addr netip.Addr, timeout time.D
 func (s StackRetrying) DoDialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrPort, timeout time.Duration, retries int) (err error) {
 	expectEnd := time.Now().Add(timeout * time.Duration(retries))
 	var firstErr error
-	for i := 0; i < retries; i++ {
+	for range retries {
 		err = s.block.DoDialTCP(conn, localPort, addrp, timeout)
 		if err == nil {
 			return nil

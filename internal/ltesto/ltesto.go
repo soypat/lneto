@@ -489,11 +489,8 @@ func mutateTCPOptions(opts []byte, seed int64, variant int64) int64 {
 		}
 	case 4: // SACK with garbage block data.
 		if len(opts) >= 10 {
-			opts[0] = byte(tcp.OptSACK) // kind=5
-			sackLen := len(opts)
-			if sackLen > 34 {
-				sackLen = 34 // max 4 SACK blocks
-			}
+			opts[0] = byte(tcp.OptSACK)   // kind=5
+			sackLen := min(len(opts), 34) // max 4 SACK blocks
 			opts[1] = byte(sackLen)
 			for i := 2; i < sackLen; i++ {
 				opts[i] = byte(seed)

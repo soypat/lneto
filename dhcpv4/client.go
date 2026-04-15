@@ -153,10 +153,7 @@ func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) 
 		numOpts += n
 		n, _ = EncodeOption(opts[numOpts:], OptParameterRequestList, defaultParamReqList...)
 		numOpts += n
-		maxlen := len(dst)
-		if maxlen > math.MaxUint16 {
-			maxlen = math.MaxUint16
-		}
+		maxlen := min(len(dst), math.MaxUint16)
 		n, _ = EncodeOption16(opts[numOpts:], OptMaximumMessageSize, uint16(maxlen))
 		numOpts += n
 		if c.reqIP.valid {

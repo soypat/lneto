@@ -76,7 +76,7 @@ func (c *Cookie) Parse() error {
 
 func (c *Cookie) ForEach(cb func(key, value []byte) error) error {
 	nc := len(c.kvs)
-	for i := 0; i < nc; i++ {
+	for i := range nc {
 		kv := c.kvs[i]
 		key := tok2bytes(c.buf, kv.key)
 		value := tok2bytes(c.buf, kv.value)
@@ -91,7 +91,7 @@ func (c *Cookie) ForEach(cb func(key, value []byte) error) error {
 // Get gets a cookie's value from its key. Use HasValueOrKey to check if a key or single-valued cookie is present in the cookie.
 func (c *Cookie) Get(key string) []byte {
 	nc := len(c.kvs)
-	for i := 0; i < nc; i++ {
+	for i := range nc {
 		kv := c.kvs[i]
 		if b2s(tok2bytes(c.buf, kv.key)) == key {
 			return tok2bytes(c.buf, kv.value)
@@ -102,7 +102,7 @@ func (c *Cookie) Get(key string) []byte {
 
 func (c *Cookie) HasKeyOrSingleValue(keyOrSingleValue string) bool {
 	nc := len(c.kvs)
-	for i := 0; i < nc; i++ {
+	for i := range nc {
 		kv := c.kvs[i]
 		if kv.key.len == 0 && b2s(tok2bytes(c.buf, kv.value)) == keyOrSingleValue ||
 			b2s(tok2bytes(c.buf, kv.key)) == keyOrSingleValue {
@@ -159,7 +159,7 @@ func (c *Cookie) String() string {
 // AppendKeyValues appends the HTTP header value of the cookie expected after the "Cookie:" string. Does not include trailing \r\n's.
 func (c *Cookie) AppendKeyValues(dst []byte) []byte {
 	nc := len(c.kvs)
-	for i := 0; i < nc; i++ {
+	for i := range nc {
 		kv := c.kvs[i]
 		key := tok2bytes(c.buf, kv.key)
 		value := tok2bytes(c.buf, kv.value)

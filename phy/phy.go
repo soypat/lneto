@@ -147,7 +147,7 @@ func (phy *Device) ResetPHY() (err error) {
 	const maxPolls = 50
 	const resetTimeout = 500 * time.Millisecond // As per standard.
 	var ctl BMCR
-	for i := 0; i < maxPolls; i++ {
+	for range maxPolls {
 		time.Sleep(resetTimeout / maxPolls)
 		ctl, err = phy.BasicControl()
 		if err != nil {

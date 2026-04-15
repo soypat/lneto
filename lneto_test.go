@@ -19,7 +19,7 @@ func TestTCPMarshalUnmarshal(t *testing.T) {
 	const maxSize = 4096
 	src := make([]byte, maxSize)
 	dst := make([]byte, maxSize)
-	for i := 0; i < 512; i++ {
+	for range 512 {
 		src = gen.AppendRandomIPv4TCPPacket(src[:0], rng, tcp.Segment{
 			SEQ:     tcp.Value(rng.Int()),
 			ACK:     tcp.Value(rng.Int()),

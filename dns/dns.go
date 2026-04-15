@@ -489,7 +489,7 @@ func NewName(domain string) (Name, error) {
 // Returns an empty Name if n exceeds the number of labels.
 func (n Name) TrimLabels(skip int) Name {
 	off := 0
-	for i := 0; i < skip; i++ {
+	for range skip {
 		if off >= len(n.data) {
 			return Name{}
 		}

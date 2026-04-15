@@ -17,7 +17,7 @@ func AppendFormatAddr(dst []byte, addr [16]byte) []byte {
 	// Find the longest run of consecutive all-zero 16-bit groups for :: compression.
 	bestStart, bestLen := 0, 0
 	curStart := -1
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		if addr[i*2] == 0 && addr[i*2+1] == 0 {
 			if curStart < 0 {
 				curStart = i

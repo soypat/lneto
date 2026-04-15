@@ -771,7 +771,7 @@ func appendField(dst, pkt []byte, fieldBitStart, bitlen int, rightAligned bool) 
 		if octets+octetsStart+1 > len(pkt) {
 			return dst, lneto.ErrShortBuffer
 		}
-		for i := 0; i < octets; i++ {
+		for i := range octets {
 			b := (pkt[octetsStart+i] & mask) << (8 - firstBitOffset)
 			b |= pkt[octetsStart+i+1] >> firstBitOffset
 			dst = append(dst, b)

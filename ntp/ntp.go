@@ -269,11 +269,11 @@ func (d Date) Time() (time.Time, error) {
 func CalculateSystemPrecision(nowNano func() int64, iters []int64) int8 {
 	maxIter := len(iters)
 	if nowNano == nil {
-		for i := 0; i < maxIter; i++ {
+		for i := range maxIter {
 			iters[i] = time.Now().UnixNano()
 		}
 	} else {
-		for i := 0; i < maxIter; i++ {
+		for i := range maxIter {
 			iters[i] = nowNano()
 		}
 	}

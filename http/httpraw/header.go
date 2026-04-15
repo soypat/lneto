@@ -199,7 +199,7 @@ func (h *Header) ForEach(cb func(key, value []byte) error) error {
 
 func (hb *headerBuf) forEach(cb func(key, value []byte) error) error {
 	nh := len(hb.headers)
-	for i := 0; i < nh; i++ {
+	for i := range nh {
 		kv := hb.headers[i]
 		if !kv.isValid() {
 			continue

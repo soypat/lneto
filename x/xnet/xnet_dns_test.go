@@ -3,6 +3,7 @@ package xnet
 import (
 	"errors"
 	"net/netip"
+	"slices"
 	"testing"
 
 	"github.com/soypat/lneto"
@@ -87,13 +88,7 @@ func TestDNS_QueryReceivesAnswer(t *testing.T) {
 		t.Fatal("no addresses returned from DNS lookup")
 	}
 
-	found := false
-	for _, addr := range addrs {
-		if addr == wantAddr {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(addrs, wantAddr)
 	if !found {
 		t.Errorf("expected address %s not found in result %v", wantAddr, addrs)
 	}

@@ -163,7 +163,7 @@ func TestConn_ReadTruncates(t *testing.T) {
 
 func TestConn_DemuxExhausted(t *testing.T) {
 	conn := newTestConn(t) // queue size 4
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		frame := makeUDPFrame(8080, 1234, []byte{byte(i)})
 		err := conn.Demux(frame, 0)
 		if err != nil {

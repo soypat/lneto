@@ -38,7 +38,7 @@ type StackGo struct {
 	plcfg TCPPoolConfig
 }
 
-func (s StackGo) Socket(ctx context.Context, network string, family, sotype int, laddr, raddr net.Addr) (c interface{}, err error) {
+func (s StackGo) Socket(ctx context.Context, network string, family, sotype int, laddr, raddr net.Addr) (c any, err error) {
 	switch family {
 	case syscall.AF_INET:
 	default:
@@ -60,7 +60,7 @@ func (s StackGo) Socket(ctx context.Context, network string, family, sotype int,
 	return s.SocketNetip(ctx, network, family, sotype, local, remote)
 }
 
-func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype int, laddr, raddr netip.AddrPort) (c interface{}, err error) {
+func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype int, laddr, raddr netip.AddrPort) (c any, err error) {
 	switch family {
 	case syscall.AF_INET:
 	default:

@@ -1002,7 +1002,7 @@ func TestHandler_RetransmitAfter3DupACKs(t *testing.T) {
 	if !client.scb.IncomingIsDupACK(dup.ACK) {
 		t.Fatal("MakeRetransmitDupACK return should be considered a duplicate ACK by remote")
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		fb, _ := NewFrame(pkt[:])
 		fb.SetSourcePort(server.LocalPort())
 		fb.SetDestinationPort(client.LocalPort())
@@ -1083,7 +1083,7 @@ func TestHandler_RetransmitAfterMultipleLossesBothDirections(t *testing.T) {
 		if !sender.scb.IncomingIsDupACK(dup.ACK) {
 			t.Fatal("dup ACK not recognized as dupack by sender")
 		}
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			clear(pkt[:])
 			fb, _ := NewFrame(pkt[:])
 			fb.SetSourcePort(receiver.LocalPort())
@@ -1144,8 +1144,8 @@ func TestHandler_RetransmitAfterMultipleLossesBothDirections(t *testing.T) {
 	}
 
 	// Do several losses in client->server direction
-	for i := 0; i < loops; i++ {
-		payload := []byte(fmt.Sprintf("C->S loss %d", i))
+	for i := range loops {
+		payload := fmt.Appendf(nil, "C->S loss %d", i)
 		sendWithLoss(client, server, payload)
 		sendWithLoss(client, server, payload)
 		sendWithLoss(server, client, payload)
