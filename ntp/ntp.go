@@ -131,6 +131,37 @@ func (frm Frame) SetTransmitTime(rt Timestamp) {
 	rt.Put(frm.buf[40:48])
 }
 
+// RawData returns the underlying byte slice for the entire NTP packet.
+func (frm Frame) RawData() []byte { return frm.buf }
+
+// Payload returns the extension fields area of the NTP packet (all bytes
+// following the fixed 48-byte NTP header). Returns nil for packets with no
+// extension fields.
+func (frm Frame) Payload() []byte {
+	if len(frm.buf) <= SizeHeader {
+		return nil
+	}
+	return frm.buf[SizeHeader:]
+}
+
+// ValidateSize checks that the NTP header is complete and that any extension
+// fields are well-formed with valid lengths.
+func (frm Frame) ValidateSize(v *lneto.Validator) {
+	if len(frm.buf) < SizeHeader {
+		v.AddError(lneto.ErrTruncatedFrame)
+		return
+	}
+	buf := frm.Payload()
+	for len(buf) > 0 {
+		_, rest, err := NextExtField(buf)
+		if err != nil {
+			v.AddError(err)
+			return
+		}
+		buf = rest
+	}
+}
+
 // ClearHeader zeros out the header contents.
 func (frm Frame) ClearHeader() {
 	for i := range frm.buf[:SizeHeader] {

@@ -29,8 +29,9 @@ type Client struct {
 	//  - t[1] (rec): Server timestamp of request packet reception.
 	//  - t[2] (xmt): Server timestamp of response packet transmission.
 	//  - t[3]: Client timestamp of response packet reception.
-	t [4]Timestamp
-	// org      Timestamp
+	t             [4]Timestamp
+	offset1       time.Duration // unsynced clock offset from first exchange, averaged with second in OffsetUnsynced.
+	rtt1          time.Duration // round-trip delay from first exchange, averaged with second in RoundTripDelay.
 	state         state
 	serverStratum Stratum
 	sysprec       int8
@@ -67,8 +68,9 @@ func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) 
 		c.t[0] = TimestampFromUint64(0)
 		c.state = stateAwait1
 	case stateSend2:
-		// c.xmt = c.unsyncTimestamp(c.now())
-		c.state = stateDone
+		c.start = c.now()
+		c.t[0] = TimestampFromUint64(0)
+		c.state = stateAwait2
 	default:
 		return 0, nil // Nothing to handle.
 	}
@@ -103,14 +105,25 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 		if xmt == orig || orig != c.t[0] {
 			return lneto.ErrPacketDrop
 		}
-
 		txelapsed := c.now().Sub(c.start)
 		c.t[1] = frm.ReceiveTime()
 		c.t[2] = xmt
 		c.t[3] = c.t[0].Add(txelapsed)
 		c.serverStratum = frm.Stratum()
-		c.state = stateDone // TODO: add second exchange part.
+		c.offset1 = (c.t[1].Sub(c.t[0]) + c.t[2].Sub(c.t[3])) / 2
+		c.rtt1 = c.t[3].Sub(c.t[0]) - c.t[2].Sub(c.t[1])
+		c.state = stateSend2
 	case stateAwait2:
+		xmt := frm.TransmitTime()
+		orig := frm.OriginTime()
+		if xmt == orig || orig != c.t[0] {
+			return lneto.ErrPacketDrop
+		}
+		txelapsed := c.now().Sub(c.start)
+		c.t[1] = frm.ReceiveTime()
+		c.t[2] = xmt
+		c.t[3] = c.t[0].Add(txelapsed)
+		c.serverStratum = frm.Stratum()
 		c.state = stateDone
 	}
 	return nil
@@ -155,20 +168,22 @@ func (c *Client) offsetAndNow() (clientNow time.Time, offset time.Duration) {
 }
 
 // OffsetUnsynced returns the absolute time offset difference between client and server clock
-// as calculated by the clock synchonization algorithm. It is unsynchonized- the result of OffsetUnsynced will not change with time.
+// as calculated by the clock synchronization algorithm. It is unsynced — the result will not
+// change with time. When both exchanges are complete the result is the average of both exchanges.
 func (c *Client) OffsetUnsynced() time.Duration {
 	if c.IsDone() {
 		t := &c.t
-		return (t[1].Sub(t[0]) + t[2].Sub(t[3])) / 2
+		offset2 := (t[1].Sub(t[0]) + t[2].Sub(t[3])) / 2
+		return (c.offset1 + offset2) / 2
 	}
 	return 0
 }
 
+// RoundTripDelay returns the average round-trip delay across both NTP exchanges.
 func (c *Client) RoundTripDelay() time.Duration {
 	if c.IsDone() {
-		d0 := c.t[3].Sub(c.t[0])
-		d1 := c.t[2].Sub(c.t[1])
-		return d0 - d1
+		rtt2 := c.t[3].Sub(c.t[0]) - c.t[2].Sub(c.t[1])
+		return (c.rtt1 + rtt2) / 2
 	}
 	return -1
 }
