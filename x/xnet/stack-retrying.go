@@ -5,12 +5,13 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/tcp"
 )
 
-func (s *StackAsync) StackRetrying(loopSleep time.Duration) StackRetrying {
+func (s *StackAsync) StackRetrying(stackProtoBackoff lneto.BackoffStrategy) StackRetrying {
 	return StackRetrying{
-		block: s.StackBlocking(loopSleep),
+		block: s.StackBlocking(stackProtoBackoff),
 	}
 }
 

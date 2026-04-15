@@ -199,7 +199,7 @@ func run() error {
 	}()
 
 	// Create blocking + Berkeley stack
-	blocking := stack.StackBlocking(5 * time.Millisecond)
+	blocking := stack.StackBlocking(stackBackoff)
 	berkeley := blocking.StackGo(xnet.StackGoConfig{
 		ListenerPoolConfig: xnet.TCPPoolConfig{
 			PoolSize:           uint16(flagPoolSize),
@@ -212,7 +212,7 @@ func run() error {
 	})
 
 	// Perform DHCP to get address.
-	rstack := stack.StackRetrying(5 * time.Millisecond)
+	rstack := stack.StackRetrying(stackBackoff)
 	const dhcpTimeout = 6 * time.Second
 	const dhcpRetries = 2
 	results, err := rstack.DoDHCPv4([4]byte{192, 168, 1, 96}, dhcpTimeout, dhcpRetries)
@@ -398,4 +398,11 @@ func mockClient(stack *xnet.StackAsync, port uint16, subnet netip.Prefix) {
 	}
 	fmt.Println("mockclient: received response:\n", string(page))
 	mockConn.Close()
+}
+
+func stackBackoff(consecutiveBackoffs uint) time.Duration {
+	if consecutiveBackoffs < 10 {
+		return time.Millisecond
+	}
+	return 10 * time.Millisecond
 }

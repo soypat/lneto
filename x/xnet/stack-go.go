@@ -5,7 +5,6 @@ import (
 	"net"
 	"net/netip"
 	"syscall"
-	"time"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/tcp"
@@ -22,8 +21,8 @@ type StackGoConfig struct {
 	ListenerPoolConfig TCPPoolConfig
 }
 
-func (s *StackAsync) StackGo(loopSleep time.Duration, cfg StackGoConfig) StackGo {
-	return s.StackBlocking(loopSleep).StackGo(cfg)
+func (s *StackAsync) StackGo(stackProtoBackoff lneto.BackoffStrategy, cfg StackGoConfig) StackGo {
+	return s.StackBlocking(stackProtoBackoff).StackGo(cfg)
 }
 
 func (s StackBlocking) StackGo(cfg StackGoConfig) StackGo {
@@ -131,8 +130,10 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			if err != nil {
 				return nil, err
 			}
+			var backoffs uint
 			for {
-				time.Sleep(s.blk.loopSleep)
+				s.blk.backoff(backoffs)
+				backoffs++
 				state := conn.State()
 				if state == tcp.StateEstablished {
 					tc := tcpconn{
@@ -159,7 +160,7 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			}
 			var l tcplistener
 			l.localAddr = net.TCPAddrFromAddrPort(laddr)
-			l.sleep = s.blk.loopSleep
+			l.sleep = s.blk._backoff
 			err = l.l.Reset(laddr.Port(), pool)
 			if err != nil {
 				return nil, err
@@ -177,7 +178,7 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 type tcplistener struct {
 	l         tcp.Listener
 	closed    bool
-	sleep     time.Duration
+	sleep     lneto.BackoffStrategy
 	localAddr net.Addr
 }
 
@@ -191,12 +192,15 @@ func (l *tcplistener) Accept() (net.Conn, error) {
 	if l.closed {
 		return nil, net.ErrClosed
 	}
+	var backoffs uint
 	for {
 		n := l.l.NumberOfReadyToAccept()
 		if n == 0 {
-			time.Sleep(l.sleep)
+			backoff(l.sleep, backoffs)
+			backoffs++
 			continue
 		}
+		backoffs = 0
 		c, _, err := l.l.TryAccept()
 		if err != nil {
 			return nil, err

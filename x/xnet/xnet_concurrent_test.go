@@ -432,6 +432,6 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 
 }
 
-func backoffGosched(consecutiveBackoffs int) (sleep time.Duration) {
+func backoffGosched(consecutiveBackoffs uint) (sleep time.Duration) {
 	return lneto.BackoffFlagGosched
 }

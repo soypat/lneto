@@ -190,7 +190,7 @@ func run() (err error) {
 		}
 	}()
 
-	rstack := stack.StackRetrying(5 * time.Millisecond)
+	rstack := stack.StackRetrying(stackBackoff)
 
 	const (
 		dhcpTimeout = 6 * time.Second
@@ -353,4 +353,11 @@ func tryPoll(iface ltesto.Interface, poll time.Duration) (dataMayBeReady bool, _
 	}
 	dataMayBeReady = true
 	return dataMayBeReady, nil
+}
+
+func stackBackoff(consecutiveBackoffs uint) time.Duration {
+	if consecutiveBackoffs < 10 {
+		return time.Millisecond
+	}
+	return 10 * time.Millisecond
 }
