@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions: read-all
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: "1.26"
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::Files not formatted with gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go vet (tinygo tags)
+        run: go vet -tags=tinygo ./...
+
+      - name: go fix
+        run: |
+          diff=$(go fix -diff ./...)
+          if [ -n "$diff" ]; then
+            echo "$diff"
+            echo "::error::Files need go tool fix. Run: go tool fix ./..."
+            exit 1
+          fi
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: "1.26"
+
+      - name: Build
+        run: go build -v ./...
+
+  test:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: "1.26"
+
+      - name: Test
+        run: |
+          mkdir -p profiles
+          go test -v -shuffle=on -count=1 \
+            -coverprofile=profiles/coverage.profile -covermode=atomic -coverpkg=./... \
+            -timeout=10m \
+            ./...
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@3f20e214133d0983f9a10f3d63b0faf9241a3daa # v6.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: profiles/coverage.profile
+          slug: soypat/lneto
+
+      - name: Upload profiles
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-profiles
+          path: profiles/
+          retention-days: 14
+
+  race:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: "1.26"
+
+      - name: Test (race + shuffle)
+        run: go test -race -shuffle=on -count=1 -timeout=10m ./...
+
+  benchmark:
+    needs: [test]
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: "1.26"
+
+      - name: Run benchmarks
+        run: go test -bench=. -benchmem -count=5 -shuffle=on -run='^$' -timeout=15m ./... | tee bench-results.txt
+
+      # Fails for a weird reason, will be investigated in the future
+      # - name: Report benchmark regressions
+      #   uses: benchmark-action/github-action-benchmark@a887eba2af2000fda74e733fcf952aa823b65916 # v1.21.0
+      #   with:
+      #     tool: go
+      #     output-file-path: bench-results.txt
+      #     summary-always: true
+      #     comment-on-alert: true
+      #     alert-threshold: "120%"
+      #     fail-on-alert: false
+      #     auto-push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      #     github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bench-results
+          path: bench-results.txt
+          retention-days: 30
