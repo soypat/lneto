@@ -161,7 +161,7 @@ func (sc *SYNCookieJar) hashTuple(srcAddr, dstAddr []byte, srcPort, dstPort uint
 	// Handle remaining bytes of srcAddr
 	if rem := len(srcAddr) % 4; rem != 0 {
 		var last uint32
-		for i := 0; i < rem; i++ {
+		for i := range rem {
 			last |= uint32(srcAddr[len(srcAddr)-rem+i]) << (i * 8)
 		}
 		h3 ^= last
@@ -174,7 +174,7 @@ func (sc *SYNCookieJar) hashTuple(srcAddr, dstAddr []byte, srcPort, dstPort uint
 	// Handle remaining bytes of dstAddr
 	if rem := len(dstAddr) % 4; rem != 0 {
 		var last uint32
-		for i := 0; i < rem; i++ {
+		for i := range rem {
 			last |= uint32(dstAddr[len(dstAddr)-rem+i]) << (i * 8)
 		}
 		h0 ^= last

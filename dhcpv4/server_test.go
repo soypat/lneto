@@ -106,7 +106,7 @@ func TestServerMultipleClients(t *testing.T) {
 	}
 
 	// All assigned addresses must be unique.
-	for i := 0; i < nClients; i++ {
+	for i := range nClients {
 		for j := i + 1; j < nClients; j++ {
 			if assignedAddrs[i] == assignedAddrs[j] {
 				t.Errorf("clients %d and %d got same address %v", i, j, assignedAddrs[i])
@@ -123,7 +123,7 @@ func TestServerSequentialAddressAllocation(t *testing.T) {
 	sv.Configure(testServerConfig(svAddr))
 
 	// Build raw DISCOVER frames for two clients.
-	for i := byte(0); i < 2; i++ {
+	for i := range byte(2) {
 		var buf [512]byte
 		frm, _ := NewFrame(buf[:])
 		frm.ClearHeader()
@@ -147,7 +147,7 @@ func TestServerSequentialAddressAllocation(t *testing.T) {
 
 	// Encapsulate both OFFERs and verify addresses are in expected range.
 	var seen [2][4]byte
-	for i := byte(0); i < 2; i++ {
+	for i := range byte(2) {
 		var buf [512]byte
 		n, err := sv.Encapsulate(buf[:], -1, 0)
 		if err != nil {

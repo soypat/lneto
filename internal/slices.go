@@ -32,7 +32,7 @@ func DeleteZeroed[T comparable](a []T) []T {
 	var z T
 	off := 0
 	deleted := false
-	for i := 0; i < len(a); i++ {
+	for i := range a {
 		if a[i] != z {
 			if deleted {
 				a[off] = a[i]

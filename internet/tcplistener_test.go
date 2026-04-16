@@ -160,7 +160,7 @@ func TestListener_MultiConn(t *testing.T) {
 	var buf [2048]byte
 
 	// Complete full handshakes for all clients.
-	for i := 0; i < numClients; i++ {
+	for i := range numClients {
 		expectExchange(t, &clientStacks[i], &serverStack, buf[:]) // SYN
 		expectExchange(t, &serverStack, &clientStacks[i], buf[:]) // SYN-ACK
 		expectExchange(t, &clientStacks[i], &serverStack, buf[:]) // ACK
@@ -173,7 +173,7 @@ func TestListener_MultiConn(t *testing.T) {
 	}
 
 	// Accept all connections.
-	for i := 0; i < numClients; i++ {
+	for i := range numClients {
 		var err error
 		acceptedConns[i], _, err = listener.TryAccept()
 		if err != nil {
@@ -185,7 +185,7 @@ func TestListener_MultiConn(t *testing.T) {
 	}
 
 	// Verify all connections established.
-	for i := 0; i < numClients; i++ {
+	for i := range numClients {
 		if clientConns[i].State() != tcp.StateEstablished {
 			t.Errorf("client %d: expected StateEstablished, got %s", i, clientConns[i].State())
 		}
@@ -195,7 +195,7 @@ func TestListener_MultiConn(t *testing.T) {
 	}
 
 	// Test data exchange: client -> server.
-	for i := 0; i < numClients; i++ {
+	for i := range numClients {
 		msg := []byte("hello from client " + string('0'+byte(i)))
 		n, err := clientConns[i].Write(msg)
 		if err != nil {
@@ -207,12 +207,12 @@ func TestListener_MultiConn(t *testing.T) {
 	}
 
 	// Exchange data packets from all clients to server.
-	for i := 0; i < numClients; i++ {
+	for i := range numClients {
 		expectExchange(t, &clientStacks[i], &serverStack, buf[:])
 	}
 
 	// Read data on server side and verify.
-	for i := 0; i < numClients; i++ {
+	for i := range numClients {
 		expected := "hello from client " + string('0'+byte(i))
 		var readBuf [64]byte
 		n, err := acceptedConns[i].Read(readBuf[:])
@@ -225,7 +225,7 @@ func TestListener_MultiConn(t *testing.T) {
 	}
 
 	// Test data exchange: server -> client.
-	for i := 0; i < numClients; i++ {
+	for i := range numClients {
 		msg := []byte("reply to client " + string('0'+byte(i)))
 		n, err := acceptedConns[i].Write(msg)
 		if err != nil {
@@ -237,12 +237,12 @@ func TestListener_MultiConn(t *testing.T) {
 	}
 
 	// Exchange data packets from server to all clients.
-	for i := 0; i < numClients; i++ {
+	for i := range numClients {
 		expectExchange(t, &serverStack, &clientStacks[i], buf[:])
 	}
 
 	// Read responses on client side and verify.
-	for i := 0; i < numClients; i++ {
+	for i := range numClients {
 		expected := "reply to client " + string('0'+byte(i))
 		var readBuf [64]byte
 		n, err := clientConns[i].Read(readBuf[:])
@@ -255,7 +255,7 @@ func TestListener_MultiConn(t *testing.T) {
 	}
 
 	// Close connections, alternating between client-initiated and server-initiated.
-	for i := 0; i < numClients; i++ {
+	for i := range numClients {
 		var closer, responder *StackIP
 		var closerConn, responderConn *tcp.Conn
 		var serverClosed bool

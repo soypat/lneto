@@ -259,7 +259,7 @@ func runClient(t *testing.T, id int, stack *StackAsync, conn *tcp.Conn,
 	}
 
 	// Send test data.
-	testData := []byte(fmt.Sprintf("hello from client %d", id))
+	testData := fmt.Appendf(nil, "hello from client %d", id)
 	_, err = conn.Write(testData)
 	if err != nil {
 		t.Errorf("client %d write failed: %v", id, err)

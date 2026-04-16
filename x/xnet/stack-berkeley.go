@@ -31,7 +31,7 @@ const (
 // family must be syscall.AF_INET. SOCK_STREAM is only one supported for now since is TCP.
 // network supported for now is "tcp" or "tcp4". A nil remote address and defined local address means net.Listener is returned.
 // if remote address defined then is active connection, returns a net.Conn.
-type gosocket = func(ctx context.Context, network string, family, sotype int, laddr, raddr net.Addr) (c interface{}, err error)
+type gosocket = func(ctx context.Context, network string, family, sotype int, laddr, raddr net.Addr) (c any, err error)
 
 type socket[T any] struct {
 	sockfd int
@@ -84,7 +84,7 @@ func (s *StackBerkeley) Bind(sockfd int, ip netip.AddrPort) error {
 }
 
 // SetSockOpt sets a socket option on sockfd. Currently unimplemented.
-func (s *StackBerkeley) SetSockOpt(sockfd int, level int, opt int, value interface{}) error {
+func (s *StackBerkeley) SetSockOpt(sockfd int, level int, opt int, value any) error {
 	return nil
 }
 

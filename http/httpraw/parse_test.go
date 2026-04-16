@@ -533,10 +533,7 @@ func TestParseRequest_InvalidHeaderSpaceBeforeColon(t *testing.T) {
 func splitInto(s string, n int) []string {
 	var chunks []string
 	for len(s) > 0 {
-		end := n
-		if end > len(s) {
-			end = len(s)
-		}
+		end := min(n, len(s))
 		chunks = append(chunks, s[:end])
 		s = s[end:]
 	}

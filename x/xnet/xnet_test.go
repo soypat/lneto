@@ -127,7 +127,7 @@ func TestStackAsyncTCP_multipacket(t *testing.T) {
 		tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1337)
 		testClose()
 		var buf [MTU]byte
-		for i := 0; i < 20; i++ {
+		for range 20 {
 			payloadSize := rng.Intn(maxPktLen) + 1
 			tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1337)
 			// npkt := rng.Intn(maxNPkt-1) + 2

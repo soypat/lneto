@@ -431,13 +431,6 @@ func (h *Handler) IsTxOver() bool {
 		state == StateTimeWait && !h.scb.HasPending()
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func errstr(err error) string {
 	if err == nil {
 		return "<nil>"

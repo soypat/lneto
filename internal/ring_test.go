@@ -20,7 +20,7 @@ func TestRing(t *testing.T) {
 	}
 	const data = "hello"
 	// Set random data and write some more and read it back.
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		nfirst := max(1, rng.Intn(bufSize)/2)
 		nsecond := max(1, rng.Intn(bufSize)/2)
 		if nfirst+nsecond > bufSize {
@@ -59,7 +59,7 @@ func TestRing(t *testing.T) {
 	var zeros [bufSize]byte
 
 	// Set random data and write some more and read it back with ReadAt and ReadPeek and ReadDiscard.
-	for i := 0; i < 32; i++ {
+	for range 32 {
 		nfirst := rng.Intn(len(data))/2 + 1 // write garbage data first.
 		nsecond := rng.Intn(len(data))/2 + 1
 		if nfirst+nsecond > bufSize {
@@ -72,7 +72,7 @@ func TestRing(t *testing.T) {
 		content = append(content, data[:nsecond]...)
 		setRingData(t, r, randOff, content)
 		// Two-tap ReadPeek to make sure pointer not advanced.
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			n, err = r.ReadPeek(readback[:])
 			if err != nil && err != io.EOF {
 				t.Fatal("read failed", err)
@@ -87,7 +87,7 @@ func TestRing(t *testing.T) {
 		}
 
 		// Two-tap ReadAt to make sure pointer not advanced.
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			off := rng.Intn(nfirst + nsecond)
 			n, err = r.ReadAt(readback[:nfirst+nsecond-off], int64(off))
 
@@ -135,7 +135,7 @@ func TestRing2(t *testing.T) {
 	ringbuf := make([]byte, maxsize)
 	auxbuf := make([]byte, maxsize)
 	rng.Read(data)
-	for i := 0; i < ntests; i++ {
+	for i := range ntests {
 		dsize := max(rng.Intn(len(data)), 1)
 		if !testRing1_loopback(t, rng, ringbuf, data[:dsize], auxbuf) {
 			t.Fatalf("failed test %d", i)
@@ -156,7 +156,7 @@ func TestRingEmpty(t *testing.T) {
 		for _, isonReadEndCalled := range []bool{false, true} {
 			name := fmt.Sprintf("reset=%v readend=%v", isResetCalled, isonReadEndCalled)
 			t.Run(name, func(t *testing.T) {
-				for off := 0; off < bufSize+1; off++ {
+				for off := range bufSize + 1 {
 					r.End = 0
 					r.Off = off
 					if isResetCalled {
@@ -201,7 +201,7 @@ func TestRingNonEmpty(t *testing.T) {
 				name := fmt.Sprintf("readend=%v checkWrite=%v checkRead=%v", isonReadEndCalled, checkWrite, checkRead)
 				t.Run(name, func(t *testing.T) {
 					for end := 1; end < bufSize+1; end++ {
-						for off := 0; off < bufSize+1; off++ {
+						for off := range bufSize + 1 {
 							r.End = end
 							r.Off = off
 							buf := r.Buffered()
@@ -251,7 +251,7 @@ func TestRing_OffWrite(t *testing.T) {
 	var rawbuf, auxbuf, readback [bufSize]byte
 	r := &Ring{Buf: rawbuf[:]}
 	for n := 1; n < bufSize+1; n++ {
-		for off := 0; off < bufSize+1; off++ {
+		for off := range bufSize + 1 {
 			r.Off = off // Start write at off.
 			r.End = 0   // Reset to use no data.
 			for i := 0; i < n; i++ {
@@ -288,7 +288,7 @@ func TestRing_TwoWrite(t *testing.T) {
 	var rawbuf, auxbuf, readback [bufSize]byte
 	r := &Ring{Buf: rawbuf[:]}
 
-	for i := 0; i < 1024; i++ {
+	for range 1024 {
 		n1 := rng.Intn(bufSize-1) + 1 // leave space for one more write
 		n2 := rng.Intn(bufSize-n1) + 1
 		off := rng.Intn(bufSize + 1)
@@ -319,8 +319,8 @@ func TestRingOverwrite(t *testing.T) {
 	const bufSize = 8
 	var rawbuf, auxbuf [bufSize]byte
 	r := &Ring{Buf: rawbuf[:]}
-	for off := 0; off < bufSize+1; off++ {
-		for buf := 0; buf < bufSize+1; buf++ {
+	for off := range bufSize + 1 {
+		for buf := range bufSize + 1 {
 			setRingData(t, r, off, rawbuf[:buf])
 			// Select write size overwriting data.
 			for osz := bufSize - buf + 1; osz < bufSize+1; osz++ {
@@ -403,7 +403,7 @@ func TestRing_findcrash(t *testing.T) {
 	rng := rand.New(rand.NewSource(0))
 	data := make([]byte, maxsize)
 
-	for i := 0; i < ntests; i++ {
+	for i := range ntests {
 		free := r.Free()
 		if free < 0 {
 			t.Fatal("free < 0")
@@ -448,7 +448,7 @@ func TestRingFreeLimited(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	buffer := make([]byte, n)
 	r := Ring{Buf: buffer}
-	for itest := 0; itest < 100000; itest++ {
+	for itest := range 100000 {
 		r.Off = rng.Intn(n)
 		r.End = rng.Intn(n + 1)
 		limit := rng.Intn(n)

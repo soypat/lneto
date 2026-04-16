@@ -27,9 +27,9 @@ func TestRingTx_op(t *testing.T) {
 	dataSent := make([]byte, 0, maxBuf*10)
 	var rtx ringTx
 	rng := rand.New(rand.NewSource(0))
-	for iseed := int64(0); iseed < 1000; iseed++ {
+	for iseed := range int64(1000) {
 		rng.Seed(iseed + rng.Int63())
-		for itest := 0; itest < 32; itest++ {
+		for itest := range 32 {
 			bufsize := rng.Intn(maxBuf/2) + maxBuf/2
 			iss := Value(0)
 			npackets := rng.Intn(maxpkt-1) + 1
@@ -45,7 +45,7 @@ func TestRingTx_op(t *testing.T) {
 			nacked := 0
 			dataWritten = dataWritten[:0]
 			dataSent = dataSent[:0]
-			for iop := 0; iop < Nops; iop++ {
+			for iop := range Nops {
 				free := bufsize - nsent - nunsent
 				availPkt := rtx.slist.Free()
 				op := op(rng.Intn(int(opmax)))
@@ -180,7 +180,7 @@ func TestSentlist_simple(t *testing.T) {
 
 	// Test partial ack.
 	sl.AddPacket(pkt, 0, bufsize, sl.ssn)
-	for i := Value(0); i < pkt-1; i++ {
+	for range Value(pkt - 1) {
 		ack++
 		sl.RecvAck(ack, bufsize)
 		oldest = sl.Oldest()
@@ -208,7 +208,7 @@ func TestTxQueue_multipacket(t *testing.T) {
 	internalbuff := make([]byte, mtu)
 	rng := rand.New(rand.NewSource(3))
 	var wbuf, rbuf [mtu]byte
-	for itest := 0; itest < 32; itest++ {
+	for itest := range 32 {
 		rng.Seed(int64(itest))
 		err := rtx.Reset(internalbuff, maxPkts, iss)
 		if err != nil {
@@ -217,7 +217,7 @@ func TestTxQueue_multipacket(t *testing.T) {
 		numWrites := rng.Intn(maxWrites) + 1
 		total := 0
 		woff := 0
-		for iw := 0; iw < numWrites; iw++ {
+		for range numWrites {
 			wlen := rng.Intn(maxWriteSize) + 1
 			towrite := wbuf[woff : woff+wlen]
 			rng.Read(towrite)
@@ -234,7 +234,7 @@ func TestTxQueue_multipacket(t *testing.T) {
 		npkt := rng.Intn(maxPkts) + 1
 		roff := 0
 		seq := Value(iss)
-		for ipkt := 0; ipkt < npkt; ipkt++ {
+		for range npkt {
 			maxToPacket := min(total-roff, maxWriteSize)
 			pktlen := rng.Intn(maxToPacket) + 1
 			pkt := rbuf[roff : roff+pktlen]
@@ -289,7 +289,7 @@ func TestTxQueue(t *testing.T) {
 			name: "SequentialMessages",
 			test: func(t *testing.T) {
 				const startAck = 0
-				for i := 0; i < 10; i++ {
+				for range 10 {
 					rng.Read(msgBuf[:])
 					msgs := removeEmptyMsgs(bytes.SplitAfter(msgBuf[:], []byte{0}))
 					currentAck := Value(startAck)
@@ -314,7 +314,7 @@ func TestTxQueue(t *testing.T) {
 			name: "N-Messages",
 			test: func(t *testing.T) {
 				const startAck = 0
-				for i := 0; i < 10; i++ {
+				for range 10 {
 					rng.Read(msgBuf[:])
 					msgs := removeEmptyMsgs(bytes.SplitAfter(msgBuf[:], []byte{0}))
 					currentAck := Value(startAck)
@@ -362,7 +362,7 @@ func TestTxQueue(t *testing.T) {
 				const packets = 100
 				const maxPacketSize = bufsize / 4
 				var datalens [][]byte
-				for i := 0; i < 10; i++ {
+				for range 10 {
 					rng.Read(msgBuf[:])
 					err := rtx.Reset(ringBuf[:], packets, startAck)
 					if err != nil {

@@ -18,7 +18,7 @@ func TestFrame(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	const wantVersion = 4
 	v := new(lneto.Validator)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		// SET VALUES:
 		wantIHL := uint8(5 + rng.Intn(10))
 		wantToS := ToS(rng.Intn(4))

@@ -13,10 +13,8 @@ func BackoffConnRW(consecutiveBackoffs uint) {
 		maxShift       = 22
 		_overflowCheck = minWait << maxShift
 	)
-	wait := minWait << min(consecutiveBackoffs, maxShift)
-	if wait > maxWait {
-		wait = maxWait
-	}
+	shifted := minWait << min(consecutiveBackoffs, maxShift)
+	wait := min(shifted, maxWait)
 	time.Sleep(time.Duration(wait))
 }
 
@@ -31,9 +29,7 @@ func BackoffStackProto(consecutiveBackoffs uint) {
 		maxShift       = 22
 		_overflowCheck = minWait << maxShift
 	)
-	wait := minWait << min(consecutiveBackoffs, maxShift)
-	if wait > maxWait {
-		wait = maxWait
-	}
+	shifted := minWait << min(consecutiveBackoffs, maxShift)
+	wait := min(shifted, maxWait)
 	time.Sleep(time.Duration(wait))
 }

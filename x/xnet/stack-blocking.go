@@ -41,7 +41,7 @@ func (s StackBlocking) DoDHCPv4(reqAddr [4]byte, timeout time.Duration) (*DHCPRe
 	deadline := time.Now().Add(timeout)
 	requested := false
 	var lastState dhcpv4.ClientState
-	for i := 0; i < maxIter; i++ {
+	for range maxIter {
 		s.async.mu.Lock()
 		state := s.async.dhcp.State()
 		s.async.mu.Unlock()
@@ -80,7 +80,7 @@ func (s StackBlocking) DoPing(hostAddr netip.Addr, timeout time.Duration) (round
 	}
 	start := time.Now()
 	var backoffs uint
-	for i := 0; i < maxIter; i++ {
+	for range maxIter {
 		s.async.mu.Lock()
 		completed, exists := s.async.icmp.PingPop(key)
 		s.async.mu.Unlock()
@@ -108,7 +108,7 @@ func (s StackBlocking) DoNTP(hostAddr netip.Addr, timeout time.Duration) (offset
 	deadline := time.Now().Add(timeout)
 	var done bool
 	var backoffs uint
-	for i := 0; i < maxIter; i++ {
+	for range maxIter {
 		offset, done = s.async.ResultNTPOffset()
 		if done {
 			return offset, nil
@@ -128,7 +128,7 @@ func (s StackBlocking) DoResolveHardwareAddress6(addr netip.Addr, timeout time.D
 	}
 	var backoffs uint
 	deadline := time.Now().Add(timeout)
-	for i := 0; i < maxIter; i++ {
+	for range maxIter {
 		hw, err = s.async.ResultResolveHardwareAddress6(addr)
 		if err == nil {
 			break
@@ -152,7 +152,7 @@ func (s StackBlocking) DoLookupIP(host string, timeout time.Duration) (addrs []n
 
 	deadline := time.Now().Add(timeout)
 	var backoffs uint
-	for i := 0; i < maxIter; i++ {
+	for range maxIter {
 		addrs, completed, err := s.async.ResultLookupIP(host)
 		if completed {
 			return addrs, err
@@ -174,7 +174,7 @@ func (s StackBlocking) DoDialTCP(conn *tcp.Conn, localPort uint16, addrp netip.A
 	}
 	deadline := time.Now().Add(timeout)
 	var backoffs uint
-	for i := 0; i < maxIter; i++ {
+	for range maxIter {
 		state := conn.State()
 		if state == tcp.StateEstablished {
 			return nil

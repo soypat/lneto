@@ -86,7 +86,7 @@ func TestRSTQueue_DrainNegativeOffset(t *testing.T) {
 func TestRSTQueue_Full(t *testing.T) {
 	var q RSTQueue
 	addr := []byte{10, 0, 0, 1}
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		q.Queue(addr, uint16(i), 1234, Value(i), 0, FlagRST)
 	}
 	if q.Pending() != 4 {
@@ -143,7 +143,7 @@ func TestRSTQueue_MultipleDrains(t *testing.T) {
 	const offsetToTCP = 34
 
 	// Drain all 3 entries.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		setIPv4Version(carrier, offsetToIP)
 		n, err := q.Drain(carrier, offsetToIP, offsetToTCP)
 		if err != nil {

@@ -195,32 +195,32 @@ func TestMessageAppendEncodeIncompleteOK(t *testing.T) {
 
 func (m *Message) String() string {
 	// s := fmt.Sprintf("Message: %#v\n", &m.Header)
-	var s string
+	var s strings.Builder
 	if len(m.Questions) > 0 {
-		s += "-- Questions\n"
+		s.WriteString("-- Questions\n")
 		for _, q := range m.Questions {
-			s += fmt.Sprintf("%#v\n", q)
+			s.WriteString(fmt.Sprintf("%#v\n", q))
 		}
 	}
 	if len(m.Answers) > 0 {
-		s += "-- Answers\n"
+		s.WriteString("-- Answers\n")
 		for _, a := range m.Answers {
-			s += fmt.Sprintf("%#v\n", a)
+			s.WriteString(fmt.Sprintf("%#v\n", a))
 		}
 	}
 	if len(m.Authorities) > 0 {
-		s += "-- Authorities\n"
+		s.WriteString("-- Authorities\n")
 		for _, ns := range m.Authorities {
-			s += fmt.Sprintf("%#v\n", ns)
+			s.WriteString(fmt.Sprintf("%#v\n", ns))
 		}
 	}
 	if len(m.Additionals) > 0 {
-		s += "-- Additionals\n"
+		s.WriteString("-- Additionals\n")
 		for _, e := range m.Additionals {
-			s += fmt.Sprintf("%#v\n", e)
+			s.WriteString(fmt.Sprintf("%#v\n", e))
 		}
 	}
-	return s
+	return s.String()
 }
 
 func TestDecodeMessage(t *testing.T) {

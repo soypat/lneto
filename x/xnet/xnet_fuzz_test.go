@@ -532,7 +532,7 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 		// Hard ceiling prevents infinite send loops from passing silently.
 		// Also send drained packet to other stack to also catch infinite feedback loops.
 		const drainLimit = 8
-		for d := 0; d < drainLimit; d++ {
+		for d := range drainLimit {
 			limit := d == drainLimit-1
 			n, err := first.EgressEthernet(buf[:])
 			if (err != nil || n > 0) && limit {
