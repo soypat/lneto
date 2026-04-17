@@ -347,7 +347,9 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	if off >= len(buf) {
-		return lneto.ErrTruncatedFrame // TODO: this check is bad.
+		// off is the IP header length; if it equals or exceeds the frame
+		// length, there are zero bytes of TCP payload — drop the frame.
+		return lneto.ErrTruncatedFrame
 	}
 	raddr, _, id, _, err := internal.GetIPAddr(buf[:off])
 	if err != nil {

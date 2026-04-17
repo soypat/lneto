@@ -172,8 +172,7 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 	err = h.scb.Recv(segIncoming)
 	if err != nil {
 		if h.scb.State() == StateClosed {
-			// TODO(soypat): Should return EOF/ErrClosed?
-			err = net.ErrClosed //err // Connection closed by reset.
+			err = net.ErrClosed // Connection closed by RST; signal caller to tear down.
 		}
 		return err
 	}
