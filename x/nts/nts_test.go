@@ -459,6 +459,250 @@ func FuzzNextExtField(f *testing.F) {
 	})
 }
 
+func TestServer_Reset_Validation(t *testing.T) {
+	key := make([]byte, chacha20poly1305.KeySize)
+	aead, _ := chacha20poly1305.New(key)
+	var s Server
+	if err := s.Reset(ServerConfig{C2S: aead, S2C: aead, Stratum: ntp.StratumPrimary}); err != nil {
+		t.Fatalf("valid Reset: %v", err)
+	}
+	prevID := *s.ConnectionID()
+	if err := s.Reset(ServerConfig{C2S: nil, S2C: aead}); err == nil {
+		t.Error("nil C2S: expected error")
+	}
+	if *s.ConnectionID() != prevID {
+		t.Error("connID should not increment on failed Reset")
+	}
+}
+
+func TestServer_NoPendingReturnsZero(t *testing.T) {
+	key := make([]byte, chacha20poly1305.KeySize)
+	aead, _ := chacha20poly1305.New(key)
+	var s Server
+	s.Reset(ServerConfig{C2S: aead, S2C: aead, Stratum: ntp.StratumPrimary})
+	carrier := make([]byte, 1500)
+	n, err := s.Encapsulate(carrier, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("expected 0, got %d", n)
+	}
+}
+
+func TestClientServer_E2E(t *testing.T) {
+	c2sKey := make([]byte, chacha20poly1305.KeySize)
+	s2cKey := make([]byte, chacha20poly1305.KeySize)
+	rand.Read(c2sKey)
+	rand.Read(s2cKey)
+	c2s, _ := chacha20poly1305.New(c2sKey)
+	s2c, _ := chacha20poly1305.New(s2cKey)
+
+	cookie := []byte("nts-cookie-round-trip-test")
+
+	baseTime := ntp.BaseTime()
+	clientTime := baseTime.Add(10 * time.Second)
+	serverTime := clientTime.Add(200 * time.Millisecond)
+
+	var clientCfg ClientConfig
+	clientCfg.C2S = c2s
+	clientCfg.S2C = s2c
+	clientCfg.ChosenAlg = AlgAESSIVCMAC256
+	clientCfg.Now = func() time.Time { return clientTime }
+	clientCfg.Sysprec = -20
+	for i := 0; i < 2; i++ {
+		copy(clientCfg.Cookies[i][:], cookie)
+		clientCfg.CookieLens[i] = len(cookie)
+	}
+	clientCfg.NumCookies = 2
+
+	var client Client
+	if err := client.Reset(clientCfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// Server uses same keys (C2S to verify client, S2C to seal responses).
+	var server Server
+	if err := server.Reset(ServerConfig{
+		C2S:     c2s,
+		S2C:     s2c,
+		Now:     func() time.Time { return serverTime },
+		Stratum: ntp.StratumPrimary,
+		Prec:    -20,
+		RefID:   [4]byte{'G', 'P', 'S', 0},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for exchange := 0; exchange < 2; exchange++ {
+		carrier := make([]byte, 1500)
+		n, err := client.Encapsulate(carrier, 0, 0)
+		if err != nil || n == 0 {
+			t.Fatalf("exchange %d: client Encapsulate: n=%d err=%v", exchange, n, err)
+		}
+
+		if err = server.Demux(carrier[:n], 0); err != nil {
+			t.Fatalf("exchange %d: server Demux: %v", exchange, err)
+		}
+
+		resp := make([]byte, 1500)
+		rn, err := server.Encapsulate(resp, 0, 0)
+		if err != nil || rn == 0 {
+			t.Fatalf("exchange %d: server Encapsulate: rn=%d err=%v", exchange, rn, err)
+		}
+
+		clientTime = clientTime.Add(100 * time.Millisecond)
+		serverTime = serverTime.Add(100 * time.Millisecond)
+
+		if err = client.Demux(resp[:rn], 0); err != nil {
+			t.Fatalf("exchange %d: client Demux: %v", exchange, err)
+		}
+	}
+
+	if !client.IsDone() {
+		t.Fatal("client should be done after two exchanges")
+	}
+	if client.RoundTripDelay() < 0 {
+		t.Errorf("RTD = %v; want >= 0", client.RoundTripDelay())
+	}
+}
+
+func TestClientServer_TamperedAADRejected(t *testing.T) {
+	c2sKey := make([]byte, chacha20poly1305.KeySize)
+	s2cKey := make([]byte, chacha20poly1305.KeySize)
+	rand.Read(c2sKey)
+	rand.Read(s2cKey)
+	c2s, _ := chacha20poly1305.New(c2sKey)
+	s2c, _ := chacha20poly1305.New(s2cKey)
+
+	cookie := []byte("cookie-tamper-test")
+	var cfg ClientConfig
+	cfg.C2S = c2s
+	cfg.S2C = s2c
+	cfg.NumCookies = 1
+	copy(cfg.Cookies[0][:], cookie)
+	cfg.CookieLens[0] = len(cookie)
+
+	var client Client
+	client.Reset(cfg)
+
+	carrier := make([]byte, 1500)
+	n, _ := client.Encapsulate(carrier, 0, 0)
+
+	// Tamper with NTP header (part of AAD).
+	carrier[ntp.SizeHeader-1] ^= 0xff
+
+	var server Server
+	server.Reset(ServerConfig{C2S: c2s, S2C: s2c, Stratum: ntp.StratumPrimary})
+
+	if err := server.Demux(carrier[:n], 0); err != lneto.ErrBadCRC {
+		t.Errorf("tampered Demux: got %v; want ErrBadCRC", err)
+	}
+}
+
+func TestHandleKE_E2E(t *testing.T) {
+	cert := generateSelfSignedCert(t)
+	pool := x509.NewCertPool()
+	leaf, _ := x509.ParseCertificate(cert.Certificate[0])
+	pool.AddCert(leaf)
+
+	serverTLSCfg := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS13,
+		NextProtos:   []string{"ntske/1"},
+	}
+	clientTLSCfg := &tls.Config{
+		RootCAs:    pool,
+		ServerName: "localhost",
+		MinVersion: tls.VersionTLS13,
+		NextProtos: []string{"ntske/1"},
+	}
+
+	wantCookie := []byte("ke-server-cookie-data")
+
+	serverConn, clientConn := net.Pipe()
+	done := make(chan KESecrets, 1)
+	errc := make(chan error, 1)
+	go func() {
+		tc := tls.Server(serverConn, serverTLSCfg)
+		if err := tc.Handshake(); err != nil {
+			errc <- err
+			return
+		}
+		defer tc.Close()
+		secrets, err := HandleKE(tc, KEServerConfig{
+			Cookies: [][]byte{wantCookie},
+		})
+		if err != nil {
+			errc <- err
+			return
+		}
+		done <- secrets
+	}()
+
+	tc := tls.Client(clientConn, clientTLSCfg)
+	if err := tc.Handshake(); err != nil {
+		t.Fatal(err)
+	}
+	clientSecrets, err := PerformKE(tc, KEConfig{})
+	tc.Close()
+
+	select {
+	case err := <-errc:
+		t.Fatalf("server KE: %v", err)
+	case serverSecrets := <-done:
+		if err != nil {
+			t.Fatalf("client KE: %v", err)
+		}
+		if clientSecrets.ChosenAlg != serverSecrets.ChosenAlg {
+			t.Errorf("ChosenAlg: client=%v server=%v; want equal", clientSecrets.ChosenAlg, serverSecrets.ChosenAlg)
+		}
+		if clientSecrets.C2SKey != serverSecrets.C2SKey {
+			t.Errorf("C2SKey mismatch: client and server derived different keys")
+		}
+		if clientSecrets.S2CKey != serverSecrets.S2CKey {
+			t.Errorf("S2CKey mismatch: client and server derived different keys")
+		}
+		if clientSecrets.NumCookies != 1 {
+			t.Errorf("NumCookies = %d; want 1", clientSecrets.NumCookies)
+		}
+		gotCookie := clientSecrets.Cookies[0][:clientSecrets.CookieLens[0]]
+		if !bytes.Equal(gotCookie, wantCookie) {
+			t.Errorf("cookie = %q; want %q", gotCookie, wantCookie)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("HandleKE server goroutine timed out")
+	}
+}
+
+func FuzzServerDemux(f *testing.F) {
+	key := make([]byte, chacha20poly1305.KeySize)
+	aead, _ := chacha20poly1305.New(key)
+
+	// Seed with a valid NTS request built by the client.
+	var c Client
+	c.Reset(ClientConfig{
+		C2S: aead, S2C: aead, NumCookies: 1,
+		Cookies:    [MaxCookies][MaxCookieLen]byte{},
+		CookieLens: [MaxCookies]int{16},
+	})
+	carrier := make([]byte, 1500)
+	n, _ := c.Encapsulate(carrier, 0, 0)
+	if n > 0 {
+		f.Add(carrier[:n])
+	}
+	f.Add(make([]byte, ntp.SizeHeader))
+	f.Add([]byte{})
+	f.Add(make([]byte, 10))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		fuzzKey := make([]byte, chacha20poly1305.KeySize)
+		fuzzAEAD, _ := chacha20poly1305.New(fuzzKey)
+		var s Server
+		s.Reset(ServerConfig{C2S: fuzzAEAD, S2C: fuzzAEAD, Stratum: ntp.StratumPrimary})
+		_ = s.Demux(data, 0)
+	})
+}
+
 func BenchmarkClient_Encapsulate(b *testing.B) {
 	key := make([]byte, chacha20poly1305.KeySize)
 	aead, _ := chacha20poly1305.New(key)
