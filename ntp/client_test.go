@@ -15,7 +15,7 @@ func simulateServerResponse(t *testing.T, reqBuf []byte, serverRecv, serverXmt t
 	respFrm.SetFlags(ModeServer, Version4, LeapNoWarning)
 	respFrm.SetStratum(StratumPrimary)
 	respFrm.SetPrecision(-20)
-	respFrm.SetOriginTime(reqFrm.OriginTime())
+	respFrm.SetOriginTime(reqFrm.TransmitTime())
 	recvTS, err := TimestampFromTime(serverRecv)
 	if err != nil {
 		t.Fatal(err)

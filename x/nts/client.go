@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"io"
+	"log/slog"
 	"time"
 
 	"github.com/soypat/lneto"
@@ -27,6 +28,7 @@ type ClientConfig struct {
 	ChosenAlg  AEADAlgorithmID
 	Rand       io.Reader
 	Now        func() time.Time
+	Log        *slog.Logger
 	Sysprec    int8
 	Cookies    [MaxCookies][MaxCookieLen]byte
 	CookieLens [MaxCookies]int
@@ -46,6 +48,7 @@ type Client struct {
 	cookies    [MaxCookies][MaxCookieLen]byte
 	cookieLens [MaxCookies]int
 	numCookies int
+	exchange   int // counts completed Encapsulate calls
 }
 
 // Reset re-initialises the client with cfg.  May be called again after
@@ -77,6 +80,7 @@ func (c *Client) Reset(cfg ClientConfig) error {
 		numCookies: cfg.NumCookies,
 	}
 	c.ntpState.Reset(cfg.Sysprec, cfg.Now)
+	c.ntpState.SetLogger(cfg.Log)
 	return nil
 }
 
@@ -131,8 +135,16 @@ func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) 
 
 	// Cookie: pop one from the pool.
 	ci := c.numCookies - 1
-	buf = ntp.AppendExtField(buf, ntp.ExtNTSCookie, c.cookies[ci][:c.cookieLens[ci]])
+	cookieLen := c.cookieLens[ci]
+	buf = ntp.AppendExtField(buf, ntp.ExtNTSCookie, c.cookies[ci][:cookieLen])
 	c.numCookies--
+	c.exchange++
+	if c.cfg.Log != nil {
+		c.cfg.Log.Debug("nts.Client:encapsulate",
+			slog.Int("exchange", c.exchange),
+			slog.Int("cookieLen", cookieLen),
+			slog.Int("cookiesRemaining", c.numCookies))
+	}
 
 	// NTS-Authenticator-and-EEF (RFC 8915 §5.6).
 	// Body = [nonceLen(2)] [ctLen(2)] [nonce(N)] [ciphertext(M)]
@@ -176,7 +188,13 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 
 	// RFC 8915 §5.7: verify the response carries the same UniqueID we sent.
 	if err = c.verifyUniqueID(payload); err != nil {
+		if c.cfg.Log != nil {
+			c.cfg.Log.Debug("nts.Client:demux:uniqueID-fail", slog.String("err", err.Error()))
+		}
 		return err
+	}
+	if c.cfg.Log != nil {
+		c.cfg.Log.Debug("nts.Client:demux:uniqueID-ok")
 	}
 
 	authOffset, authField, err := findAuthField(payload)
@@ -203,10 +221,19 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 
 	plaintext, openErr := c.cfg.S2C.Open(nil, nonce, ciphertext, aad)
 	if openErr != nil {
+		if c.cfg.Log != nil {
+			c.cfg.Log.Debug("nts.Client:demux:auth-fail", slog.String("err", openErr.Error()))
+		}
 		return lneto.ErrBadCRC
 	}
 
+	prevCookies := c.numCookies
 	c.ingestAuthPayload(plaintext)
+	if c.cfg.Log != nil {
+		c.cfg.Log.Debug("nts.Client:demux:auth-ok",
+			slog.Int("newCookies", c.numCookies-prevCookies),
+			slog.Int("totalCookies", c.numCookies))
+	}
 	return c.ntpState.Demux(carrierData, frameOffset)
 }
 
