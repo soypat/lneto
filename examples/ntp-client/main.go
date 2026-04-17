@@ -1,7 +1,9 @@
 package main
 
 import (
+	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"time"
@@ -17,12 +19,11 @@ func main() {
 }
 
 func run() error {
-	addr := "pool.ntp.org:123"
-	if len(os.Args) > 1 {
-		addr = os.Args[1]
-	}
+	addr := flag.String("server", "pool.ntp.org:123", "NTP server address (host:port)")
+	debug := flag.Bool("debug", false, "enable debug logging")
+	flag.Parse()
 
-	conn, err := net.DialTimeout("udp", addr, 5*time.Second)
+	conn, err := net.DialTimeout("udp", *addr, 5*time.Second)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
@@ -30,6 +31,9 @@ func run() error {
 
 	var client ntp.Client
 	client.Reset(-18, time.Now)
+	if *debug {
+		client.SetLogger(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	}
 
 	for !client.IsDone() {
 		reqBuf := make([]byte, ntp.SizeHeader)
