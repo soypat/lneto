@@ -1,6 +1,22 @@
+// Command ntp-server is a minimal NTP server that listens for client requests
+// on a UDP socket and responds with the current system time. It serves as an
+// integration test target for the ntp-client example.
+//
+// Usage:
+//
+//	go run ./examples/ntp-server/ -addr :10123
+//
+// The listen address defaults to :123 (requires root).
+//
+// This tool uses the standard library net package for UDP transport instead of
+// lneto's own networking stack. These examples exercise one protocol layer at a
+// time in isolation, keeping the transport concern separate so failures are
+// clearly attributable to the NTP codec and state machine rather than the
+// full-stack IP/UDP path.
 package main
 
 import (
+	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -17,12 +33,10 @@ func main() {
 }
 
 func run() error {
-	listenAddr := ":123"
-	if len(os.Args) > 1 {
-		listenAddr = os.Args[1]
-	}
+	listenAddr := flag.String("addr", ":123", "UDP listen address (host:port)")
+	flag.Parse()
 
-	pc, err := net.ListenPacket("udp", listenAddr)
+	pc, err := net.ListenPacket("udp", *listenAddr)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
@@ -38,7 +52,7 @@ func run() error {
 		MaxPending: 16,
 	})
 	if err != nil {
-		return fmt.Errorf("handler reset: %w", err)
+		return fmt.Errorf("server reset: %w", err)
 	}
 
 	buf := make([]byte, 1500)

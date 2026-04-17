@@ -1,7 +1,23 @@
+// Command ntp-client performs a two-exchange NTP clock synchronization against
+// a remote server and prints the corrected time, clock offset, and round-trip
+// delay.
+//
+// Usage:
+//
+//	go run ./examples/ntp-client/ -server pool.ntp.org:123
+//	go run ./examples/ntp-client/ -server 127.0.0.1:10123 -debug
+//
+// This tool uses the standard library net package for UDP transport instead of
+// lneto's own networking stack. These examples exercise one protocol layer at a
+// time in isolation, keeping the transport concern separate so failures are
+// clearly attributable to the NTP codec and state machine rather than the
+// full-stack IP/UDP path.
 package main
 
 import (
+	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"time"
@@ -17,12 +33,11 @@ func main() {
 }
 
 func run() error {
-	addr := "pool.ntp.org:123"
-	if len(os.Args) > 1 {
-		addr = os.Args[1]
-	}
+	addr := flag.String("server", "pool.ntp.org:123", "NTP server address (host:port)")
+	debug := flag.Bool("debug", false, "enable debug logging")
+	flag.Parse()
 
-	conn, err := net.DialTimeout("udp", addr, 5*time.Second)
+	conn, err := net.DialTimeout("udp", *addr, 5*time.Second)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
@@ -30,6 +45,9 @@ func run() error {
 
 	var client ntp.Client
 	client.Reset(-18, time.Now)
+	if *debug {
+		client.SetLogger(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	}
 
 	for !client.IsDone() {
 		reqBuf := make([]byte, ntp.SizeHeader)
