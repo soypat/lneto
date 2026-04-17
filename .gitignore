@@ -15,6 +15,7 @@ vendor/
 *.so
 *.dylib
 *.hex
+*.wasm
 
 # Profiling
 *.pprof

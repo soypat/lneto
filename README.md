@@ -27,6 +27,14 @@ Userspace networking primitives.
 ## [`min-working-example`](./examples/min-working-example/) - Quick lneto showcase
 Get a quick showcase of how lneto can be configured and how to get a TCP listening server up and running.
 
+### Binary size comparisons
+All examples include IPv4, ARP, ICMP, TCP and UDP functionality. Go and TinyGo default build flags used. **DNC**= Does Not Compile.
+
+
+| Program | Extra Protocols | amd64 Go | WASM Go  | amd64 TinyGo | WASM TinyGo | Pico TinyGo |
+|---|---|---|---|---|---|---|
+| [Lneto MWE](./examples/min-working-example/) | DNS,NTP,DHCP | 3.8MB | 4.3MB | 1.3MB | 934kB | 181kB |
+| [Gvisor MWE w/ go-net](./examples/_import_examples/gvisor-mwe/)| None | 6.6MB | 7.5MB | DNC | DNC | DNC |
 ## `xcurl` example
 You may try lneto out on linux with the [xcurl example](./examples/xcurl/) which gets an HTTP page by doing all the low-level networking part using absolutely no standard library. 
 
