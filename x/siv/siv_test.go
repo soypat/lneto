@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/aes"
 	"encoding/hex"
+	"fmt"
 	"testing"
 
 	"golang.org/x/crypto/chacha20poly1305"
@@ -53,35 +54,38 @@ var aesSIVTests = []struct {
 
 func TestAESSIVCMAC256_Vectors(t *testing.T) {
 	for i, tc := range aesSIVTests {
-		key := mustDecodeHex(tc.key)
-		if len(key) != 32 {
-			t.Skipf("vector %d: key length %d not 32, skipping (not AES-SIV-CMAC-256)", i, len(key))
-		}
-		plaintext := mustDecodeHex(tc.plaintext)
-		ad := mustDecodeHex(tc.additionalData)
-		var nonce []byte
-		if tc.nonce != "" {
-			nonce = mustDecodeHex(tc.nonce)
-		}
-		want := mustDecodeHex(tc.ciphertext)
+		name := fmt.Sprintf("vector_%d/pt=%d_ad=%d", i, len(tc.plaintext)/2, len(tc.additionalData)/2)
+		t.Run(name, func(t *testing.T) {
+			key := mustDecodeHex(tc.key)
+			if len(key) != 32 {
+				t.Skipf("key length %d not 32, skipping (not AES-SIV-CMAC-256)", len(key))
+			}
+			plaintext := mustDecodeHex(tc.plaintext)
+			ad := mustDecodeHex(tc.additionalData)
+			var nonce []byte
+			if tc.nonce != "" {
+				nonce = mustDecodeHex(tc.nonce)
+			}
+			want := mustDecodeHex(tc.ciphertext)
 
-		aead, err := NewAESSIVCMAC256(key)
-		if err != nil {
-			t.Fatalf("vector %d: NewAESSIVCMAC256: %v", i, err)
-		}
+			aead, err := NewAESSIVCMAC256(key)
+			if err != nil {
+				t.Fatalf("NewAESSIVCMAC256: %v", err)
+			}
 
-		got := aead.Seal(nil, nonce, plaintext, ad)
-		if !bytes.Equal(got, want) {
-			t.Errorf("vector %d: Seal mismatch\n got  %x\n want %x", i, got, want)
-		}
+			got := aead.Seal(nil, nonce, plaintext, ad)
+			if !bytes.Equal(got, want) {
+				t.Errorf("Seal mismatch\n got  %x\n want %x", got, want)
+			}
 
-		dec, err := aead.Open(nil, nonce, got, ad)
-		if err != nil {
-			t.Errorf("vector %d: Open failed: %v", i, err)
-		}
-		if !bytes.Equal(dec, plaintext) {
-			t.Errorf("vector %d: Open roundtrip mismatch", i)
-		}
+			dec, err := aead.Open(nil, nonce, got, ad)
+			if err != nil {
+				t.Errorf("Open failed: %v", err)
+			}
+			if !bytes.Equal(dec, plaintext) {
+				t.Errorf("Open roundtrip mismatch")
+			}
+		})
 	}
 }
 
@@ -135,18 +139,20 @@ var cmacTests = []struct {
 
 func TestAESCMAC_RFC4493(t *testing.T) {
 	for i, tc := range cmacTests {
-		key := mustDecodeHex(tc.key)
-		msg := mustDecodeHex(tc.msg)
-		want := mustDecodeHex(tc.tag)
-		mac, err := newCMAC(key)
-		if err != nil {
-			t.Fatalf("vector %d: newCMAC: %v", i, err)
-		}
-		mac.Write(msg)
-		got := mac.Sum(nil)
-		if !bytes.Equal(got, want) {
-			t.Errorf("vector %d: CMAC mismatch\n got  %x\n want %x", i, got, want)
-		}
+		t.Run(fmt.Sprintf("vector_%d/msg=%d", i, len(tc.msg)/2), func(t *testing.T) {
+			key := mustDecodeHex(tc.key)
+			msg := mustDecodeHex(tc.msg)
+			want := mustDecodeHex(tc.tag)
+			mac, err := newCMAC(key)
+			if err != nil {
+				t.Fatalf("newCMAC: %v", err)
+			}
+			mac.Write(msg)
+			got := mac.Sum(nil)
+			if !bytes.Equal(got, want) {
+				t.Errorf("CMAC mismatch\n got  %x\n want %x", got, want)
+			}
+		})
 	}
 }
 
@@ -187,6 +193,31 @@ func benchmarkSeal(b *testing.B, size int) {
 	for b.Loop() {
 		dst = aead.Seal(dst[:0], nil, pt, nil)
 	}
+}
+
+func FuzzAESSIVCMAC256(f *testing.F) {
+	f.Add([]byte("hello world"), []byte("aad"))
+	f.Add([]byte{}, []byte{})
+	f.Add(make([]byte, 64), make([]byte, 32))
+	f.Fuzz(func(t *testing.T, plaintext, ad []byte) {
+		key := make([]byte, 32)
+		aead, err := NewAESSIVCMAC256(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ct := aead.Seal(nil, nil, plaintext, ad)
+		dec, err := aead.Open(nil, nil, ct, ad)
+		if err != nil {
+			t.Fatalf("Open(Seal(pt)) failed: %v", err)
+		}
+		if !bytes.Equal(dec, plaintext) {
+			t.Fatalf("roundtrip mismatch: got %d bytes, want %d", len(dec), len(plaintext))
+		}
+		ct[0] ^= 0xff
+		if _, err := aead.Open(nil, nil, ct, ad); err == nil {
+			t.Fatal("Open should reject tampered ciphertext")
+		}
+	})
 }
 
 // TestChacha20Poly1305Interface ensures that x/crypto ChaCha20-Poly1305
