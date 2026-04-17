@@ -245,7 +245,7 @@ func TestClient_E2E(t *testing.T) {
 
 	// Simulate server response: build an NTP response and re-encrypt.
 	resp1 := buildTestResponse(t, carrier[:n], clockTime.Add(serverOffset), clockTime.Add(serverOffset+5*time.Millisecond), s2cKey)
-	clockTime = baseTime.Add(110 * time.Millisecond)
+	clockTime = baseTime.Add(10*time.Second + 110*time.Millisecond)
 	if err = client.Demux(resp1, 0); err != nil {
 		t.Fatalf("Demux 1: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestClient_E2E(t *testing.T) {
 
 	// --- Second exchange ---
 	carrier2 := make([]byte, 1500)
-	clockTime = baseTime.Add(200 * time.Millisecond)
+	clockTime = baseTime.Add(10*time.Second + 200*time.Millisecond)
 	n2, err := client.Encapsulate(carrier2, 0, 0)
 	if err != nil {
 		t.Fatalf("Encapsulate 2: %v", err)
@@ -265,7 +265,7 @@ func TestClient_E2E(t *testing.T) {
 	}
 
 	resp2 := buildTestResponse(t, carrier2[:n2], clockTime.Add(serverOffset), clockTime.Add(serverOffset+5*time.Millisecond), s2cKey)
-	clockTime = baseTime.Add(310 * time.Millisecond)
+	clockTime = baseTime.Add(10*time.Second + 310*time.Millisecond)
 	if err = client.Demux(resp2, 0); err != nil {
 		t.Fatalf("Demux 2: %v", err)
 	}
@@ -389,7 +389,7 @@ func buildTestResponse(t *testing.T, request []byte, serverRecv, serverXmt time.
 	respFrm.SetFlags(ntp.ModeServer, ntp.Version4, ntp.LeapNoWarning)
 	respFrm.SetStratum(ntp.StratumPrimary)
 	respFrm.SetPrecision(-20)
-	respFrm.SetOriginTime(reqFrm.OriginTime())
+	respFrm.SetOriginTime(reqFrm.TransmitTime())
 	recvTS, _ := ntp.TimestampFromTime(serverRecv)
 	xmtTS, _ := ntp.TimestampFromTime(serverXmt)
 	respFrm.SetReceiveTime(recvTS)

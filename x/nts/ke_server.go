@@ -13,6 +13,10 @@ type KEServerConfig struct {
 	SupportedAlgorithms [4]AEADAlgorithmID
 	NumAlgorithms       int
 	Cookies             [][]byte
+	// NTPPort, when non-zero, is advertised to the client as the port to use
+	// for NTS-authenticated NTP (via RecordNTPv4Port). Zero means the client
+	// should use the standard NTP port (123) and no record is sent.
+	NTPPort uint16
 }
 
 // HandleKE runs the server side of the NTS Key Exchange protocol over an
@@ -49,7 +53,7 @@ func HandleKE(conn *tls.Conn, cfg KEServerConfig) (KESecrets, error) {
 
 	var secrets KESecrets
 	secrets.ChosenAlg = chosen
-	if err := sendKEResponse(conn, chosen, cfg.Cookies); err != nil {
+	if err := sendKEResponse(conn, chosen, cfg.Cookies, cfg.NTPPort); err != nil {
 		return secrets, err
 	}
 
@@ -127,7 +131,7 @@ func negotiateAlg(clientOffered []AEADAlgorithmID, serverSupported []AEADAlgorit
 	return 0
 }
 
-func sendKEResponse(w io.Writer, chosen AEADAlgorithmID, cookies [][]byte) error {
+func sendKEResponse(w io.Writer, chosen AEADAlgorithmID, cookies [][]byte, ntpPort uint16) error {
 	var proto [2]byte
 	binary.BigEndian.PutUint16(proto[:], ntpv4ProtocolID)
 	var buf []byte
@@ -139,6 +143,12 @@ func sendKEResponse(w io.Writer, chosen AEADAlgorithmID, cookies [][]byte) error
 
 	for _, c := range cookies {
 		buf = AppendKERecord(buf, false, RecordNewCookie, c)
+	}
+
+	if ntpPort != 0 {
+		var portBody [2]byte
+		binary.BigEndian.PutUint16(portBody[:], ntpPort)
+		buf = AppendKERecord(buf, false, RecordNTPv4Port, portBody[:])
 	}
 
 	buf = AppendKERecord(buf, true, RecordEndOfMessage, nil)
