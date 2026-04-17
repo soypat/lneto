@@ -32,7 +32,7 @@ All examples include IPv4, ARP, ICMP, TCP and UDP functionality. Go and TinyGo d
 
 
 | Program | Extra Protocols | Packet capture printing | amd64 Go | WASM Go  | amd64 TinyGo | WASM TinyGo | Pico TinyGo |
-|---|---|---|---|---|---|---|---|
+|---|:---:|:---:|---|---|---|---|---|
 | [Lneto MWE](./examples/min-working-example/) | DNS,NTP,DHCP | ✅ | 3.8MB | 4.3MB | 1.3MB | 934kB | 181kB |
 | [Gvisor MWE w/ go-net](./examples/_import_examples/gvisor-mwe/)| None | ❌ | 6.6MB | 7.5MB | DNC | DNC | DNC |
 ## `xcurl` example

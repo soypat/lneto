@@ -22,8 +22,8 @@ type NetworkDevice struct {
 	recv func([]byte) (int, error)
 }
 
-func (d *NetworkDevice) Transmit(buf []byte) error        { return d.send(buf) }
-func (d *NetworkDevice) Receive(buf []byte) (int, error)   { return d.recv(buf) }
+func (d *NetworkDevice) Transmit(buf []byte) error       { return d.send(buf) }
+func (d *NetworkDevice) Receive(buf []byte) (int, error) { return d.recv(buf) }
 
 func main() {
 	ctx := context.Background()
