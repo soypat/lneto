@@ -12,9 +12,10 @@ import (
 )
 
 type Interface[C any] struct {
-	dev       DevEthernet
-	netlink   Netlink[C]
-	ip        netip.Prefix
+	dev     DevEthernet
+	netlink Netlink[C]
+	ip      netip.Prefix
+	// Below are values calculated from [DevEthernet] return values to avoid recalculation.
 	frameSize int
 	frameOff  int
 	mtu       int
@@ -65,11 +66,14 @@ type Stack interface {
 	// The Stack must resolve the gateway hardware address if set.
 	Configure(mac net.HardwareAddr, ip netip.Prefix, gw netip.Addr) error
 	// EnableICMP enables responding/sending ICMP echo frames.
-	EnableICMP() error
+	EnableICMP(enabled bool) error
+	// EnableDHCP enables DHCP on the device if set.
+	EnableDHCP(enabled bool, reqIP netip.Addr) error
 	// Socket is a berkeley socket abstraction. Returns an [net.Listener] or [net.Conn] depending on laddr/raddr combination.
-	Socket(ctx context.Context, network string, family, sotype int, laddr, raddr netip.Addr) (c any, err error)
+	Socket(ctx context.Context, network string, family, sotype int, laddr, raddr netip.AddrPort) (c any, err error)
 	// EgressPackets instructs Stack to write outgoing packets into bufs and writing the sizes into sizes.
 	// offset can be used to tell the stack to start writing after an offset for each buffer.
+	// The size written into sizes includes only Ethernet frame size and so is independent of offset value.
 	EgressPackets(bufs [][]byte, sizes []int, offset int) error
 	// IngressPackets is called on incoming packets so the Stack can direct packets to
 	// their respective node/connection and update internal state.
@@ -89,8 +93,14 @@ type Netlink[C any] interface {
 	// changes for the Netlink. The callback can signal an immediate reconnect is desired
 	// by setting reconnectNowRetries to a positive integer. The netlink should then retry connection
 	// immediately with the given reconnectParams. reconnectParams should not be nil if reconnectNowRetries is positive.
-	LinkNotify(cb func(connected bool) (reconnectNowRetries int, reconnectParams C))
+	LinkNotify(cb NotifyCallback[C])
 }
+
+// NotifyCallback is a convenience type alias that serves mostly as semantic code documentation.
+// NotifyCallback is called when a [Netlink] connects or disconnects from a network. The callback returns:
+//   - reconnectNowRetries: Amount of times to attempt reconnection before giving up.
+//   - reconnectParams: parameters to use in reconnection.
+type NotifyCallback[C any] = func(reconnectNowRetries int, reconnectParams C)
 
 // InterfaceConfig mostly optional configuration.
 type InterfaceConfig struct {

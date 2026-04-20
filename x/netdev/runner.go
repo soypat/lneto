@@ -96,9 +96,14 @@ func (r *Runner[C]) Run(ctx context.Context, iface Interface[C], stack Stack, ba
 	return ctx.Err()
 }
 
+// PrintDebug
+//
+// Deprecated: Might be given other shape in future, but this is not how we do debugging. use freely meanwhile.
 func (r *Runner[C]) PrintDebug() {
 	print("RUNNER: tx|rx:", r.tx.Load(), "|", r.rx.Load(),
-		" devpollonly:", r.deviceIsPollOnly, " pktlost:", r.pktlost.Load(), " handles:", r.handlerTriggered, "\n")
+		" devpollonly:", r.deviceIsPollOnly, " pktlost:", r.pktlost.Load(),
+		" handles:", r.handlerTriggered, " bufsize:", len(r.buf),
+		"\n")
 }
 
 func (r *Runner[C]) acquire() bool {
