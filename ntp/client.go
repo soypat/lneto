@@ -68,26 +68,19 @@ func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) 
 		return 0, err
 	}
 
-	var exchange int
 	switch c.state {
-	case stateSend1:
+	case stateSend1, stateSend2:
 		now := c.now()
 		c.start = now
 		var err error
 		if c.t[0], err = TimestampFromTime(now); err != nil {
 			return 0, err
 		}
-		c.state = stateAwait1
-		exchange = 1
-	case stateSend2:
-		now := c.now()
-		c.start = now
-		var err error
-		if c.t[0], err = TimestampFromTime(now); err != nil {
-			return 0, err
+		if c.state == stateSend1 {
+			c.state = stateAwait1
+		} else {
+			c.state = stateAwait2
 		}
-		c.state = stateAwait2
-		exchange = 2
 	default:
 		return 0, nil // Nothing to handle.
 	}
@@ -99,8 +92,8 @@ func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) 
 	frm.SetTransmitTime(c.t[0])
 	frm.SetFlags(ModeClient, Version4, LeapNoWarning)
 	if c._log != nil {
-		c._log.Debug("ntp.Client:encapsulate", slog.Int("exchange", exchange),
-			slog.Uint64("T1.sec", uint64(c.t[0].Seconds())))
+		c._log.Debug("ntp.Client:encapsulate", slog.Int("state", int(c.state)),
+			slog.Uint64("T1", c.t[0].Uint64()))
 	}
 	return SizeHeader, nil
 }
@@ -116,52 +109,58 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 	}
 
 	switch c.state {
-	case stateAwait1:
-		xmt := frm.TransmitTime()
-		orig := frm.OriginTime()
-		if xmt == orig || orig != c.t[0] {
-			if c._log != nil {
-				c._log.Debug("ntp.Client:demux:drop", slog.String("reason", "origin mismatch"),
-					slog.Uint64("orig.sec", uint64(orig.Seconds())), slog.Uint64("T1.sec", uint64(c.t[0].Seconds())))
-			}
-			return lneto.ErrPacketDrop
+	case stateAwait1, stateAwait2:
+	default:
+		return nil // Not awaiting a response.
+	}
+
+	// RFC 5905 §8 validation: discard bogus packets.
+	// Bogus: origin timestamp does not echo our T1 (the transmit time we sent).
+	// Malformed: server's transmit time equals its own origin echo (degenerate
+	// response; RFC §8 replay detection compares against a stored peer state
+	// which a stateless client approximates with this simpler check).
+	xmt := frm.TransmitTime()
+	orig := frm.OriginTime()
+	if xmt == orig || orig != c.t[0] {
+		if c._log != nil {
+			c._log.Debug("ntp.Client:demux:drop", slog.String("reason", "origin mismatch"),
+				slog.Uint64("orig", orig.Uint64()), slog.Uint64("T1", c.t[0].Uint64()))
 		}
-		txelapsed := c.now().Sub(c.start)
-		c.t[1] = frm.ReceiveTime()
-		c.t[2] = xmt
-		c.t[3] = c.t[0].Add(txelapsed)
+		return lneto.ErrPacketDrop
+	}
+
+	// RFC 5905 §8 on-wire protocol: compute T1..T4 timestamps.
+	//  T1 = c.t[0] (client transmit, captured in Encapsulate)
+	//  T2 = ReceiveTime (server receive)
+	//  T3 = TransmitTime (server transmit)
+	//  T4 = T1 + elapsed local time since Encapsulate
+	txelapsed := c.now().Sub(c.start)
+	c.t[1] = frm.ReceiveTime()
+	c.t[2] = xmt
+	c.t[3] = c.t[0].Add(txelapsed)
+
+	// RFC 5905 §8 clock offset θ = ((T2-T1) + (T3-T4)) / 2
+	// RFC 5905 §8 round-trip delay δ = (T4-T1) - (T3-T2)
+	offset := (c.t[1].Sub(c.t[0]) + c.t[2].Sub(c.t[3])) / 2
+	rtt := c.t[3].Sub(c.t[0]) - c.t[2].Sub(c.t[1])
+
+	if c.state == stateAwait1 {
 		c.serverStratum = frm.Stratum()
-		c.offset1 = (c.t[1].Sub(c.t[0]) + c.t[2].Sub(c.t[3])) / 2
-		c.rtt1 = c.t[3].Sub(c.t[0]) - c.t[2].Sub(c.t[1])
+		c.offset1 = offset
+		c.rtt1 = rtt
 		c.state = stateSend2
 		if c._log != nil {
 			c._log.Debug("ntp.Client:demux:exchange1",
 				slog.Duration("offset", c.offset1), slog.Duration("rtt", c.rtt1),
 				slog.String("stratum", c.serverStratum.String()))
 		}
-	case stateAwait2:
-		xmt := frm.TransmitTime()
-		orig := frm.OriginTime()
-		if xmt == orig || orig != c.t[0] {
-			if c._log != nil {
-				c._log.Debug("ntp.Client:demux:drop", slog.String("reason", "origin mismatch"),
-					slog.Uint64("orig.sec", uint64(orig.Seconds())), slog.Uint64("T1.sec", uint64(c.t[0].Seconds())))
-			}
-			return lneto.ErrPacketDrop
-		}
-		txelapsed := c.now().Sub(c.start)
-		c.t[1] = frm.ReceiveTime()
-		c.t[2] = xmt
-		c.t[3] = c.t[0].Add(txelapsed)
-		c.serverStratum = frm.Stratum()
-		offset2 := (c.t[1].Sub(c.t[0]) + c.t[2].Sub(c.t[3])) / 2
-		rtt2 := c.t[3].Sub(c.t[0]) - c.t[2].Sub(c.t[1])
+	} else {
 		c.state = stateDone
 		if c._log != nil {
 			c._log.Debug("ntp.Client:demux:exchange2",
-				slog.Duration("offset", offset2), slog.Duration("rtt", rtt2),
-				slog.Duration("avg_offset", (c.offset1+offset2)/2),
-				slog.Duration("avg_rtt", (c.rtt1+rtt2)/2))
+				slog.Duration("offset", offset), slog.Duration("rtt", rtt),
+				slog.Duration("avg_offset", (c.offset1+offset)/2),
+				slog.Duration("avg_rtt", (c.rtt1+rtt)/2))
 		}
 	}
 	return nil

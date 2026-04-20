@@ -5,10 +5,10 @@ import (
 	"time"
 )
 
-func TestHandler_BasicExchange(t *testing.T) {
+func TestServer_BasicExchange(t *testing.T) {
 	serverTime := BaseTime().Add(100 * time.Second)
-	var h Handler
-	err := h.Reset(HandlerConfig{
+	var h Server
+	err := h.Reset(ServerConfig{
 		Now:       func() time.Time { return serverTime },
 		Stratum:   StratumPrimary,
 		Precision: -20,
@@ -57,7 +57,7 @@ func TestHandler_BasicExchange(t *testing.T) {
 	}
 }
 
-func TestHandler_RejectsNonClient(t *testing.T) {
+func TestServer_RejectsNonClient(t *testing.T) {
 	modes := []struct {
 		name string
 		mode Mode
@@ -69,8 +69,8 @@ func TestHandler_RejectsNonClient(t *testing.T) {
 	}
 	for _, tc := range modes {
 		t.Run(tc.name, func(t *testing.T) {
-			var h Handler
-			h.Reset(HandlerConfig{
+			var h Server
+			h.Reset(ServerConfig{
 				Now:     time.Now,
 				Stratum: StratumPrimary,
 			})
@@ -78,15 +78,15 @@ func TestHandler_RejectsNonClient(t *testing.T) {
 			frm, _ := NewFrame(reqBuf)
 			frm.SetFlags(tc.mode, Version4, LeapNoWarning)
 			if err := h.Demux(reqBuf, 0); err == nil {
-				t.Errorf("Handler.Demux(mode=%d) = nil; want error", tc.mode)
+				t.Errorf("Server.Demux(mode=%d) = nil; want error", tc.mode)
 			}
 		})
 	}
 }
 
-func TestHandler_ExhaustedPending(t *testing.T) {
-	var h Handler
-	h.Reset(HandlerConfig{
+func TestServer_ExhaustedPending(t *testing.T) {
+	var h Server
+	h.Reset(ServerConfig{
 		Now:        time.Now,
 		Stratum:    StratumPrimary,
 		MaxPending: 1,
@@ -104,9 +104,9 @@ func TestHandler_ExhaustedPending(t *testing.T) {
 	}
 }
 
-func TestHandler_NoPendingReturnsZero(t *testing.T) {
-	var h Handler
-	h.Reset(HandlerConfig{
+func TestServer_NoPendingReturnsZero(t *testing.T) {
+	var h Server
+	h.Reset(ServerConfig{
 		Now:     time.Now,
 		Stratum: StratumPrimary,
 	})
@@ -121,7 +121,7 @@ func TestHandler_NoPendingReturnsZero(t *testing.T) {
 	}
 }
 
-func TestHandler_ClientServerRoundTrip(t *testing.T) {
+func TestServer_ClientServerRoundTrip(t *testing.T) {
 	baseTime := BaseTime()
 	clientStart := baseTime.Add(10 * time.Second)
 	serverOffset := 500 * time.Millisecond
@@ -131,15 +131,15 @@ func TestHandler_ClientServerRoundTrip(t *testing.T) {
 	client.Reset(-18, func() time.Time { return clockTime })
 
 	serverTime := clientStart.Add(serverOffset)
-	var server Handler
-	server.Reset(HandlerConfig{
+	var server Server
+	server.Reset(ServerConfig{
 		Now:       func() time.Time { return serverTime },
 		Stratum:   StratumPrimary,
 		Precision: -20,
 		RefID:     [4]byte{'G', 'P', 'S', 0},
 	})
 
-	for exchange := 0; exchange < 2; exchange++ {
+	for exchange := range 2 {
 		reqBuf := make([]byte, SizeHeader)
 		n, err := client.Encapsulate(reqBuf, 0, 0)
 		if err != nil || n == 0 {
@@ -172,7 +172,7 @@ func TestHandler_ClientServerRoundTrip(t *testing.T) {
 	}
 }
 
-func FuzzHandlerDemux(f *testing.F) {
+func FuzzServerDemux(f *testing.F) {
 	valid := make([]byte, SizeHeader)
 	frm, _ := NewFrame(valid)
 	frm.SetFlags(ModeClient, Version4, LeapNoWarning)
@@ -181,8 +181,8 @@ func FuzzHandlerDemux(f *testing.F) {
 	f.Add([]byte{})
 	f.Add(make([]byte, 10))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		var h Handler
-		h.Reset(HandlerConfig{
+		var h Server
+		h.Reset(ServerConfig{
 			Now:     time.Now,
 			Stratum: StratumPrimary,
 		})

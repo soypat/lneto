@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"testing"
-
-	"golang.org/x/crypto/chacha20poly1305"
 )
 
 func mustDecodeHex(s string) []byte {
@@ -218,19 +216,4 @@ func FuzzAESSIVCMAC256(f *testing.F) {
 			t.Fatal("Open should reject tampered ciphertext")
 		}
 	})
-}
-
-// TestChacha20Poly1305Interface ensures that x/crypto ChaCha20-Poly1305
-// satisfies cipher.AEAD so it can be used as a test AEAD in x/nts tests.
-func TestChacha20Poly1305Interface(t *testing.T) {
-	key := make([]byte, chacha20poly1305.KeySize)
-	aead, err := chacha20poly1305.New(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	nonce := make([]byte, aead.NonceSize())
-	ct := aead.Seal(nil, nonce, []byte("test"), nil)
-	if _, err := aead.Open(nil, nonce, ct, nil); err != nil {
-		t.Fatal(err)
-	}
 }

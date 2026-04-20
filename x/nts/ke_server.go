@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"io"
+	"slices"
 
 	"github.com/soypat/lneto"
 )
@@ -61,10 +62,7 @@ func HandleKE(conn *tls.Conn, cfg KEServerConfig) (KESecrets, error) {
 		if i >= MaxCookies {
 			break
 		}
-		n := len(c)
-		if n > MaxCookieLen {
-			n = MaxCookieLen
-		}
+		n := min(len(c), MaxCookieLen)
 		copy(secrets.Cookies[i][:], c[:n])
 		secrets.CookieLens[i] = n
 		secrets.NumCookies++
@@ -122,10 +120,8 @@ func readKERequest(r io.Reader) (offered []AEADAlgorithmID, err error) {
 
 func negotiateAlg(clientOffered []AEADAlgorithmID, serverSupported []AEADAlgorithmID) AEADAlgorithmID {
 	for _, c := range clientOffered {
-		for _, s := range serverSupported {
-			if c == s {
-				return c
-			}
+		if slices.Contains(serverSupported, c) {
+			return c
 		}
 	}
 	return 0

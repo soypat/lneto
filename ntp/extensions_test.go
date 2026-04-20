@@ -7,15 +7,15 @@ import (
 )
 
 func TestNextExtField_Empty(t *testing.T) {
-	field, rest, err := NextExtField(nil)
+	field, n, err := NextExtField(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(field.RawData()) != 0 {
 		t.Errorf("NextExtField(nil) RawData len = %d; want 0", len(field.RawData()))
 	}
-	if rest != nil {
-		t.Errorf("NextExtField(nil) rest = %v; want nil", rest)
+	if n != 0 {
+		t.Errorf("NextExtField(nil) n = %d; want 0", n)
 	}
 }
 
@@ -35,10 +35,12 @@ func TestAppendAndIterateExtFields(t *testing.T) {
 		t.Fatalf("AppendExtField total len = %d; want %d", len(buf), wantLen)
 	}
 
-	field, rest, err := NextExtField(buf)
+	off := 0
+	field, n, err := NextExtField(buf[off:])
 	if err != nil {
 		t.Fatal(err)
 	}
+	off += n
 	if field.Type() != ExtNTSUniqueID {
 		t.Errorf("field 1 Type() = %#x; want ExtNTSUniqueID (%#x)", field.Type(), ExtNTSUniqueID)
 	}
@@ -46,10 +48,11 @@ func TestAppendAndIterateExtFields(t *testing.T) {
 		t.Errorf("field 1 Value() mismatch")
 	}
 
-	field, rest, err = NextExtField(rest)
+	field, n, err = NextExtField(buf[off:])
 	if err != nil {
 		t.Fatal(err)
 	}
+	off += n
 	if field.Type() != ExtNTSCookie {
 		t.Errorf("field 2 Type() = %#x; want ExtNTSCookie (%#x)", field.Type(), ExtNTSCookie)
 	}
@@ -59,14 +62,14 @@ func TestAppendAndIterateExtFields(t *testing.T) {
 		t.Errorf("field 2 Value() = %v; want %v", field.Value(), wantCookiePadded)
 	}
 
-	field, rest, err = NextExtField(rest)
+	field, n, err = NextExtField(buf[off:])
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(field.RawData()) != 0 {
 		t.Errorf("NextExtField after last: RawData len = %d; want 0", len(field.RawData()))
 	}
-	_ = rest
+	_ = n
 }
 
 func TestNextExtField_Errors(t *testing.T) {
@@ -89,23 +92,23 @@ func TestNextExtField_Errors(t *testing.T) {
 	}
 }
 
-func TestFramePayload(t *testing.T) {
+func TestFrameExtensionFields(t *testing.T) {
 	t.Run("with_extensions", func(t *testing.T) {
 		buf := make([]byte, SizeHeader+8)
 		frm, err := NewFrame(buf)
 		if err != nil {
 			t.Fatal(err)
 		}
-		p := frm.Payload()
+		p := frm.ExtensionFields()
 		if len(p) != 8 {
-			t.Errorf("Payload() len = %d; want 8", len(p))
+			t.Errorf("ExtensionFields() len = %d; want 8", len(p))
 		}
 	})
 	t.Run("header_only", func(t *testing.T) {
 		buf := make([]byte, SizeHeader)
 		frm, _ := NewFrame(buf)
-		if frm.Payload() != nil {
-			t.Errorf("Payload() = non-nil; want nil for header-only frame")
+		if len(frm.ExtensionFields()) != 0 {
+			t.Errorf("ExtensionFields() len = %d; want 0 for header-only frame", len(frm.ExtensionFields()))
 		}
 	})
 }
@@ -155,9 +158,9 @@ func FuzzNextExtField(f *testing.F) {
 	f.Add([]byte{0x01})
 	f.Add([]byte{0, 1, 0, 4})
 	f.Fuzz(func(t *testing.T, data []byte) {
-		buf := data
-		for len(buf) > 0 {
-			field, rest, err := NextExtField(buf)
+		off := 0
+		for off < len(data) {
+			field, n, err := NextExtField(data[off:])
 			if err != nil {
 				return
 			}
@@ -167,7 +170,7 @@ func FuzzNextExtField(f *testing.F) {
 			_ = field.Type()
 			_ = field.TotalLen()
 			_ = field.Value()
-			buf = rest
+			off += n
 		}
 	})
 }

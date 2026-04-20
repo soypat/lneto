@@ -43,8 +43,8 @@ func run() error {
 	defer pc.Close()
 	fmt.Printf("NTP server listening on %s\n", pc.LocalAddr())
 
-	var handler ntp.Handler
-	err = handler.Reset(ntp.HandlerConfig{
+	var handler ntp.Server
+	err = handler.Reset(ntp.ServerConfig{
 		Now:        time.Now,
 		Stratum:    ntp.StratumPrimary,
 		Precision:  -20,

@@ -6,8 +6,8 @@ import (
 	"github.com/soypat/lneto"
 )
 
-// HandlerConfig configures an NTP server [Handler].
-type HandlerConfig struct {
+// ServerConfig configures an NTP [Server].
+type ServerConfig struct {
 	Now        func() time.Time
 	Stratum    Stratum
 	Precision  int8
@@ -15,12 +15,12 @@ type HandlerConfig struct {
 	MaxPending int
 }
 
-// Handler is a basic NTP server implementing [lneto.StackNode].
-// It receives client requests via [Handler.Demux] and builds server
-// responses via [Handler.Encapsulate].
+// Server is a basic NTP server implementing [lneto.StackNode].
+// It receives client requests via [Server.Demux] and builds server
+// responses via [Server.Encapsulate].
 //
-// Handler is not safe for concurrent use.
-type Handler struct {
+// Server is not safe for concurrent use.
+type Server struct {
 	connID  uint64
 	_now    func() time.Time
 	stratum Stratum
@@ -33,8 +33,8 @@ type pendingRequest struct {
 	origin Timestamp
 }
 
-// Reset re-initialises the handler with cfg. Increments connID.
-func (h *Handler) Reset(cfg HandlerConfig) error {
+// Reset re-initialises the server with cfg. Increments connID.
+func (h *Server) Reset(cfg ServerConfig) error {
 	if cfg.Now == nil {
 		return lneto.ErrInvalidConfig
 	}
@@ -45,7 +45,7 @@ func (h *Handler) Reset(cfg HandlerConfig) error {
 	if cap(pending) < cfg.MaxPending {
 		pending = make([]pendingRequest, 0, cfg.MaxPending)
 	}
-	*h = Handler{
+	*h = Server{
 		connID:  h.connID + 1,
 		_now:    cfg.Now,
 		stratum: cfg.Stratum,
@@ -57,17 +57,17 @@ func (h *Handler) Reset(cfg HandlerConfig) error {
 }
 
 // ConnectionID implements [lneto.StackNode].
-func (h *Handler) ConnectionID() *uint64 { return &h.connID }
+func (h *Server) ConnectionID() *uint64 { return &h.connID }
 
 // Protocol implements [lneto.StackNode].
-func (h *Handler) Protocol() uint64 { return 0 }
+func (h *Server) Protocol() uint64 { return 0 }
 
 // LocalPort implements [lneto.StackNode].
-func (h *Handler) LocalPort() uint16 { return ServerPort }
+func (h *Server) LocalPort() uint16 { return ServerPort }
 
 // Encapsulate implements [lneto.StackNode]. It writes one pending NTP server
 // response into carrierData. Returns 0 when no pending requests exist.
-func (h *Handler) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
+func (h *Server) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
 	if len(h.pending) == 0 {
 		return 0, nil
 	}
@@ -99,8 +99,8 @@ func (h *Handler) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 }
 
 // Demux implements [lneto.StackNode]. It validates an incoming NTP client
-// request and queues it for response via [Handler.Encapsulate].
-func (h *Handler) Demux(carrierData []byte, frameOffset int) error {
+// request and queues it for response via [Server.Encapsulate].
+func (h *Server) Demux(carrierData []byte, frameOffset int) error {
 	buf := carrierData[frameOffset:]
 	frm, err := NewFrame(buf)
 	if err != nil {
@@ -125,7 +125,7 @@ func (h *Handler) Demux(carrierData []byte, frameOffset int) error {
 	return nil
 }
 
-func (h *Handler) now() time.Time {
+func (h *Server) now() time.Time {
 	if h._now == nil {
 		return time.Now()
 	}

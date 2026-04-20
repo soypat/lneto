@@ -14,10 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/crypto/chacha20poly1305"
-
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ntp"
+	"github.com/soypat/lneto/x/siv"
 )
 
 func TestKERecord_RoundTrip(t *testing.T) {
@@ -198,21 +197,21 @@ func TestPerformKE_E2E(t *testing.T) {
 }
 
 // TestClient_E2E runs a full NTS Encapsulate→Demux cycle using
-// ChaCha20-Poly1305 as the test AEAD (in place of AES-SIV-CMAC-256).
+// AES-SIV-CMAC-256 as the AEAD.
 func TestClient_E2E(t *testing.T) {
-	c2sKey := make([]byte, chacha20poly1305.KeySize)
-	s2cKey := make([]byte, chacha20poly1305.KeySize)
+	c2sKey := make([]byte, 32)
+	s2cKey := make([]byte, 32)
 	rand.Read(c2sKey)
 	rand.Read(s2cKey)
-	c2s, _ := chacha20poly1305.New(c2sKey)
-	s2c, _ := chacha20poly1305.New(s2cKey)
+	c2s, _ := siv.NewAESSIVCMAC256(c2sKey)
+	s2c, _ := siv.NewAESSIVCMAC256(s2cKey)
 
 	cookie := []byte("nts-cookie-12345678901234")
 	var cfg ClientConfig
 	cfg.C2S = c2s
 	cfg.S2C = s2c
 	cfg.ChosenAlg = AlgAESSIVCMAC256
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		copy(cfg.Cookies[i][:], cookie)
 		cfg.CookieLens[i] = len(cookie)
 	}
@@ -278,8 +277,8 @@ func TestClient_E2E(t *testing.T) {
 }
 
 func TestClient_Reset_Validation(t *testing.T) {
-	key := make([]byte, chacha20poly1305.KeySize)
-	aead, _ := chacha20poly1305.New(key)
+	key := make([]byte, 32)
+	aead, _ := siv.NewAESSIVCMAC256(key)
 	cookie := [MaxCookieLen]byte{}
 	cfg := ClientConfig{
 		C2S: aead, S2C: aead, NumCookies: 1,
@@ -309,8 +308,8 @@ func TestClient_Reset_Validation(t *testing.T) {
 }
 
 func TestClient_ExhaustedCookies(t *testing.T) {
-	key := make([]byte, chacha20poly1305.KeySize)
-	aead, _ := chacha20poly1305.New(key)
+	key := make([]byte, 32)
+	aead, _ := siv.NewAESSIVCMAC256(key)
 	cfg := ClientConfig{
 		C2S: aead, S2C: aead, NumCookies: 1,
 		Cookies:    [MaxCookies][MaxCookieLen]byte{[MaxCookieLen]byte{}},
@@ -332,8 +331,8 @@ func TestClient_ExhaustedCookies(t *testing.T) {
 }
 
 func TestClient_DemuxBadTag(t *testing.T) {
-	key := make([]byte, chacha20poly1305.KeySize)
-	aead, _ := chacha20poly1305.New(key)
+	key := make([]byte, 32)
+	aead, _ := siv.NewAESSIVCMAC256(key)
 	cookie := make([]byte, 16)
 	var cookies [MaxCookies][MaxCookieLen]byte
 	copy(cookies[0][:], cookie)
@@ -370,9 +369,9 @@ func buildTestResponse(t *testing.T, request []byte, serverRecv, serverXmt time.
 
 	// Extract the Unique-ID from the request so the response can echo it.
 	var uniqueID []byte
-	buf := reqFrm.Payload()
-	for {
-		field, rest, e := ntp.NextExtField(buf)
+	extBuf := reqFrm.ExtensionFields()
+	for off := 0; off < len(extBuf); {
+		field, n, e := ntp.NextExtField(extBuf[off:])
 		if e != nil || len(field.RawData()) == 0 {
 			break
 		}
@@ -380,7 +379,7 @@ func buildTestResponse(t *testing.T, request []byte, serverRecv, serverXmt time.
 			uniqueID = field.Value()
 			break
 		}
-		buf = rest
+		off += n
 	}
 
 	// Build response in a new buffer.
@@ -402,15 +401,15 @@ func buildTestResponse(t *testing.T, request []byte, serverRecv, serverXmt time.
 	}
 
 	// Build NTS-Auth field sealed with S2C key.
-	s2c, err := chacha20poly1305.New(s2cKey)
+	s2c, err := siv.NewAESSIVCMAC256(s2cKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	nonceLen := s2c.NonceSize()
 	overhead := s2c.Overhead()
 
-	var nonce [12]byte
-	rand.Read(nonce[:])
+	var nonce [maxNonceLen]byte
+	rand.Read(nonce[:nonceLen])
 
 	aad := respBuf
 
@@ -453,15 +452,15 @@ func FuzzNextExtField(f *testing.F) {
 	f.Add([]byte{})
 	f.Add([]byte{0, 1, 0, 0})
 	f.Fuzz(func(t *testing.T, data []byte) {
-		field, rest, _ := ntp.NextExtField(data)
+		field, n, _ := ntp.NextExtField(data)
 		_ = field.RawData()
-		_ = rest
+		_ = n
 	})
 }
 
 func TestServer_Reset_Validation(t *testing.T) {
-	key := make([]byte, chacha20poly1305.KeySize)
-	aead, _ := chacha20poly1305.New(key)
+	key := make([]byte, 32)
+	aead, _ := siv.NewAESSIVCMAC256(key)
 	var s Server
 	if err := s.Reset(ServerConfig{C2S: aead, S2C: aead, Stratum: ntp.StratumPrimary}); err != nil {
 		t.Fatalf("valid Reset: %v", err)
@@ -476,8 +475,8 @@ func TestServer_Reset_Validation(t *testing.T) {
 }
 
 func TestServer_NoPendingReturnsZero(t *testing.T) {
-	key := make([]byte, chacha20poly1305.KeySize)
-	aead, _ := chacha20poly1305.New(key)
+	key := make([]byte, 32)
+	aead, _ := siv.NewAESSIVCMAC256(key)
 	var s Server
 	s.Reset(ServerConfig{C2S: aead, S2C: aead, Stratum: ntp.StratumPrimary})
 	carrier := make([]byte, 1500)
@@ -491,12 +490,12 @@ func TestServer_NoPendingReturnsZero(t *testing.T) {
 }
 
 func TestClientServer_E2E(t *testing.T) {
-	c2sKey := make([]byte, chacha20poly1305.KeySize)
-	s2cKey := make([]byte, chacha20poly1305.KeySize)
+	c2sKey := make([]byte, 32)
+	s2cKey := make([]byte, 32)
 	rand.Read(c2sKey)
 	rand.Read(s2cKey)
-	c2s, _ := chacha20poly1305.New(c2sKey)
-	s2c, _ := chacha20poly1305.New(s2cKey)
+	c2s, _ := siv.NewAESSIVCMAC256(c2sKey)
+	s2c, _ := siv.NewAESSIVCMAC256(s2cKey)
 
 	cookie := []byte("nts-cookie-round-trip-test")
 
@@ -510,7 +509,7 @@ func TestClientServer_E2E(t *testing.T) {
 	clientCfg.ChosenAlg = AlgAESSIVCMAC256
 	clientCfg.Now = func() time.Time { return clientTime }
 	clientCfg.Sysprec = -20
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		copy(clientCfg.Cookies[i][:], cookie)
 		clientCfg.CookieLens[i] = len(cookie)
 	}
@@ -534,7 +533,7 @@ func TestClientServer_E2E(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for exchange := 0; exchange < 2; exchange++ {
+	for exchange := range 2 {
 		carrier := make([]byte, 1500)
 		n, err := client.Encapsulate(carrier, 0, 0)
 		if err != nil || n == 0 {
@@ -568,12 +567,12 @@ func TestClientServer_E2E(t *testing.T) {
 }
 
 func TestClientServer_TamperedAADRejected(t *testing.T) {
-	c2sKey := make([]byte, chacha20poly1305.KeySize)
-	s2cKey := make([]byte, chacha20poly1305.KeySize)
+	c2sKey := make([]byte, 32)
+	s2cKey := make([]byte, 32)
 	rand.Read(c2sKey)
 	rand.Read(s2cKey)
-	c2s, _ := chacha20poly1305.New(c2sKey)
-	s2c, _ := chacha20poly1305.New(s2cKey)
+	c2s, _ := siv.NewAESSIVCMAC256(c2sKey)
+	s2c, _ := siv.NewAESSIVCMAC256(s2cKey)
 
 	cookie := []byte("cookie-tamper-test")
 	var cfg ClientConfig
@@ -676,8 +675,8 @@ func TestHandleKE_E2E(t *testing.T) {
 }
 
 func FuzzServerDemux(f *testing.F) {
-	key := make([]byte, chacha20poly1305.KeySize)
-	aead, _ := chacha20poly1305.New(key)
+	key := make([]byte, 32)
+	aead, _ := siv.NewAESSIVCMAC256(key)
 
 	// Seed with a valid NTS request built by the client.
 	var c Client
@@ -695,8 +694,8 @@ func FuzzServerDemux(f *testing.F) {
 	f.Add([]byte{})
 	f.Add(make([]byte, 10))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		fuzzKey := make([]byte, chacha20poly1305.KeySize)
-		fuzzAEAD, _ := chacha20poly1305.New(fuzzKey)
+		fuzzKey := make([]byte, 32)
+		fuzzAEAD, _ := siv.NewAESSIVCMAC256(fuzzKey)
 		var s Server
 		s.Reset(ServerConfig{C2S: fuzzAEAD, S2C: fuzzAEAD, Stratum: ntp.StratumPrimary})
 		_ = s.Demux(data, 0)
@@ -704,8 +703,8 @@ func FuzzServerDemux(f *testing.F) {
 }
 
 func BenchmarkClient_Encapsulate(b *testing.B) {
-	key := make([]byte, chacha20poly1305.KeySize)
-	aead, _ := chacha20poly1305.New(key)
+	key := make([]byte, 32)
+	aead, _ := siv.NewAESSIVCMAC256(key)
 	carrier := make([]byte, 1500)
 
 	var c Client

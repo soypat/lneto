@@ -206,10 +206,7 @@ func readKEResponse(r io.Reader, scratch []byte) (KESecrets, error) {
 			}
 
 		case RecordNTPv4Server:
-			n := len(body)
-			if n > len(secrets.NTPAddr) {
-				n = len(secrets.NTPAddr)
-			}
+			n := min(len(body), len(secrets.NTPAddr))
 			copy(secrets.NTPAddr[:], body[:n])
 			secrets.NTPAddrLen = n
 

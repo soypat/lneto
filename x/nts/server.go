@@ -25,13 +25,13 @@ type ServerConfig struct {
 }
 
 // Server is a stateful NTS-capable NTP server implementing [lneto.StackNode].
-// It wraps an [ntp.Handler] and validates/builds NTS extension fields.
+// It wraps an [ntp.Server] and validates/builds NTS extension fields.
 //
 // Server is not safe for concurrent use.
 type Server struct {
 	connID   uint64
 	cfg      ServerConfig
-	ntpState ntp.Handler
+	ntpState ntp.Server
 	nonce    [maxNonceLen]byte
 	// pending stores extension data from the last Demux needed for Encapsulate.
 	pending    [1]pendingNTS
@@ -62,7 +62,7 @@ func (s *Server) Reset(cfg ServerConfig) error {
 		connID: prevConnID,
 		cfg:    cfg,
 	}
-	if err := s.ntpState.Reset(ntp.HandlerConfig{
+	if err := s.ntpState.Reset(ntp.ServerConfig{
 		Now:       cfg.Now,
 		Stratum:   cfg.Stratum,
 		Precision: cfg.Prec,
@@ -90,29 +90,25 @@ func (s *Server) Demux(carrierData []byte, frameOffset int) error {
 	if err != nil {
 		return err
 	}
-	payload := frame.Payload()
+	payload := frame.ExtensionFields()
 	if len(payload) == 0 {
 		return lneto.ErrMismatch
 	}
 
 	// Extract UniqueID for echoing in the response.
 	var p pendingNTS
-	buf := payload
-	for {
-		field, rest, e := ntp.NextExtField(buf)
+	for off := 0; off < len(payload); {
+		field, n, e := ntp.NextExtField(payload[off:])
 		if e != nil || len(field.RawData()) == 0 {
 			break
 		}
 		if field.Type() == ntp.ExtNTSUniqueID {
 			v := field.Value()
-			n := len(v)
-			if n > len(p.uniqueID) {
-				n = len(p.uniqueID)
-			}
-			copy(p.uniqueID[:], v[:n])
-			p.uidLen = n
+			vn := min(len(v), len(p.uniqueID))
+			copy(p.uniqueID[:], v[:vn])
+			p.uidLen = vn
 		}
-		buf = rest
+		off += n
 	}
 
 	// Find and verify the NTS authenticator.

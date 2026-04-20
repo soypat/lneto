@@ -64,33 +64,34 @@ func (ef ExtField) Value() []byte {
 // RawData returns the complete extension field bytes including the 4-byte header.
 func (ef ExtField) RawData() []byte { return ef.buf }
 
-// NextExtField parses the first NTP extension field from buf and returns it along
-// with the remaining unprocessed bytes. An empty buf returns io.EOF-equivalent nil
-// error with an empty ExtField. Use this in a loop:
+// NextExtField parses the first NTP extension field from buf and returns it
+// along with the number of bytes consumed. An empty buf returns a zero n
+// with nil error. Use this in a loop:
 //
-//	field, rest, err := ntp.NextExtField(payload)
-//	for err == nil && len(field.RawData()) > 0 {
+//	for off := 0; off < len(payload); {
+//	    field, n, err := ntp.NextExtField(payload[off:])
+//	    if err != nil { break }
 //	    // process field
-//	    field, rest, err = ntp.NextExtField(rest)
+//	    off += n
 //	}
-func NextExtField(buf []byte) (field ExtField, rest []byte, err error) {
+func NextExtField(buf []byte) (field ExtField, n int, err error) {
 	if len(buf) == 0 {
-		return ExtField{}, nil, nil
+		return ExtField{}, 0, nil
 	}
 	if len(buf) < sizeExtHeader {
-		return ExtField{}, nil, lneto.ErrTruncatedFrame
+		return ExtField{}, 0, lneto.ErrTruncatedFrame
 	}
 	totalLen := int(binary.BigEndian.Uint16(buf[2:4]))
 	if totalLen < sizeExtHeader {
-		return ExtField{}, nil, lneto.ErrInvalidLengthField
+		return ExtField{}, 0, lneto.ErrInvalidLengthField
 	}
 	if totalLen%4 != 0 {
-		return ExtField{}, nil, lneto.ErrInvalidLengthField
+		return ExtField{}, 0, lneto.ErrInvalidLengthField
 	}
 	if totalLen > len(buf) {
-		return ExtField{}, nil, lneto.ErrTruncatedFrame
+		return ExtField{}, 0, lneto.ErrTruncatedFrame
 	}
-	return ExtField{buf: buf[:totalLen]}, buf[totalLen:], nil
+	return ExtField{buf: buf[:totalLen]}, totalLen, nil
 }
 
 // AppendExtField appends a single NTP extension field with the given type and value

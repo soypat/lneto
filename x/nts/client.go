@@ -181,7 +181,7 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 	if err != nil {
 		return err
 	}
-	payload := frame.Payload()
+	payload := frame.ExtensionFields()
 	if len(payload) == 0 {
 		return lneto.ErrMismatch
 	}
@@ -240,9 +240,8 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 // verifyUniqueID scans extension fields in payload for the NTS UniqueID
 // field and verifies it matches the one sent in the request (RFC 8915 §5.7).
 func (c *Client) verifyUniqueID(payload []byte) error {
-	buf := payload
-	for {
-		field, rest, err := ntp.NextExtField(buf)
+	for off := 0; off < len(payload); {
+		field, n, err := ntp.NextExtField(payload[off:])
 		if err != nil || len(field.RawData()) == 0 {
 			return lneto.ErrMismatch // UniqueID not found
 		}
@@ -258,17 +257,16 @@ func (c *Client) verifyUniqueID(payload []byte) error {
 			}
 			return nil
 		}
-		buf = rest
+		off += n
 	}
+	return lneto.ErrMismatch
 }
 
 // findAuthField iterates extension fields in payload and returns the byte
 // offset of the NTSAuthAndEEF field within payload, plus the field itself.
 func findAuthField(payload []byte) (offsetInPayload int, auth ntp.ExtField, err error) {
-	scanned := 0
-	buf := payload
-	for {
-		field, rest, e := ntp.NextExtField(buf)
+	for off := 0; off < len(payload); {
+		field, n, e := ntp.NextExtField(payload[off:])
 		if e != nil {
 			return 0, ntp.ExtField{}, e
 		}
@@ -276,19 +274,18 @@ func findAuthField(payload []byte) (offsetInPayload int, auth ntp.ExtField, err 
 			return 0, ntp.ExtField{}, lneto.ErrMismatch
 		}
 		if field.Type() == ntp.ExtNTSAuthAndEEF {
-			return scanned, field, nil
+			return off, field, nil
 		}
-		scanned += len(field.RawData())
-		buf = rest
+		off += n
 	}
+	return 0, ntp.ExtField{}, lneto.ErrMismatch
 }
 
 // ingestAuthPayload extracts NTS-Cookie fields from the authenticated EEF
 // payload and adds them to the cookie pool (up to MaxCookies).
 func (c *Client) ingestAuthPayload(payload []byte) {
-	buf := payload
-	for {
-		field, rest, err := ntp.NextExtField(buf)
+	for off := 0; off < len(payload); {
+		field, n, err := ntp.NextExtField(payload[off:])
 		if err != nil || len(field.RawData()) == 0 {
 			return
 		}
@@ -301,6 +298,6 @@ func (c *Client) ingestAuthPayload(payload []byte) {
 				c.numCookies++
 			}
 		}
-		buf = rest
+		off += n
 	}
 }
