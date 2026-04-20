@@ -40,7 +40,7 @@ type DevEthernet interface {
 	// SetRecvHandler registers the function called when an Ethernet
 	// frame is received. Buffers needed by the device to operate efficiently
 	// should be allocated on its side.
-	SetEthRecvHandler(handler func(rxEthframe []byte) error)
+	SetEthRecvHandler(handler func(rxEthframe []byte))
 	// EthPoll services the device. For poll-based devices (e.g. CYW43439
 	// over SPI), reads from the bus and invokes the handler for each
 	// received frame. Behaviour for interrupt driven devices is undefined
@@ -105,34 +105,43 @@ type InterfaceConfig struct {
 	MTU uint16
 }
 
-// Init initializes the interface from scratch with a netlink and device.
+// Init initializes the interface from scratch with a netlink and device. If Init fails all methods on Interface are unsafe to call (panic).
 func (iface *Interface[C]) Init(netlink Netlink[C], dev DevEthernet, cfg InterfaceConfig) (err error) {
 	if netlink == nil || dev == nil {
 		return lneto.ErrInvalidConfig
 	}
+	maxFrameSize, frameOff := dev.MaxFrameSizeAndOffset()
+	maxEthFrame := maxFrameSize - frameOff
+	maxEthPayload := maxEthFrame - 14
+	mtu := int(cfg.MTU)
+	if mtu == 0 {
+		mtu = min(1500, maxEthPayload)
+	}
+	if mtu > maxEthPayload {
+		return errors.New("MTU exceeds max frame size")
+	} else if mtu < ethernet.MinimumMTU || mtu > ethernet.MaxMTU {
+		return errors.New("bad DevEthernet max frame size and/or frame offset. typical is 1500,0")
+	}
+	var mac [6]byte
 	if internal.IsZeroed(cfg.HardwareAddr6) {
-		iface.mac, err = dev.HardwareAddr6()
+		mac, err = dev.HardwareAddr6()
 		if err != nil {
 			return err
-		} else if internal.IsZeroed(iface.mac) {
+		} else if internal.IsZeroed(mac) {
 			return lneto.ErrInvalidAddr
 		}
 	} else {
-		iface.mac = cfg.HardwareAddr6
+		mac = cfg.HardwareAddr6
 	}
-	iface.frameSize, iface.frameOff = dev.MaxFrameSizeAndOffset()
-	maxEthPayload := iface.frameSize - iface.frameOff
-	if cfg.MTU == 0 {
-		iface.mtu = min(1500, maxEthPayload)
-	} else {
-		iface.mtu = int(cfg.MTU)
+	*iface = Interface[C]{
+		dev:       dev,
+		netlink:   netlink,
+		ip:        cfg.NetworkIP,
+		frameSize: maxFrameSize,
+		frameOff:  frameOff,
+		mtu:       mtu,
+		mac:       mac,
 	}
-	if iface.mtu < ethernet.MinimumMTU || iface.mtu > ethernet.MaxMTU {
-		return errors.New("bad DevEthernet max frame size and/or frame offset")
-	}
-	iface.ip = cfg.NetworkIP
-	iface.dev = dev
-	iface.netlink = netlink
 	return nil
 }
 
@@ -149,55 +158,4 @@ func (iface *Interface[C]) NetworkAddr() netip.Prefix {
 
 func (iface *Interface[C]) bufsize() int {
 	return iface.frameOff + 14 + iface.mtu
-}
-
-func Run[C any](ctx context.Context, iface Interface[C], stack Stack, backoff lneto.BackoffStrategy, buf []byte) error {
-	bufsize := iface.bufsize()
-	if len(buf) < bufsize {
-		return lneto.ErrShortBuffer
-	}
-
-	var handlerTriggered bool
-	iface.dev.SetEthRecvHandler(func(rxEthframe []byte) error {
-		var bufs [1][]byte = [1][]byte{rxEthframe}
-		handlerTriggered = true
-		err := stack.IngressPackets(bufs[:], 0)
-		if err != nil {
-			println("err stack ingress:", err.Error())
-		}
-		return nil
-	})
-	buf = buf[:bufsize]
-	bufs := [1][]byte{buf}
-	var sizes [1]int
-	var backoffs uint
-	irqDriven := false
-	totalRxBytes := 0
-	for ctx.Err() == nil {
-		_, ethBytes, err := iface.dev.EthPoll(buf)
-		totalRxBytes += ethBytes
-		if err != nil {
-			println("err iface.dev.EthPoll:", err.Error())
-		} else if !irqDriven && totalRxBytes == 0 && handlerTriggered {
-			irqDriven = true // Packet was processed
-			println("driver is IRQ driven")
-		}
-
-		sizes[0] = 0
-		err = stack.EgressPackets(bufs[:], sizes[:], iface.frameOff)
-		sendPkt := sizes[0] > 0
-		if sendPkt {
-			err = iface.dev.SendOffsetEthFrame(buf)
-			if err != nil {
-				println("err iface.dev.send:", err.Error())
-			}
-		}
-		if ethBytes == 0 && !sendPkt {
-			backoff.Do(backoffs)
-			backoffs++
-		} else {
-			backoffs = 0
-		}
-	}
-	return ctx.Err()
 }

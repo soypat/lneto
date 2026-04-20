@@ -27,6 +27,7 @@ const (
 	// based on one or two encountered use cases, example use case included.
 	/*
 		- ErrUnregistered/ErrAborted // connection unregistered. i.e: ICMP client aborted during active ping, ping process returns this.
+		- ErrInvalidArgs // invalid func arguments i.e: different from Config since this refers to non-config arguments. usually nil values.
 	*/
 )
 
