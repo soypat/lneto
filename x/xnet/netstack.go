@@ -2,7 +2,6 @@ package xnet
 
 import (
 	"context"
-	"net"
 	"net/netip"
 
 	"github.com/soypat/lneto/x/netdev"
@@ -19,9 +18,16 @@ var _ netdev.Stack = (*Netstack)(nil)
 
 // Configure configures this Stack with the argument mac, ip and gateway addresses.
 // The Stack must resolve the gateway hardware address if set.
-func (netstack *Netstack) Configure(mac net.HardwareAddr, ip netip.Prefix, gw netip.Addr) error {
-
+func (netstack *Netstack) Reset(cfg StackConfig) error {
+	err := netstack.stack.Reset(cfg)
+	if err != nil {
+		return err
+	}
 	return nil
+}
+
+func (netstack *Netstack) IPAddr() netip.Addr {
+	return netstack.stack.Addr()
 }
 
 // EnableICMP enables responding/sending ICMP echo frames.
@@ -47,10 +53,13 @@ func (netstack *Netstack) Socket(ctx context.Context, network string, family, so
 // EgressPackets instructs Stack to write outgoing packets into bufs and writing the sizes into sizes not including initial offset.
 // offset can be used to tell the stack to start writing after an offset for each buffer.
 func (netstack *Netstack) EgressPackets(bufs [][]byte, sizes []int, offset int) (err error) {
+	var err0 error
 	for i := range bufs {
-		sizes[i], err = netstack.stack.EgressEthernet(bufs[i][offset:])
+		sizes[i], err0 = netstack.stack.EgressEthernet(bufs[i][offset:])
 		if sizes[i] == 0 {
 			return err
+		} else if err0 != nil {
+			err = err0
 		}
 	}
 	return err

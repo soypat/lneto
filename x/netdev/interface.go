@@ -3,7 +3,6 @@ package netdev
 import (
 	"context"
 	"errors"
-	"net"
 	"net/netip"
 
 	"github.com/soypat/lneto"
@@ -40,12 +39,13 @@ type DevEthernet interface {
 	SendOffsetEthFrame(offsetTxEthFrame []byte) error
 	// SetRecvHandler registers the function called when an Ethernet
 	// frame is received. Buffers needed by the device to operate efficiently
-	// should be allocated on its side.
+	// should be allocated on its side. This function is mutually exclusive with EthPoll:
+	// use on or the other to receive data.
 	SetEthRecvHandler(handler func(rxEthframe []byte))
 	// EthPoll services the device. For poll-based devices (e.g. CYW43439
 	// over SPI), reads from the bus and invokes the handler for each
-	// received frame. Behaviour for interrupt driven devices is undefined
-	// at the moment.
+	// received frame. This method is mutually exclusive with SetEthRecvHandler:
+	// use one or the other to receive data but not return data via both channels.
 	EthPoll(buf []byte) (ethFrameOff, ethernetBytes int, err error)
 	// MaxFrameSizeAndOffset returns the max complete device frame size
 	// (including headers and any overhead) for buffer allocation.
@@ -64,10 +64,11 @@ type DevEthernet interface {
 type Stack interface {
 	// Configure configures this Stack with the argument mac, ip and gateway addresses.
 	// The Stack must resolve the gateway hardware address if set.
-	Configure(mac net.HardwareAddr, ip netip.Prefix, gw netip.Addr) error
+	// Configure(mac net.HardwareAddr, ip netip.Prefix, gw netip.Addr) error
+
 	// EnableICMP enables responding/sending ICMP echo frames.
 	EnableICMP(enabled bool) error
-	// EnableDHCP enables DHCP on the device if set.
+	// EnableDHCP enables DHCP on the device if enabled=true.
 	EnableDHCP(enabled bool, reqIP netip.Addr) error
 	// Socket is a berkeley socket abstraction. Returns an [net.Listener] or [net.Conn] depending on laddr/raddr combination.
 	Socket(ctx context.Context, network string, family, sotype int, laddr, raddr netip.AddrPort) (c any, err error)
@@ -100,7 +101,7 @@ type Netlink[C any] interface {
 // NotifyCallback is called when a [Netlink] connects or disconnects from a network. The callback returns:
 //   - reconnectNowRetries: Amount of times to attempt reconnection before giving up.
 //   - reconnectParams: parameters to use in reconnection.
-type NotifyCallback[C any] = func(reconnectNowRetries int, reconnectParams C)
+type NotifyCallback[C any] = func(connected bool) (reconnectNowRetries int, reconnectParams C)
 
 // InterfaceConfig mostly optional configuration.
 type InterfaceConfig struct {
