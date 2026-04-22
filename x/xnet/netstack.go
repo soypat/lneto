@@ -3,7 +3,9 @@ package xnet
 import (
 	"context"
 	"net/netip"
+	"time"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/x/netdev"
 )
 
@@ -18,7 +20,7 @@ var _ netdev.Stack = (*Netstack)(nil)
 
 // Configure configures this Stack with the argument mac, ip and gateway addresses.
 // The Stack must resolve the gateway hardware address if set.
-func (netstack *Netstack) Reset(cfg StackConfig) error {
+func (netstack *Netstack) Reset(stackBackoff lneto.BackoffStrategy, cfg StackConfig) error {
 	err := netstack.stack.Reset(cfg)
 	if err != nil {
 		return err
@@ -36,13 +38,23 @@ func (netstack *Netstack) EnableICMP(enabled bool) error {
 }
 
 // EnableDHCP
-func (netstack *Netstack) EnableDHCP(enabled bool, requestAddr netip.Addr) (err error) {
-	if enabled {
-		err = netstack.stack.StartDHCPv4Request(requestAddr.As4())
-	} else {
+func (netstack *Netstack) EnableDHCP(ctx context.Context, enabled bool, requestAddr netip.Addr) (assigned netip.Addr, routerGW netip.Addr, subnetBits int, err error) {
+	var addr [4]byte
+	if !enabled {
 		netstack.stack.dhcp.Reset()
+		return netip.Addr{}, netip.Addr{}, 0, nil
+	} else if requestAddr.Is4() {
+		addr = requestAddr.As4()
+	} else if requestAddr.IsValid() {
+		return netip.Addr{}, netip.Addr{}, 0, lneto.ErrUnsupported
 	}
-	return err
+	timeout := 4 * time.Second
+	deadline, ok := ctx.Deadline()
+	if ok {
+		timeout = time.Until(deadline)
+	}
+	results, err := netstack.gstack.blk.DoDHCPv4(addr, timeout)
+	return results.AssignedAddr, results.Router, results.Subnet.Bits(), err
 }
 
 // Socket is a berkeley socket abstraction. Returns an [net.Listener] or [net.Conn] depending on laddr/raddr combination.
