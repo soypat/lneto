@@ -68,8 +68,8 @@ type Stack interface {
 
 	// EnableICMP enables responding/sending ICMP echo frames.
 	EnableICMP(enabled bool) error
-	// EnableDHCP enables DHCP on the device if enabled=true.
-	EnableDHCP(enabled bool, reqIP netip.Addr) error
+	// EnableDHCP enables DHCP on the device if enabled=true and performs a DHCP request.
+	EnableDHCP(ctx context.Context, enabled bool, reqIP netip.Addr) (assigned netip.Addr, routerGW netip.Addr, subnetBits int, _ error)
 	// Socket is a berkeley socket abstraction. Returns an [net.Listener] or [net.Conn] depending on laddr/raddr combination.
 	Socket(ctx context.Context, network string, family, sotype int, laddr, raddr netip.AddrPort) (c any, err error)
 	// EgressPackets instructs Stack to write outgoing packets into bufs and writing the sizes into sizes.
