@@ -86,9 +86,7 @@ const (
 	// user asked to query this address and the query has not been sent out yet.
 	// The MAC address is invalid in this case.
 	eflagIncompletePendingQuery
-	eflagSent
 	eflagComplete
-	eflagFailed
 )
 
 func (c *cache) age() {
@@ -123,15 +121,6 @@ func (c *cache) clearFlags(entryHasFlags, clrTheseFlagsIfMatch eflags) {
 	}
 }
 
-func (c *cache) queryMAC(mac [6]byte) *entry {
-	for i := range c.entries {
-		if c.entries[i].flags&eflagInUse != 0 && c.entries[i].mac == mac {
-			return &c.entries[i]
-		}
-	}
-	return nil
-}
-
 func (c *cache) queryAddr(addr []byte) *entry {
 	n := len(addr)
 	for i := range c.entries {
@@ -140,16 +129,6 @@ func (c *cache) queryAddr(addr []byte) *entry {
 		}
 	}
 	return nil
-}
-
-func (c *cache) addentry(mac, addr []byte, flags eflags) {
-	e := c.acquireNext()
-	copy(e.mac[:], mac)
-	copy(e.addr[:], addr)
-	e.flags = flags
-	if len(addr) == 16 {
-		e.flags |= eflagIPv6
-	}
 }
 
 // acquireNext gets next available entry for use. If all are in use will get oldest entry.

@@ -2,7 +2,6 @@ package arp
 
 import (
 	"bytes"
-	"log"
 	"testing"
 
 	"github.com/soypat/lneto"
@@ -86,9 +85,9 @@ func TestHandler(t *testing.T) {
 	}
 	hwaddr, err := c1.QueryResult(queryAddr)
 	if err != nil {
-		log.Fatal("expected query result:", err)
+		t.Fatal("expected query result:", err)
 	} else if !bytes.Equal(hwaddr, expectHWAddr) {
-		log.Fatalf("expected to get hwaddr %x!=%x", hwaddr, expectHWAddr)
+		t.Fatalf("expected to get hwaddr %x!=%x", hwaddr, expectHWAddr)
 	}
 	n, err = c1.Encapsulate(buf[:], -1, 0)
 	if err != nil {

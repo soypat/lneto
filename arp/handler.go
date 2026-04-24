@@ -46,6 +46,9 @@ func (h *Handler) Reset(cfg HandlerConfig) error {
 	} else if cfg.MaxQueries <= 0 || cfg.MaxPending <= 0 {
 		return lneto.ErrInvalidConfig
 	}
+	if cfg.HardwareType != 1 || cfg.ProtocolType != ethernet.TypeIPv4 && cfg.ProtocolType != ethernet.TypeIPv6 {
+		return lneto.ErrUnsupported // We only support common for now.
+	}
 	*h = Handler{
 		connID:       h.connID + 1,
 		ourHWAddr:    h.ourHWAddr[:0],
@@ -76,7 +79,7 @@ func (h *Handler) QueryResult(protoAddr []byte) (hwAddr []byte, err error) {
 	}
 	if e.flags.hasAny(eflagComplete) {
 		return e.mac[:], nil
-	} else if e.flags.hasAny(eflagSent) {
+	} else if e.flags.hasAny(eflagIncomplete) {
 		return nil, errQueryPending
 	}
 	return nil, lneto.ErrBug
