@@ -28,8 +28,8 @@ const (
 )
 
 // gosocket is the stack abstraction for the baremetal proposal.
-// family must be syscall.AF_INET. SOCK_STREAM is only one supported for now since is TCP.
-// network supported for now is "tcp" or "tcp4". A nil remote address and defined local address means net.Listener is returned.
+// family must be syscall.AF_INET. Known networks: "tcp", "tcp4", "udp", "udp4".
+// A nil remote address and defined local address means net.Listener is returned.
 // if remote address defined then is active connection, returns a net.Conn.
 type gosocket = func(ctx context.Context, network string, family, sotype int, laddr, raddr net.Addr) (c any, err error)
 
@@ -138,17 +138,17 @@ func (s *StackBerkeley) Connect(sockfd int, host string, ip netip.AddrPort) erro
 		return fmt.Errorf("Connect: unsupported protocol %d", pending.sock.protocol)
 	}
 	c, err := s.gosocket(context.Background(), network, family, sotype, laddr, raddr)
-		if err != nil {
-			return err
-		}
-		conn, ok := c.(net.Conn)
-		if !ok {
-			return fmt.Errorf("Connect: stack returned non-Conn for protocol %d", pending.sock.protocol)
-		}
-		s.mu.Lock()
-		s.pendingFDs = deleteFD(s.pendingFDs, sockfd)
-		s.conns = append(s.conns, socket[net.Conn]{sockfd: sockfd, sock: conn})
-		s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	conn, ok := c.(net.Conn)
+	if !ok {
+		return fmt.Errorf("Connect: stack returned non-Conn for protocol %d", pending.sock.protocol)
+	}
+	s.mu.Lock()
+	s.pendingFDs = deleteFD(s.pendingFDs, sockfd)
+	s.conns = append(s.conns, socket[net.Conn]{sockfd: sockfd, sock: conn})
+	s.mu.Unlock()
 	return nil
 }
 
