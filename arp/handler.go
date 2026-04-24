@@ -68,21 +68,14 @@ func (h *Handler) AbortPending() {
 	h.cache.clearFlags(eflagPendingResponse|eflagIncomplete, eflagInUse)
 }
 
-func (h *Handler) expectSize() int {
-	return sizeHeader + 2*len(h.ourHWAddr) + 2*len(h.ourProtoAddr)
-}
-
 func (h *Handler) QueryResult(protoAddr []byte) (hwAddr []byte, err error) {
 	e := h.cache.queryAddr(protoAddr)
 	if e == nil {
 		return nil, errQueryNotFound
-	}
-	if e.flags.hasAny(eflagComplete) {
-		return e.mac[:], nil
 	} else if e.flags.hasAny(eflagIncomplete) {
 		return nil, errQueryPending
 	}
-	return nil, lneto.ErrBug
+	return e.mac[:], nil
 }
 
 func (h *Handler) DiscardQuery(protoAddr []byte) error {
@@ -107,7 +100,7 @@ func (h *Handler) StartQuery(dstHWAddr, proto []byte) error {
 		return lneto.ErrInvalidConfig
 	}
 	e := h.cache.acquireNext()
-	e.use([6]byte{}, proto, eflagIncomplete|eflagIncompletePendingQuery)
+	e.use([6]byte{}, proto, eflagIncomplete|eflagIncompletePendingQuery|eflagPriority)
 	return nil
 }
 
@@ -181,7 +174,6 @@ func (h *Handler) Demux(ethFrame []byte, frameOffset int) error {
 		}
 		copy(e.mac[:], hwaddr)
 		e.flags &^= eflagIncomplete | eflagIncompletePendingQuery
-		e.flags |= eflagComplete
 
 	default:
 		return errARPUnsupported

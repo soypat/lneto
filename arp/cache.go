@@ -76,7 +76,9 @@ type eflags uint8
 
 // unset eflagInUse to signal the entry can be acquired for a new query.
 const (
+	// eflagInUse set when in use. Discarded/unused entries have this bit unset.
 	eflagInUse eflags = 1 << iota
+	// set for IPv6 addressed entries.
 	eflagIPv6
 	// network device queried our address and we must respond to it.
 	// Both MAC and IP are valid in this case.
@@ -86,7 +88,9 @@ const (
 	// user asked to query this address and the query has not been sent out yet.
 	// The MAC address is invalid in this case.
 	eflagIncompletePendingQuery
-	eflagComplete
+	// eflagPriority set for prioritized cache entries. These entries are discarded last.
+	// i.e: set for user created queries, unset for external incoming network queries.
+	eflagPriority
 )
 
 func (c *cache) age() {
@@ -131,18 +135,30 @@ func (c *cache) queryAddr(addr []byte) *entry {
 	return nil
 }
 
-// acquireNext gets next available entry for use. If all are in use will get oldest entry.
+// acquireNext gets next available entry for use. If all are in use evicts
+// the oldest passive entry (learned from incoming requests) before touching
+// active user queries or pending responses.
 func (c *cache) acquireNext() *entry {
-	oldest := 0
+	const priorityFlags = eflagPendingResponse | eflagIncomplete | eflagPriority
+	oldest, oldestPassive := 0, -1
 	for i := range c.entries {
 		if c.entries[i].flags&eflagInUse == 0 {
 			oldest = i
 			break
-		} else if c.entries[i].age > c.entries[oldest].age {
+		}
+		if !c.entries[i].flags.hasAny(priorityFlags) {
+			if oldestPassive < 0 || c.entries[i].age > c.entries[oldestPassive].age {
+				oldestPassive = i
+			}
+		}
+		if c.entries[i].age > c.entries[oldest].age {
 			oldest = i
 		}
 	}
-	c.age() // Age all entries on acquiring one.
+	if oldestPassive >= 0 && c.entries[oldest].flags&eflagInUse != 0 {
+		oldest = oldestPassive
+	}
+	c.age()
 	e := &c.entries[oldest]
 	e.destroy()
 	return e
