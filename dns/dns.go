@@ -346,6 +346,8 @@ func (r *Resource) Reset() {
 	r.data = r.data[:0]
 }
 
+func (r *Resource) Header() ResourceHeader { return r.header }
+
 func (r *Resource) RawData() []byte {
 	length := r.header.Length
 	if int(length) > len(r.data) {

@@ -6,6 +6,8 @@ import (
 	"github.com/soypat/lneto"
 )
 
+//go:generate stringer -type=Type,CodeDestinationUnreachable,CodeRedirect -linecomment -output stringers.go
+
 const (
 	sizeHeader = 8
 )
@@ -33,7 +35,7 @@ const (
 type CodeTimeExceeded uint8
 
 const (
-	CodeExceededInTransit  CodeTimeExceeded = iota // TTL exceeded in transit
+	CodeExceededInTransit  CodeTimeExceeded = iota // TTL exceeded
 	CodeFragmentReassembly                         // fragment reassembly time exceeded
 )
 

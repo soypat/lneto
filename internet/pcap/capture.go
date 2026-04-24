@@ -384,14 +384,14 @@ func (pc *PacketBreakdown) CaptureICMPv4(dst []Frame, pkt []byte, bitOffset int)
 	}
 
 	finfo := reclaimFrame(&dst, "ICMP", bitOffset, baseICMPv4Fields[:])
-
+	tp := ifrm.Type()
 	// Add type-specific fields.
-	switch ifrm.Type() {
+	switch tp {
 	case icmpv4.TypeEcho, icmpv4.TypeEchoReply:
 		finfo.Fields = append(finfo.Fields, icmpv4EchoFields[:]...)
 		if len(icmpData) > 8 {
 			finfo.Fields = append(finfo.Fields, FrameField{
-				Name:           "Data",
+				Name:           tp.String(),
 				Class:          FieldClassPayload,
 				FrameBitOffset: 8 * octet,
 				BitLength:      (len(icmpData) - 8) * octet,
@@ -439,24 +439,126 @@ func (pc *PacketBreakdown) CaptureDNS(dst []Frame, pkt []byte, bitOffset int) ([
 	}
 	dnsData := pkt[bitOffset/8:]
 	pc.dmsg.LimitResourceDecoding(4, 4, 4, 4)
-	off, incomplete, err := pc.dmsg.Decode(dnsData)
+	_, incomplete, err := pc.dmsg.Decode(dnsData)
 	if err != nil && !incomplete {
 		return dst, err
 	}
 	debuglog("pcap:dns-decode")
-	finfo := reclaimFrame(&dst, "DNS", bitOffset, nil)
+	hdr, _ := dns.NewFrame(dnsData)
+	finfo := reclaimFrame(&dst, "DNS", bitOffset, baseDNSFields[:])
 	if incomplete {
 		finfo.Errors = append(finfo.Errors, ErrLimitExceeded)
 	}
-	field := internal.SliceReclaim(&finfo.Fields)
-	*field = FrameField{
-		Name:           "Data",
-		FrameBitOffset: 0,
-		BitLength:      int(off) * octet,
-		SubFields:      field.SubFields[:0], // Reuse subfields.
+	if pc.SubfieldLimit <= 0 {
+		debuglog("pcap:dns-done")
+		return dst, nil
 	}
+
+	wireOff := dns.SizeHeader
+
+	// Questions section: walk all QDCount wire records to keep wireOff correct,
+	// but only emit SubFields for the decoded ones.
+	nq := int(hdr.QDCount())
+	if nq > 0 {
+		sectionStart := wireOff
+		qfield := internal.SliceReclaim(&finfo.Fields)
+		*qfield = FrameField{Name: "Questions", Class: FieldClassOptions, SubFields: qfield.SubFields[:0]}
+		decoded := pc.dmsg.Questions
+		for i := range nq {
+			recStart := wireOff
+			wireOff, err = dnsSkipName(dnsData, wireOff)
+			if err != nil {
+				break
+			}
+			wireOff += 4 // Type(2) + Class(2)
+			if i < len(decoded) && len(qfield.SubFields) < pc.SubfieldLimit-1 {
+				qfield.SubFields = append(qfield.SubFields, FrameField{
+					Name:           "Type",
+					FrameBitOffset: recStart * octet,
+					Class:          FieldClassType,
+					BitLength:      2 * octet,
+				}, FrameField{
+					Name:           "Class",
+					FrameBitOffset: (recStart + 2) * octet,
+					Class:          FieldClassType,
+					BitLength:      2 * octet,
+				})
+			}
+		}
+		qfield.FrameBitOffset = sectionStart * octet
+		qfield.BitLength = (wireOff - sectionStart) * octet
+	}
+
+	wireOff = pc.appendDNSResources(finfo, "Answers", dnsData, pc.dmsg.Answers, int(hdr.ANCount()), wireOff)
+	wireOff = pc.appendDNSResources(finfo, "Authorities", dnsData, pc.dmsg.Authorities, int(hdr.NSCount()), wireOff)
+	wireOff = pc.appendDNSResources(finfo, "Additionals", dnsData, pc.dmsg.Additionals, int(hdr.ARCount()), wireOff)
+	_ = wireOff
+
 	debuglog("pcap:dns-done")
 	return dst, nil
+}
+
+// appendDNSResources adds a section FrameField with per-record SubFields to finfo.
+// It walks all `total` wire records to keep wireOff accurate, but only emits SubFields
+// for the decoded slice entries while nFields < pc.SubfieldLimit.
+func (pc *PacketBreakdown) appendDNSResources(finfo *Frame, name string, dnsData []byte, decoded []dns.Resource, total, wireOff int) int {
+	if total == 0 {
+		return wireOff
+	}
+	var err error
+	sectionStart := wireOff
+	rfield := internal.SliceReclaim(&finfo.Fields)
+	*rfield = FrameField{Name: name, Class: FieldClassOptions, SubFields: rfield.SubFields[:0]}
+	for i := range total {
+		recStart := wireOff
+		wireOff, err = dnsSkipName(dnsData, wireOff)
+		if err != nil || wireOff+10 > len(dnsData) {
+			break
+		}
+		dataLen := int(binary.BigEndian.Uint16(dnsData[wireOff+8:]))
+		wireOff += 10 + dataLen // Type(2)+Class(2)+TTL(4)+Length(2)+Data
+		if wireOff > len(dnsData) {
+			break
+		}
+		if i < len(decoded) && len(rfield.SubFields) < pc.SubfieldLimit {
+			rfield.SubFields = append(rfield.SubFields, FrameField{
+				Name:           decoded[i].Header().Type.String(),
+				FrameBitOffset: recStart * octet,
+			})
+		}
+	}
+	rfield.FrameBitOffset = sectionStart * octet
+	rfield.BitLength = (wireOff - sectionStart) * octet
+	return wireOff
+}
+
+// dnsSkipName advances off past a DNS name in wire format without allocating.
+// Compression pointers are followed and consume 2 bytes, terminating the name.
+func dnsSkipName(b []byte, off int) (int, error) {
+	for {
+		if off >= len(b) {
+			return off, lneto.ErrTruncatedFrame
+		}
+		c := b[off]
+		off++
+		switch c & 0xc0 {
+		case 0x00:
+			if c == 0 {
+				return off, nil // null terminator
+			}
+			off += int(c) // skip label bytes
+			if off > len(b) {
+				return off, lneto.ErrTruncatedFrame
+			}
+		case 0xc0:
+			if off >= len(b) {
+				return off, lneto.ErrTruncatedFrame
+			}
+			return off + 1, nil // compression pointer: 2 bytes total, always terminal
+		default:
+			return off, lneto.ErrInvalidField // reserved label type
+		}
+	}
 }
 
 func (pc *PacketBreakdown) CaptureNTP(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {

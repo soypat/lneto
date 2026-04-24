@@ -10,6 +10,7 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/dhcpv4"
+	"github.com/soypat/lneto/dns"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/http/httpraw"
 	"github.com/soypat/lneto/internal/ltesto"
@@ -486,9 +487,68 @@ func ExampleFormatter_dhcp() {
 	// 	(Hostname string)="myhost"
 }
 
-func writeOpt(dst []byte, opt dhcpv4.OptNum, data ...byte) int {
-	dst[0] = byte(opt)
-	dst[1] = byte(len(data))
-	copy(dst[2:], data)
-	return 2 + len(data)
+func ExampleFormatter_dns() {
+	const (
+		ethSize  = 14
+		ipv4Size = 20
+		udpSize  = 8
+	)
+
+	// Build a DNS query for "example.com" A record.
+	var msg dns.Message
+	msg.Questions = []dns.Question{
+		{Name: dns.MustNewName("example.com"), Type: dns.TypeA, Class: dns.ClassINET},
+	}
+	dnsPayload, err := msg.AppendTo(nil, 0x1234, dns.NewClientHeaderFlags(dns.OpCodeQuery, true))
+	if err != nil {
+		fmt.Println("dns encode error:", err)
+		return
+	}
+
+	pkt := make([]byte, ethSize+ipv4Size+udpSize+len(dnsPayload))
+
+	efrm, _ := ethernet.NewFrame(pkt)
+	*efrm.DestinationHardwareAddr() = [6]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x01}
+	*efrm.SourceHardwareAddr() = [6]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x02}
+	efrm.SetEtherType(ethernet.TypeIPv4)
+
+	ifrm, _ := ipv4.NewFrame(pkt[ethSize:])
+	ifrm.SetVersionAndIHL(4, 5)
+	ifrm.SetTTL(64)
+	ifrm.SetProtocol(lneto.IPProtoUDP)
+	ifrm.SetTotalLength(uint16(ipv4Size + udpSize + len(dnsPayload)))
+	ifrm.SetCRC(ifrm.CalculateHeaderCRC())
+
+	ufrm, _ := udp.NewFrame(pkt[ethSize+ipv4Size:])
+	ufrm.SetSourcePort(58200)
+	ufrm.SetDestinationPort(dns.ServerPort)
+	ufrm.SetLength(uint16(udpSize + len(dnsPayload)))
+
+	copy(pkt[ethSize+ipv4Size+udpSize:], dnsPayload)
+
+	var cap PacketBreakdown
+	cap.SubfieldLimit = 10
+	frames, err := cap.CaptureEthernet(nil, pkt, 0)
+	if err != nil {
+		fmt.Println("capture error:", err)
+		return
+	}
+
+	var fmtr Formatter
+	fmtr.SubfieldLimit = cap.SubfieldLimit
+	fmtr.FrameSep = "\n"
+	fmtr.FieldSep = "; "
+	fmtr.SubfieldSep = "\n\t"
+	out, err := fmtr.FormatFrames(nil, frames, pkt)
+	if err != nil {
+		fmt.Println("format error:", err)
+		return
+	}
+	fmt.Println(string(out))
+	// Output:
+	// Ethernet len=14; destination=00:00:00:00:00:01; source=00:00:00:00:00:02; protocol=0x0800
+	// IPv4 len=20; version=0x04; (Header Length)=5; (Type of Service)=0x00; (Total Length)=57; identification=0x0000; flags=0x0000; (Time to live)=0x40; protocol=0x11; checksum=0x7ab5; source=0.0.0.0; destination=0.0.0.0
+	// UDP len=8; (Source port)=58200; (Destination port)=53; size=37; checksum=0x0000
+	// DNS len=29; identification=0x1234; flags=0x0100; Questions=1; Answers=0; Authorities=0; Additionals=0; Questions
+	// 	A
 }
