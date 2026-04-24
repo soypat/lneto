@@ -533,7 +533,7 @@ func ExampleFormatter_dns() {
 	copy(pkt[ethSize+ipv4Size+udpSize:], dnsPayload)
 
 	var cap PacketBreakdown
-	cap.SubfieldLimit = 10
+	cap.SubfieldLimit = 20
 	frames, err := cap.CaptureEthernet(nil, pkt, 0)
 	if err != nil {
 		fmt.Println("capture error:", err)
@@ -553,9 +553,25 @@ func ExampleFormatter_dns() {
 	fmt.Println(string(out))
 	// Output:
 	// Ethernet len=14; destination=00:00:00:00:00:01; source=00:00:00:00:00:02; protocol=0x0800
-	// IPv4 len=20; version=0x04; (Header Length)=5; (Type of Service)=0x00; (Total Length)=57; identification=0x0000; flags=0x0000; (Time to live)=0x40; protocol=0x11; checksum=0x7ab5; source=0.0.0.0; destination=0.0.0.0
-	// UDP len=8; (Source port)=58200; (Destination port)=53; size=37; checksum=0x0000
-	// DNS len=29; identification=0x1234; flags=0x0100; Questions=1; Answers=0; Authorities=0; Additionals=0; Questions
-	// 	A=1
+	// IPv4 len=20; version=0x04; (Header Length)=5; (Type of Service)=0x00; (Total Length)=117; identification=0x0000; flags=0x0000; (Time to live)=0x40; protocol=0x11; checksum=0x7a79; source=0.0.0.0; destination=0.0.0.0
+	// UDP len=8; (Source port)=58200; (Destination port)=53; size=97; checksum=0x0000
+	// DNS len=89; identification=0x1234; flags=0x0100; Questions=2; Answers=2; Authorities=0; Additionals=0; Questions
+	// 	Name=example.com
+	// 	Type=1
 	// 	Class=1
+	// 	Name=temu.com
+	// 	Type=28
+	// 	Class=255; Answers
+	// 	Name=abc.com
+	// 	Type=255
+	// 	Class=255
+	// 	TTL=0x00000040
+	// 	Length=4
+	// 	Data=10.0.11.1
+	// 	Name=123.com
+	// 	Type=1
+	// 	Class=1
+	// 	TTL=0x00000040
+	// 	Length=4
+	// 	Data=20.0.22.2
 }

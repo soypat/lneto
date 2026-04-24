@@ -465,14 +465,20 @@ func (pc *PacketBreakdown) CaptureDNS(dst []Frame, pkt []byte, bitOffset int) ([
 		*qfield = FrameField{Name: "Questions", Class: FieldClassOptions, SubFields: qfield.SubFields[:0]}
 		decoded := pc.dmsg.Questions
 		for i := range nq {
+			nameStart := wireOff
 			wireOff, err = dnsSkipName(dnsData, wireOff)
 			if err != nil {
 				break
 			}
 			nameEnd := wireOff
 			wireOff += 4 // Type(2) + Class(2)
-			if i < len(decoded) && len(qfield.SubFields)+2 <= pc.SubfieldLimit {
+			if i < len(decoded) && len(qfield.SubFields)+3 <= pc.SubfieldLimit {
 				qfield.SubFields = append(qfield.SubFields, FrameField{
+					Name:           "Name",
+					Class:          FieldClassDNSName,
+					FrameBitOffset: nameStart * octet,
+					BitLength:      (nameEnd - nameStart) * octet,
+				}, FrameField{
 					Name:           "Type",
 					Class:          FieldClassOperation,
 					FrameBitOffset: nameEnd * octet,
@@ -510,6 +516,7 @@ func (pc *PacketBreakdown) appendDNSResources(finfo *Frame, name string, dnsData
 	rfield := internal.SliceReclaim(&finfo.Fields)
 	*rfield = FrameField{Name: name, Class: FieldClassOptions, SubFields: rfield.SubFields[:0]}
 	for i := range total {
+		nameStart := wireOff
 		wireOff, err = dnsSkipName(dnsData, wireOff)
 		if err != nil || wireOff+10 > len(dnsData) {
 			break
@@ -520,9 +527,14 @@ func (pc *PacketBreakdown) appendDNSResources(finfo *Frame, name string, dnsData
 		if wireOff > len(dnsData) {
 			break
 		}
-		if i < len(decoded) && len(rfield.SubFields)+5 <= pc.SubfieldLimit {
+		if i < len(decoded) && len(rfield.SubFields)+6 <= pc.SubfieldLimit {
 			rfield.SubFields = append(rfield.SubFields, FrameField{
-				Name:           decoded[i].Header().Type.String(),
+				Name:           "Name",
+				Class:          FieldClassDNSName,
+				FrameBitOffset: nameStart * octet,
+				BitLength:      (nameEnd - nameStart) * octet,
+			}, FrameField{
+				Name:           "Type",
 				Class:          FieldClassOperation,
 				FrameBitOffset: nameEnd * octet,
 				BitLength:      2 * octet,
@@ -533,7 +545,7 @@ func (pc *PacketBreakdown) appendDNSResources(finfo *Frame, name string, dnsData
 				BitLength:      2 * octet,
 			}, FrameField{
 				Name:           "TTL",
-				Class:          FieldClassSize,
+				Class:          FieldClassID,
 				FrameBitOffset: (nameEnd + 4) * octet,
 				BitLength:      4 * octet,
 			}, FrameField{
@@ -551,7 +563,47 @@ func (pc *PacketBreakdown) appendDNSResources(finfo *Frame, name string, dnsData
 	}
 	rfield.FrameBitOffset = sectionStart * octet
 	rfield.BitLength = (wireOff - sectionStart) * octet
+	if err != nil {
+		finfo.Errors = append(finfo.Errors, err)
+	}
 	return wireOff
+}
+
+// dnsAppendDottedName walks a DNS name in wire format starting at off within
+// dnsMsg, follows compression pointers, and appends the dotted representation
+// (e.g. "example.com") to dst. Returns dst unchanged on error.
+func dnsAppendDottedName(dst, dnsMsg []byte, off int) []byte {
+	// TODO: somehow move this to dns package. dns.Name.Append ? dns.Name is the wire format...
+	first := true
+	for ptr := 0; off < len(dnsMsg) && ptr <= 10; {
+		c := dnsMsg[off]
+		off++
+		switch c & 0xc0 {
+		case 0x00:
+			if c == 0 {
+				return dst // null terminator: done
+			}
+			end := off + int(c)
+			if end > len(dnsMsg) {
+				return dst
+			}
+			if !first {
+				dst = append(dst, '.')
+			}
+			dst = append(dst, dnsMsg[off:end]...)
+			off = end
+			first = false
+		case 0xc0:
+			if off >= len(dnsMsg) {
+				return dst
+			}
+			off = int(c&0x3f)<<8 | int(dnsMsg[off])
+			ptr++ // guard against pointer loops
+		default:
+			return dst // reserved label type
+		}
+	}
+	return dst
 }
 
 // dnsSkipName advances off past a DNS name in wire format without allocating.
@@ -979,6 +1031,7 @@ const (
 	FieldClassBinaryText // binary-text
 	FieldClassOperation  // op
 	FieldClassTimestamp  // timestamp
+	FieldClassDNSName    // dns name
 )
 
 const octet = 8

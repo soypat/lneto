@@ -177,6 +177,12 @@ func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, p
 			dst = strconv.AppendQuote(dst, unsafe.String(&f.buf[0], len(f.buf)))
 		}
 		debuglog("pcap:fmtfield:text-done")
+	case FieldClassDNSName:
+		// Walk the DNS message from pktStartOff to resolve the name, following
+		// compression pointers that reference earlier bytes in the DNS message.
+		dnsMsg := pkt[pktStartOff/8:]
+		nameOff := field.FrameBitOffset / 8
+		dst = dnsAppendDottedName(dst, dnsMsg, nameOff)
 	case FieldClassDst, FieldClassSrc, FieldClassSize, FieldClassAddress, FieldClassOperation:
 		// IP, MAC addresses and ports.
 		if field.BitLength <= 16 {
