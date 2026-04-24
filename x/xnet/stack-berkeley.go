@@ -28,8 +28,8 @@ const (
 )
 
 // gosocket is the stack abstraction for the baremetal proposal.
-// family must be syscall.AF_INET. SOCK_STREAM is only one supported for now since is TCP.
-// network supported for now is "tcp" or "tcp4". A nil remote address and defined local address means net.Listener is returned.
+// family must be syscall.AF_INET. Known networks: "tcp", "tcp4", "udp", "udp4".
+// A nil remote address and defined local address means net.Listener is returned.
 // if remote address defined then is active connection, returns a net.Conn.
 type gosocket = func(ctx context.Context, network string, family, sotype int, laddr, raddr net.Addr) (c any, err error)
 
@@ -55,8 +55,7 @@ type StackBerkeley struct {
 
 	pendingFDs   []socket[pendingSocket]
 	tcpListeners []socket[net.Listener]
-	tcpConns     []socket[net.Conn]
-	udpConns     []socket[net.Conn]
+	conns        []socket[net.Conn]
 }
 
 // NewBerkeleyStack wraps the gostack with Berkeley-style calling convention. See [StackBerkeley].
@@ -115,45 +114,41 @@ func (s *StackBerkeley) Connect(sockfd int, host string, ip netip.AddrPort) erro
 	}
 
 	var laddr net.Addr
-
+	var raddr net.Addr
+	var network string
+	var family, sotype int
 	switch pending.sock.protocol {
 	case _IPPROTO_TCP, _IPPROTO_TLS:
 		if pending.sock.boundAddr.IsValid() && pending.sock.boundAddr.Port() > 0 {
 			laddr = &net.TCPAddr{IP: pending.sock.boundAddr.Addr().AsSlice(), Port: int(pending.sock.boundAddr.Port())}
 		}
-		raddr := &net.TCPAddr{IP: ip.Addr().AsSlice(), Port: int(ip.Port())}
-		c, err := s.gosocket(context.Background(), "tcp4", _AF_INET, _SOCK_STREAM, laddr, raddr)
-		if err != nil {
-			return err
-		}
-		conn, ok := c.(net.Conn)
-		if !ok {
-			return fmt.Errorf("Connect: stack returned non-Conn for protocol %d", pending.sock.protocol)
-		}
-		s.mu.Lock()
-		s.pendingFDs = deleteFD(s.pendingFDs, sockfd)
-		s.tcpConns = append(s.tcpConns, socket[net.Conn]{sockfd: sockfd, sock: conn})
-		s.mu.Unlock()
+		raddr = &net.TCPAddr{IP: ip.Addr().AsSlice(), Port: int(ip.Port())}
+		network = "tcp4"
+		family = _AF_INET
+		sotype = _SOCK_STREAM
 	case _IPPROTO_UDP:
 		if pending.sock.boundAddr.IsValid() && pending.sock.boundAddr.Port() > 0 {
 			laddr = &net.UDPAddr{IP: pending.sock.boundAddr.Addr().AsSlice(), Port: int(pending.sock.boundAddr.Port())}
 		}
-		raddr := &net.UDPAddr{IP: ip.Addr().AsSlice(), Port: int(ip.Port())}
-		c, err := s.gosocket(context.Background(), "udp4", _AF_INET, _SOCK_DGRAM, laddr, raddr)
-		if err != nil {
-			return err
-		}
-		conn, ok := c.(net.Conn)
-		if !ok {
-			return fmt.Errorf("Connect: stack returned non-Conn for protocol %d", pending.sock.protocol)
-		}
-		s.mu.Lock()
-		s.pendingFDs = deleteFD(s.pendingFDs, sockfd)
-		s.udpConns = append(s.udpConns, socket[net.Conn]{sockfd: sockfd, sock: conn})
-		s.mu.Unlock()
+		raddr = &net.UDPAddr{IP: ip.Addr().AsSlice(), Port: int(ip.Port())}
+		network = "udp4"
+		family = _AF_INET
+		sotype = _SOCK_DGRAM
 	default:
 		return fmt.Errorf("Connect: unsupported protocol %d", pending.sock.protocol)
 	}
+	c, err := s.gosocket(context.Background(), network, family, sotype, laddr, raddr)
+	if err != nil {
+		return err
+	}
+	conn, ok := c.(net.Conn)
+	if !ok {
+		return fmt.Errorf("Connect: stack returned non-Conn for protocol %d", pending.sock.protocol)
+	}
+	s.mu.Lock()
+	s.pendingFDs = deleteFD(s.pendingFDs, sockfd)
+	s.conns = append(s.conns, socket[net.Conn]{sockfd: sockfd, sock: conn})
+	s.mu.Unlock()
 	return nil
 }
 
@@ -209,7 +204,7 @@ func (s *StackBerkeley) Accept(sockfd int) (int, netip.AddrPort, error) {
 
 	s.mu.Lock()
 	fd := s.newFD()
-	s.tcpConns = append(s.tcpConns, socket[net.Conn]{sockfd: fd, sock: conn})
+	s.conns = append(s.conns, socket[net.Conn]{sockfd: fd, sock: conn})
 	s.mu.Unlock()
 	return fd, addrPort, nil
 }
@@ -252,8 +247,7 @@ func (s *StackBerkeley) Close(sockfd int) error {
 		s.mu.Unlock()
 		err := conn.sock.Close()
 		s.mu.Lock()
-		s.tcpConns = deleteFD(s.tcpConns, sockfd)
-		s.udpConns = deleteFD(s.udpConns, sockfd)
+		s.conns = deleteFD(s.conns, sockfd)
 		s.mu.Unlock()
 		return err
 	}
@@ -284,11 +278,7 @@ func (s *StackBerkeley) newFD() int {
 }
 
 func (s *StackBerkeley) getConn(fd int) socket[net.Conn] {
-	sock := getFD(s.tcpConns, fd)
-	if !sock.isvalid() {
-		return getFD(s.udpConns, fd)
-	}
-	return sock
+	return getFD(s.conns, fd)
 }
 func (s *StackBerkeley) getListener(fd int) socket[net.Listener] { return getFD(s.tcpListeners, fd) }
 func (s *StackBerkeley) getPending(fd int) socket[pendingSocket] { return getFD(s.pendingFDs, fd) }
