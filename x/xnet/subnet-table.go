@@ -121,8 +121,8 @@ func (a *subnetTable) patchEgressMAC(frame []byte) {
 		return
 	}
 	efrm, _ := ethernet.NewFrame(frame)
-	if !efrm.IsBroadcast() {
-		return
+	if efrm.IsBroadcast() {
+		return // broadcast stays broadcast (e.g. DHCP discover).
 	}
 	// Server-side connections have no registered MAC; fill from passively learned entries.
 	_, dstIP, _, _, err := internal.GetIPAddr(frame[14:])
