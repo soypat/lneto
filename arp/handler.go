@@ -90,7 +90,7 @@ func (h *Handler) CacheSeed(protoAddr, hwAddr []byte) error {
 // CacheLookup returns the hardware address for protoAddr if it is resolved in the cache.
 // Returns [errQueryPending] if a query is in flight, [errQueryNotFound] if no entry exists.
 func (h *Handler) CacheLookup(protoAddr []byte) (hwAddr []byte, err error) {
-	e := h.cache.queryAddr(protoAddr)
+	e := h.cache.Lookup(protoAddr)
 	if e == nil {
 		return nil, errQueryNotFound
 	} else if e.flags.hasAny(eflagIncomplete) {
@@ -101,7 +101,7 @@ func (h *Handler) CacheLookup(protoAddr []byte) (hwAddr []byte, err error) {
 
 // CacheRemove cancels a pending query or evicts a cached entry for protoAddr.
 func (h *Handler) CacheRemove(protoAddr []byte) error {
-	e := h.cache.queryAddr(protoAddr)
+	e := h.cache.Lookup(protoAddr)
 	if e == nil {
 		return errQueryNotFound
 	}
@@ -187,7 +187,7 @@ func (h *Handler) Demux(ethFrame []byte, frameOffset int) error {
 
 	case OpReply:
 		hwaddr, protoaddr := afrm.Sender()
-		e := h.cache.queryAddr(protoaddr)
+		e := h.cache.Lookup(protoaddr)
 		if e == nil {
 			return nil
 		}

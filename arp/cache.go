@@ -127,7 +127,7 @@ func (c *cache) clearFlags(entryHasFlags, clrTheseFlagsIfMatch eflags) {
 	}
 }
 
-func (c *cache) queryAddr(addr []byte) *entry {
+func (c *cache) Lookup(addr []byte) *entry {
 	n := len(addr)
 	for i := range c.entries {
 		if c.entries[i].flags&eflagInUse != 0 && internal.BytesEqual(c.entries[i].addr[:n], addr) {
