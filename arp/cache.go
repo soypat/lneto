@@ -10,6 +10,7 @@ type cache struct {
 	entries []entry
 }
 
+// entry is designed for compactness. size=class=24 bytes, same as a slice header on x86.
 type entry struct {
 	addr  [16]byte
 	mac   [6]byte
@@ -28,7 +29,7 @@ func (e *entry) use(mac [6]byte, proto []byte, flags eflags) {
 
 func (e *entry) destroy() { *e = entry{} }
 
-func (e *entry) put(frame, ourMAC, ourAddr []byte, op Operation) (int, error) {
+func (e *entry) put(frame, ourAddr []byte, ourMAC [6]byte, op Operation) (int, error) {
 	if len(ourMAC) != 6 {
 		return 0, lneto.ErrInvalidAddr
 	}
@@ -47,7 +48,7 @@ func (e *entry) put(frame, ourMAC, ourAddr []byte, op Operation) (int, error) {
 		}
 		f.SetProtocol(ethernet.TypeIPv6, 16)
 		hw, addr := f.Sender16()
-		copy(hw[:], ourMAC)
+		*hw = ourMAC
 		copy(addr[:], ourAddr)
 		hw, addr = f.Target16()
 		copy(hw[:], e.mac[:])
@@ -59,7 +60,7 @@ func (e *entry) put(frame, ourMAC, ourAddr []byte, op Operation) (int, error) {
 		}
 		f.SetProtocol(ethernet.TypeIPv4, 4)
 		hw, addr := f.Sender4()
-		copy(hw[:], ourMAC)
+		*hw = ourMAC
 		copy(addr[:], ourAddr)
 		hw, addr = f.Target4()
 		copy(hw[:], e.mac[:])
@@ -69,8 +70,7 @@ func (e *entry) put(frame, ourMAC, ourAddr []byte, op Operation) (int, error) {
 	return n, nil
 }
 
-func (flags eflags) hasAny(bits eflags) bool  { return flags&bits != 0 }
-func (flags eflags) hasAll(exact eflags) bool { return flags&exact == exact }
+func (flags eflags) hasAny(bits eflags) bool { return flags&bits != 0 }
 
 type eflags uint8
 
@@ -91,6 +91,8 @@ const (
 	// eflagPriority set for prioritized cache entries. These entries are discarded last.
 	// i.e: set for user created queries, unset for external incoming network queries.
 	eflagPriority
+	// trigger callback, you know the drill.
+	eflagResolveTriggersCallback
 )
 
 func (c *cache) age() {

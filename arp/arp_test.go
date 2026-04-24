@@ -47,9 +47,9 @@ func TestHandler(t *testing.T) {
 	}
 
 	// Perform ARP exchange.
-	expectHWAddr := c2.ourHWAddr
+	expectHWAddr := c2.ourHWAddr[:]
 	queryAddr := c2.ourProtoAddr
-	err = c1.StartQuery(nil, queryAddr)
+	err = c1.StartQuery(queryAddr, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hwaddr, err := c1.QueryResult(queryAddr)
+	hwaddr, err := c1.CacheLookup(queryAddr)
 	if err != nil {
 		t.Fatal("expected query result:", err)
 	} else if !bytes.Equal(hwaddr, expectHWAddr) {

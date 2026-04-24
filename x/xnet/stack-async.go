@@ -60,6 +60,13 @@ type StackAsync struct {
 
 	totalsent uint64
 	totalrecv uint64
+	// stores tuples that are to be resolved asynchronously.
+	// mac is externally owned. ip is owned by this structure.
+	asyncARPResolves [4]struct {
+		mac []byte // mac is externally owned field.
+		ip  []byte // ip is owned by this structure.
+		age uint32 // age used to determine whether to drop this entry
+	}
 }
 
 type StackConfig struct {
@@ -241,14 +248,15 @@ func (s *StackAsync) resetARP() error {
 	err := s.arp.Reset(arp.HandlerConfig{
 		HardwareAddr: mac[:],
 		ProtocolAddr: addr.AsSlice(),
-		MaxQueries:   3,
-		MaxPending:   3,
+		MaxQueries:   5,
+		MaxPending:   5,
 		HardwareType: 1,
 		ProtocolType: proto,
 	})
 	if err != nil {
 		return err
 	}
+	s.arp.SetOnResolveCallback(s.arpResolveCallback)
 	err = s.link.Register(&s.arp)
 	if err != nil {
 		return err
@@ -361,7 +369,7 @@ func (s *StackAsync) DialUDP(conn *udp.Conn, localPort uint16, addrp netip.AddrP
 	if s.subnet.Contains(addrp.Addr()) {
 		mac = make([]byte, 6)
 		ip := addrp.Addr().As4()
-		hw, err := s.arp.QueryResult(ip[:])
+		hw, err := s.arp.CacheLookup(ip[:])
 		if err == nil {
 			// MAC already contained in results.
 			copy(mac, hw)
@@ -369,7 +377,7 @@ func (s *StackAsync) DialUDP(conn *udp.Conn, localPort uint16, addrp netip.AddrP
 			// StartQuery starts an ARP query for addresses in this network.
 			// On finishing query MAC is set and thus the StackPort will allow encapsulating
 			// data on that connection.
-			err = s.arp.StartQuery(mac, ip[:])
+			err = s.startAsyncARPQuery(mac, ip[:])
 			if err != nil {
 				return err
 			}
@@ -389,7 +397,7 @@ func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrP
 	var mac []byte
 	if s.subnet.Contains(addrp.Addr()) {
 		ip := addrp.Addr().As4()
-		hw, err := s.arp.QueryResult(ip[:])
+		hw, err := s.arp.CacheLookup(ip[:])
 		mac = make([]byte, 6)
 		if err == nil {
 			// Query exists, use pre-existing result.
@@ -398,7 +406,7 @@ func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrP
 			// StartQuery starts an ARP query for addresses in this network.
 			// On finishing query MAC is set and thus the StackPort will allow encapsulating
 			// data on that connection.
-			err = s.arp.StartQuery(mac, ip[:])
+			err = s.startAsyncARPQuery(mac, ip[:])
 			if err != nil {
 				return err
 			}
@@ -576,7 +584,7 @@ func (s *StackAsync) StartResolveHardwareAddress6(ip netip.Addr) error {
 		return lneto.ErrUnsupported
 	}
 	addr := ip.As4()
-	return s.arp.StartQuery(nil, addr[:])
+	return s.arp.StartQuery(addr[:], false)
 }
 
 // ResultResolveHardwareAddress6
@@ -587,7 +595,7 @@ func (s *StackAsync) ResultResolveHardwareAddress6(ip netip.Addr) (hw [6]byte, e
 		return hw, lneto.ErrUnsupported
 	}
 	addr := ip.As4()
-	hwslice, err := s.arp.QueryResult(addr[:])
+	hwslice, err := s.arp.CacheLookup(addr[:])
 	if err != nil {
 		return hw, err
 	} else if len(hwslice) != 6 {
@@ -604,7 +612,7 @@ func (s *StackAsync) DiscardResolveHardwareAddress6(ip netip.Addr) error {
 		return lneto.ErrUnsupported
 	}
 	addr := ip.As4()
-	return s.arp.DiscardQuery(addr[:])
+	return s.arp.CacheRemove(addr[:])
 }
 
 type DHCPResults struct {
@@ -692,6 +700,48 @@ func (s *StackAsync) populateDHCPResults() error {
 	}
 	s.dhcpResults.DNSServers = s.dhcp.AppendDNSServers(s.dhcpResults.DNSServers)
 	return nil
+}
+
+/*
+Async ARP logic.
+*/
+
+func (s *StackAsync) startAsyncARPQuery(mac, ip []byte) error {
+	err := s.arp.StartQuery(ip, true)
+	if err != nil {
+		return err
+	}
+	// Find free place.
+	oldest := 0
+	for i := range s.asyncARPResolves {
+		v := &s.asyncARPResolves[i]
+		if len(v.mac) == 0 {
+			oldest = i
+			break
+		} else if v.age > s.asyncARPResolves[oldest].age {
+			oldest = i
+		}
+	}
+	for i := range s.asyncARPResolves {
+		s.asyncARPResolves[i].age++
+	}
+	v := &s.asyncARPResolves[oldest]
+	v.mac = mac
+	v.ip = append(v.ip[:0], ip...)
+	v.age = 0
+	return nil
+}
+
+func (s *StackAsync) arpResolveCallback(mac, ip []byte) {
+	for i := range s.asyncARPResolves {
+		v := &s.asyncARPResolves[i]
+		if internal.BytesEqual(ip, v.ip) {
+			copy(v.mac, mac)
+			v.mac = nil     // Not owned by us. Discard memory.
+			v.ip = v.ip[:0] // empty it out but keep memory.
+			return
+		}
+	}
 }
 
 func addr4(addr [4]byte, ok bool) netip.Addr {

@@ -8,12 +8,14 @@ import (
 
 type Handler struct {
 	connID       uint64
-	ourHWAddr    []byte
-	ourProtoAddr []byte
-	htype        uint16
-	protoType    ethernet.Type
-	vld          lneto.Validator
 	cache        cache
+	vld          lneto.Validator
+	ourProtoAddr []byte
+	onresolve    func(hw, proto []byte)
+
+	htype     uint16
+	protoType ethernet.Type
+	ourHWAddr [6]byte
 }
 
 type HandlerConfig struct {
@@ -39,6 +41,10 @@ func (h *Handler) UpdateProtoAddr(protoAddr []byte) error {
 	return nil
 }
 
+func (h *Handler) SetOnResolveCallback(cb func(hwAddr, protoAddr []byte)) {
+	h.onresolve = cb
+}
+
 func (h *Handler) Reset(cfg HandlerConfig) error {
 	if len(cfg.HardwareAddr) == 0 || len(cfg.HardwareAddr) > 255 ||
 		len(cfg.ProtocolAddr) == 0 || len(cfg.ProtocolAddr) > 255 {
@@ -51,14 +57,15 @@ func (h *Handler) Reset(cfg HandlerConfig) error {
 	}
 	*h = Handler{
 		connID:       h.connID + 1,
-		ourHWAddr:    h.ourHWAddr[:0],
+		ourHWAddr:    h.ourHWAddr,
 		ourProtoAddr: h.ourProtoAddr[:0],
 		htype:        cfg.HardwareType,
 		protoType:    cfg.ProtocolType,
 		cache:        h.cache,
 	}
 	h.cache.reset(cfg.MaxPending + cfg.MaxQueries)
-	h.ourHWAddr = append(h.ourHWAddr, cfg.HardwareAddr...)
+
+	h.ourHWAddr = [6]byte(cfg.HardwareAddr)
 	h.ourProtoAddr = append(h.ourProtoAddr, cfg.ProtocolAddr...)
 	return nil
 }
@@ -68,7 +75,21 @@ func (h *Handler) AbortPending() {
 	h.cache.clearFlags(eflagPendingResponse|eflagIncomplete, eflagInUse)
 }
 
-func (h *Handler) QueryResult(protoAddr []byte) (hwAddr []byte, err error) {
+// CacheSeed pre-populates the cache with a known proto→hardware mapping, making it
+// immediately resolvable via [Handler.CacheLookup] without an ARP exchange.
+// Seeded entries are evicted before active user queries when the cache is full.
+func (h *Handler) CacheSeed(protoAddr, hwAddr []byte) error {
+	if len(hwAddr) != 6 {
+		return lneto.ErrUnsupported
+	}
+	e := h.cache.acquireNext()
+	e.use([6]byte(hwAddr), protoAddr, 0)
+	return nil
+}
+
+// CacheLookup returns the hardware address for protoAddr if it is resolved in the cache.
+// Returns [errQueryPending] if a query is in flight, [errQueryNotFound] if no entry exists.
+func (h *Handler) CacheLookup(protoAddr []byte) (hwAddr []byte, err error) {
 	e := h.cache.queryAddr(protoAddr)
 	if e == nil {
 		return nil, errQueryNotFound
@@ -78,7 +99,8 @@ func (h *Handler) QueryResult(protoAddr []byte) (hwAddr []byte, err error) {
 	return e.mac[:], nil
 }
 
-func (h *Handler) DiscardQuery(protoAddr []byte) error {
+// CacheRemove cancels a pending query or evicts a cached entry for protoAddr.
+func (h *Handler) CacheRemove(protoAddr []byte) error {
 	e := h.cache.queryAddr(protoAddr)
 	if e == nil {
 		return errQueryNotFound
@@ -88,19 +110,16 @@ func (h *Handler) DiscardQuery(protoAddr []byte) error {
 }
 
 // StartQuery queues a query to perform over ARP for the protocol address `proto`.
-// The user can additionally specify an dstHWAddr to write query result to on completion.
-// If dstHWAddr is nil then query still occurs but no external buffer is written on query completion.
-// dstHWAddr must be zeroed out (invalid MAC).
-func (h *Handler) StartQuery(dstHWAddr, proto []byte) error {
+// Use [Handler.SetOnResolveCallback] to asynchronously set an ARP request result.
+func (h *Handler) StartQuery(proto []byte, triggerCallback bool) error {
 	if len(proto) != len(h.ourProtoAddr) {
 		return lneto.ErrMismatchLen
-	} else if dstHWAddr != nil && len(dstHWAddr) != len(h.ourHWAddr) {
-		return lneto.ErrMismatchLen
-	} else if dstHWAddr != nil && !internal.IsZeroed(dstHWAddr...) {
-		return lneto.ErrInvalidConfig
 	}
 	e := h.cache.acquireNext()
 	e.use([6]byte{}, proto, eflagIncomplete|eflagIncompletePendingQuery|eflagPriority)
+	if triggerCallback {
+		e.flags |= eflagResolveTriggersCallback
+	}
 	return nil
 }
 
@@ -123,7 +142,7 @@ func (h *Handler) Encapsulate(carrierData []byte, _, offsetToFrame int) (int, er
 		e.flags &^= eflagPendingResponse
 	}
 	// Write Request or Reply, depending on which entry we got.
-	n, err := e.put(b, h.ourHWAddr, h.ourProtoAddr, op)
+	n, err := e.put(b, h.ourProtoAddr, h.ourHWAddr, op)
 	if err != nil {
 		return 0, err
 	}
@@ -174,7 +193,9 @@ func (h *Handler) Demux(ethFrame []byte, frameOffset int) error {
 		}
 		copy(e.mac[:], hwaddr)
 		e.flags &^= eflagIncomplete | eflagIncompletePendingQuery
-
+		if e.flags.hasAny(eflagResolveTriggersCallback) && h.onresolve != nil {
+			h.onresolve(e.mac[:], protoaddr)
+		}
 	default:
 		return errARPUnsupported
 	}
