@@ -105,7 +105,7 @@ func (f *Formatter) FormatFrame(dst []byte, frm Frame, pkt []byte) (_ []byte, er
 }
 
 func (f *Formatter) filterField(field FrameField) bool {
-	return f.FilterClasses != nil && !slices.Contains(f.FilterClasses, field.Class) ||
+	return f.FilterClasses != nil && field.Flags&FlagContainer == 0 && !slices.Contains(f.FilterClasses, field.Class) ||
 		(field.Flags.IsLegacy() && !f.DisableLegacyFilter)
 }
 
@@ -142,7 +142,8 @@ func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, p
 	if hasSpaces {
 		dst = append(dst, ')')
 	}
-	if field.BitLength == 0 {
+	if field.BitLength == 0 || field.Flags&FlagContainer != 0 {
+		// We do not print empty nor container fields.
 		return dst, nil
 	}
 	dst = append(dst, '=')

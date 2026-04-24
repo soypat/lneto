@@ -462,7 +462,7 @@ func (pc *PacketBreakdown) CaptureDNS(dst []Frame, pkt []byte, bitOffset int) ([
 	if nq > 0 {
 		sectionStart := wireOff
 		qfield := internal.SliceReclaim(&finfo.Fields)
-		*qfield = FrameField{Name: "Questions", Class: FieldClassOptions, SubFields: qfield.SubFields[:0]}
+		*qfield = FrameField{Name: "Questions", Class: fieldClassDNSResource, SubFields: qfield.SubFields[:0], Flags: FlagContainer}
 		decoded := pc.dmsg.Questions
 		for i := range nq {
 			nameStart := wireOff
@@ -514,7 +514,7 @@ func (pc *PacketBreakdown) appendDNSResources(finfo *Frame, name string, dnsData
 	var err error
 	sectionStart := wireOff
 	rfield := internal.SliceReclaim(&finfo.Fields)
-	*rfield = FrameField{Name: name, Class: FieldClassOptions, SubFields: rfield.SubFields[:0]}
+	*rfield = FrameField{Name: name, Class: fieldClassDNSResource, SubFields: rfield.SubFields[:0], Flags: FlagContainer}
 	for i := range total {
 		nameStart := wireOff
 		wireOff, err = dnsSkipName(dnsData, wireOff)
@@ -832,6 +832,9 @@ type Flags uint32
 const (
 	FlagRightAligned Flags = 1 << iota
 	FlagLegacy
+	// FlagContainer is used for [FrameField]s whose SubFields represent
+	// the entirety of the FrameField's data. i.e: DNS Questions/Answers.
+	FlagContainer
 )
 
 func (ff Flags) IsLegacy() bool       { return ff&FlagLegacy != 0 }
@@ -1035,6 +1038,8 @@ const (
 )
 
 const octet = 8
+
+const fieldClassDNSResource = fieldClassUndefined
 
 var baseEthernetFields = [...]FrameField{
 	{

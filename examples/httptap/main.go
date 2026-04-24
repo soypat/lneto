@@ -87,7 +87,7 @@ func run() error {
 	var cap pcap.PacketBreakdown
 	cap.SubfieldLimit = 30 // For big DNS or DHCP.
 	pf := pcap.Formatter{
-		FilterClasses: []pcap.FieldClass{pcap.FieldClassDst, pcap.FieldClassSrc, pcap.FieldClassSize, pcap.FieldClassFlags},
+		FilterClasses: []pcap.FieldClass{pcap.FieldClassDst, pcap.FieldClassSrc, pcap.FieldClassSize, pcap.FieldClassFlags, pcap.FieldClassDNSName},
 	}
 	var pfbuf []byte
 	sv.OnTransfer(func(channel int, pkt []byte) {

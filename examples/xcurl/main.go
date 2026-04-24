@@ -139,7 +139,7 @@ func run() (err error) {
 		cap.SubfieldLimit = 30 // For chunky DNS.
 		var frames []pcap.Frame
 		pf := pcap.Formatter{
-			FilterClasses: []pcap.FieldClass{pcap.FieldClassFlags, pcap.FieldClassOperation, pcap.FieldClassDst, pcap.FieldClassSrc, pcap.FieldClassAddress, pcap.FieldClassTimestamp},
+			FilterClasses: []pcap.FieldClass{pcap.FieldClassFlags, pcap.FieldClassOperation, pcap.FieldClassDst, pcap.FieldClassSrc, pcap.FieldClassAddress, pcap.FieldClassTimestamp, pcap.FieldClassDNSName},
 		}
 		var pfbuf []byte
 		logFrames := func(context string, pkt []byte) error {
