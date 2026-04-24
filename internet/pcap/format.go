@@ -105,12 +105,12 @@ func (f *Formatter) FormatFrame(dst []byte, frm Frame, pkt []byte) (_ []byte, er
 }
 
 func (f *Formatter) filterField(field FrameField) bool {
-	return f.FilterClasses != nil && !slices.Contains(f.FilterClasses, field.Class) ||
+	return f.FilterClasses != nil && field.Flags&FlagContainer == 0 && !slices.Contains(f.FilterClasses, field.Class) ||
 		(field.Flags.IsLegacy() && !f.DisableLegacyFilter)
 }
 
 func (f *Formatter) FormatField(dst []byte, pktStartOff int, field FrameField, pkt []byte) (_ []byte, err error) {
-	printOnlySubfields := field.Class == FieldClassOptions && len(field.SubFields) > 0
+	printOnlySubfields := (field.Flags&FlagContainer != 0 || field.Class == FieldClassOptions) && len(field.SubFields) > 0
 	if !printOnlySubfields {
 		dst, err = f.formatField(dst, pktStartOff, field, pkt)
 	} else {
@@ -119,7 +119,10 @@ func (f *Formatter) FormatField(dst []byte, pktStartOff int, field FrameField, p
 	if f.SubfieldLimit > 0 && len(field.SubFields) > 0 {
 		sep := f.subfieldSep()
 		lim := min(len(field.SubFields), f.SubfieldLimit)
-		for i := 0; err == nil && i < lim && !f.filterField(field.SubFields[i]); i++ {
+		for i := 0; err == nil && i < lim; i++ {
+			if f.filterField(field.SubFields[i]) {
+				continue
+			}
 			dst = append(dst, sep...)
 			// Notice we only format subfields one level low
 			dst, err = f.formatField(dst, pktStartOff, field.SubFields[i], pkt)
@@ -143,9 +146,13 @@ func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, p
 		dst = append(dst, ')')
 	}
 	if field.BitLength == 0 {
+		// We do not print empty nor container fields.
 		return dst, nil
 	}
 	dst = append(dst, '=')
+	if field.Flags&FlagContainer != 0 {
+		return dst, nil
+	}
 	f.mubuf.Lock()
 	defer f.mubuf.Unlock()
 	f.buf, err = appendField(f.buf[:0], pkt, field.FrameBitOffset+pktStartOff, field.BitLength, field.Flags.IsRightAligned())
@@ -177,6 +184,12 @@ func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, p
 			dst = strconv.AppendQuote(dst, unsafe.String(&f.buf[0], len(f.buf)))
 		}
 		debuglog("pcap:fmtfield:text-done")
+	case FieldClassDNSName:
+		// Walk the DNS message from pktStartOff to resolve the name, following
+		// compression pointers that reference earlier bytes in the DNS message.
+		dnsMsg := pkt[pktStartOff/8:]
+		nameOff := field.FrameBitOffset / 8
+		dst = dnsAppendDottedName(dst, dnsMsg, nameOff)
 	case FieldClassDst, FieldClassSrc, FieldClassSize, FieldClassAddress, FieldClassOperation:
 		// IP, MAC addresses and ports.
 		if field.BitLength <= 16 {
@@ -221,7 +234,7 @@ func (f *Formatter) fieldSep() string {
 func (f *Formatter) subfieldSep() string {
 	sep := f.SubfieldSep
 	if sep == "" {
-		sep = "_" // default sub-field separator
+		sep = "," // default sub-field separator
 	}
 	return sep
 }
