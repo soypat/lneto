@@ -140,6 +140,7 @@ func run() (err error) {
 		var frames []pcap.Frame
 		pf := pcap.Formatter{
 			FilterClasses: []pcap.FieldClass{pcap.FieldClassFlags, pcap.FieldClassOperation, pcap.FieldClassDst, pcap.FieldClassSrc, pcap.FieldClassAddress, pcap.FieldClassTimestamp, pcap.FieldClassDNSName},
+			SubfieldLimit: 30,
 		}
 		var pfbuf []byte
 		logFrames := func(context string, pkt []byte) error {
