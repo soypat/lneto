@@ -132,7 +132,7 @@ func (h *Handler) Encapsulate(carrierData []byte, _, offsetToFrame int) (int, er
 		broadcast := ethernet.BroadcastAddr()
 		trySetEthernetDst(carrierData[:offsetToFrame], broadcast[:])
 	case OpReply:
-		_, tgt := afrm.Target()
+		tgt, _ := afrm.Target()
 		trySetEthernetDst(carrierData[:offsetToFrame], tgt)
 	}
 	return n, nil
