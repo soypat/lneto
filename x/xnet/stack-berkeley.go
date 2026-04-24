@@ -114,31 +114,30 @@ func (s *StackBerkeley) Connect(sockfd int, host string, ip netip.AddrPort) erro
 	}
 
 	var laddr net.Addr
-
+	var raddr net.Addr
+	var network string
+	var family, sotype int
 	switch pending.sock.protocol {
 	case _IPPROTO_TCP, _IPPROTO_TLS:
 		if pending.sock.boundAddr.IsValid() && pending.sock.boundAddr.Port() > 0 {
 			laddr = &net.TCPAddr{IP: pending.sock.boundAddr.Addr().AsSlice(), Port: int(pending.sock.boundAddr.Port())}
 		}
-		raddr := &net.TCPAddr{IP: ip.Addr().AsSlice(), Port: int(ip.Port())}
-		c, err := s.gosocket(context.Background(), "tcp4", _AF_INET, _SOCK_STREAM, laddr, raddr)
-		if err != nil {
-			return err
-		}
-		conn, ok := c.(net.Conn)
-		if !ok {
-			return fmt.Errorf("Connect: stack returned non-Conn for protocol %d", pending.sock.protocol)
-		}
-		s.mu.Lock()
-		s.pendingFDs = deleteFD(s.pendingFDs, sockfd)
-		s.conns = append(s.conns, socket[net.Conn]{sockfd: sockfd, sock: conn})
-		s.mu.Unlock()
+		raddr = &net.TCPAddr{IP: ip.Addr().AsSlice(), Port: int(ip.Port())}
+		network = "tcp4"
+		family = _AF_INET
+		sotype = _SOCK_STREAM
 	case _IPPROTO_UDP:
 		if pending.sock.boundAddr.IsValid() && pending.sock.boundAddr.Port() > 0 {
 			laddr = &net.UDPAddr{IP: pending.sock.boundAddr.Addr().AsSlice(), Port: int(pending.sock.boundAddr.Port())}
 		}
-		raddr := &net.UDPAddr{IP: ip.Addr().AsSlice(), Port: int(ip.Port())}
-		c, err := s.gosocket(context.Background(), "udp4", _AF_INET, _SOCK_DGRAM, laddr, raddr)
+		raddr = &net.UDPAddr{IP: ip.Addr().AsSlice(), Port: int(ip.Port())}
+		network = "udp4"
+		family = _AF_INET
+		sotype = _SOCK_DGRAM
+	default:
+		return fmt.Errorf("Connect: unsupported protocol %d", pending.sock.protocol)
+	}
+	c, err := s.gosocket(context.Background(), network, family, sotype, laddr, raddr)
 		if err != nil {
 			return err
 		}
@@ -150,9 +149,6 @@ func (s *StackBerkeley) Connect(sockfd int, host string, ip netip.AddrPort) erro
 		s.pendingFDs = deleteFD(s.pendingFDs, sockfd)
 		s.conns = append(s.conns, socket[net.Conn]{sockfd: sockfd, sock: conn})
 		s.mu.Unlock()
-	default:
-		return fmt.Errorf("Connect: unsupported protocol %d", pending.sock.protocol)
-	}
 	return nil
 }
 
