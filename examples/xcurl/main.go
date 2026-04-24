@@ -136,6 +136,7 @@ func run() (err error) {
 		lastAction := time.Now()
 		buf := make([]byte, math.MaxUint16) // Generic-receive Offload (GRO) can aggregate packets.
 		var cap pcap.PacketBreakdown
+		cap.SubfieldLimit = 30 // For chunky DNS.
 		var frames []pcap.Frame
 		pf := pcap.Formatter{
 			FilterClasses: []pcap.FieldClass{pcap.FieldClassFlags, pcap.FieldClassOperation, pcap.FieldClassDst, pcap.FieldClassSrc, pcap.FieldClassAddress, pcap.FieldClassTimestamp},

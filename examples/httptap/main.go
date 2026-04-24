@@ -85,6 +85,7 @@ func run() error {
 	}
 	defer sv.Close()
 	var cap pcap.PacketBreakdown
+	cap.SubfieldLimit = 30 // For big DNS or DHCP.
 	pf := pcap.Formatter{
 		FilterClasses: []pcap.FieldClass{pcap.FieldClassDst, pcap.FieldClassSrc, pcap.FieldClassSize, pcap.FieldClassFlags},
 	}
