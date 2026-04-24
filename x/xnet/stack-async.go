@@ -39,7 +39,7 @@ type StackAsync struct {
 	dhcpUDP     internet.StackUDPPort
 	dhcp        dhcpv4.Client
 	dhcpResults DHCPResults
-	subnet      netip.Prefix // Local subnet for ARP resolution.
+	arpt        subnetTable
 
 	dnsUDP  internet.StackUDPPort
 	dns     dns.Client
@@ -60,16 +60,6 @@ type StackAsync struct {
 
 	totalsent uint64
 	totalrecv uint64
-	// stores tuples that are to be resolved asynchronously.
-	// mac is externally owned. ip is owned by this structure.
-	// TODO: this should be an internet.StackXxx type that embeds internet.StackEthernet(?). Maybe can also be hooked to StackPorts to make StackPortMACFiltered redundant. Investigate.
-	asyncARPResolves []struct {
-		mac []byte // mac is externally owned field.
-		ip  []byte // ip is owned by this structure.
-		age uint16 // age used to determine whether to drop this entry
-	}
-	// maxsubnetnodes stores issubnetreserved quantity. These are stored at the front of asyncARPResolves.
-	maxsubnetnodes uint8
 }
 
 type StackConfig struct {
@@ -108,29 +98,8 @@ func (s *StackAsync) IngressEthernet(ethernetFrame []byte) error {
 	defer s.mu.Unlock()
 	s.totalrecv += uint64(len(ethernetFrame))
 	err := s.link.Demux(ethernetFrame, 0)
-	if err == nil && len(ethernetFrame) > 14+20 && s.maxsubnetnodes > 0 &&
-		binary.BigEndian.Uint16(ethernetFrame[12:14]) == uint16(ethernet.TypeIPv4) {
-		// Passive ARP learn when src_ip in my subnet.
-		src, _, _, _, err := internal.GetIPAddr(ethernetFrame[14:])
-		if err != nil {
-			return err
-		}
-		addr, _ := netip.AddrFromSlice(src)
-		mac := ethernetFrame[6:12]
-		if s.subnet.Contains(addr) {
-			for i := range s.maxsubnetnodes {
-				v := &s.asyncARPResolves[i]
-				if internal.BytesEqual(v.ip, src) {
-					copy(v.mac, mac) // update in case MAC changed (e.g. NIC swap)
-					break
-				}
-				if len(v.ip) == 0 {
-					v.ip = append(v.ip, src...)
-					v.mac = append(v.mac, mac...)
-					break
-				}
-			}
-		}
+	if err == nil {
+		s.arpt.learnFromIngressEthernet(ethernetFrame)
 	}
 	return err
 }
@@ -206,7 +175,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	if cfg.PassivePeers == 0 {
 		s.link.OnEncapsulate(nil)
 	} else {
-		s.link.OnEncapsulate(s.patchEgressMAC)
+		s.link.OnEncapsulate(s.arpt.patchEgressMAC)
 	}
 	const ipNodes = 3 // 3 IP protocols possible: UDP, TCP, ICMP.
 	err = s.ip.Reset(addr, ipNodes)
@@ -214,7 +183,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 		return err
 	}
 	s.ip.SetAcceptMulticast(cfg.AcceptMulticast)
-	s.maxsubnetnodes = uint8(cfg.PassivePeers)
+	s.arpt.passivePeers = uint8(cfg.PassivePeers)
 	err = s.resetARP()
 	if err != nil {
 		return err
@@ -293,11 +262,8 @@ func (s *StackAsync) resetARP() error {
 	if err != nil {
 		return err
 	}
-	if s.asyncARPResolves == nil {
-		internal.SliceReuse(&s.asyncARPResolves, 10+int(s.maxsubnetnodes))
-		s.asyncARPResolves = s.asyncARPResolves[:cap(s.asyncARPResolves)]
-	}
-	s.arp.SetOnResolveCallback(s.arpResolveCallback)
+	s.arpt.reset(10, s.arpt.passivePeers)
+	s.arp.SetOnResolveCallback(s.arpt.onResolve)
 	err = s.link.Register(&s.arp)
 	if err != nil {
 		return err
@@ -357,7 +323,7 @@ func (s *StackAsync) Addr() netip.Addr {
 func (s *StackAsync) SetSubnet(subnetMask netip.Prefix) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.subnet = subnetMask
+	s.arpt.subnet = subnetMask
 }
 
 func (s *StackAsync) SetHardwareAddress(hw [6]byte) error {
@@ -407,7 +373,7 @@ func (s *StackAsync) DialUDP(conn *udp.Conn, localPort uint16, addrp netip.AddrP
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var mac []byte
-	if s.subnet.Contains(addrp.Addr()) {
+	if s.arpt.subnet.Contains(addrp.Addr()) {
 		mac = make([]byte, 6)
 		ip := addrp.Addr().As4()
 		hw, err := s.arp.CacheLookup(ip[:])
@@ -418,7 +384,7 @@ func (s *StackAsync) DialUDP(conn *udp.Conn, localPort uint16, addrp netip.AddrP
 			// StartQuery starts an ARP query for addresses in this network.
 			// On finishing query MAC is set and thus the StackPort will allow encapsulating
 			// data on that connection.
-			err = s.startAsyncARPQuery(mac, ip[:])
+			err = s.arpt.startQuery(mac, ip[:], &s.arp)
 			if err != nil {
 				return err
 			}
@@ -436,7 +402,7 @@ func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrP
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var mac []byte
-	if s.subnet.Contains(addrp.Addr()) {
+	if s.arpt.subnet.Contains(addrp.Addr()) {
 		ip := addrp.Addr().As4()
 		hw, err := s.arp.CacheLookup(ip[:])
 		mac = make([]byte, 6)
@@ -447,7 +413,7 @@ func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrP
 			// StartQuery starts an ARP query for addresses in this network.
 			// On finishing query MAC is set and thus the StackPort will allow encapsulating
 			// data on that connection.
-			err = s.startAsyncARPQuery(mac, ip[:])
+			err = s.arpt.startQuery(mac, ip[:], &s.arp)
 			if err != nil {
 				return err
 			}
@@ -697,7 +663,7 @@ func (stack *StackAsync) AssimilateDHCPResults(results *DHCPResults) error {
 	stack.mu.Lock()
 	defer stack.mu.Unlock()
 	if results.Subnet.IsValid() {
-		stack.subnet = results.Subnet
+		stack.arpt.subnet = results.Subnet
 	}
 	if results.AssignedAddr.IsValid() {
 		err := stack.setIPAddr(results.AssignedAddr)
@@ -741,83 +707,6 @@ func (s *StackAsync) populateDHCPResults() error {
 	}
 	s.dhcpResults.DNSServers = s.dhcp.AppendDNSServers(s.dhcpResults.DNSServers)
 	return nil
-}
-
-/*
-Async ARP logic.
-*/
-
-func (s *StackAsync) startAsyncARPQuery(mac, ip []byte) error {
-	// Check passively learned subnet entries before issuing a query.
-	for i := range s.maxsubnetnodes {
-		v := &s.asyncARPResolves[i]
-		if internal.BytesEqual(v.ip, ip) {
-			copy(mac, v.mac)
-			return nil
-		}
-	}
-	err := s.arp.StartQuery(ip, true)
-	if err != nil {
-		return err
-	}
-	// Find free place among non-reserved entries.
-	n := int(s.maxsubnetnodes)
-	oldest := n
-	for i := n; i < len(s.asyncARPResolves); i++ {
-		v := &s.asyncARPResolves[i]
-		if len(v.mac) == 0 {
-			oldest = i
-			break
-		} else if v.age > s.asyncARPResolves[oldest].age {
-			oldest = i
-		}
-	}
-	for i := n; i < len(s.asyncARPResolves); i++ {
-		s.asyncARPResolves[i].age++
-	}
-	v := &s.asyncARPResolves[oldest]
-	v.mac = mac
-	v.ip = append(v.ip[:0], ip...)
-	v.age = 0
-	return nil
-}
-
-func (s *StackAsync) arpResolveCallback(mac, ip []byte) {
-	for i := int(s.maxsubnetnodes); i < len(s.asyncARPResolves); i++ {
-		v := &s.asyncARPResolves[i]
-		if internal.BytesEqual(ip, v.ip) {
-			copy(v.mac, mac)
-			v.mac = nil     // Not owned by us. Discard memory.
-			v.ip = v.ip[:0] // empty it out but keep memory.
-			return
-		}
-	}
-}
-
-// patchEgressMAC is registered as the OnEncapsulate callback on StackEthernet.
-// It runs after the payload is written but before CRC is appended, so the CRC
-// covers the corrected destination MAC.
-func (s *StackAsync) patchEgressMAC(frame []byte) {
-	if s.maxsubnetnodes == 0 || len(frame) < 14+20 ||
-		binary.BigEndian.Uint16(frame[12:14]) != uint16(ethernet.TypeIPv4) {
-		return
-	}
-	efrm, _ := ethernet.NewFrame(frame)
-	if !efrm.IsBroadcast() {
-		return
-	}
-	// Server-side connections have no registered MAC; fill from passively learned entries.
-	_, dstIP, _, _, err := internal.GetIPAddr(frame[14:])
-	if err != nil {
-		return
-	}
-	for i := range s.maxsubnetnodes {
-		v := &s.asyncARPResolves[i]
-		if internal.BytesEqual(v.ip, dstIP) {
-			*efrm.DestinationHardwareAddr() = [6]byte(v.mac)
-			return
-		}
-	}
 }
 
 func addr4(addr [4]byte, ok bool) netip.Addr {
