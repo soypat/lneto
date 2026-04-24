@@ -39,6 +39,8 @@ type StackEthernet struct {
 	gwmac           [6]byte
 	mtu             uint16
 	acceptMulticast bool
+
+	onSend func(p []byte)
 	// crcupdate set when crc32 has been configured to be appended.
 	crcupdate func(crc uint32, p []byte) uint32
 }
@@ -61,6 +63,10 @@ func (ls *StackEthernet) SetHardwareAddr6(mac [6]byte) {
 
 func (ls *StackEthernet) HardwareAddr6() [6]byte {
 	return ls.mac
+}
+
+func (ls *StackEthernet) OnEncapsulate(cb func([]byte)) {
+	ls.onSend = cb
 }
 
 // Reset6 resets the stack with the given parameters.
@@ -193,6 +199,9 @@ func (ls *StackEthernet) Encapsulate(carrierData []byte, offsetToIP, offsetToFra
 	for n < minFrameSize {
 		dst[n] = 0
 		n++
+	}
+	if ls.onSend != nil {
+		ls.onSend(dst[:n])
 	}
 	if ls.crcupdate != nil {
 		crc := ls.crcupdate(0, carrierData[offsetToFrame:offsetToFrame+n])

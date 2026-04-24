@@ -107,7 +107,8 @@ func (s *StackAsync) IngressEthernet(ethernetFrame []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.totalrecv += uint64(len(ethernetFrame))
-	if len(ethernetFrame) > 14+20 && s.maxsubnetnodes > 0 &&
+	err := s.link.Demux(ethernetFrame, 0)
+	if err == nil && len(ethernetFrame) > 14+20 && s.maxsubnetnodes > 0 &&
 		binary.BigEndian.Uint16(ethernetFrame[12:14]) == uint16(ethernet.TypeIPv4) {
 		// Passive ARP learn when src_ip in my subnet.
 		src, _, _, _, err := internal.GetIPAddr(ethernetFrame[14:])
@@ -131,7 +132,7 @@ func (s *StackAsync) IngressEthernet(ethernetFrame []byte) error {
 			}
 		}
 	}
-	return s.link.Demux(ethernetFrame, 0)
+	return err
 }
 
 // EgressEthernet writes the next ethernet frame to send into dstEthernetFrame from the stack.
@@ -141,23 +142,6 @@ func (s *StackAsync) EgressEthernet(dstEthernetFrame []byte) (int, error) {
 	defer s.mu.Unlock()
 	n, err := s.link.Encapsulate(dstEthernetFrame, -1, 0)
 	s.totalsent += uint64(n)
-	if n >= 14+20 && s.maxsubnetnodes > 0 &&
-		binary.BigEndian.Uint16(dstEthernetFrame[12:14]) == uint16(ethernet.TypeIPv4) {
-		efrm, _ := ethernet.NewFrame(dstEthernetFrame)
-		if efrm.IsBroadcast() {
-			// Server-side connections have no registered MAC; fill from passively learned entries.
-			_, dstIP, _, _, iperr := internal.GetIPAddr(dstEthernetFrame[14:])
-			if iperr == nil {
-				for i := range s.maxsubnetnodes {
-					v := &s.asyncARPResolves[i]
-					if internal.BytesEqual(v.ip, dstIP) {
-						*efrm.DestinationHardwareAddr() = [6]byte(v.mac)
-						break
-					}
-				}
-			}
-		}
-	}
 	return n, err
 }
 
@@ -219,6 +203,11 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 		return err
 	}
 	s.link.SetAcceptMulticast(cfg.AcceptMulticast)
+	if cfg.PassivePeers == 0 {
+		s.link.OnEncapsulate(nil)
+	} else {
+		s.link.OnEncapsulate(s.patchEgressMAC)
+	}
 	const ipNodes = 3 // 3 IP protocols possible: UDP, TCP, ICMP.
 	err = s.ip.Reset(addr, ipNodes)
 	if err != nil {
@@ -800,6 +789,32 @@ func (s *StackAsync) arpResolveCallback(mac, ip []byte) {
 			copy(v.mac, mac)
 			v.mac = nil     // Not owned by us. Discard memory.
 			v.ip = v.ip[:0] // empty it out but keep memory.
+			return
+		}
+	}
+}
+
+// patchEgressMAC is registered as the OnEncapsulate callback on StackEthernet.
+// It runs after the payload is written but before CRC is appended, so the CRC
+// covers the corrected destination MAC.
+func (s *StackAsync) patchEgressMAC(frame []byte) {
+	if s.maxsubnetnodes == 0 || len(frame) < 14+20 ||
+		binary.BigEndian.Uint16(frame[12:14]) != uint16(ethernet.TypeIPv4) {
+		return
+	}
+	efrm, _ := ethernet.NewFrame(frame)
+	if !efrm.IsBroadcast() {
+		return
+	}
+	// Server-side connections have no registered MAC; fill from passively learned entries.
+	_, dstIP, _, _, err := internal.GetIPAddr(frame[14:])
+	if err != nil {
+		return
+	}
+	for i := range s.maxsubnetnodes {
+		v := &s.asyncARPResolves[i]
+		if internal.BytesEqual(v.ip, dstIP) {
+			*efrm.DestinationHardwareAddr() = [6]byte(v.mac)
 			return
 		}
 	}
