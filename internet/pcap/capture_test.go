@@ -498,7 +498,13 @@ func ExampleFormatter_dns() {
 	var msg dns.Message
 	msg.Questions = []dns.Question{
 		{Name: dns.MustNewName("example.com"), Type: dns.TypeA, Class: dns.ClassINET},
+		{Name: dns.MustNewName("temu.com"), Type: dns.TypeAAAA, Class: dns.ClassANY},
 	}
+	msg.Answers = []dns.Resource{
+		dns.NewResource(dns.MustNewName("abc.com"), dns.TypeALL, dns.ClassANY, 64, []byte{10, 0, 11, 1}),
+		dns.NewResource(dns.MustNewName("123.com"), dns.TypeA, dns.ClassINET, 64, []byte{20, 0, 22, 2}),
+	}
+
 	dnsPayload, err := msg.AppendTo(nil, 0x1234, dns.NewClientHeaderFlags(dns.OpCodeQuery, true))
 	if err != nil {
 		fmt.Println("dns encode error:", err)
@@ -550,5 +556,6 @@ func ExampleFormatter_dns() {
 	// IPv4 len=20; version=0x04; (Header Length)=5; (Type of Service)=0x00; (Total Length)=57; identification=0x0000; flags=0x0000; (Time to live)=0x40; protocol=0x11; checksum=0x7ab5; source=0.0.0.0; destination=0.0.0.0
 	// UDP len=8; (Source port)=58200; (Destination port)=53; size=37; checksum=0x0000
 	// DNS len=29; identification=0x1234; flags=0x0100; Questions=1; Answers=0; Authorities=0; Additionals=0; Questions
-	// 	A
+	// 	A=1
+	// 	Class=1
 }

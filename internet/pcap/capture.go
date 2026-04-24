@@ -465,22 +465,22 @@ func (pc *PacketBreakdown) CaptureDNS(dst []Frame, pkt []byte, bitOffset int) ([
 		*qfield = FrameField{Name: "Questions", Class: FieldClassOptions, SubFields: qfield.SubFields[:0]}
 		decoded := pc.dmsg.Questions
 		for i := range nq {
-			recStart := wireOff
 			wireOff, err = dnsSkipName(dnsData, wireOff)
 			if err != nil {
 				break
 			}
+			nameEnd := wireOff
 			wireOff += 4 // Type(2) + Class(2)
-			if i < len(decoded) && len(qfield.SubFields) < pc.SubfieldLimit-1 {
+			if i < len(decoded) && len(qfield.SubFields)+2 <= pc.SubfieldLimit {
 				qfield.SubFields = append(qfield.SubFields, FrameField{
 					Name:           "Type",
-					FrameBitOffset: recStart * octet,
-					Class:          FieldClassType,
+					FrameBitOffset: nameEnd * octet,
+					Class:          FieldClassOperation,
 					BitLength:      2 * octet,
 				}, FrameField{
 					Name:           "Class",
-					FrameBitOffset: (recStart + 2) * octet,
-					Class:          FieldClassType,
+					FrameBitOffset: (nameEnd + 2) * octet,
+					Class:          FieldClassOperation,
 					BitLength:      2 * octet,
 				})
 			}
