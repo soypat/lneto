@@ -55,8 +55,7 @@ type StackBerkeley struct {
 
 	pendingFDs   []socket[pendingSocket]
 	tcpListeners []socket[net.Listener]
-	tcpConns     []socket[net.Conn]
-	udpConns     []socket[net.Conn]
+	conns        []socket[net.Conn]
 }
 
 // NewBerkeleyStack wraps the gostack with Berkeley-style calling convention. See [StackBerkeley].
@@ -132,7 +131,7 @@ func (s *StackBerkeley) Connect(sockfd int, host string, ip netip.AddrPort) erro
 		}
 		s.mu.Lock()
 		s.pendingFDs = deleteFD(s.pendingFDs, sockfd)
-		s.tcpConns = append(s.tcpConns, socket[net.Conn]{sockfd: sockfd, sock: conn})
+		s.conns = append(s.conns, socket[net.Conn]{sockfd: sockfd, sock: conn})
 		s.mu.Unlock()
 	case _IPPROTO_UDP:
 		if pending.sock.boundAddr.IsValid() && pending.sock.boundAddr.Port() > 0 {
@@ -149,7 +148,7 @@ func (s *StackBerkeley) Connect(sockfd int, host string, ip netip.AddrPort) erro
 		}
 		s.mu.Lock()
 		s.pendingFDs = deleteFD(s.pendingFDs, sockfd)
-		s.udpConns = append(s.udpConns, socket[net.Conn]{sockfd: sockfd, sock: conn})
+		s.conns = append(s.conns, socket[net.Conn]{sockfd: sockfd, sock: conn})
 		s.mu.Unlock()
 	default:
 		return fmt.Errorf("Connect: unsupported protocol %d", pending.sock.protocol)
@@ -209,7 +208,7 @@ func (s *StackBerkeley) Accept(sockfd int) (int, netip.AddrPort, error) {
 
 	s.mu.Lock()
 	fd := s.newFD()
-	s.tcpConns = append(s.tcpConns, socket[net.Conn]{sockfd: fd, sock: conn})
+	s.conns = append(s.conns, socket[net.Conn]{sockfd: fd, sock: conn})
 	s.mu.Unlock()
 	return fd, addrPort, nil
 }
@@ -252,8 +251,7 @@ func (s *StackBerkeley) Close(sockfd int) error {
 		s.mu.Unlock()
 		err := conn.sock.Close()
 		s.mu.Lock()
-		s.tcpConns = deleteFD(s.tcpConns, sockfd)
-		s.udpConns = deleteFD(s.udpConns, sockfd)
+		s.conns = deleteFD(s.conns, sockfd)
 		s.mu.Unlock()
 		return err
 	}
@@ -284,11 +282,7 @@ func (s *StackBerkeley) newFD() int {
 }
 
 func (s *StackBerkeley) getConn(fd int) socket[net.Conn] {
-	sock := getFD(s.tcpConns, fd)
-	if !sock.isvalid() {
-		return getFD(s.udpConns, fd)
-	}
-	return sock
+	return getFD(s.conns, fd)
 }
 func (s *StackBerkeley) getListener(fd int) socket[net.Listener] { return getFD(s.tcpListeners, fd) }
 func (s *StackBerkeley) getPending(fd int) socket[pendingSocket] { return getFD(s.pendingFDs, fd) }
