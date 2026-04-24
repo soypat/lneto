@@ -474,13 +474,13 @@ func (pc *PacketBreakdown) CaptureDNS(dst []Frame, pkt []byte, bitOffset int) ([
 			if i < len(decoded) && len(qfield.SubFields)+2 <= pc.SubfieldLimit {
 				qfield.SubFields = append(qfield.SubFields, FrameField{
 					Name:           "Type",
-					FrameBitOffset: nameEnd * octet,
 					Class:          FieldClassOperation,
+					FrameBitOffset: nameEnd * octet,
 					BitLength:      2 * octet,
 				}, FrameField{
 					Name:           "Class",
-					FrameBitOffset: (nameEnd + 2) * octet,
 					Class:          FieldClassOperation,
+					FrameBitOffset: (nameEnd + 2) * octet,
 					BitLength:      2 * octet,
 				})
 			}
@@ -510,20 +510,42 @@ func (pc *PacketBreakdown) appendDNSResources(finfo *Frame, name string, dnsData
 	rfield := internal.SliceReclaim(&finfo.Fields)
 	*rfield = FrameField{Name: name, Class: FieldClassOptions, SubFields: rfield.SubFields[:0]}
 	for i := range total {
-		recStart := wireOff
 		wireOff, err = dnsSkipName(dnsData, wireOff)
 		if err != nil || wireOff+10 > len(dnsData) {
 			break
 		}
-		dataLen := int(binary.BigEndian.Uint16(dnsData[wireOff+8:]))
+		nameEnd := wireOff
+		dataLen := int(binary.BigEndian.Uint16(dnsData[nameEnd+8:]))
 		wireOff += 10 + dataLen // Type(2)+Class(2)+TTL(4)+Length(2)+Data
 		if wireOff > len(dnsData) {
 			break
 		}
-		if i < len(decoded) && len(rfield.SubFields) < pc.SubfieldLimit {
+		if i < len(decoded) && len(rfield.SubFields)+5 <= pc.SubfieldLimit {
 			rfield.SubFields = append(rfield.SubFields, FrameField{
 				Name:           decoded[i].Header().Type.String(),
-				FrameBitOffset: recStart * octet,
+				Class:          FieldClassOperation,
+				FrameBitOffset: nameEnd * octet,
+				BitLength:      2 * octet,
+			}, FrameField{
+				Name:           "Class",
+				Class:          FieldClassOperation,
+				FrameBitOffset: (nameEnd + 2) * octet,
+				BitLength:      2 * octet,
+			}, FrameField{
+				Name:           "TTL",
+				Class:          FieldClassSize,
+				FrameBitOffset: (nameEnd + 4) * octet,
+				BitLength:      4 * octet,
+			}, FrameField{
+				Name:           "Length",
+				Class:          FieldClassSize,
+				FrameBitOffset: (nameEnd + 8) * octet,
+				BitLength:      2 * octet,
+			}, FrameField{
+				Name:           "Data",
+				Class:          FieldClassAddress,
+				FrameBitOffset: (nameEnd + 10) * octet,
+				BitLength:      dataLen * octet,
 			})
 		}
 	}
