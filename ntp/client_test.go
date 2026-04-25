@@ -5,6 +5,32 @@ import (
 	"time"
 )
 
+// simulateServerResponse builds a server NTP response that echoes the client's
+// TransmitTime as the response's OriginTime (RFC 5905 §8), then sets server
+// receive and transmit timestamps.
+func simulateServerResponse(t *testing.T, reqBuf []byte, serverRecv, serverXmt time.Time) []byte {
+	t.Helper()
+	reqFrm, _ := NewFrame(reqBuf)
+	respBuf := make([]byte, SizeHeader)
+	respFrm, _ := NewFrame(respBuf)
+	respFrm.SetFlags(ModeServer, Version4, LeapNoWarning)
+	respFrm.SetStratum(StratumPrimary)
+	respFrm.SetPrecision(-20)
+	// Server echoes client's TransmitTime as response OriginTime per RFC 5905 §8.
+	respFrm.SetOriginTime(reqFrm.TransmitTime())
+	recvTS, err := TimestampFromTime(serverRecv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xmtTS, err := TimestampFromTime(serverXmt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	respFrm.SetReceiveTime(recvTS)
+	respFrm.SetTransmitTime(xmtTS)
+	return respBuf
+}
+
 func TestClient_FullExchange(t *testing.T) {
 	// Simulate a NTP client-server exchange without network.
 	baseTime := BaseTime()
@@ -19,7 +45,7 @@ func TestClient_FullExchange(t *testing.T) {
 		t.Fatal("client should not be done before exchange")
 	}
 
-	// Step 1: Client encapsulates request.
+	// Step 1: Client encapsulates first request.
 	reqBuf := make([]byte, SizeHeader)
 	n, err := client.Encapsulate(reqBuf, 0, 0)
 	if err != nil {
@@ -49,42 +75,53 @@ func TestClient_FullExchange(t *testing.T) {
 	// Server receives at clientStart + serverOffset, sends response at clientStart + serverOffset + 10ms processing.
 	serverRecvTime := clientStart.Add(serverOffset)
 	serverXmtTime := serverRecvTime.Add(10 * time.Millisecond)
-
-	respBuf := make([]byte, SizeHeader)
-	respFrm, _ := NewFrame(respBuf)
-	respFrm.SetFlags(ModeServer, Version4, LeapNoWarning)
-	respFrm.SetStratum(StratumPrimary)
-	respFrm.SetPrecision(-20)
-
-	// Echo client's origin time.
-	respFrm.SetOriginTime(reqFrm.OriginTime())
-
-	// Set server timestamps.
-	recvTS, err := TimestampFromTime(serverRecvTime)
-	if err != nil {
-		t.Fatal(err)
-	}
-	xmtTS, err := TimestampFromTime(serverXmtTime)
-	if err != nil {
-		t.Fatal(err)
-	}
-	respFrm.SetReceiveTime(recvTS)
-	respFrm.SetTransmitTime(xmtTS)
+	respBuf := simulateServerResponse(t, reqBuf, serverRecvTime, serverXmtTime)
 
 	// Advance client clock to simulate network delay.
 	clockTime = clientStart.Add(100 * time.Millisecond)
 
-	// Step 3: Client demuxes response.
+	// Step 3: Client demuxes first response.
 	err = client.Demux(respBuf, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if !client.IsDone() {
-		t.Fatal("client should be done after exchange")
+	if client.IsDone() {
+		t.Fatal("client should not be done after first exchange only")
+	}
+	if client.ServerStratum() != StratumPrimary {
+		t.Errorf("server stratum = %s; want primary", client.ServerStratum())
 	}
 
-	// Step 4: Verify results.
+	// Step 4: Client encapsulates second request.
+	req2Buf := make([]byte, SizeHeader)
+	clockTime = clientStart.Add(200 * time.Millisecond)
+	n, err = client.Encapsulate(req2Buf, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != SizeHeader {
+		t.Fatalf("second request: expected %d bytes, got %d", SizeHeader, n)
+	}
+
+	// Step 5: Simulate second server response.
+	serverRecv2 := clientStart.Add(serverOffset + 200*time.Millisecond)
+	serverXmt2 := serverRecv2.Add(10 * time.Millisecond)
+	resp2Buf := simulateServerResponse(t, req2Buf, serverRecv2, serverXmt2)
+
+	clockTime = clientStart.Add(300 * time.Millisecond)
+
+	// Step 6: Client demuxes second response.
+	err = client.Demux(resp2Buf, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !client.IsDone() {
+		t.Fatal("client should be done after second exchange")
+	}
+
+	// Step 7: Verify results.
 	if client.ServerStratum() != StratumPrimary {
 		t.Errorf("server stratum = %s; want primary", client.ServerStratum())
 	}
@@ -171,6 +208,49 @@ func TestClient_OffsetBeforeDone(t *testing.T) {
 	}
 	if c.RoundTripDelay() != -1 {
 		t.Fatal("RoundTripDelay should be -1 before done")
+	}
+}
+
+func TestClient_SecondExchangeRejection(t *testing.T) {
+	baseTime := BaseTime()
+	clientStart := baseTime.Add(10 * time.Second)
+	serverOffset := 500 * time.Millisecond
+	clockTime := clientStart
+
+	var client Client
+	client.Reset(-18, func() time.Time { return clockTime })
+
+	// Complete first exchange.
+	reqBuf := make([]byte, SizeHeader)
+	client.Encapsulate(reqBuf, 0, 0)
+
+	serverRecv1 := clientStart.Add(serverOffset)
+	serverXmt1 := serverRecv1.Add(10 * time.Millisecond)
+	resp1Buf := simulateServerResponse(t, reqBuf, serverRecv1, serverXmt1)
+	clockTime = clientStart.Add(100 * time.Millisecond)
+	client.Demux(resp1Buf, 0)
+
+	// Start second exchange.
+	req2Buf := make([]byte, SizeHeader)
+	clockTime = clientStart.Add(200 * time.Millisecond)
+	client.Encapsulate(req2Buf, 0, 0)
+
+	// Build bogus response with wrong origin time.
+	bogus := make([]byte, SizeHeader)
+	frm, _ := NewFrame(bogus)
+	frm.SetFlags(ModeServer, Version4, LeapNoWarning)
+	frm.SetOriginTime(TimestampFromUint64(99999))
+	xmt, _ := TimestampFromTime(clockTime.Add(time.Second))
+	frm.SetTransmitTime(xmt)
+	frm.SetReceiveTime(xmt)
+
+	clockTime = clientStart.Add(300 * time.Millisecond)
+	err := client.Demux(bogus, 0)
+	if err == nil {
+		t.Fatal("second exchange should reject mismatched origin")
+	}
+	if client.IsDone() {
+		t.Fatal("should not be done after rejected second response")
 	}
 }
 
