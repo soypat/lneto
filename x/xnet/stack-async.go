@@ -39,7 +39,7 @@ type StackAsync struct {
 	dhcpUDP     internet.StackUDPPort
 	dhcp        dhcpv4.Client
 	dhcpResults DHCPResults
-	subnet      netip.Prefix // Local subnet for ARP resolution.
+	arpt        subnetTable
 
 	dnsUDP  internet.StackUDPPort
 	dns     dns.Client
@@ -83,6 +83,9 @@ type StackConfig struct {
 	// ICMPQueueLimit sets maximum number of input/output packets queued for processing.
 	// If set to zero ICMP cannot be enabled on the stack.
 	ICMPQueueLimit int
+	// PassivePeers limits how many subnet peers the stack passively learns MAC addresses for.
+	// Passively learned entries skip ARP round-trips on the first DialTCP/DialUDP to that peer.
+	PassivePeers int
 }
 
 func (s *StackAsync) Hostname() string {
@@ -94,7 +97,11 @@ func (s *StackAsync) IngressEthernet(ethernetFrame []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.totalrecv += uint64(len(ethernetFrame))
-	return s.link.Demux(ethernetFrame, 0)
+	err := s.link.Demux(ethernetFrame, 0)
+	if err == nil {
+		s.arpt.learnFromIngressEthernet(ethernetFrame)
+	}
+	return err
 }
 
 // EgressEthernet writes the next ethernet frame to send into dstEthernetFrame from the stack.
@@ -137,7 +144,7 @@ func (s *StackAsync) MTU() int {
 }
 
 func (s *StackAsync) Reset(cfg StackConfig) error {
-	if cfg.RandSeed == 0 || cfg.Hostname == "" {
+	if cfg.RandSeed == 0 || cfg.Hostname == "" || cfg.PassivePeers > 255 {
 		return lneto.ErrInvalidConfig
 	}
 	mac := cfg.HardwareAddress
@@ -165,12 +172,18 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 		return err
 	}
 	s.link.SetAcceptMulticast(cfg.AcceptMulticast)
+	if cfg.PassivePeers == 0 {
+		s.link.OnEncapsulate(nil)
+	} else {
+		s.link.OnEncapsulate(s.arpt.patchEgressMAC)
+	}
 	const ipNodes = 3 // 3 IP protocols possible: UDP, TCP, ICMP.
 	err = s.ip.Reset(addr, ipNodes)
 	if err != nil {
 		return err
 	}
 	s.ip.SetAcceptMulticast(cfg.AcceptMulticast)
+	s.arpt.passivePeers = uint8(cfg.PassivePeers)
 	err = s.resetARP()
 	if err != nil {
 		return err
@@ -241,14 +254,16 @@ func (s *StackAsync) resetARP() error {
 	err := s.arp.Reset(arp.HandlerConfig{
 		HardwareAddr: mac[:],
 		ProtocolAddr: addr.AsSlice(),
-		MaxQueries:   3,
-		MaxPending:   3,
+		MaxQueries:   5,
+		MaxPending:   5,
 		HardwareType: 1,
 		ProtocolType: proto,
 	})
 	if err != nil {
 		return err
 	}
+	s.arpt.reset(10, s.arpt.passivePeers)
+	s.arp.SetOnResolveCallback(s.arpt.onResolve)
 	err = s.link.Register(&s.arp)
 	if err != nil {
 		return err
@@ -308,7 +323,7 @@ func (s *StackAsync) Addr() netip.Addr {
 func (s *StackAsync) SetSubnet(subnetMask netip.Prefix) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.subnet = subnetMask
+	s.arpt.subnet = subnetMask
 }
 
 func (s *StackAsync) SetHardwareAddress(hw [6]byte) error {
@@ -358,10 +373,10 @@ func (s *StackAsync) DialUDP(conn *udp.Conn, localPort uint16, addrp netip.AddrP
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var mac []byte
-	if s.subnet.Contains(addrp.Addr()) {
+	if s.arpt.subnet.Contains(addrp.Addr()) {
 		mac = make([]byte, 6)
 		ip := addrp.Addr().As4()
-		hw, err := s.arp.QueryResult(ip[:])
+		hw, err := s.arp.CacheLookup(ip[:])
 		if err == nil {
 			// MAC already contained in results.
 			copy(mac, hw)
@@ -369,7 +384,7 @@ func (s *StackAsync) DialUDP(conn *udp.Conn, localPort uint16, addrp netip.AddrP
 			// StartQuery starts an ARP query for addresses in this network.
 			// On finishing query MAC is set and thus the StackPort will allow encapsulating
 			// data on that connection.
-			err = s.arp.StartQuery(mac, ip[:])
+			err = s.arpt.startQuery(mac, ip[:], &s.arp)
 			if err != nil {
 				return err
 			}
@@ -387,9 +402,9 @@ func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrP
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var mac []byte
-	if s.subnet.Contains(addrp.Addr()) {
+	if s.arpt.subnet.Contains(addrp.Addr()) {
 		ip := addrp.Addr().As4()
-		hw, err := s.arp.QueryResult(ip[:])
+		hw, err := s.arp.CacheLookup(ip[:])
 		mac = make([]byte, 6)
 		if err == nil {
 			// Query exists, use pre-existing result.
@@ -398,7 +413,7 @@ func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrP
 			// StartQuery starts an ARP query for addresses in this network.
 			// On finishing query MAC is set and thus the StackPort will allow encapsulating
 			// data on that connection.
-			err = s.arp.StartQuery(mac, ip[:])
+			err = s.arpt.startQuery(mac, ip[:], &s.arp)
 			if err != nil {
 				return err
 			}
@@ -576,7 +591,7 @@ func (s *StackAsync) StartResolveHardwareAddress6(ip netip.Addr) error {
 		return lneto.ErrUnsupported
 	}
 	addr := ip.As4()
-	return s.arp.StartQuery(nil, addr[:])
+	return s.arp.StartQuery(addr[:], false)
 }
 
 // ResultResolveHardwareAddress6
@@ -587,7 +602,7 @@ func (s *StackAsync) ResultResolveHardwareAddress6(ip netip.Addr) (hw [6]byte, e
 		return hw, lneto.ErrUnsupported
 	}
 	addr := ip.As4()
-	hwslice, err := s.arp.QueryResult(addr[:])
+	hwslice, err := s.arp.CacheLookup(addr[:])
 	if err != nil {
 		return hw, err
 	} else if len(hwslice) != 6 {
@@ -604,7 +619,7 @@ func (s *StackAsync) DiscardResolveHardwareAddress6(ip netip.Addr) error {
 		return lneto.ErrUnsupported
 	}
 	addr := ip.As4()
-	return s.arp.DiscardQuery(addr[:])
+	return s.arp.CacheRemove(addr[:])
 }
 
 type DHCPResults struct {
@@ -648,7 +663,7 @@ func (stack *StackAsync) AssimilateDHCPResults(results *DHCPResults) error {
 	stack.mu.Lock()
 	defer stack.mu.Unlock()
 	if results.Subnet.IsValid() {
-		stack.subnet = results.Subnet
+		stack.arpt.subnet = results.Subnet
 	}
 	if results.AssignedAddr.IsValid() {
 		err := stack.setIPAddr(results.AssignedAddr)

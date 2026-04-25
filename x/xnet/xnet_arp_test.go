@@ -42,7 +42,7 @@ func TestARPLocal(t *testing.T) {
 	tst := testerFrom(t, mtu)
 	_ = tst
 	tst.ARPExchangeOnly(s1, s2)
-	hwaddr, err := s1.arp.QueryResult(addr2.Addr().AsSlice())
+	hwaddr, err := s1.arp.CacheLookup(addr2.Addr().AsSlice())
 	if err != nil {
 		t.Fatal(err)
 	} else if !bytes.Equal(hwaddr[:], hw2[:]) {

@@ -140,7 +140,7 @@ func (s StackBlocking) DoResolveHardwareAddress6(addr netip.Addr, timeout time.D
 		err = errDeadlineExceed // Ensure that if iterations done error is returned.
 	}
 	ip4 := addr.As4()
-	s.async.arp.DiscardQuery(ip4[:])
+	s.async.arp.CacheRemove(ip4[:])
 	return hw, err
 }
 

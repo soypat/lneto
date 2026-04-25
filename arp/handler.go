@@ -1,21 +1,21 @@
 package arp
 
 import (
-	"log/slog"
-
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
 )
 
 type Handler struct {
-	connID          uint64
-	ourHWAddr       []byte
-	ourProtoAddr    []byte
-	htype           uint16
-	protoType       ethernet.Type
-	pendingResponse [][sizeHeaderv6]byte
-	queries         []queryResult
+	connID       uint64
+	cache        cache
+	vld          lneto.Validator
+	ourProtoAddr []byte
+	onresolve    func(hw, proto []byte)
+
+	htype     uint16
+	protoType ethernet.Type
+	ourHWAddr [6]byte
 }
 
 type HandlerConfig struct {
@@ -41,6 +41,10 @@ func (h *Handler) UpdateProtoAddr(protoAddr []byte) error {
 	return nil
 }
 
+func (h *Handler) SetOnResolveCallback(cb func(hwAddr, protoAddr []byte)) {
+	h.onresolve = cb
+}
+
 func (h *Handler) Reset(cfg HandlerConfig) error {
 	if len(cfg.HardwareAddr) == 0 || len(cfg.HardwareAddr) > 255 ||
 		len(cfg.ProtocolAddr) == 0 || len(cfg.ProtocolAddr) > 255 {
@@ -48,197 +52,120 @@ func (h *Handler) Reset(cfg HandlerConfig) error {
 	} else if cfg.MaxQueries <= 0 || cfg.MaxPending <= 0 {
 		return lneto.ErrInvalidConfig
 	}
+	if cfg.HardwareType != 1 || cfg.ProtocolType != ethernet.TypeIPv4 && cfg.ProtocolType != ethernet.TypeIPv6 {
+		return lneto.ErrUnsupported // We only support common for now.
+	}
 	*h = Handler{
-		connID:          h.connID + 1,
-		ourHWAddr:       h.ourHWAddr[:0],
-		ourProtoAddr:    h.ourProtoAddr[:0],
-		htype:           cfg.HardwareType,
-		protoType:       cfg.ProtocolType,
-		pendingResponse: h.pendingResponse[:0],
-		queries:         h.queries[:0],
+		connID:       h.connID + 1,
+		ourHWAddr:    h.ourHWAddr,
+		ourProtoAddr: h.ourProtoAddr[:0],
+		htype:        cfg.HardwareType,
+		protoType:    cfg.ProtocolType,
+		cache:        h.cache,
 	}
-	h.ourHWAddr = append(h.ourHWAddr, cfg.HardwareAddr...)
+	h.cache.reset(cfg.MaxPending + cfg.MaxQueries)
+
+	h.ourHWAddr = [6]byte(cfg.HardwareAddr)
 	h.ourProtoAddr = append(h.ourProtoAddr, cfg.ProtocolAddr...)
-	if cap(h.pendingResponse) < cfg.MaxPending {
-		h.pendingResponse = make([][52]byte, cfg.MaxPending)[:0]
-	}
-	if cap(h.queries) < cfg.MaxQueries {
-		h.queries = make([]queryResult, cfg.MaxQueries)[:0]
-	}
 	return nil
 }
-
-type queryResult struct {
-	protoaddr []byte
-	hwaddr    []byte
-	dstHw     []byte
-	querysent bool
-	// inc tracks amount of times the query survived compaction.
-	// The queries with higher inc will be discarded first.
-	inc uint16
-}
-
-func (qr *queryResult) destroy() {
-	*qr = queryResult{protoaddr: qr.protoaddr[:0], hwaddr: qr.hwaddr[:0]}
-}
-
-func (qr *queryResult) response() []byte {
-	if len(qr.hwaddr) == 0 {
-		return nil
-	}
-	return qr.hwaddr[:]
-}
-func (qr *queryResult) isInvalid() bool { return len(qr.protoaddr) == 0 }
 
 // AbortPending drops pending queries and incoming requests.
 func (h *Handler) AbortPending() {
-	h.pendingResponse = h.pendingResponse[:0]
-	h.queries = h.queries[:0]
+	h.cache.clearFlags(eflagPendingResponse|eflagIncomplete, eflagInUse)
 }
 
-func (h *Handler) expectSize() int {
-	return sizeHeader + 2*len(h.ourHWAddr) + 2*len(h.ourProtoAddr)
+// CacheSeed pre-populates the cache with a known proto→hardware mapping, making it
+// immediately resolvable via [Handler.CacheLookup] without an ARP exchange.
+// Seeded entries are evicted before active user queries when the cache is full.
+func (h *Handler) CacheSeed(protoAddr, hwAddr []byte) error {
+	if len(hwAddr) != 6 {
+		return lneto.ErrUnsupported
+	}
+	e := h.cache.acquireNext()
+	e.use([6]byte(hwAddr), protoAddr, 0)
+	return nil
 }
 
-func (h *Handler) QueryResult(protoAddr []byte) (hwAddr []byte, err error) {
-	for i := range h.queries {
-		if internal.BytesEqual(protoAddr, h.queries[i].protoaddr) {
-			if !h.queries[i].querysent {
-				return nil, errQueryPending
-			}
-			mac := h.queries[i].response()
-			if mac == nil {
-				return nil, errQueryPending
-			}
-			return mac, nil
-		}
+// CacheLookup returns the hardware address for protoAddr if it is resolved in the cache.
+// Returns [errQueryPending] if a query is in flight, [errQueryNotFound] if no entry exists.
+func (h *Handler) CacheLookup(protoAddr []byte) (hwAddr []byte, err error) {
+	e := h.cache.Lookup(protoAddr)
+	if e == nil {
+		return nil, errQueryNotFound
+	} else if e.flags.hasAny(eflagIncomplete) {
+		return nil, errQueryPending
 	}
-	return nil, errQueryNotFound
+	return e.mac[:], nil
 }
 
-func (h *Handler) DiscardQuery(protoAddr []byte) error {
-	for i := range h.queries {
-		q := &h.queries[i]
-		if internal.BytesEqual(protoAddr, q.protoaddr) {
-			q.destroy()
-			return nil
-		}
+// CacheRemove cancels a pending query or evicts a cached entry for protoAddr.
+func (h *Handler) CacheRemove(protoAddr []byte) error {
+	e := h.cache.Lookup(protoAddr)
+	if e == nil {
+		return errQueryNotFound
 	}
-	return errQueryNotFound
-}
-
-func (h *Handler) compactQueries() {
-	validOff := 0
-	maxIdx := -1
-	maxInc := uint16(0)
-	for i := 0; i < len(h.queries); i++ {
-		discard := h.queries[i].isInvalid()
-		if !discard {
-			h.queries[i].inc++
-			if h.queries[i].inc > maxInc {
-				maxInc = h.queries[i].inc
-				maxIdx = i
-			}
-			if i != validOff {
-				// We swap the queries here so that when `StartQuery` extends
-				// queries slice, we don't have sharing of the internal structures.
-				// An alternative would be to zero things, however that would incur
-				// an allocation cost.
-				h.queries[validOff], h.queries[i] = h.queries[i], h.queries[validOff]
-			}
-			validOff++
-		}
-	}
-	if validOff == len(h.queries) && maxIdx >= 0 {
-		h.queries[maxIdx].destroy() // Destroy oldest query if unable to compact.
-	}
-	h.queries = h.queries[:validOff]
+	e.destroy()
+	return nil
 }
 
 // StartQuery queues a query to perform over ARP for the protocol address `proto`.
-// The user can additionally specify an dstHWAddr to write query result to on completion.
-// If dstHWAddr is nil then query still occurs but no external buffer is written on query completion.
-// dstHWAddr must be zeroed out (invalid MAC).
-func (h *Handler) StartQuery(dstHWAddr, proto []byte) error {
-	if len(h.queries) == cap(h.queries) {
-		h.compactQueries()
-		if len(h.queries) == cap(h.queries) {
-			return lneto.ErrExhausted // Should never fail.
-		}
-	}
+// Use [Handler.SetOnResolveCallback] to asynchronously set an ARP request result.
+func (h *Handler) StartQuery(proto []byte, triggerCallback bool) error {
 	if len(proto) != len(h.ourProtoAddr) {
 		return lneto.ErrMismatchLen
-	} else if dstHWAddr != nil && len(dstHWAddr) != len(h.ourHWAddr) {
-		return lneto.ErrMismatchLen
-	} else if dstHWAddr != nil && !internal.IsZeroed(dstHWAddr...) {
-		return lneto.ErrInvalidConfig
 	}
-	q := internal.SliceReclaim(&h.queries)
-	*q = queryResult{
-		protoaddr: append(q.protoaddr[:0], proto...),
-		hwaddr:    q.hwaddr[:0],
-		dstHw:     dstHWAddr,
+	e := h.cache.acquireNext()
+	e.use([6]byte{}, proto, eflagIncomplete|eflagIncompletePendingQuery|eflagPriority)
+	if triggerCallback {
+		e.flags |= eflagResolveTriggersCallback
 	}
 	return nil
 }
 
-func (h *Handler) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
+func (h *Handler) Encapsulate(carrierData []byte, _, offsetToFrame int) (int, error) {
 	b := carrierData[offsetToFrame:]
-	n := h.expectSize()
-	if len(b) < n {
-		return 0, errShortARP
+	afrm, err := h.newframe(b)
+	if err != nil {
+		return 0, err
 	}
-	if len(h.pendingResponse) > 0 {
-		// pop frame.
-		afrm, _ := NewFrame(h.pendingResponse[len(h.pendingResponse)-1][:])
-		h.pendingResponse = h.pendingResponse[:len(h.pendingResponse)-1]
-		afrm.SetOperation(OpReply)
-		afrm.SwapTargetSender()
-		hwsender, _ := afrm.Sender()
-		copy(hwsender, h.ourHWAddr)
-		n := copy(b, afrm.Clip().RawData())
-		tgt, _ := afrm.Target()
-		trySetEthernetDst(carrierData[:offsetToFrame], tgt)
-		return n, nil
+	op := OpReply
+	e := h.cache.getNextFlagged(eflagPendingResponse) // Prioritize responses.
+	if e == nil {
+		e = h.cache.getNextFlagged(eflagIncompletePendingQuery)
+		if e == nil {
+			return 0, nil // No action to perform
+		}
+		e.flags &^= eflagIncompletePendingQuery
+		op = OpRequest
+	} else {
+		e.flags &^= eflagPendingResponse
 	}
-	for i := range h.queries {
-		if h.queries[i].isInvalid() || h.queries[i].querysent {
-			continue
-		}
-		h.queries[i].querysent = true
-		afrm, _ := NewFrame(b)
-		afrm.SetHardware(h.htype, uint8(len(h.ourHWAddr)))
-		afrm.SetProtocol(h.protoType, uint8(len(h.ourProtoAddr)))
-		afrm.SetOperation(OpRequest)
-		hwSender, protoSender := afrm.Sender()
-		copy(hwSender, h.ourHWAddr)
-		copy(protoSender, h.ourProtoAddr)
-		hwTarget, protoTarget := afrm.Target()
-		copy(protoTarget, h.queries[i].protoaddr)
-		for j := range hwTarget {
-			hwTarget[j] = 0
-		}
+	// Write Request or Reply, depending on which entry we got.
+	n, err := e.put(b, h.ourProtoAddr, h.ourHWAddr, op)
+	if err != nil {
+		return 0, err
+	}
+	switch op {
+	case OpRequest:
 		broadcast := ethernet.BroadcastAddr()
 		trySetEthernetDst(carrierData[:offsetToFrame], broadcast[:])
-		return n, nil
+	case OpReply:
+		tgt, _ := afrm.Target()
+		trySetEthernetDst(carrierData[:offsetToFrame], tgt)
 	}
-	return 0, nil
+	return n, nil
 }
 
 func (h *Handler) Demux(ethFrame []byte, frameOffset int) error {
-	if len(h.pendingResponse) == cap(h.pendingResponse) {
-		return lneto.ErrExhausted
-	}
-
 	b := ethFrame[frameOffset:]
-	afrm, err := NewFrame(b)
+	afrm, err := h.newframe(b)
 	if err != nil {
 		return err
 	}
-	var vld lneto.Validator
-	afrm.ValidateSize(&vld)
-	if vld.HasError() {
-		return vld.ErrPop()
+	afrm.ValidateSize(&h.vld)
+	if h.vld.HasError() {
+		return h.vld.ErrPop()
 	}
 	htype, hlen := afrm.Hardware()
 	if htype != h.htype || int(hlen) != len(h.ourHWAddr) {
@@ -254,33 +181,35 @@ func (h *Handler) Demux(ethFrame []byte, frameOffset int) error {
 		if !internal.BytesEqual(protoaddr, h.ourProtoAddr) {
 			return nil // Not for us.
 		}
-		h.pendingResponse = h.pendingResponse[:len(h.pendingResponse)+1] // Extend pending buffer.
-		copy(h.pendingResponse[len(h.pendingResponse)-1][:], afrm.buf)   // Set pending buffer.
+		hw, proto := afrm.Sender()
+		e := h.cache.acquireNext()
+		e.use([6]byte(hw), proto, eflagPendingResponse)
 
 	case OpReply:
 		hwaddr, protoaddr := afrm.Sender()
-		for i := range h.queries {
-			q := &h.queries[i]
-			mac := q.response()
-			if mac == nil && internal.BytesEqual(q.protoaddr, protoaddr) {
-				q.hwaddr = append(q.hwaddr, hwaddr...)
-				if q.dstHw != nil {
-					if !internal.IsZeroed(q.dstHw...) {
-						internal.LogAttrs(nil, slog.LevelError, "race-condition:ARP-reused-buffer")
-					}
-					// External write to user buffer.
-					// Copy data and free up this memory.
-					copy(q.dstHw, hwaddr)
-					q.inc = 10000
-				}
-				return nil
-			}
+		e := h.cache.Lookup(protoaddr)
+		if e == nil {
+			return nil
 		}
-
+		copy(e.mac[:], hwaddr)
+		e.flags &^= eflagIncomplete | eflagIncompletePendingQuery
+		if e.flags.hasAny(eflagResolveTriggersCallback) && h.onresolve != nil {
+			h.onresolve(e.mac[:], protoaddr)
+		}
 	default:
 		return errARPUnsupported
 	}
 	return nil
+}
+
+func (h *Handler) newframe(b []byte) (Frame, error) {
+	f, err := NewFrame(b)
+	if err != nil {
+		return f, err
+	} else if h.protoType == ethernet.TypeIPv6 && len(b) < sizeHeaderv6 {
+		return f, lneto.ErrMismatch
+	}
+	return f, nil
 }
 
 func trySetEthernetDst(ethFrame []byte, dst []byte) {
