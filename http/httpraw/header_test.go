@@ -112,13 +112,19 @@ func BenchmarkParseBytes(b *testing.B) {
 		asRequest   = false
 	)
 	req, _ := http.NewRequest(wantMethod, wantURI, strings.NewReader(wantMessage))
-	var buf bytes.Buffer
-	req.Write(&buf)
-	data := buf.Bytes()
+	var rawBuf bytes.Buffer
+	req.Write(&rawBuf)
+	data := rawBuf.Bytes()
+
+	// hdr is declared outside the loop so that ParseBytes can reuse the
+	// backing arrays on Reset (headers slice and data buffer) without
+	// allocating on every iteration. Declaring it inside the loop causes
+	// two allocs per iteration: one for the headers slice (make in reset)
+	// and one for the data buffer (append in readFromBytes).
+	var hdr Header
 	b.StartTimer()
 
 	for i := 0; i < b.N; i++ {
-		var hdr Header
 		err := hdr.ParseBytes(asRequest, data)
 		if err != nil {
 			b.Fatal(err)

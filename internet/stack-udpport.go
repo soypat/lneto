@@ -45,7 +45,18 @@ func (sudp *StackUDPPort) Demux(carrierData []byte, frameOffset int) error {
 	if dst != sudp.h.lport {
 		return lneto.ErrPacketDrop // Not meant for us.
 	}
-	// TODO remote ip address handling.
+	// Filter by source IP when a unicast remote address was configured via
+	// SetStackNode. Multicast addresses (IPv4 class D: 224.0.0.0/4) are used
+	// as send destinations only and must not filter incoming source IPs.
+	if len(sudp.raddr) > 0 && sudp.raddr[0]&0xF0 != 0xE0 {
+		srcIP, _, _, _, err := internal.GetIPAddr(carrierData[:frameOffset])
+		if err != nil {
+			return err
+		}
+		if !internal.BytesEqual(srcIP, sudp.raddr) {
+			return lneto.ErrPacketDrop
+		}
+	}
 
 	src := ufrm.SourcePort()
 	if sudp.rmport != 0 && src != sudp.rmport {
