@@ -5,6 +5,7 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"sync"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/dhcpv4"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/udp"
@@ -89,6 +91,12 @@ func (d *dhcpInterceptor) Write(b []byte) (int, error) {
 		return len(b), nil // Consumed by DHCP server, don't forward.
 	}
 	d.rewriteEthernetDst(b)
+	if len(b) >= sizeEthernet+sizeIPv4 &&
+		*(*[6]byte)(b[0:6]) == d.svMAC &&
+		binary.BigEndian.Uint16(b[12:14]) == uint16(ethernet.TypeIPv4) {
+		dstIP := *(*[4]byte)(b[sizeEthernet+16 : sizeEthernet+20])
+		internal.LogAttrs(slog.Default(), slog.LevelWarn, "ethernet-self-loop", internal.SlogAddr4("dstIP", &dstIP))
+	}
 	return d.inner.Write(b)
 }
 
@@ -308,6 +316,8 @@ func (d *dhcpInterceptor) rewriteEthernetDst(b []byte) {
 	d.mu.Unlock()
 	if ok {
 		copy(b[0:6], mac[:])
+	} else {
+		internal.LogAttrs(slog.Default(), slog.LevelWarn, "gateway-rewrite-miss", internal.SlogAddr4("dstIP", &dstIP))
 	}
 }
 
