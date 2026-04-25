@@ -131,6 +131,34 @@ func (frm Frame) SetTransmitTime(rt Timestamp) {
 	rt.Put(frm.buf[40:48])
 }
 
+// RawData returns the underlying byte slice for the entire NTP packet.
+func (frm Frame) RawData() []byte { return frm.buf }
+
+// ExtensionFields returns the extension fields area of the NTP packet (all
+// bytes following the fixed 48-byte NTP header). The RFC calls these
+// "extension fields" (RFC 7822 §2).
+func (frm Frame) ExtensionFields() []byte {
+	return frm.buf[SizeHeader:]
+}
+
+// ValidateSize checks that the NTP header is complete and that any extension
+// fields are well-formed with valid lengths.
+func (frm Frame) ValidateSize(v *lneto.Validator) {
+	if len(frm.buf) < SizeHeader {
+		v.AddError(lneto.ErrTruncatedFrame)
+		return
+	}
+	buf := frm.ExtensionFields()
+	for len(buf) > 0 {
+		_, n, err := NextExtField(buf)
+		if err != nil {
+			v.AddError(err)
+			return
+		}
+		buf = buf[n:]
+	}
+}
+
 // ClearHeader zeros out the header contents.
 func (frm Frame) ClearHeader() {
 	for i := range frm.buf[:SizeHeader] {
@@ -215,6 +243,10 @@ type Date struct {
 func (t Timestamp) Seconds() uint32 { return t.sec }
 
 func (t Timestamp) Fractions() uint32 { return t.fra }
+
+// Uint64 returns the full 64-bit NTP timestamp with seconds in the upper 32
+// bits and fractions in the lower 32 bits. Suitable for logging and encoding.
+func (t Timestamp) Uint64() uint64 { return uint64(t.sec)<<32 | uint64(t.fra) }
 
 func (t Short) Seconds() uint16   { return uint16(t >> 16) }
 func (t Short) Fractions() uint16 { return uint16(t) }
