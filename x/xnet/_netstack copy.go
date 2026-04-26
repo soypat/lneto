@@ -3,7 +3,6 @@ package xnet
 import (
 	"context"
 	"net/netip"
-	"time"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/x/netdev"
@@ -42,23 +41,14 @@ func (netstack *Netstack) EnableICMP(enabled bool) error {
 }
 
 // EnableDHCP
-func (netstack *Netstack) EnableDHCP(ctx context.Context, enabled bool, requestAddr netip.Addr) (assigned netip.Addr, routerGW netip.Addr, subnetBits int, err error) {
-	var addr [4]byte
-	if !enabled {
+func (netstack *Netstack) EnableDHCP(enabled bool, requestAddr netip.Addr) (err error) {
+	if enabled {
+		err = netstack.stack.StartDHCPv4Request(requestAddr.As4())
+		netstack.awaitDHCP = true
+	} else {
 		netstack.stack.dhcp.Reset()
-		return netip.Addr{}, netip.Addr{}, 0, nil
-	} else if requestAddr.Is4() {
-		addr = requestAddr.As4()
-	} else if requestAddr.IsValid() {
-		return netip.Addr{}, netip.Addr{}, 0, lneto.ErrUnsupported
 	}
-	timeout := 4 * time.Second
-	deadline, ok := ctx.Deadline()
-	if ok {
-		timeout = time.Until(deadline)
-	}
-	results, err := netstack.gstack.blk.DoDHCPv4(addr, timeout)
-	return results.AssignedAddr, results.Router, results.Subnet.Bits(), err
+	return err
 }
 
 // Socket is a berkeley socket abstraction. Returns an [net.Listener] or [net.Conn] depending on laddr/raddr combination.
@@ -89,6 +79,13 @@ func (netstack *Netstack) IngressPackets(bufs [][]byte, offset int) (err error) 
 		err0 := netstack.stack.IngressEthernet(buf[offset:])
 		if err0 != nil {
 			err = err0
+		} else if netstack.awaitDHCP && netstack.stack.dhcp.State().HasIP() {
+			results, err := netstack.stack.ResultDHCP()
+			if err == nil {
+				netstack.stack.AssimilateDHCPResults(results)
+				println("\n\n\n\n\n\nDHCP DONE\n", results.AssignedAddr.String())
+			}
+			netstack.awaitDHCP = false
 		}
 	}
 	return err

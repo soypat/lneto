@@ -2,6 +2,8 @@
 
 package netdev
 
+import _ "unsafe" // needed for go:linkname usage.
+
 // UseNetdev is the dynamic linker function
 // for inserting a networking stack into the
 // standard library implementation in the TinyGo compiler.
