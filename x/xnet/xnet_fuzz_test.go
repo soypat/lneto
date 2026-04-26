@@ -283,7 +283,7 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 		MTU:               mtu,
 		HardwareAddress:   [6]byte{0x1, 0, 0, 0, 0, v1},
 		AcceptMulticast:   v1%2 == 0,
-		PassivePeers:      1,
+		PassivePeers:      int(v1 >> 6),
 	}
 	err := s1.Reset(cfg1)
 	if err != nil {
@@ -299,7 +299,7 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 		MTU:               mtu,
 		HardwareAddress:   [6]byte{0x2, 0, 0, 0, 0, v2},
 		AcceptMulticast:   v2%2 == 0,
-		PassivePeers:      1,
+		PassivePeers:      int(v2 >> 6),
 	}
 	err = s2.Reset(cfg2)
 	if err != nil {
