@@ -59,14 +59,19 @@ func main() {
 	}, backoff, poolCfg)
 	failIfErr("stack reset", err)
 
+	err = dev.LinkConnect(globConnectParams)
+	failIfErr("wifi join", err)
+
 	var iface netdev.Interface[ConnectParams]
 	var runner netdev.Runner[ConnectParams]
+	dev.LinkNotify(userNotify)
 	err = iface.Init(&dev, &dev, netdev.InterfaceConfig{})
 	failIfErr("init iface", err)
 
 	go func() {
-		err = runner.Run(context.Background(), iface, &stack, backoff)
-		failIfErr("runner", err)
+		if err := runner.Run(context.Background(), iface, &stack, backoff); err != nil {
+			failIfErr("runner", err)
+		}
 	}()
 	assigned, gatewayRt, subnetBits, err := stack.EnableDHCP(context.Background(), true, netip.Addr{})
 	failIfErr("enable dhcp", err)
@@ -76,7 +81,7 @@ func main() {
 
 // compile-time guarantee of interface implementation.
 var _ lneto.BackoffStrategy = backoff
-var _ netdev.Stack
+var _ netdev.Stack = (*xnet.Netstack)(nil)
 
 func backoff(consecutiveBackoffs uint) (sleepOrFlag time.Duration) {
 	return 5 * time.Millisecond
@@ -93,7 +98,8 @@ var _ netdev.DevEthernet = (*Netdev)(nil)
 var _ netdev.Netlink[ConnectParams] = (*Netdev)(nil)
 
 type Netdev struct {
-	dev *cyw43439.Device
+	dev      *cyw43439.Device
+	notifyCb netdev.NotifyCallback[ConnectParams]
 }
 
 type ConnectParams struct {
@@ -106,7 +112,7 @@ func (nl *Netdev) Netflags() (flags net.Flags) {
 	if nl.dev.IsLinkUp() {
 		flags |= net.FlagRunning
 	}
-	return net.FlagRunning
+	return flags
 }
 
 // LinkConnect implements [netdev.Netlink].
@@ -121,7 +127,7 @@ func (nl *Netdev) LinkDisconnect() {
 
 // LinkNotify implements [netdev.Netlink].
 func (nl *Netdev) LinkNotify(cb netdev.NotifyCallback[ConnectParams]) {
-
+	nl.notifyCb = cb
 }
 
 // HardwareAddr6 implements [netdev.DevEthernet].
