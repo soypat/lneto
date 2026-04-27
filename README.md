@@ -5,7 +5,7 @@
 [![Go](https://github.com/soypat/lneto/actions/workflows/go.yml/badge.svg)](https://github.com/soypat/lneto/actions/workflows/go.yml)
 [![sourcegraph](https://sourcegraph.com/github.com/soypat/lneto/-/badge.svg)](https://sourcegraph.com/github.com/soypat/lneto?badge)
 
-Userspace networking primitives. 
+Userspace networking primitives.
 
 `lneto` is pronounced "L-net-oh", a.k.a. "El Neto"; a.k.a. "Don Networkio"; a.k.a "Neto, connector of worlds".
 
@@ -36,14 +36,14 @@ All examples include IPv4, ARP, ICMP, TCP and UDP functionality. Go and TinyGo d
 | [Lneto MWE](./examples/min-working-example/) | DNS,NTP,DHCP | ✅ | 3.8MB | 4.3MB | 1.3MB | 934kB | 181kB |
 | [Gvisor MWE w/ go-net](./examples/_import_examples/gvisor-mwe/)| None | ❌ | 6.6MB | 7.5MB | DNC | DNC | DNC |
 ## `xcurl` example
-You may try lneto out on linux with the [xcurl example](./examples/xcurl/) which gets an HTTP page by doing all the low-level networking part using absolutely no standard library. 
+You may try lneto out on linux with the [xcurl example](./examples/xcurl/) which gets an HTTP page by doing all the low-level networking part using absolutely no standard library.
 
 - DHCP client address lease
 - ARP address resolution
 - DNS address resolution of requested host
 - HTTP over TCP/IPv4/Ethernet connection using
 - NTP time check (optional)
-- Print packet captures using lneto's [internet/pcap](./internet/pcap) package 
+- Print packet captures using lneto's [internet/pcap](./internet/pcap) package
 
 See Developing section below for more information.
 
@@ -51,7 +51,7 @@ See Developing section below for more information.
 lneto is currently being used primarily by embedded developers and those who need a lighter alternative to gVisor in terms of memory usage and binary size.
 
 - [**soypat/cyw43439**](https://github.com/soypat/cyw43439): Enabling internet access on [Raspberry Pi Pico W](https://www.raspberrypi.com/products/raspberry-pi-pico/). See [`examples`](https://github.com/soypat/cyw43439/tree/main/examples).
-- [**tinygo-org/espradio**](https://github.com/tinygo-org/espradio): Enabling internet access on [Espressif's ESP32s](https://www.espressif.com/en/products/socs/esp32)
+- [**tinygo-org/espradio**](https://github.com/tinygo-org/espradio): Enabling internet access on [Espressif's ESP32s](https://www.espressif.com/en/products/socs/esp32).
 - [**TamaGo**](https://github.com/usbarmory/tamago): Enabling networking on Go baremetal projects. See [go-net project](https://github.com/usbarmory/go-net).
 - [**netbird.io**](https://netbird.io/)(planned): Secure remote P2P access.
 - [**soypat/lan8720**](https://github.com/soypat/lan8720): Enabling internet access with 100M ethernet PHY devices. 
@@ -79,13 +79,43 @@ PASS
 ok      github.com/soypat/lneto/x/xnet  2.926s
 ```
 
+## Protocol Support Matrix
+
+> **Generated 2026-04-27.** This table may not always reflect the current state of the codebase.
+> Allocation figures are derived from benchmark tests run on amd64.
+> `—` denotes no standalone benchmark exists for that protocol; those packages follow the same zero-allocation design principle documented in the codebase.
+
+| Protocol | RFC / Spec | Status | Package | Allocs/op | Notes |
+|----------|-----------|:------:|---------|:---------:|-------|
+| Ethernet II | IEEE 802.3 | ✅ | `ethernet` | 0 ¹ | Frame parsing, CRC-32 |
+| ARP | RFC 826 | ✅ | `arp` | 0 ¹ | Request/reply, hardware address cache |
+| IPv4 | RFC 791 | ✅ | `ipv4` | 0 ² | Frame parsing, ones-complement checksum |
+| ICMPv4 | RFC 792 | ✅ | `ipv4/icmpv4` | — | Echo (ping) client handler |
+| UDP | RFC 768 | ✅ | `udp` | — | Handler + thread-safe `Conn` |
+| TCP | RFC 9293 | ✅ | `tcp` | 0 ²³ | Full state machine, SYN cookies, retransmit queue, `Conn`/`Listener` |
+| DNS | RFC 1035 | ✅ | `dns` | — | Client (A/AAAA query) |
+| DHCPv4 | RFC 2131 | ✅ | `dhcpv4` | — | Client + Server |
+| NTP | RFC 5905 | ✅ | `ntp` | — | Client |
+| mDNS | RFC 6762 | ✅ | `mdns` | — | Client (service announcement + query) |
+| HTTP/1.1 headers | RFC 9110, RFC 9112 | ✅ | `http/httpraw` | 2 ⁴ | Header parse/format; no field normalization |
+| Ethernet PHY/MDIO | IEEE 802.3 cl.22/45 | ✅ | `phy` | — | Bare-metal PHY management via MDIO |
+| IPv6 | RFC 8200 | 🟡 | `ipv6` | — | Frame parsing only; no stack handler |
+| ICMPv6 | RFC 4443 | ❌ | — | — | Not implemented |
+| DHCPv6 | RFC 8415 | ❌ | — | — | Not implemented |
+| TLS 1.3 | RFC 8446 | ❌ | — | — | Not implemented |
+
+¹ `BenchmarkARPExchange` — full ARP request/response exchange over Ethernet: **0 B/op, 0 allocs/op**
+² `BenchmarkTCPHandshake` — TCP 3-way handshake over Ethernet/IPv4: **0 B/op, 0 allocs/op**
+³ `BenchmarkSYNCookie_Generate` / `BenchmarkSYNCookie_Validate` — SYN cookie generation and validation: **0 B/op, 0 allocs/op each**
+⁴ `BenchmarkParseBytes` — HTTP/1.1 request header + body parsing: **240 B/op, 2 allocs/op**
+
 ## Packages
 - `lneto`: Low-level Networking Operations, or "El Neto", the networking package. Zero copy network frame marshalling and unmarshalling.
     - [`lneto/validation.go`](./validation.go): Packet validation utilities
 - [`lneto/internet`](./internet): Userspace IP/TCP networking stack. This is where the magic happens. Integrates many of the listed packages.
     - [`lneto/internet/pcap`](./internal/pcap): Packet capture and field breakdown utilities. Wireshark in the making.
 - [`lneto/http/httpraw`](./http/httpraw/): Heapless HTTP header processing and validation. Does no implement header normalization.
-- [`lneto/tcp`](./ntp): TCP implementation and low level logic.
+- [`lneto/tcp`](./tcp): TCP implementation and low level logic.
 - [`lneto/dhcpv4`](./dhcpv4): DHCP version 4 protocol implementation and low level logic.
 - [`lneto/dns`](./dns): DNS protocol implementation and low level logic.
 - [`lneto/ntp`](./ntp): NTP implementation and low level logic. Includes NTP time primitives manipulation and conversion to Go native types.
@@ -98,7 +128,7 @@ The following interface is implemented by networking stack nodes and the stack t
 
 ```go
 type StackNode interface {
-    // Encapsulate receives a buffer the receiver must fill with data. 
+    // Encapsulate receives a buffer the receiver must fill with data.
     // The receiver's start byte is at carrierData[offsetToFrame].
 	Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error)
 	// Demux receives a buffer the receiver must decode and pass on to corresponding child StackNode(s).
@@ -128,7 +158,7 @@ go mod download github.com/soypat/lneto@latest
     - `POST http://127.0.0.1:7070/send`: Receives a POST with request body containing JSON string of data to send over TAP interface. Response contains only status code.
     - `GET http://127.0.0.1:7070/recv`: Receives a GET request. Response contains a JSON string of oldest unread TAP interface packet. If string is empty then there is no more data to read.
 
-- [`xcurl`](./examples/xcurl) Contains example of a application that uses lneto and can attach to a linux tap/bridge interface or a [httptap](./examples/httptap)(with -ihttp flag) to work. When using httptap can be run as non-root user to be debugged comfortably. 
+- [`xcurl`](./examples/xcurl) Contains example of a application that uses lneto and can attach to a linux tap/bridge interface or a [httptap](./examples/httptap)(with -ihttp flag) to work. When using httptap can be run as non-root user to be debugged comfortably.
     - Example: `go run ./examples/xcurl -host google.com -ihttp`
 
 ### LLM Policy / AI Policy
