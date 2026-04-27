@@ -68,7 +68,7 @@ func main() {
 		err = runner.Run(context.Background(), iface, &stack, backoff)
 		failIfErr("runner", err)
 	}()
-	err = stack.EnableDHCP(true, netip.Addr{})
+	assigned, gatewayRt, subnetBits, err := stack.EnableDHCP(context.Background(), true, netip.Addr{})
 	failIfErr("enable dhcp", err)
 	select {}
 }
