@@ -26,5 +26,5 @@ type GoNet interface {
 	Send(sockfd int, buf []byte, flags int, deadline time.Time) (int, error)
 	Recv(sockfd int, buf []byte, flags int, deadline time.Time) (int, error)
 	Close(sockfd int) error
-	SetSockOpt(sockfd int, level int, opt int, value interface{}) error
+	SetSockOpt(sockfd int, level int, opt int, value any) error
 }
