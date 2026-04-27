@@ -70,6 +70,7 @@ func main() {
 	}()
 	assigned, gatewayRt, subnetBits, err := stack.EnableDHCP(context.Background(), true, netip.Addr{})
 	failIfErr("enable dhcp", err)
+	println("assigned=", assigned.String(), "gateway=", gatewayRt.String(), "subnet", subnetBits)
 	select {}
 }
 
