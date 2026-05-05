@@ -2,6 +2,7 @@ package udp
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 
@@ -9,6 +10,59 @@ import (
 	"github.com/soypat/lneto/internal"
 )
 
+var (
+	_ lneto.StackNode = (*muxHandler)(nil)
+	_ lneto.StackNode = (*MuxHandlerMIMO)(nil)
+	_ lneto.StackNode = (*MuxHandlerSIMO)(nil)
+)
+
+// MuxHandlerSIMO is a single-input single-output UDP mux handler.
+// It binds to one local UDP port and multiplexes transmit/receive using that port.
+type MuxHandlerSIMO struct {
+	muxHandler
+	localPort uint16
+}
+
+// MuxHandlerMIMO is a multi-input multi-output UDP mux handler.
+// It supports sending and receiving on multiple local UDP ports through shared state.
+type MuxHandlerMIMO struct {
+	muxHandler
+}
+
+// Configure initializes the SIMO handler for a single local source port.
+// The provided localPort becomes the only permitted receive port.
+func (ms *MuxHandlerSIMO) Configure(localPort uint16, cfg MuxConfig) (err error) {
+	if localPort == 0 {
+		return lneto.ErrZeroSource
+	}
+	err = ms.muxHandler.Configure(cfg)
+	if err != nil {
+		return err
+	}
+	ms.muxHandler.FilterAddLocalPort(localPort, 1)
+	return nil
+}
+
+// LocalPort returns the configured local UDP port for this SIMO handler.
+func (ms *MuxHandlerSIMO) LocalPort() uint16 { return ms.localPort }
+
+// WriteTo queues a UDP payload for transmission from the handler's local port.
+func (ms *MuxHandlerSIMO) WriteTo(buf []byte, raddr netip.AddrPort) error {
+	return ms.muxHandler.WriteTo(buf, ms.localPort, raddr)
+}
+
+// ReadNext returns the next received datagram for this handler's local port.
+// If the datagram is for a different port it is discarded.
+func (ms *MuxHandlerSIMO) ReadNext(buf []byte) (n int, completeRead bool, raddr netip.AddrPort) {
+	var lport uint16
+	n, completeRead, lport, raddr = ms.muxHandler.ReadNext(buf)
+	if lport != ms.localPort { // Can happen if user fiddles with filters.
+		return 0, false, raddr
+	}
+	return n, completeRead, raddr
+}
+
+// MuxConfig configures receive/transmit buffers and queue sizes for a UDP mux handler.
 type MuxConfig struct {
 	// Configure receive buffer. If not set will use previously set buffer in [MuxHandler.Configure].
 	RxBuf []byte
@@ -18,8 +72,8 @@ type MuxConfig struct {
 	TxQueueSize int
 }
 
-// MuxHandler
-type MuxHandler struct {
+// muxHandler
+type muxHandler struct {
 	connid uint64
 	// filterLPorts stores rx port ranges over which Handler can receive data.
 	// If not set will not filter UDP data.
@@ -50,7 +104,7 @@ type MuxHandler struct {
 
 // Configure initializes the handler with the given buffer and queue configuration.
 // Increments the connection ID, invalidating any prior stack registration.
-func (mh *MuxHandler) Configure(cfg MuxConfig) error {
+func (mh *muxHandler) Configure(cfg MuxConfig) error {
 	if cfg.RxBuf == nil {
 		cfg.RxBuf = mh.rxRing.Buf
 	}
@@ -60,19 +114,37 @@ func (mh *MuxHandler) Configure(cfg MuxConfig) error {
 	if len(cfg.RxBuf) < sizeHeader || len(cfg.TxBuf) < sizeHeader || cfg.RxQueueSize <= 0 || cfg.TxQueueSize <= 0 {
 		return lneto.ErrInvalidConfig
 	}
-	mh.connid++
+	mh.Abort()
 	mh.rxRing = internal.Ring{Buf: cfg.RxBuf}
 	mh.txRing = internal.Ring{Buf: cfg.TxBuf}
 	internal.SliceReuse(&mh.rxDgrams, cfg.RxQueueSize)
 	internal.SliceReuse(&mh.txDgrams, cfg.TxQueueSize)
-	mh.closeCalled = false
 	return nil
 }
 
-// LocalPort not applicable to mux. Mux is a multi Rx/Tx port abstraction.
-func (mh *MuxHandler) LocalPort() uint16 { return 0 }
+// Protocol implements [lneto.StackNode].
+func (mh *muxHandler) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
 
-func (mh *MuxHandler) FilterLocalPort(lport uint16) (filtered bool) {
+// ConnectionID implements [lneto.StackNode].
+func (mh *muxHandler) ConnectionID() *uint64 { return &mh.connid }
+
+// LocalPort implements [lneto.StackNode] but not applicable to mux. Mux is a multi Rx/Tx port abstraction.
+func (mh *muxHandler) LocalPort() uint16 { return 0 }
+
+func (mh *muxHandler) FilterResetLocalPorts() {
+	mh.filterLPorts = mh.filterLPorts[:0]
+}
+
+func (mh *muxHandler) FilterAddLocalPort(startPort, nports uint16) {
+	if int(startPort)+int(nports) > math.MaxUint16 {
+		panic("port overflow")
+	}
+	f := internal.SliceReclaim(&mh.filterLPorts)
+	f.startPort = startPort
+	f.nports = nports
+}
+
+func (mh *muxHandler) FilterLocalPort(lport uint16) (filtered bool) {
 	filtered = len(mh.filterLPorts) > 0
 	for i := range mh.filterLPorts {
 		maxPort := mh.filterLPorts[i].startPort + mh.filterLPorts[i].nports
@@ -84,12 +156,10 @@ func (mh *MuxHandler) FilterLocalPort(lport uint16) (filtered bool) {
 	return filtered
 }
 
-var X lneto.StackNode
-
 // Recv parses a UDP frame from buf, validates the ports and length fields,
 // and enqueues the payload into the rx ring buffer. Returns [lneto.ErrMismatch]
 // if source/destination ports don't match the configured ports.
-func (mh *MuxHandler) Demux(carrierData []byte, frameOffset int) error {
+func (mh *muxHandler) Demux(carrierData []byte, frameOffset int) error {
 	if mh.closeCalled {
 		return net.ErrClosed
 	}
@@ -133,7 +203,7 @@ func (mh *MuxHandler) Demux(carrierData []byte, frameOffset int) error {
 	return nil
 }
 
-func (mh *MuxHandler) Encapsulate(carrierData []byte, ipOffset, frameOffset int) (int, error) {
+func (mh *muxHandler) Encapsulate(carrierData []byte, ipOffset, frameOffset int) (int, error) {
 	if mh.closeCalled {
 		return 0, net.ErrClosed
 	} else if len(mh.txDgrams) == 0 {
@@ -178,15 +248,15 @@ func (mh *MuxHandler) Encapsulate(carrierData []byte, ipOffset, frameOffset int)
 		default:
 			return 0, lneto.ErrUnsupported
 		}
-		dgram.raddr.AppendBinary(carrierData[addroffset:])
+		dgram.raddr.AppendBinary(carrierData[addroffset:addroffset])
 	}
 	return int(8 + dgram.length), nil
 }
 
-func (mh *MuxHandler) WriteTo(lport uint16, raddr netip.AddrPort, buf []byte) error {
+func (mh *muxHandler) WriteTo(buf []byte, lport uint16, raddr netip.AddrPort) error {
 	if mh.closeCalled {
 		return net.ErrClosed
-	} else if raddr.Port() == 0 || raddr.IsValid() {
+	} else if raddr.Port() == 0 || !raddr.IsValid() {
 		return lneto.ErrZeroDestination
 	} else if lport == 0 {
 		return lneto.ErrZeroSource
@@ -213,7 +283,7 @@ func (mh *MuxHandler) WriteTo(lport uint16, raddr netip.AddrPort, buf []byte) er
 // datagram, the remaining bytes are discarded (SOCK_DGRAM semantics).
 // The port the datagram was destined to and address it was received from are returned.
 // If bytes are discarded completeRead=false.
-func (mh *MuxHandler) ReadNext(buf []byte) (n int, completeRead bool, lport uint16, raddr netip.AddrPort) {
+func (mh *muxHandler) ReadNext(buf []byte) (n int, completeRead bool, lport uint16, raddr netip.AddrPort) {
 	if len(mh.rxDgrams) == 0 {
 		return 0, false, 0, raddr
 	}
@@ -229,7 +299,7 @@ func (mh *MuxHandler) ReadNext(buf []byte) (n int, completeRead bool, lport uint
 
 // BufferedInputNext returns the size of the next datagram to read. A call
 // to [Handler.ReadNext] will read up to this amount of bytes.
-func (mh *MuxHandler) BufferedInputNext() uint16 {
+func (mh *muxHandler) BufferedInputNext() uint16 {
 	if len(mh.rxDgrams) > 0 {
 		return mh.rxDgrams[0].length
 	}
@@ -237,46 +307,46 @@ func (mh *MuxHandler) BufferedInputNext() uint16 {
 }
 
 // BufferedInput returns the number of unread bytes in the receive buffer.
-func (h *MuxHandler) BufferedInput() int {
+func (h *muxHandler) BufferedInput() int {
 	return h.rxRing.Buffered()
 }
 
 // BufferedUnsent returns the number of written but unsent bytes in the transmit buffer.
-func (h *MuxHandler) BufferedOutput() int {
+func (h *muxHandler) BufferedOutput() int {
 	return h.txRing.Buffered()
 }
 
 // SizeInput returns the total size of the receive ring buffer.
-func (h *MuxHandler) SizeInput() int {
+func (h *muxHandler) SizeInput() int {
 	return h.rxRing.Size()
 }
 
 // SizeOutput returns the total size of the transmit ring buffer.
-func (h *MuxHandler) SizeOutput() int {
+func (h *muxHandler) SizeOutput() int {
 	return h.txRing.Size()
 }
 
 // FreeOutput returns the number of free bytes in the transmit buffer.
 // This tells the user how many bytes can be written with Write method before write failing.
-func (h *MuxHandler) FreeOutput() int {
+func (h *muxHandler) FreeOutput() int {
 	return h.txRing.Free()
 }
 
 // FreeInput returns the number of free bytes in the receive buffer.
-func (h *MuxHandler) FreeInput() int {
+func (h *muxHandler) FreeInput() int {
 	return h.rxRing.Free()
 }
 
-func (mh *MuxHandler) IsOpen() bool {
+func (mh *muxHandler) IsOpen() bool {
 	return cap(mh.rxDgrams) > 0 && !mh.closeCalled
 }
 
-func (mh *MuxHandler) Close() {
+func (mh *muxHandler) Close() {
 	mh.closeCalled = true
 }
 
-func (mh *MuxHandler) Abort() {
-	*mh = MuxHandler{
+func (mh *muxHandler) Abort() {
+	*mh = muxHandler{
 		connid:       mh.connid + 1,
 		filterLPorts: mh.filterLPorts[:0],
 		rxRing:       mh.rxRing,
