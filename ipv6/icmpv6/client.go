@@ -56,16 +56,20 @@ type Client struct {
 }
 
 func (client *Client) Configure(cfg ClientConfig) error {
-	if cfg.HashSeed == 0 || len(cfg.ResponseQueueBuffer) < 16 || cfg.ResponseQueueLimit <= 0 {
+	echoOK := cfg.HashSeed != 0 && len(cfg.ResponseQueueBuffer) >= 16 && cfg.ResponseQueueLimit > 0
+	ndpOK := cfg.NDPCache > 0
+	if !echoOK && !ndpOK {
 		return lneto.ErrInvalidConfig
 	}
 	client.connid++
-	internal.SliceReuse(&client.outgoingEcho, cfg.ResponseQueueLimit)
-	internal.SliceReuse(&client.incomingEcho, cfg.ResponseQueueLimit)
-	client.responseRing = internal.Ring{Buf: cfg.ResponseQueueBuffer}
-	client.magic = cfg.HashSeed
-	client.id = cfg.ID
-	if cfg.NDPCache > 0 {
+	if echoOK {
+		internal.SliceReuse(&client.outgoingEcho, cfg.ResponseQueueLimit)
+		internal.SliceReuse(&client.incomingEcho, cfg.ResponseQueueLimit)
+		client.responseRing = internal.Ring{Buf: cfg.ResponseQueueBuffer}
+		client.magic = cfg.HashSeed
+		client.id = cfg.ID
+	}
+	if ndpOK {
 		client.ourIP = cfg.OurAddr
 		client.ourMAC = cfg.OurMAC
 		client.ndpCache.reset(cfg.NDPCache)
