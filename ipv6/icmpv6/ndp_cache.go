@@ -75,8 +75,8 @@ func (c *ndpCache) ageEntries() {
 	}
 }
 
-func (c *ndpCache) reset(size int) {
-	internal.SliceReuse(&c.entries, size)
+func (c *ndpCache) reset(maxLimit int) {
+	internal.SliceReuse(&c.entries, maxLimit)
 	c.entries = c.entries[:cap(c.entries)]
 }
 
