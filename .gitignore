@@ -5,6 +5,7 @@ go.work.sum
 *.test
 # Dependency directories after running `go mod vendor`
 vendor/
+*.credentials
 
 # Binaries for programs and plugins
 *.elf
