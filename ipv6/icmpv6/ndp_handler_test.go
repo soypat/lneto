@@ -5,23 +5,23 @@ import (
 	"testing"
 )
 
-func TestNDPHandler(t *testing.T) {
+func TestClientNDP(t *testing.T) {
 	addr1 := [16]byte{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
 	addr2 := [16]byte{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
 	mac1 := [6]byte{0xde, 0xad, 0xbe, 0xef, 0x00, 0x01}
 	mac2 := [6]byte{0xc0, 0xff, 0xee, 0xc0, 0xff, 0x02}
 
-	var h1, h2 NDPHandler
-	if err := h1.Reset(NDPHandlerConfig{Addr: addr1, MAC: mac1, MaxCache: 2}); err != nil {
+	var h1, h2 Client
+	if err := h1.Configure(ClientConfig{OurAddr: addr1, OurMAC: mac1, NDPCache: 2}); err != nil {
 		t.Fatal(err)
 	}
-	if err := h2.Reset(NDPHandlerConfig{Addr: addr2, MAC: mac2, MaxCache: 2}); err != nil {
+	if err := h2.Configure(ClientConfig{OurAddr: addr2, OurMAC: mac2, NDPCache: 2}); err != nil {
 		t.Fatal(err)
 	}
 
 	var buf [64]byte
 
-	// No pending work: both handlers should be silent.
+	// No pending work: both clients should be silent.
 	n, err := h1.Encapsulate(buf[:], -1, 0)
 	if err != nil || n > 0 {
 		t.Fatal("expected no data before query:", err, n)
@@ -32,7 +32,7 @@ func TestNDPHandler(t *testing.T) {
 	}
 
 	// h1 queries h2's MAC.
-	if err = h1.StartQuery(addr2, false); err != nil {
+	if err = h1.NDPStartQuery(addr2, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -52,7 +52,7 @@ func TestNDPHandler(t *testing.T) {
 		t.Errorf("NS target addr mismatch: want %x, got %x", addr2, *nsfrm.TargetAddr())
 	}
 
-	// h2 receives the NS (no IP carrier, so CRC covers only ICMPv6 body).
+	// h2 receives the NS.
 	if err = h2.Demux(buf[:n], 0); err != nil {
 		t.Fatal("h2 demux NS:", err)
 	}
@@ -77,7 +77,7 @@ func TestNDPHandler(t *testing.T) {
 		t.Error("expected solicited flag set in NA")
 	}
 
-	// Verify double-tap: h2 should have nothing left to send.
+	// Double-tap: h2 should have nothing left to send.
 	n2, err := h2.Encapsulate(buf[:], -1, 0)
 	if err != nil || n2 > 0 {
 		t.Fatal("double tap: expected no more data from h2:", err, n2)
@@ -87,7 +87,7 @@ func TestNDPHandler(t *testing.T) {
 	if err = h1.Demux(buf[:n], 0); err != nil {
 		t.Fatal("h1 demux NA:", err)
 	}
-	mac, err := h1.CacheLookup(addr2)
+	mac, err := h1.NDPCacheLookup(addr2)
 	if err != nil {
 		t.Fatal("cache lookup after resolution:", err)
 	}

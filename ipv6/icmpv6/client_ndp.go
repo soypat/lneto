@@ -1,6 +1,20 @@
 package icmpv6
 
-import "github.com/soypat/lneto"
+import (
+	"errors"
+
+	"github.com/soypat/lneto"
+)
+
+const (
+	ndpOptSourceLinkAddr = 1 // RFC 4861 §4.6.1
+	ndpOptTargetLinkAddr = 2 // RFC 4861 §4.6.2
+)
+
+var (
+	errNDPQueryPending  = errors.New("icmpv6: NDP query pending")
+	errNDPQueryNotFound = errors.New("icmpv6: NDP query not found")
+)
 
 func (client *Client) demuxNDP(carrierData []byte, frameOffset int) error {
 	rawdata := carrierData[frameOffset:]
@@ -74,4 +88,29 @@ func (client *Client) encapsNDP(carrierData []byte, frameOffset int) (n int, dst
 		dst = e.addr
 	}
 	return n, dst, nil
+}
+
+// solicitedNodeMulticast returns the solicited-node multicast address for addr (RFC 4291 §2.7.1).
+func solicitedNodeMulticast(addr [16]byte) [16]byte {
+	return [16]byte{
+		0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0xff,
+		addr[13], addr[14], addr[15],
+	}
+}
+
+// parseLinkLayerOption scans NDP options for the first option of optType
+// and returns the embedded 6-byte Ethernet address.
+func parseLinkLayerOption(options []byte, optType byte) ([6]byte, bool) {
+	for len(options) >= sizeNDPOption {
+		t := options[0]
+		l := int(options[1]) * 8
+		if l == 0 || l > len(options) {
+			break
+		}
+		if t == optType && l >= sizeNDPOption {
+			return [6]byte(options[2:8]), true
+		}
+		options = options[l:]
+	}
+	return [6]byte{}, false
 }
