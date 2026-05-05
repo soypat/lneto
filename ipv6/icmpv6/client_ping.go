@@ -57,6 +57,11 @@ func (client *Client) pingidx(key uint32) int {
 	return -1
 }
 
+func (client *Client) seq() uint16 {
+	client._seq++
+	return client._seq
+}
+
 func (client *Client) magichash(pattern []byte, size int) (hash uint32) {
 	hash = client.magic
 	i := 0
@@ -74,27 +79,13 @@ func (client *Client) magichash(pattern []byte, size int) (hash uint32) {
 	return hash
 }
 
+// demuxEcho handles TypeEchoRequest and TypeEchoReply frames.
+// CRC has already been verified by the caller (Client.Demux).
 func (client *Client) demuxEcho(carrierData []byte, frameOffset int) error {
 	rawdata := carrierData[frameOffset:]
-	ifrm, err := NewFrame(rawdata)
-	if err != nil {
-		return err
-	}
+	ifrm, _ := NewFrame(rawdata) // already validated by Demux
 	tp := ifrm.Type()
-	if tp != TypeEchoRequest && tp != TypeEchoReply {
-		return lneto.ErrPacketDrop
-	}
-	var crc lneto.CRC791
 	ipEnabled := frameOffset >= 40
-	if ipEnabled {
-		// ICMPv6 checksum covers an IPv6 pseudo-header (RFC 4443 §2.3).
-		crc.WriteEven(carrierData[8:40]) // src(16B) + dst(16B) from IPv6 header at offset 0
-		crc.AddUint32(uint32(len(rawdata)))
-		crc.AddUint32(uint32(lneto.IPProtoIPv6ICMP))
-	}
-	if crc.PayloadSum16(rawdata) != 0 {
-		return lneto.ErrBadCRC
-	}
 	var raddr [16]byte
 	if ipEnabled {
 		src, _, _, _, _ := internal.GetIPAddr(carrierData)
@@ -102,6 +93,7 @@ func (client *Client) demuxEcho(carrierData []byte, frameOffset int) error {
 			raddr = [16]byte(src)
 		}
 	}
+	var err error
 	switch tp {
 	case TypeEchoRequest:
 		free := cap(client.incomingEcho) - len(client.incomingEcho)
@@ -144,14 +136,16 @@ func (client *Client) demuxEcho(carrierData []byte, frameOffset int) error {
 	return err
 }
 
-func (client *Client) encapsEcho(carrierData []byte, ipOffset, frameOffset int) (int, error) {
+// encapsEcho writes an echo reply or request frame into carrierData[frameOffset:].
+// CRC and SetIPAddrs are handled by the caller (Client.Encapsulate).
+func (client *Client) encapsEcho(carrierData []byte, frameOffset int) (n int, dst [16]byte, err error) {
+	if len(client.incomingEcho) == 0 && len(client.outgoingEcho) == 0 {
+		return 0, [16]byte{}, nil
+	}
 	ifrm, err := NewFrame(carrierData[frameOffset:])
 	if err != nil {
-		return 0, err
+		return 0, [16]byte{}, err
 	}
-
-	var n int
-	var raddr [16]byte
 	if len(client.incomingEcho) > 0 {
 		// Priority: send echo reply.
 		inc := client.incomingEcho[0]
@@ -162,22 +156,18 @@ func (client *Client) encapsEcho(carrierData []byte, ipOffset, frameOffset int) 
 		dataLen := int(inc.length)
 		_, rerr := client.responseRing.Read(efrm.Data()[:dataLen])
 		if rerr != nil {
-			return 0, rerr
+			return 0, [16]byte{}, rerr
 		}
 		client.incomingEcho = slices.Delete(client.incomingEcho, 0, 1)
 		n = sizeHeader + dataLen
-		raddr = inc.raddr
-	} else if len(client.outgoingEcho) > 0 {
+		dst = inc.raddr
+	} else {
 		idx := 0
-		for idx < len(client.outgoingEcho) {
-			out := &client.outgoingEcho[idx]
-			if out.key&keyHashSentBit == 0 {
-				break
-			}
+		for idx < len(client.outgoingEcho) && client.outgoingEcho[idx].key&keyHashSentBit != 0 {
 			idx++
 		}
 		if idx >= len(client.outgoingEcho) {
-			return 0, nil // No pending packet to send.
+			return 0, [16]byte{}, nil // No pending packet to send.
 		}
 		out := &client.outgoingEcho[idx]
 		efrm := FrameEcho{Frame: ifrm}
@@ -195,24 +185,9 @@ func (client *Client) encapsEcho(carrierData []byte, ipOffset, frameOffset int) 
 		copy(data[written:written+size%len(pattern)], pattern)
 		n = sizeHeader + size
 		out.key |= keyHashSentBit
-		raddr = out.raddr
-	} else {
-		return 0, nil
+		dst = out.raddr
 	}
-	ifrm.buf = carrierData[frameOffset : frameOffset+n] // Raw buffer set.
+	ifrm.buf = carrierData[frameOffset : frameOffset+n]
 	ifrm.SetCode(0)
-	ifrm.SetCRC(0)
-	if ipOffset >= 0 {
-		err = internal.SetIPAddrs(carrierData[ipOffset:], 0, nil, raddr[:])
-	}
-	var crc lneto.CRC791
-	if ipOffset >= 0 {
-		// ICMPv6 checksum covers an IPv6 pseudo-header (RFC 4443 §2.3).
-		crc.WriteEven(carrierData[ipOffset+8 : ipOffset+40]) // src(16B) + dst(16B)
-		crc.AddUint32(uint32(n))
-		crc.AddUint32(uint32(lneto.IPProtoIPv6ICMP))
-	}
-	sum := crc.PayloadSum16(carrierData[frameOffset : frameOffset+n])
-	ifrm.SetCRC(sum)
-	return n, err
+	return n, dst, nil
 }
