@@ -77,8 +77,8 @@ func (client *Client) Configure(cfg ClientConfig) error {
 	return nil
 }
 
-func (client *Client) Protocol() uint64    { return uint64(lneto.IPProtoIPv6ICMP) }
-func (client *Client) LocalPort() uint16   { return 0 }
+func (client *Client) Protocol() uint64      { return uint64(lneto.IPProtoIPv6ICMP) }
+func (client *Client) LocalPort() uint16     { return 0 }
 func (client *Client) ConnectionID() *uint64 { return &client.connid }
 
 func (client *Client) Abort() {
@@ -90,6 +90,7 @@ func (client *Client) Reset() {
 	client.incomingEcho = client.incomingEcho[:0]
 	client.outgoingEcho = client.outgoingEcho[:0]
 	client.responseRing.Reset()
+	client.ndpCache.reset(0)
 }
 
 func (client *Client) Demux(carrierData []byte, frameOffset int) error {
