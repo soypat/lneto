@@ -1,6 +1,10 @@
 package dhcpv6
 
-import "github.com/soypat/lneto"
+import (
+	"encoding/binary"
+
+	"github.com/soypat/lneto"
+)
 
 // ClientState transition table during request:
 //
@@ -116,33 +120,60 @@ func EncodeOption(dst []byte, code OptCode, data ...byte) (int, error) {
 	} else if len(dst) < 4+len(data) {
 		return 0, lneto.ErrShortBuffer
 	}
-	panic("not implemented")
+	binary.BigEndian.PutUint16(dst[0:2], uint16(code))
+	binary.BigEndian.PutUint16(dst[2:4], uint16(len(data)))
+	copy(dst[4:], data)
+	return 4 + len(data), nil
 }
 
 // EncodeOption16 encodes a single uint16 value as a DHCPv6 option.
 func EncodeOption16(dst []byte, code OptCode, v uint16) (int, error) {
-	panic("not implemented")
+	return EncodeOption(dst, code, byte(v>>8), byte(v))
 }
 
 // EncodeOption32 encodes a single uint32 value as a DHCPv6 option.
 func EncodeOption32(dst []byte, code OptCode, v uint32) (int, error) {
-	panic("not implemented")
+	return EncodeOption(dst, code, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
 }
 
 // EncodeOptionIANA encodes an IA_NA option (RFC 8415 §21.4).
 // Layout: code(2) + len(2) + IAID(4) + T1(4) + T2(4) + subOpts.
 func EncodeOptionIANA(dst []byte, iaid [4]byte, t1, t2 uint32, subOpts []byte) (int, error) {
-	panic("not implemented")
+	const fixedLen = 12 // IAID(4) + T1(4) + T2(4)
+	dataLen := fixedLen + len(subOpts)
+	if len(dst) < 4+dataLen {
+		return 0, lneto.ErrShortBuffer
+	}
+	binary.BigEndian.PutUint16(dst[0:2], uint16(OptIANA))
+	binary.BigEndian.PutUint16(dst[2:4], uint16(dataLen))
+	copy(dst[4:8], iaid[:])
+	binary.BigEndian.PutUint32(dst[8:12], t1)
+	binary.BigEndian.PutUint32(dst[12:16], t2)
+	copy(dst[16:], subOpts)
+	return 4 + dataLen, nil
 }
 
 // EncodeOptionIAAddr encodes an IAADDR option (RFC 8415 §21.6).
 // Layout: code(2) + len(2) + addr(16) + preferred(4) + valid(4).
 func EncodeOptionIAAddr(dst []byte, addr [16]byte, preferred, valid uint32) (int, error) {
-	panic("not implemented")
+	const dataLen = 24 // addr(16) + preferred(4) + valid(4)
+	if len(dst) < 4+dataLen {
+		return 0, lneto.ErrShortBuffer
+	}
+	binary.BigEndian.PutUint16(dst[0:2], uint16(OptIAAddr))
+	binary.BigEndian.PutUint16(dst[2:4], dataLen)
+	copy(dst[4:20], addr[:])
+	binary.BigEndian.PutUint32(dst[20:24], preferred)
+	binary.BigEndian.PutUint32(dst[24:28], valid)
+	return 4 + dataLen, nil
 }
 
 // AppendDUIDLL appends a DUID-LL (type 3) for an Ethernet MAC to dst.
 // Format: DUIDType(2) + hwtype=1(2) + mac(6).
 func AppendDUIDLL(dst []byte, mac [6]byte) []byte {
-	panic("not implemented")
+	return append(dst,
+		byte(DUIDTypeLL>>8), byte(DUIDTypeLL), // type 3
+		0, 1, // hardware type 1 = Ethernet
+		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+	)
 }
