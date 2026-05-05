@@ -28,8 +28,9 @@ type Handler struct {
 	// connection is established via Open calls. This disambiguates whether
 	// Read and Write calls belong to the current connection.
 
-	optcodec OptionCodec
-	closing  bool
+	optcodec   OptionCodec
+	closing    bool
+	shutdownRx bool
 	// nRetransmit stores the number of times the oldest packet was retransmit.
 	nRetransmit uint8
 }
@@ -128,6 +129,7 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 		validator:  h.validator,
 		logger:     h.logger,
 		closing:    false,
+		shutdownRx: false,
 	}
 	h.bufTx.ResetOrReuse(nil, 0, iss)
 	h.bufRx.Reset()
@@ -185,7 +187,7 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 	if prevState != h.scb.State() {
 		h.info("tcp.Handler:rx-statechange", slog.Uint64("port", uint64(h.localPort)), slog.String("old", prevState.String()), slog.String("new", h.scb.State().String()), slog.String("rxflags", segIncoming.Flags.String()))
 	}
-	if segIncoming.DATALEN != 0 {
+	if segIncoming.DATALEN != 0 && !h.shutdownRx {
 		_, err = h.bufRx.Write(payload)
 		if err != nil {
 			return err
@@ -227,6 +229,13 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		)
 	}
 	return nil
+}
+
+// ShutdownRead activates local discard mode: incoming payload bytes are dropped
+// (ACK/SEQ still advance normally) and Read returns io.EOF immediately.
+// Not reversible within the lifetime of a connection; reset clears it.
+func (h *Handler) ShutdownRead() {
+	h.shutdownRx = true
 }
 
 func (h *Handler) Close() error {
@@ -338,6 +347,9 @@ func (h *Handler) Write(b []byte) (int, error) {
 
 // Read implements [io.Reader] by reading received data from remote peer in internal buffer.
 func (h *Handler) Read(b []byte) (n int, err error) {
+	if h.shutdownRx {
+		return 0, io.EOF
+	}
 	if h.bufRx.Buffered() > 0 {
 		n, err = h.bufRx.Read(b)
 	}
