@@ -16,7 +16,7 @@ var (
 	_ lneto.StackNode = (*MuxHandlerSIMO)(nil)
 )
 
-// MuxHandlerSIMO is a single-input single-output UDP mux handler.
+// MuxHandlerSIMO is a single-input multiple-output UDP mux handler.
 // It binds to one local UDP port and multiplexes transmit/receive using that port.
 type MuxHandlerSIMO struct {
 	muxHandler
