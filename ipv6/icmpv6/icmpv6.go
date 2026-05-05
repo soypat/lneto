@@ -9,7 +9,10 @@ import (
 //go:generate stringer -type=Type,CodeDestinationUnreachable,CodeParameterProblem -linecomment -output stringers.go
 
 const (
-	sizeHeader = 8
+	sizeHeader    = 8
+	sizeNDPBase   = sizeHeader + 16 // 24: ICMPv6 header + 16-byte target address
+	sizeNDPOption = 8               // 1 type + 1 len + 6 MAC (Ethernet link-layer option, RFC 4861 §4.6.1)
+	sizeNDP       = sizeNDPBase + sizeNDPOption
 )
 
 type Type uint8
@@ -33,7 +36,7 @@ const (
 type CodeTimeExceeded uint8
 
 const (
-	CodeHopLimitExceeded  CodeTimeExceeded = iota // hop limit exceeded in transit
+	CodeHopLimitExceeded   CodeTimeExceeded = iota // hop limit exceeded in transit
 	CodeFragmentReassembly                         // fragment reassembly time exceeded
 )
 
@@ -161,4 +164,60 @@ func (frm FrameEcho) Data() []byte {
 
 func (frm FrameEcho) RawData() []byte {
 	return frm.buf
+}
+
+// FrameNeighborSolicitation accesses a Neighbor Solicitation message (RFC 4861 §4.3).
+// Layout after ICMPv6 base header: Reserved(4B) | TargetAddr(16B) | Options.
+type FrameNeighborSolicitation struct {
+	Frame
+}
+
+// TargetAddr returns the IPv6 address being queried.
+func (frm FrameNeighborSolicitation) TargetAddr() *[16]byte {
+	return (*[16]byte)(frm.buf[8:24])
+}
+
+// Options returns the bytes following the fixed header for parsing NDP options.
+func (frm FrameNeighborSolicitation) Options() []byte {
+	return frm.buf[24:]
+}
+
+// FrameNeighborAdvertisement accesses a Neighbor Advertisement message (RFC 4861 §4.4).
+// Layout after ICMPv6 base header: R|S|O|Reserved(4B) | TargetAddr(16B) | Options.
+type FrameNeighborAdvertisement struct {
+	Frame
+}
+
+// Flags returns the R (router), S (solicited), O (override) flag bits.
+func (frm FrameNeighborAdvertisement) Flags() (router, solicited, override bool) {
+	b := frm.buf[4]
+	return b&0x80 != 0, b&0x40 != 0, b&0x20 != 0
+}
+
+// SetFlags sets the R, S, O flags and zeroes the reserved bits.
+func (frm FrameNeighborAdvertisement) SetFlags(router, solicited, override bool) {
+	var b byte
+	if router {
+		b |= 0x80
+	}
+	if solicited {
+		b |= 0x40
+	}
+	if override {
+		b |= 0x20
+	}
+	frm.buf[4] = b
+	frm.buf[5] = 0
+	frm.buf[6] = 0
+	frm.buf[7] = 0
+}
+
+// TargetAddr returns the IPv6 address being announced.
+func (frm FrameNeighborAdvertisement) TargetAddr() *[16]byte {
+	return (*[16]byte)(frm.buf[8:24])
+}
+
+// Options returns the bytes following the fixed header for parsing NDP options.
+func (frm FrameNeighborAdvertisement) Options() []byte {
+	return frm.buf[24:]
 }
