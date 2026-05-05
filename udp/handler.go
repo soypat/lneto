@@ -141,10 +141,10 @@ func (h *Handler) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-// Read dequeues the next received datagram into b. If b is smaller than the
+// ReadNext dequeues the next received datagram into b. If b is smaller than the
 // datagram, the remaining bytes are discarded (SOCK_DGRAM semantics).
 // Returns 0, nil if no datagrams are available.
-func (h *Handler) Read(b []byte) (int, error) {
+func (h *Handler) ReadNext(b []byte) (int, error) {
 	if len(h.rxDgrams) == 0 {
 		return 0, nil
 	}
@@ -190,7 +190,7 @@ func (h *Handler) Abort() {
 }
 
 // BufferedInputNext returns the size of the next datagram to read. A call
-// to [Handler.Read] will read up to this amount of bytes.
+// to [Handler.ReadNext] will read up to this amount of bytes.
 func (h *Handler) BufferedInputNext() int {
 	if len(h.rxDgrams) == 0 {
 		return 0

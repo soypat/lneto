@@ -164,7 +164,7 @@ func (conn *Conn) Read(b []byte) (int, error) {
 			conn.mu.Unlock()
 			return 0, net.ErrClosed
 		}
-		n, err := conn.h.Read(b)
+		n, err := conn.h.ReadNext(b)
 		conn.mu.Unlock()
 		if n > 0 {
 			return n, err
