@@ -5,7 +5,7 @@ import (
 	"github.com/soypat/lneto/internal"
 )
 
-var _ lneto.StackNode = (*Client)(nil) // Compile-time guarantee of interface implementation.
+var _ lneto.StackNode = (*Client)(nil)
 
 const (
 	keyHashCompletedBit = 1 << 31
@@ -14,11 +14,15 @@ const (
 )
 
 type ClientConfig struct {
+	// Echo (ping) fields.
 	ResponseQueueBuffer []byte
 	ResponseQueueLimit  int
 	HashSeed            uint32
-	// ID is used for Echo (ping) ID field setting.
-	ID uint16
+	ID                  uint16
+	// NDP fields; NDP is disabled when NDPCache == 0.
+	OurAddr  [16]byte
+	OurMAC   [6]byte
+	NDPCache int
 }
 
 type Client struct {
@@ -26,8 +30,6 @@ type Client struct {
 	magic  uint32
 	_seq   uint16
 	id     uint16
-
-	// Echo(Ping) fields:
 
 	outgoingEcho []struct {
 		pattern []byte
@@ -46,8 +48,7 @@ type Client struct {
 	}
 	responseRing internal.Ring
 
-	// NDP Address resolution fields:
-
+	// NDP address resolution fields.
 	ndpCache  ndpCache
 	onresolve func(mac [6]byte, addr [16]byte)
 	ourMAC    [6]byte
@@ -64,13 +65,16 @@ func (client *Client) Configure(cfg ClientConfig) error {
 	client.responseRing = internal.Ring{Buf: cfg.ResponseQueueBuffer}
 	client.magic = cfg.HashSeed
 	client.id = cfg.ID
+	if cfg.NDPCache > 0 {
+		client.ourIP = cfg.OurAddr
+		client.ourMAC = cfg.OurMAC
+		client.ndpCache.reset(cfg.NDPCache)
+	}
 	return nil
 }
 
-func (client *Client) Protocol() uint64 { return uint64(lneto.IPProtoIPv6ICMP) }
-
-func (client *Client) LocalPort() uint16 { return 0 }
-
+func (client *Client) Protocol() uint64    { return uint64(lneto.IPProtoIPv6ICMP) }
+func (client *Client) LocalPort() uint16   { return 0 }
 func (client *Client) ConnectionID() *uint64 { return &client.connid }
 
 func (client *Client) Abort() {
@@ -84,35 +88,101 @@ func (client *Client) Reset() {
 	client.responseRing.Reset()
 }
 
-func (client *Client) seq() uint16 {
-	client._seq++
-	return client._seq
-}
-
-func (client *Client) Demux(carrierData []byte, frameOffset int) (err error) {
-	frm, err := NewFrame(carrierData[frameOffset:])
+func (client *Client) Demux(carrierData []byte, frameOffset int) error {
+	rawdata := carrierData[frameOffset:]
+	ifrm, err := NewFrame(rawdata)
 	if err != nil {
 		return err
 	}
-	tp := frm.Type()
-	// Can CRC be calculated here?
-	switch tp {
-	case TypeEchoReply, TypeEchoRequest:
-		err = client.demuxEcho(carrierData, frameOffset)
-	case TypeNeighborSolicitation, TypeNeighborAdvertisement:
-	default:
-		err = lneto.ErrUnsupported
+	tp := ifrm.Type()
+	ipEnabled := frameOffset >= 40
+	var crc lneto.CRC791
+	if ipEnabled {
+		crc.WriteEven(carrierData[8:40]) // IPv6 src(16B)+dst(16B) pseudo-header
+		crc.AddUint32(uint32(len(rawdata)))
+		crc.AddUint32(uint32(lneto.IPProtoIPv6ICMP))
 	}
-	return err
+	if crc.PayloadSum16(rawdata) != 0 {
+		return lneto.ErrBadCRC
+	}
+	switch tp {
+	case TypeEchoRequest, TypeEchoReply:
+		return client.demuxEcho(carrierData, frameOffset)
+	case TypeNeighborSolicitation, TypeNeighborAdvertisement:
+		return client.demuxNDP(carrierData, frameOffset)
+	default:
+		return lneto.ErrPacketDrop
+	}
 }
 
-func (client *Client) Encapsulate(carrierData []byte, ipOffset, frameOffset int) (n int, err error) {
-	// Switch statement to prioritize outgoing packet types over others.
-	switch {
-	case len(client.incomingEcho) > 0:
-		fallthrough
-	case len(client.outgoingEcho) > 0:
-		n, err = client.encapsEcho(carrierData, ipOffset, frameOffset)
+func (client *Client) Encapsulate(carrierData []byte, ipOffset, frameOffset int) (int, error) {
+	n, dst, err := client.encapsEcho(carrierData, frameOffset)
+	if n == 0 && err == nil {
+		n, dst, err = client.encapsNDP(carrierData, frameOffset)
 	}
-	return 0, nil
+	if n == 0 || err != nil {
+		return n, err
+	}
+	ifrm, _ := NewFrame(carrierData[frameOffset : frameOffset+n])
+	ifrm.SetCRC(0)
+	if ipOffset >= 0 {
+		if err = internal.SetIPAddrs(carrierData[ipOffset:], 0, nil, dst[:]); err != nil {
+			return 0, err
+		}
+		var crc lneto.CRC791
+		crc.WriteEven(carrierData[ipOffset+8 : ipOffset+40])
+		crc.AddUint32(uint32(n))
+		crc.AddUint32(uint32(lneto.IPProtoIPv6ICMP))
+		ifrm.SetCRC(crc.PayloadSum16(carrierData[frameOffset : frameOffset+n]))
+	} else {
+		var crc lneto.CRC791
+		ifrm.SetCRC(crc.PayloadSum16(carrierData[frameOffset : frameOffset+n]))
+	}
+	return n, nil
+}
+
+// NDP public API — mirrors NDPHandler but on the unified Client.
+
+func (client *Client) SetNDPResolveCallback(cb func(mac [6]byte, addr [16]byte)) {
+	client.onresolve = cb
+}
+
+func (client *Client) NDPStartQuery(addr [16]byte, triggerCallback bool) error {
+	if addr == ([16]byte{}) {
+		return lneto.ErrZeroDestination
+	}
+	e := client.ndpCache.acquireNext()
+	e.use([6]byte{}, addr, ndpFlagIncomplete|ndpFlagIncompletePendingQuery|ndpFlagPriority)
+	if triggerCallback {
+		e.flags |= ndpFlagResolveTriggersCallback
+	}
+	return nil
+}
+
+func (client *Client) NDPCacheLookup(addr [16]byte) ([6]byte, error) {
+	e := client.ndpCache.Lookup(addr)
+	if e == nil {
+		return [6]byte{}, errNDPQueryNotFound
+	} else if e.flags.hasAny(ndpFlagIncomplete) {
+		return [6]byte{}, errNDPQueryPending
+	}
+	return e.mac, nil
+}
+
+func (client *Client) NDPCacheSeed(addr [16]byte, mac [6]byte) error {
+	if addr == ([16]byte{}) {
+		return lneto.ErrZeroDestination
+	}
+	e := client.ndpCache.acquireNext()
+	e.use(mac, addr, 0)
+	return nil
+}
+
+func (client *Client) NDPCacheRemove(addr [16]byte) error {
+	e := client.ndpCache.Lookup(addr)
+	if e == nil {
+		return errNDPQueryNotFound
+	}
+	e.destroy()
+	return nil
 }
