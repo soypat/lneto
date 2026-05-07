@@ -648,11 +648,11 @@ func visitAllLabels(msg []byte, off uint16, fn func(b []byte), allowCompression 
 //
 // Returns [lneto.ErrTruncatedFrame] if data is too short to read the full label or pointer.
 // Returns errReserved for the 0x40 and 0x80 reserved prefix classes.
-func NextLabel(data []byte) (start_RelOrAbs, end uint16, isAbsPointer bool, err error) {
+func NextLabel(data []byte) (start_RelOrAbs, endRel uint16, isAbsPointer bool, err error) {
 	// Default invalid values
-	start_RelOrAbs, end = 0, 0
+	start_RelOrAbs, endRel = 0, 0
 	if len(data) == 0 {
-		return start_RelOrAbs, end, false, lneto.ErrTruncatedFrame
+		return start_RelOrAbs, endRel, false, lneto.ErrTruncatedFrame
 	}
 	c := uint16(data[0])
 	switch c & 0xc0 {
@@ -662,28 +662,27 @@ func NextLabel(data []byte) (start_RelOrAbs, end uint16, isAbsPointer bool, err 
 		if c == 0 {
 			return start_RelOrAbs, start_RelOrAbs, false, nil // Null terminator. String ended.
 		}
-		end = start_RelOrAbs + c
-		if int(end) > len(data) {
-			return start_RelOrAbs, end, false, lneto.ErrTruncatedFrame
+		endRel = start_RelOrAbs + c
+		if int(endRel) > len(data) {
+			return start_RelOrAbs, endRel, false, lneto.ErrTruncatedFrame
 		}
 		// Reject names containing dots. See issue golang/go#56246
-		if bytes.IndexByte(data[start_RelOrAbs:end], '.') >= 0 {
-			return start_RelOrAbs, end, false, errInvalidName
+		if bytes.IndexByte(data[start_RelOrAbs:endRel], '.') >= 0 {
+			return start_RelOrAbs, endRel, false, errInvalidName
 		}
 		// Correct label!
 	case 0xc0:
 		// Pointer. Start is absolute index in DNS message.
 		isAbsPointer = true
 		if len(data) < 2 {
-			return start_RelOrAbs, end, isAbsPointer, lneto.ErrTruncatedFrame // Need more data to fully read pointer.
+			return start_RelOrAbs, endRel, isAbsPointer, lneto.ErrTruncatedFrame // Need more data to fully read pointer.
 		}
 		c1 := uint16(data[1])
 		start_RelOrAbs = (c^0xC0)<<8 | c1
-		end = 0 // Is pointer signalling.
 	default:
 		err = errReserved
 	}
-	return start_RelOrAbs, end, isAbsPointer, err
+	return start_RelOrAbs, endRel, isAbsPointer, err
 }
 
 func (dst *Message) CopyFrom(m Message) {
