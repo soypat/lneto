@@ -26,6 +26,11 @@ const (
 	MaxSizeUDP = 512
 )
 
+// Message is a convenience type for decoding DNS messages and storing results in a single object.
+// Message is designed for ease of memory reuse. All internal buffers in a Message are reused in methods:
+// - [Message.Decode]: Limited in decode size by [Message.LimitResourceDecoding] which must be called beforehand.
+// - [Message.CopyFrom]
+// - [Message.AddQuestions]
 type Message struct {
 	Questions   []Question
 	Answers     []Resource
@@ -598,8 +603,6 @@ func append32(b []byte, v uint32) []byte {
 }
 
 func visitAllLabels(msg []byte, off uint16, fn func(b []byte), allowCompression bool) (uint16, error) {
-	// currOff is the current working offset.
-	currOff := off
 	if len(msg) > math.MaxUint16 {
 		return off, errResTooLong
 	}
@@ -615,23 +618,28 @@ func visitAllLabels(msg []byte, off uint16, fn func(b []byte), allowCompression 
 		if err != nil {
 			return off, err
 		} else if start == end {
-			break // Nominal end of frame, ends with null terminator.
+			if ptr == 0 {
+				newOff = off + 1 // advance past the null terminator byte
+			}
+			break
 		} else if isPtr {
-			// Follow pointer as absolute offset.
+			if !allowCompression {
+				return newOff, errCompressedSRV
+			}
+			if ptr == 0 {
+				newOff = off + 2 // next record follows the 2-byte pointer
+			}
 			off = start
-			if int(off) > len(msg) {
-				return off, errInvalidPtr
+			if int(off) >= len(msg) {
+				return newOff, errInvalidPtr
 			} else if ptr++; ptr > 10 {
-				return off, errTooManyPtr
+				return newOff, errTooManyPtr
 			}
 		} else {
-			// Is normal label, start is relative.
-			off += start
+			// Is normal label; start/end are relative to msg[off:].
 			fn(msg[off+start : off+end])
+			off += end
 		}
-	}
-	if ptr == 0 {
-		newOff = currOff
 	}
 	return newOff, nil
 }
