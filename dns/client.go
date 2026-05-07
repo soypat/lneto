@@ -15,7 +15,7 @@ type Client struct {
 	lport           uint16
 	msg             Message
 	respFlags       HeaderFlags
-	state           clientState
+	state           StateClientQuery
 	enableRecursion bool
 }
 
@@ -36,7 +36,7 @@ func (c *Client) StartResolve(localPort, txid uint16, cfg ResolveConfig) error {
 	if nd > math.MaxUint16 {
 		return lneto.ErrInvalidConfig
 	}
-	c.reset(localPort, txid, dnsSendQuery, cfg.EnableRecursion)
+	c.reset(localPort, txid, CQueryPending, cfg.EnableRecursion)
 	c.msg.LimitResourceDecoding(uint16(nd), uint16(nd), 0, 0)
 	c.msg.AddQuestions(cfg.Questions)
 	c.msg.AddAdditionals(cfg.Additional)
@@ -46,7 +46,7 @@ func (c *Client) StartResolve(localPort, txid uint16, cfg ResolveConfig) error {
 func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
 	if c.isClosed() {
 		return 0, net.ErrClosed
-	} else if c.state != dnsSendQuery {
+	} else if c.state != CQueryPending {
 		return 0, nil
 	}
 
@@ -64,7 +64,7 @@ func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) 
 		internal.LogAttrs(nil, slog.LevelError, "dns:unexpected-write", slog.Int("got", len(data)), slog.Int("want", int(msglen)))
 		return 0, lneto.ErrBug
 	}
-	c.state = dnsAwaitResponse
+	c.state = CQueryOutstanding
 	// Unset don't frag since DNS requests go through LOTS of nodes.
 	// if frameOffset >= 28 {
 	// 	version := carrierData[0] >> 4
@@ -78,7 +78,7 @@ func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) 
 func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 	if c.isClosed() {
 		return net.ErrClosed
-	} else if c.state != dnsAwaitResponse {
+	} else if c.state != CQueryOutstanding {
 		return nil
 	}
 	frame := carrierData[frameOffset:]
@@ -91,7 +91,7 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 		return nil // Not meant for our client.
 	}
 	c.respFlags = flags
-	c.state = dnsDone
+	c.state = CQueryDone
 	msg := &c.msg
 	_, incompleteButOK, err := msg.Decode(frame)
 	if err != nil && !incompleteButOK {
@@ -101,7 +101,7 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 }
 
 func (c *Client) isClosed() bool {
-	return c.state == dnsClosed || c.state == dnsAborted
+	return c.state == CQueryIdle || c.state == CQueryAborted
 }
 
 func (c *Client) MessageCopyTo(dst *Message) (done bool, err error) {
@@ -117,17 +117,17 @@ func (c *Client) MessageCopyTo(dst *Message) (done bool, err error) {
 }
 
 func (c *Client) Answers() []Resource {
-	if c.state != dnsDone {
+	if c.state != CQueryDone {
 		return nil
 	}
 	return c.msg.Answers
 }
 
 func (c *Client) Abort() {
-	c.reset(0, 0, 0, false)
+	c.reset(0, 0, CQueryAborted, false)
 }
 
-func (c *Client) reset(lport, txid uint16, state clientState, enableRecursion bool) {
+func (c *Client) reset(lport, txid uint16, state StateClientQuery, enableRecursion bool) {
 	*c = Client{
 		connID:          c.connID + 1,
 		lport:           lport,
@@ -138,13 +138,3 @@ func (c *Client) reset(lport, txid uint16, state clientState, enableRecursion bo
 	}
 	c.msg.Reset()
 }
-
-type clientState uint8
-
-const (
-	dnsClosed clientState = iota
-	dnsSendQuery
-	dnsAwaitResponse
-	dnsDone
-	dnsAborted
-)
