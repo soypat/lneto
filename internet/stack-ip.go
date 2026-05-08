@@ -20,7 +20,7 @@ func (sb *StackIP) Reset(addr netip.Addr, maxNodes int) error {
 	if maxNodes <= 0 {
 		return lneto.ErrInvalidConfig
 	}
-	sb.reset(nil, maxNodes)
+	sb.reset(new(lneto.Validator), maxNodes)
 	sb.connID++
 	return sb.SetAddr(addr)
 }

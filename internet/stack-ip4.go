@@ -24,52 +24,52 @@ type stackip4 struct {
 	vld             *lneto.Validator
 }
 
-func (sb *stackip4) reset(vld *lneto.Validator, maxNodes int) {
-	*sb = stackip4{
+func (si4 *stackip4) reset(vld *lneto.Validator, maxNodes int) {
+	*si4 = stackip4{
 		ip4:             [4]byte{},
 		ipID:            1,
 		acceptMulticast: false,
-		handlers:        sb.handlers,
+		handlers:        si4.handlers,
 		vld:             vld,
 	}
-	sb.handlers.reset("stackip4", maxNodes)
+	si4.handlers.reset("stackip4", maxNodes)
 }
 
-func (sb *stackip4) Demux(carrierData []byte, offset int) error {
+func (si4 *stackip4) Demux(carrierData []byte, offset int) error {
 	debugLog("ip:demux")
-	sb.handlers.info("StackIP.Demux:start")
+	si4.handlers.info("StackIP.Demux:start")
 	frame := carrierData[offset:] // we don't care about carrier data in IP.
 	ifrm, err := ipv4.NewFrame(frame)
 	if err != nil {
 		return err
 	}
 	dst := ifrm.DestinationAddr()
-	if sb.ip4 != ([4]byte{}) && *dst != sb.ip4 {
-		if !sb.acceptMulticast || dst[0]&0xF0 != 0xE0 {
-			sb.handlers.debug("ip:not-for-us")
+	if si4.ip4 != ([4]byte{}) && *dst != si4.ip4 {
+		if !si4.acceptMulticast || dst[0]&0xF0 != 0xE0 {
+			si4.handlers.debug("ip:not-for-us")
 			return lneto.ErrPacketDrop // Not meant for us.
 		}
 	}
 
-	sb.vld.ResetErr()
-	ifrm.ValidateExceptCRC(sb.vld)
-	if err = sb.vld.ErrPop(); err != nil {
-		sb.handlers.error("ip:Demux.validate")
+	si4.vld.ResetErr()
+	ifrm.ValidateExceptCRC(si4.vld)
+	if err = si4.vld.ErrPop(); err != nil {
+		si4.handlers.error("ip:Demux.validate")
 		return err
 	}
 
 	if ifrm.CalculateHeaderCRC() != 0 {
-		sb.handlers.error("ip:demux.crc")
+		si4.handlers.error("ip:demux.crc")
 		return lneto.ErrBadCRC
 	}
 	off := ifrm.HeaderLength()
 	totalLen := ifrm.TotalLength()
 	proto := ifrm.Protocol()
-	node := sb.handlers.nodeByProto(uint16(proto))
+	node := si4.handlers.nodeByProto(uint16(proto))
 	// nodeIdx := getNodeByProto(sb.handlers, uint16(proto))
 	if node == nil {
 		// Drop packet.
-		sb.handlers.info("ip:demux.drop", internal.SlogAddr4("dstaddr", ifrm.DestinationAddr()), slog.String("proto", ifrm.Protocol().String()))
+		si4.handlers.info("ip:demux.drop", internal.SlogAddr4("dstaddr", ifrm.DestinationAddr()), slog.String("proto", ifrm.Protocol().String()))
 		return lneto.ErrPacketDrop
 	}
 	// Incoming CRC Validation of common IP Protocols.
@@ -78,7 +78,7 @@ func (sb *stackip4) Demux(carrierData []byte, offset int) error {
 	case lneto.IPProtoTCP:
 		ifrm.CRCWriteTCPPseudo(&crc)
 		if crc.PayloadSum16(ifrm.Payload()) != 0 {
-			sb.handlers.error("ip:demux.tcpcrc")
+			si4.handlers.error("ip:demux.tcpcrc")
 			return lneto.ErrBadCRC
 		}
 	case lneto.IPProtoUDP:
@@ -86,28 +86,28 @@ func (sb *stackip4) Demux(carrierData []byte, offset int) error {
 		if err != nil {
 			return err
 		}
-		ufrm.ValidateSize(sb.vld)
-		if err = sb.vld.ErrPop(); err != nil {
-			sb.handlers.error("ip:demux.udpvalidatesize")
+		ufrm.ValidateSize(si4.vld)
+		if err = si4.vld.ErrPop(); err != nil {
+			si4.handlers.error("ip:demux.udpvalidatesize")
 			return err
 		}
 		frameLen := ufrm.Length()
 		ifrm.CRCWriteUDPPseudo(&crc, frameLen)
 		if crc.PayloadSum16(ufrm.RawData()[:frameLen]) != 0 {
-			sb.handlers.error("ip:demux.udpcrc")
+			si4.handlers.error("ip:demux.udpcrc")
 			return lneto.ErrBadCRC
 		}
 	}
-	sb.handlers.info("ipDemux", slog.String("ipproto", proto.String()), slog.Int("plen", int(totalLen)))
+	si4.handlers.info("ipDemux", slog.String("ipproto", proto.String()), slog.Int("plen", int(totalLen)))
 	err = node.callbacks.Demux(frame[:totalLen], off)
-	if sb.handlers.tryHandleError(node, err) {
-		sb.handlers.info("ipclose", slog.String("proto", proto.String()))
+	if si4.handlers.tryHandleError(node, err) {
+		si4.handlers.info("ipclose", slog.String("proto", proto.String()))
 		err = nil
 	}
 	return err
 }
 
-func (sb *stackip4) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
+func (si4 *stackip4) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
 	frame := carrierData[offsetToFrame:]
 	if len(frame) < ipv4.MinimumMTU {
 		return 0, io.ErrShortBuffer
@@ -118,16 +118,16 @@ func (sb *stackip4) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame in
 	const dontFrag = 0x4000
 	ifrm.SetVersionAndIHL(4, ihl)
 	ifrm.SetToS(0)
-	seed := (sb.ipID + 1) ^ uint16(sb.ip4[0])
+	seed := (si4.ipID + 1) ^ uint16(si4.ip4[0])
 	id := internal.Prand16(seed)
 	ifrm.SetID(id)
 	ifrm.SetFlags(dontFrag)
 	ifrm.SetTTL(64)
-	*ifrm.SourceAddr() = sb.ip4
-	sb.ipID = id
+	*ifrm.SourceAddr() = si4.ip4
+	si4.ipID = id
 	// Children (TCP/UDP) start at offset headerlen (20 bytes after IP header start).
 	// offsetToIP is 0 relative to this slice (frame), children's frame starts at headerlen.
-	node, n, err := sb.handlers.encapsulateAny(carrierData, offsetToFrame, offsetToFrame+headerlen)
+	node, n, err := si4.handlers.encapsulateAny(carrierData, offsetToFrame, offsetToFrame+headerlen)
 	if n == 0 {
 		return n, err
 	}
@@ -162,13 +162,13 @@ func (sb *stackip4) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame in
 	return totalLen, err
 }
 
-func (sb *stackip4) SetAcceptMulticast(accept bool) {
-	sb.acceptMulticast = accept
+func (si4 *stackip4) SetAcceptMulticast(accept bool) {
+	si4.acceptMulticast = accept
 }
-func (sb *stackip4) Addr4() [4]byte { return sb.ip4 }
-func (sb *stackip4) SetAddr4(ip4 [4]byte) {
-	sb.ip4 = ip4
+func (si4 *stackip4) Addr4() [4]byte { return si4.ip4 }
+func (si4 *stackip4) SetAddr4(ip4 [4]byte) {
+	si4.ip4 = ip4
 }
-func (sb *stackip4) Protocol() uint64 { return uint64(ethernet.TypeIPv4) }
+func (si4 *stackip4) Protocol() uint64 { return uint64(ethernet.TypeIPv4) }
 
-func (sb *stackip4) LocalPort() uint16 { return 0 }
+func (si4 *stackip4) LocalPort() uint16 { return 0 }
