@@ -77,7 +77,11 @@ type StackConfig struct {
 	EthernetTxCRC32Update func(crc uint32, b []byte) uint32
 
 	HardwareAddress [6]byte
-	MTU             uint16
+	// If set to non-zero value will set link gateway address.
+	// Avoids needing to resolve gateway address via DHCP+ARP.
+	GatewayHardwareAddress [6]byte
+
+	MTU uint16
 	// Accept multicast ethernet and IP packets. Needed for MDNS.
 	AcceptMulticast bool
 	// ICMPQueueLimit sets maximum number of input/output packets queued for processing.
@@ -147,36 +151,22 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	if cfg.RandSeed == 0 || cfg.Hostname == "" || cfg.PassivePeers > 255 {
 		return lneto.ErrInvalidConfig
 	}
-	mac := cfg.HardwareAddress
+
 	addr := cfg.StaticAddress
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prng = uint32(cfg.RandSeed)
-	s.hostname = cfg.Hostname
+
 	if !addr.IsValid() {
 		addr = netip.AddrFrom4([4]byte{}) // If static not set DHCP will be performed and address will be zero.
 	} else if addr.Is6() {
 		return lneto.ErrUnsupported
 	}
-	const linkNodes = 2 // ARP and IP nodes
-	ecfg := internet.StackEthernetConfig{
-		MTU:         int(cfg.MTU),
-		MaxNodes:    linkNodes,
-		MAC:         mac,
-		Gateway:     ethernet.BroadcastAddr(),
-		AppendCRC32: cfg.EthernetTxCRC32Update != nil,
-		CRC32Update: cfg.EthernetTxCRC32Update,
-	}
-	err := s.link.Configure(ecfg)
+	err := cfg.ConfigureLink(&s.link, s.arpt.patchEgressMAC)
 	if err != nil {
 		return err
 	}
-	s.link.SetAcceptMulticast(cfg.AcceptMulticast)
-	if cfg.PassivePeers == 0 {
-		s.link.OnEncapsulate(nil)
-	} else {
-		s.link.OnEncapsulate(s.arpt.patchEgressMAC)
-	}
+	s.hostname = cfg.Hostname
 	const ipNodes = 3 // 3 IP protocols possible: UDP, TCP, ICMP.
 	err = s.ip.Reset(addr, ipNodes)
 	if err != nil {

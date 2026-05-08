@@ -158,7 +158,7 @@ func (sb *StackIP) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int
 	const dontFrag = 0x4000
 	ifrm.SetVersionAndIHL(4, ihl)
 	ifrm.SetToS(0)
-	seed := sb.ipID + uint16(sb.connID)
+	seed := sb.ipID ^ uint16(sb.connID)
 	id := internal.Prand16(seed)
 	ifrm.SetID(id)
 	ifrm.SetFlags(dontFrag)

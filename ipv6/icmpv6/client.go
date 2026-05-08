@@ -20,8 +20,6 @@ type ClientConfig struct {
 	HashSeed            uint32
 	ID                  uint16
 	// NDP fields; NDP is disabled when NDPCache == 0.
-	OurAddr  [16]byte
-	OurMAC   [6]byte
 	NDPCache int
 }
 
@@ -55,6 +53,13 @@ type Client struct {
 	ourIP     [16]byte
 }
 
+func (client *Client) SetAddr(addr [16]byte) {
+	client.ourIP = addr
+}
+func (client *Client) SetHardwareAddr(mac [6]byte) {
+	client.ourMAC = mac
+}
+
 func (client *Client) Configure(cfg ClientConfig) error {
 	echoOK := cfg.HashSeed != 0 && len(cfg.ResponseQueueBuffer) >= 16 && cfg.ResponseQueueLimit > 0
 	ndpOK := cfg.NDPCache > 0
@@ -70,8 +75,6 @@ func (client *Client) Configure(cfg ClientConfig) error {
 		client.id = cfg.ID
 	}
 	if ndpOK {
-		client.ourIP = cfg.OurAddr
-		client.ourMAC = cfg.OurMAC
 		client.ndpCache.reset(cfg.NDPCache)
 	}
 	return nil
