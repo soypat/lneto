@@ -6,16 +6,16 @@ import (
 )
 
 func TestClientNDP(t *testing.T) {
-	addr1 := [16]byte{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+	// addr1 := [16]byte{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
 	addr2 := [16]byte{0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
-	mac1 := [6]byte{0xde, 0xad, 0xbe, 0xef, 0x00, 0x01}
+	// mac1 := [6]byte{0xde, 0xad, 0xbe, 0xef, 0x00, 0x01}
 	mac2 := [6]byte{0xc0, 0xff, 0xee, 0xc0, 0xff, 0x02}
 
 	var h1, h2 Client
-	if err := h1.Configure(ClientConfig{OurAddr: addr1, OurMAC: mac1, NDPCache: 2}); err != nil {
+	if err := h1.Configure(ClientConfig{NDPCache: 2}); err != nil {
 		t.Fatal(err)
 	}
-	if err := h2.Configure(ClientConfig{OurAddr: addr2, OurMAC: mac2, NDPCache: 2}); err != nil {
+	if err := h2.Configure(ClientConfig{NDPCache: 2}); err != nil {
 		t.Fatal(err)
 	}
 

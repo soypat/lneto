@@ -284,18 +284,14 @@ func (s *StackBigAsync) Gateway6() [6]byte {
 // EnableICMP registers an ICMP handler to the stack when enabled is true.
 // If enabled=false the currently registered ICMP handler is unregistered and state reset.
 func (s *StackBigAsync) EnableICMP(enabled bool) (err error) {
-		s.mu.Lock()
+	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.icmpCapable() {
 		err = lneto.ErrInvalidConfig
 		enabled = false // ensure aborted.
 	}
 	if enabled {
-		if 
-		if s.ip.IsRegistered(lneto.IPProtoICMP) {
-			return nil
-		}
-		err = s.ip.Register(&s.icmp)
+
 	} else {
 		s.icmp.Abort()
 		s.icmp6.Abort()
