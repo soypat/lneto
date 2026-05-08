@@ -84,6 +84,7 @@ func (sb *StackBigAsync) Reset(cfg StackConfig) error {
 	if err != nil {
 		return err
 	}
+
 	sb.arpt.passivePeers = uint8(cfg.PassivePeers)
 	err = sb.resetARP()
 	if err != nil {
@@ -94,6 +95,8 @@ func (sb *StackBigAsync) Reset(cfg StackConfig) error {
 	internal.SliceReuse(&sb.userUDPs, int(cfg.MaxActiveUDPPorts))
 	tcpConns := 1 + cfg.MaxActiveTCPPorts // DNS/TCP + user-registered.
 	sb.tcps.ResetTCP(tcpConns)
+
+	// Register IP to Link, UDP/TCP to IP.
 	err = sb.link.Register(&sb.ip)
 	if err != nil {
 		return err
@@ -134,6 +137,13 @@ func (sb *StackBigAsync) Reset(cfg StackConfig) error {
 		return err
 	}
 
+	var timebuf [4]int64
+	sb.sysprec = ntp.CalculateSystemPrecision(nil, timebuf[:])
+	if sb.clientID == "" {
+		sb.clientID = "lneto-" + sb.hostname
+	}
+	sb.stats = Statistics{}
+	sb.dnssv = cfg.DNSServer
 	return nil
 }
 
@@ -221,6 +231,88 @@ func (sb *StackBigAsync) setIP(addr netip.Addr) error {
 	}
 	err = sb.resetARP()
 	return err
+}
+
+func (sb *StackBigAsync) Addr() netip.Addr {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.ip.Addr()
+}
+
+func (sb *StackBigAsync) SetAddr(addr netip.Addr) error {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.setIP(addr)
+}
+
+func (s *StackBigAsync) SetSubnet(subnetMask netip.Prefix) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+}
+
+func (sb *StackBigAsync) Prand64() uint64 {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.prand64()
+}
+
+func (s *StackBigAsync) SetHardwareAddress(hw [6]byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.link.SetHardwareAddr6(hw)
+	return s.resetARP()
+}
+
+func (s *StackBigAsync) HardwareAddress() (hw [6]byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.link.HardwareAddr6()
+}
+
+func (s *StackBigAsync) SetGateway6(gwhw [6]byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.link.SetGateway6(gwhw)
+}
+
+func (s *StackBigAsync) Gateway6() [6]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.link.Gateway6()
+}
+
+// EnableICMP registers an ICMP handler to the stack when enabled is true.
+// If enabled=false the currently registered ICMP handler is unregistered and state reset.
+func (s *StackBigAsync) EnableICMP(enabled bool) (err error) {
+		s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.icmpCapable() {
+		err = lneto.ErrInvalidConfig
+		enabled = false // ensure aborted.
+	}
+	if enabled {
+		if 
+		if s.ip.IsRegistered(lneto.IPProtoICMP) {
+			return nil
+		}
+		err = s.ip.Register(&s.icmp)
+	} else {
+		s.icmp.Abort()
+		s.icmp6.Abort()
+	}
+	return err
+}
+
+func (s *StackBigAsync) icmpCapable() bool {
+
+	if s.is4() {
+		return s.icmp.IncomingEchoCapacity() > 0
+	}
+	return s.icmp6.PingIncomingCapacity() > 0
+}
+
+func (s *StackBigAsync) is4() bool {
+	return s.ip.Addr().Is4()
 }
 
 func (sb *StackBigAsync) prand64() uint64 { return sb.prng.Uint64() }

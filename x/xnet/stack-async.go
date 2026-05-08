@@ -63,11 +63,13 @@ type StackAsync struct {
 }
 
 type StackConfig struct {
-	StaticAddress netip.Addr
-	DNSServer     netip.Addr
-	NTPServer     netip.Addr
-	RandSeed      int64
-	Hostname      string
+	StaticAddress4 [4]byte
+	StaticAddress6 [16]byte
+	StaticAddress  netip.Addr
+	DNSServer      netip.Addr
+	NTPServer      netip.Addr
+	RandSeed       int64
+	Hostname       string
 
 	// MaxActiveTCPPorts and MaxActiveUDPPorts are a memory guardrail to limit
 	// number of simultaneous open TCP/UDP ports. The memory impact at the stack level
