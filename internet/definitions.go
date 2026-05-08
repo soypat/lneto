@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/internal"
 )
 
 // node is a concrete StackNode as stored in Stacks. Methods are devirtualized for performance benefits, especially on TinyGo.
@@ -230,4 +231,32 @@ func incLim(v, max int) int {
 		v = 0
 	}
 	return v
+}
+
+type logger struct {
+	log *slog.Logger
+}
+
+func (l logger) error(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(l.log, slog.LevelError, msg, attrs...)
+}
+func (l logger) info(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(l.log, slog.LevelInfo, msg, attrs...)
+}
+func (l logger) warn(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(l.log, slog.LevelWarn, msg, attrs...)
+}
+func (l logger) debug(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(l.log, slog.LevelDebug, msg, attrs...)
+}
+func (l logger) trace(msg string, attrs ...slog.Attr) {
+	internal.LogAttrs(l.log, internal.LevelTrace, msg, attrs...)
+}
+
+const enableAllocLog = internal.HeapAllocDebugging
+
+func debugLog(msg string) {
+	if enableAllocLog {
+		internal.LogAllocs(msg)
+	}
 }
