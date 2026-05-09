@@ -21,7 +21,7 @@ func TestStackAsyncListener_SingleConnection(t *testing.T) {
 	err := client.Reset(StackConfig{
 		Hostname:          "Client",
 		RandSeed:          seed,
-		StaticAddress:     netip.AddrFrom4([4]byte{10, 0, 0, 1}),
+		StaticAddress4:    [4]byte{10, 0, 0, 1},
 		MaxActiveTCPPorts: 1,
 		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 1},
 		MTU:               MTU,
@@ -32,7 +32,7 @@ func TestStackAsyncListener_SingleConnection(t *testing.T) {
 	err = sv.Reset(StackConfig{
 		Hostname:          "Server",
 		RandSeed:          ^seed,
-		StaticAddress:     netip.AddrFrom4([4]byte{10, 0, 0, 2}),
+		StaticAddress4:    [4]byte{10, 0, 0, 2},
 		MaxActiveTCPPorts: 1, // Note: We use listener, not direct TCP conn registration.
 		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 2},
 		MTU:               MTU,
@@ -78,7 +78,7 @@ func TestStackAsyncListener_SingleConnection(t *testing.T) {
 	}
 
 	// Client dials server.
-	err = client.DialTCP(&clConn, clPort, netip.AddrPortFrom(sv.Addr(), svPort))
+	err = client.DialTCP(&clConn, clPort, netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 	err := sv.Reset(StackConfig{
 		Hostname:          "Server",
 		RandSeed:          ^seed,
-		StaticAddress:     netip.AddrFrom4([4]byte{10, 0, 0, 2}),
+		StaticAddress4:    [4]byte{10, 0, 0, 2},
 		MaxActiveTCPPorts: 1, // Note: We use listener, not direct TCP conn registration.
 		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 2},
 		MTU:               MTU,
@@ -173,7 +173,7 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 		err := client.Reset(StackConfig{
 			Hostname:          "Client",
 			RandSeed:          seed,
-			StaticAddress:     caddrp.Addr(),
+			StaticAddress4:    caddrp.Addr().As4(),
 			MaxActiveTCPPorts: 1,
 			HardwareAddress:   chw,
 			MTU:               MTU,
@@ -193,7 +193,7 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Client dials server.
-		err = client.DialTCP(&clConn, caddrp.Port(), netip.AddrPortFrom(sv.Addr(), svPort))
+		err = client.DialTCP(&clConn, caddrp.Port(), netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -207,7 +207,7 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		} else if svconn.RemotePort() != clConn.LocalPort() ||
-			[4]byte(svconn.RemoteAddr()) != client.Addr().As4() {
+			[4]byte(svconn.RemoteAddr()) != client.Addr4() {
 			t.Fatal("race condition to listener acquisition")
 		}
 		// Verify both connections are established.

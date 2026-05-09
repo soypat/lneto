@@ -178,7 +178,7 @@ func newTCPStacks(t testing.TB, randSeed int64, mtu int) (s1, s2 *StackAsync, c1
 	err := s1.Reset(StackConfig{
 		Hostname:          "Stack1",
 		RandSeed:          randSeed,
-		StaticAddress:     netip.AddrFrom4([4]byte{10, 0, 0, byte1}),
+		StaticAddress4:    [4]byte{10, 0, 0, byte1},
 		MaxActiveTCPPorts: 1,
 		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, byte1},
 		MTU:               uint16(mtu),
@@ -192,7 +192,7 @@ func newTCPStacks(t testing.TB, randSeed int64, mtu int) (s1, s2 *StackAsync, c1
 	err = s2.Reset(StackConfig{
 		Hostname:          "Stack2",
 		RandSeed:          ^randSeed,
-		StaticAddress:     netip.AddrFrom4([4]byte{10, 0, 0, byte2}),
+		StaticAddress4:    [4]byte{10, 0, 0, byte2},
 		MaxActiveTCPPorts: 1,
 		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, byte2},
 		MTU:               uint16(mtu),
@@ -257,7 +257,7 @@ func (tst *tester) TestTCPSetupAndEstablish(svStack, clStack *StackAsync, svConn
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = clStack.DialTCP(clConn, clPort, netip.AddrPortFrom(svStack.Addr(), svPort))
+	err = clStack.DialTCP(clConn, clPort, netip.AddrPortFrom(netip.AddrFrom4(svStack.Addr4()), svPort))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,12 +464,12 @@ func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAs
 	if tst.getInt(protoIPv4, pcap.FieldClassVersion) != 4 {
 		t.Errorf("did not get IP version=4, got=%d", tst.getInt(protoIPv4, pcap.FieldClassVersion))
 	}
-	srcAddr := src.Addr()
-	dstAddr := dst.Addr()
-	if !bytes.Equal(srcAddr.AsSlice(), tst.getData(protoIPv4, pcap.FieldClassSrc)) {
+	srcAddr := src.Addr4()
+	dstAddr := dst.Addr4()
+	if !bytes.Equal(srcAddr[:], tst.getData(protoIPv4, pcap.FieldClassSrc)) {
 		t.Errorf("mismatched ip src addr %d", tst.getData(protoIPv4, pcap.FieldClassSrc))
 	}
-	if !bytes.Equal(dstAddr.AsSlice(), tst.getData(protoIPv4, pcap.FieldClassDst)) {
+	if !bytes.Equal(dstAddr[:], tst.getData(protoIPv4, pcap.FieldClassDst)) {
 		t.Errorf("mismatched ip dst addr %d", tst.getData(protoIPv4, pcap.FieldClassDst))
 	}
 	tfrm := tst.getTCPFrame()
@@ -514,8 +514,8 @@ func (tst *tester) ARPExchangeOnly(querying, target *StackAsync) {
 	qHw := querying.HardwareAddress()
 	tgtHw := target.HardwareAddress()
 	broadcast := ethernet.BroadcastAddr()
-	qIP := querying.Addr()
-	tgtIP := target.Addr()
+	qIP := querying.Addr4()
+	tgtIP := target.Addr4()
 
 	// Validate Ethernet layer (request is broadcast)
 	if !bytes.Equal(qHw[:], tst.getData(protoEthernet, pcap.FieldClassSrc)) {
@@ -534,10 +534,10 @@ func (tst *tester) ARPExchangeOnly(querying, target *StackAsync) {
 	if !bytes.Equal(qHw[:], tst.getFieldByClassLen(protoARP, pcap.FieldClassSrc, 6, 0)) {
 		t.Errorf("request: mismatched ARP sender HW")
 	}
-	if !bytes.Equal(qIP.AsSlice(), tst.getFieldByClassLen(protoARP, pcap.FieldClassSrc, 4, 0)) {
+	if !bytes.Equal(qIP[:], tst.getFieldByClassLen(protoARP, pcap.FieldClassSrc, 4, 0)) {
 		t.Errorf("request: mismatched ARP sender proto")
 	}
-	if !bytes.Equal(tgtIP.AsSlice(), tst.getFieldByClassLen(protoARP, pcap.FieldClassSrc, 4, 1)) {
+	if !bytes.Equal(tgtIP[:], tst.getFieldByClassLen(protoARP, pcap.FieldClassSrc, 4, 1)) {
 		t.Errorf("request: mismatched ARP target proto")
 	}
 
@@ -579,13 +579,13 @@ func (tst *tester) ARPExchangeOnly(querying, target *StackAsync) {
 	if !bytes.Equal(tgtHw[:], tst.getFieldByClassLen(protoARP, pcap.FieldClassSrc, 6, 0)) {
 		t.Errorf("reply: mismatched ARP sender HW (should be target's MAC)")
 	}
-	if !bytes.Equal(tgtIP.AsSlice(), tst.getFieldByClassLen(protoARP, pcap.FieldClassSrc, 4, 0)) {
+	if !bytes.Equal(tgtIP[:], tst.getFieldByClassLen(protoARP, pcap.FieldClassSrc, 4, 0)) {
 		t.Errorf("reply: mismatched ARP sender proto (should be target's IP)")
 	}
 	if !bytes.Equal(qHw[:], tst.getFieldByClassLen(protoARP, pcap.FieldClassSrc, 6, 1)) {
 		t.Errorf("reply: mismatched ARP target HW (should be querying's MAC)")
 	}
-	if !bytes.Equal(qIP.AsSlice(), tst.getFieldByClassLen(protoARP, pcap.FieldClassSrc, 4, 1)) {
+	if !bytes.Equal(qIP[:], tst.getFieldByClassLen(protoARP, pcap.FieldClassSrc, 4, 1)) {
 		t.Errorf("reply: mismatched ARP target proto (should be querying's IP)")
 	}
 
@@ -597,7 +597,7 @@ func (tst *tester) ARPExchangeOnly(querying, target *StackAsync) {
 	setzero(buf[:n])
 
 	// === PHASE 3: Verify querying stack learned target's MAC ===
-	resolvedHw, err := querying.ResultResolveHardwareAddress6(tgtIP)
+	resolvedHw, err := querying.ResultResolveHardwareAddress6(netip.AddrFrom4(tgtIP))
 	if err != nil {
 		t.Errorf("ARP query result failed: %v", err)
 	} else if resolvedHw != tgtHw {
@@ -929,7 +929,7 @@ func TestTCPConn_BufferNotClearedOnPassiveClose(t *testing.T) {
 func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
 	const MTU = ethernet.MaxMTU
 	const MaxFrameLength = MTU + ethernet.MaxOverheadSize // Ethernet header+FCS+VLAN.
-	stackAddr := netip.AddrFrom4([4]byte{192, 168, 1, 99})
+	stackAddr := [4]byte{192, 168, 1, 99}
 	stackMAC := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
 	routerAddr := [4]byte{192, 168, 1, 1}
 	routerMAC := [6]byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}
@@ -938,7 +938,7 @@ func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
 	err := stack.Reset(StackConfig{
 		Hostname:        "ICMPTest",
 		RandSeed:        42,
-		StaticAddress:   stackAddr,
+		StaticAddress4:  stackAddr,
 		HardwareAddress: stackMAC,
 		MTU:             MTU,
 		ICMPQueueLimit:  2,
@@ -954,7 +954,7 @@ func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
 		SrcMAC:  routerMAC,
 		DstMAC:  stackMAC,
 		SrcIPv4: routerAddr,
-		DstIPv4: stackAddr.As4(),
+		DstIPv4: stackAddr,
 	}
 	icmpPayload := []byte("abcdefghijklmnopqrstuvwxyz012345") // 32 bytes, typical ping payload.
 	const (

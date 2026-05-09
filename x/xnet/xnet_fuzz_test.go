@@ -26,7 +26,7 @@ func FuzzStackPacketHTTP(f *testing.F) {
 	if err != nil {
 		f.Fatal(err)
 	}
-	err = s2.DialTCP(c2, 1337, netip.AddrPortFrom(s1.Addr(), c1.LocalPort()))
+	err = s2.DialTCP(c2, 1337, netip.AddrPortFrom(netip.AddrFrom4(s1.Addr4()), c1.LocalPort()))
 	if err != nil {
 		f.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func FuzzStackPacketHTTP(f *testing.F) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = s2.DialTCP(c2, 1337, netip.AddrPortFrom(s1.Addr(), c1.LocalPort()))
+		err = s2.DialTCP(c2, 1337, netip.AddrPortFrom(netip.AddrFrom4(s1.Addr4()), c1.LocalPort()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -275,7 +275,7 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 	v1, v2 := byte(seed1), byte(seed2)
 	cfg1 := StackConfig{
 		Hostname:          "s1",
-		StaticAddress:     netip.AddrFrom4([4]byte{1, 0, 0, v1}),
+		StaticAddress4:    [4]byte{1, 0, 0, v1},
 		RandSeed:          seed1,
 		MaxActiveTCPPorts: 1,
 		MaxActiveUDPPorts: 1,
@@ -291,7 +291,7 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 	}
 	cfg2 := StackConfig{
 		Hostname:          "s2",
-		StaticAddress:     netip.AddrFrom4([4]byte{1, 0, 0, v2}),
+		StaticAddress4:    [4]byte{1, 0, 0, v2},
 		RandSeed:          seed2,
 		MaxActiveTCPPorts: 1,
 		MaxActiveUDPPorts: 1,
@@ -360,7 +360,7 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 				if verbose {
 					fmt.Fprintln(fzoutput, "TCP dial")
 				}
-				err = s1.DialTCP(&tcp1, port1, netip.AddrPortFrom(s2.Addr(), port2))
+				err = s1.DialTCP(&tcp1, port1, netip.AddrPortFrom(netip.AddrFrom4(s2.Addr4()), port2))
 				if err != nil {
 					t.Fatal(i, err)
 				}
@@ -387,7 +387,7 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 				if verbose {
 					fmt.Fprintln(fzoutput, "UDP dial 1")
 				}
-				err = s1.DialUDP(&udp1, port1, netip.AddrPortFrom(s2.Addr(), port2))
+				err = s1.DialUDP(&udp1, port1, netip.AddrPortFrom(netip.AddrFrom4(s2.Addr4()), port2))
 				if err != nil {
 					t.Fatal(i, err)
 				}
@@ -396,7 +396,7 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 				if verbose {
 					fmt.Fprintln(fzoutput, "UDP dial 2")
 				}
-				err = s2.DialUDP(&udp2, port2, netip.AddrPortFrom(s1.Addr(), port1))
+				err = s2.DialUDP(&udp2, port2, netip.AddrPortFrom(netip.AddrFrom4(s1.Addr4()), port1))
 				if err != nil {
 					t.Fatal(i, err)
 				}
@@ -447,13 +447,13 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 			switch icmpaction {
 			case 0:
 				s1.icmp.Reset()
-				_, err = s1.icmp.PingStart(s2.Addr().As4(), buf[:pingMinPayload], pingMinPayload+uint16(action.Rand)%pingMinPayload)
+				_, err = s1.icmp.PingStart(s2.Addr4(), buf[:pingMinPayload], pingMinPayload+uint16(action.Rand)%pingMinPayload)
 				if err != nil {
 					t.Fatal(i, err)
 				}
 			case 1:
 				s2.icmp.Reset()
-				_, err = s2.icmp.PingStart(s1.Addr().As4(), buf[:pingMinPayload], pingMinPayload+uint16(action.Rand)%pingMinPayload)
+				_, err = s2.icmp.PingStart(s1.Addr4(), buf[:pingMinPayload], pingMinPayload+uint16(action.Rand)%pingMinPayload)
 				if err != nil {
 					t.Fatal(i, err)
 				}
@@ -466,17 +466,17 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 			}
 			switch action {
 			case 0: // s1 queries s2 address.
-				s1.StartResolveHardwareAddress6(s2.Addr())
+				s1.StartResolveHardwareAddress6(netip.AddrFrom4(s2.Addr4()))
 			case 1: // s2 queries s1 address.
-				s2.StartResolveHardwareAddress6(s1.Addr())
+				s2.StartResolveHardwareAddress6(netip.AddrFrom4(s1.Addr4()))
 			case 2: // s1 checks query result for s2.
-				s1.ResultResolveHardwareAddress6(s2.Addr())
+				s1.ResultResolveHardwareAddress6(netip.AddrFrom4(s2.Addr4()))
 			case 3: // s2 checks query result for s1.
-				s2.ResultResolveHardwareAddress6(s1.Addr())
+				s2.ResultResolveHardwareAddress6(netip.AddrFrom4(s1.Addr4()))
 			case 4: // s1 discards pending query.
-				s1.DiscardResolveHardwareAddress6(s2.Addr())
+				s1.DiscardResolveHardwareAddress6(netip.AddrFrom4(s2.Addr4()))
 			case 5: // s2 discards pending query.
-				s2.DiscardResolveHardwareAddress6(s1.Addr())
+				s2.DiscardResolveHardwareAddress6(netip.AddrFrom4(s1.Addr4()))
 			}
 		}
 		// Exchange data while checking stack does not enter runaway infinite frame send loop.

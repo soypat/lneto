@@ -1,7 +1,6 @@
 package xnet
 
 import (
-	"net/netip"
 	"testing"
 )
 
@@ -37,7 +36,7 @@ func TestStackAsync_ICMPEcho(t *testing.T) {
 			sender.SetGateway6(receiver.HardwareAddress())
 			receiver.SetGateway6(sender.HardwareAddress())
 
-			key, err := sender.icmp.PingStart(receiver.Addr().As4(), tt.pattern, tt.size)
+			key, err := sender.icmp.PingStart(receiver.Addr4(), tt.pattern, tt.size)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -92,15 +91,15 @@ func newICMPStacks(t testing.TB, randSeed int64, mtu int) (*StackAsync, *StackAs
 
 	// Use the seed to generate two adjacent IPs (10.0.0.x) and MACs.
 	base := byte(randSeed & 0x7F) // keep in safe range 0..127
-	addr1 := netip.AddrFrom4([4]byte{10, 0, 0, base})
-	addr2 := netip.AddrFrom4([4]byte{10, 0, 0, base + 1})
+	addr1 := [4]byte{10, 0, 0, base}
+	addr2 := [4]byte{10, 0, 0, base + 1}
 	mac1 := [6]byte{0xbe, 0xef, 0, 0, 0, base}
 	mac2 := [6]byte{0xbe, 0xef, 0, 0, 0, base + 1}
 
 	if err := s1.Reset(StackConfig{
 		Hostname:        "icmp-stack-1",
 		RandSeed:        randSeed,
-		StaticAddress:   addr1,
+		StaticAddress4:  addr1,
 		HardwareAddress: mac1,
 		MTU:             uint16(mtu),
 		ICMPQueueLimit:  icmpQueue,
@@ -111,7 +110,7 @@ func newICMPStacks(t testing.TB, randSeed int64, mtu int) (*StackAsync, *StackAs
 	if err := s2.Reset(StackConfig{
 		Hostname:        "icmp-stack-2",
 		RandSeed:        ^randSeed,
-		StaticAddress:   addr2,
+		StaticAddress4:  addr2,
 		HardwareAddress: mac2,
 		MTU:             uint16(mtu),
 		ICMPQueueLimit:  icmpQueue,

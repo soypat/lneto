@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"testing"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -24,7 +25,7 @@ func TestListener_SingleConnection(t *testing.T) {
 	if err := listener.Reset(serverPort, pool); err != nil {
 		t.Fatal(err)
 	}
-	if err := serverStack.Register(&listener); err != nil {
+	if err := serverStack.Register4(&listener); err != nil {
 		t.Fatal(err)
 	}
 
@@ -77,7 +78,7 @@ func TestListener_AcceptAfterEstablished(t *testing.T) {
 	if err := listener.Reset(serverPort, pool); err != nil {
 		t.Fatal(err)
 	}
-	if err := serverStack.Register(&listener); err != nil {
+	if err := serverStack.Register4(&listener); err != nil {
 		t.Fatal(err)
 	}
 
@@ -105,7 +106,7 @@ func TestListener_AcceptAfterEstablished(t *testing.T) {
 	// Setup second client and verify we can still accept.
 	var client2Stack StackIP
 	var client2Conn tcp.Conn
-	setupClient(t, &client2Stack, &client2Conn, serverStack.Addr(), serverPort, 1338)
+	setupClient(t, &client2Stack, &client2Conn, netip.AddrFrom4(serverStack.Addr4()), serverPort, 1338)
 
 	// Complete full handshake for client2.
 	expectExchange(t, &client2Stack, &serverStack, buf[:]) // SYN
@@ -147,14 +148,14 @@ func TestListener_MultiConn(t *testing.T) {
 	if err := listener.Reset(serverPort, pool); err != nil {
 		t.Fatal(err)
 	}
-	if err := serverStack.Register(&listener); err != nil {
+	if err := serverStack.Register4(&listener); err != nil {
 		t.Fatal(err)
 	}
 
 	// Setup remaining clients.
 	for i := 1; i < numClients; i++ {
 		clientPort := uint16(1337 + i)
-		setupClient(t, &clientStacks[i], &clientConns[i], serverStack.Addr(), serverPort, clientPort)
+		setupClient(t, &clientStacks[i], &clientConns[i], netip.AddrFrom4(serverStack.Addr4()), serverPort, clientPort)
 	}
 
 	var buf [2048]byte
@@ -324,7 +325,7 @@ func TestListener_RSTOnPoolExhaustion(t *testing.T) {
 	if err := listener.Reset(serverPort, pool); err != nil {
 		t.Fatal(err)
 	}
-	if err := serverStack.Register(&listener); err != nil {
+	if err := serverStack.Register4(&listener); err != nil {
 		t.Fatal(err)
 	}
 
@@ -340,10 +341,10 @@ func TestListener_RSTOnPoolExhaustion(t *testing.T) {
 
 	// Setup client2 and send its SYN — pool is full, server should queue RST.
 	const client2Port = uint16(1338)
-	setupClient(t, &client2Stack, &client2Conn, serverStack.Addr(), serverPort, client2Port)
+	setupClient(t, &client2Stack, &client2Conn, netip.AddrFrom4(serverStack.Addr4()), serverPort, client2Port)
 
 	// Client2 sends SYN.
-	n, err := client2Stack.Encapsulate(buf[:], -1, 0)
+	n, err := client2Stack.Encapsulate(buf[:], 0, 0)
 	if err != nil {
 		t.Fatal("client2 encapsulate:", err)
 	} else if n == 0 {
@@ -356,7 +357,7 @@ func TestListener_RSTOnPoolExhaustion(t *testing.T) {
 	}
 
 	// Server encapsulates — should produce RST (no connection data pending).
-	n, err = serverStack.Encapsulate(buf[:], -1, 0)
+	n, err = serverStack.Encapsulate(buf[:], 0, 0)
 	if err != nil {
 		t.Fatal("server encapsulate RST:", err)
 	} else if n == 0 {
@@ -619,7 +620,8 @@ func setupClient(t *testing.T, client *StackIP, conn *tcp.Conn, serverAddr netip
 	t.Helper()
 	bufsize := 2048
 	clientIP := netip.AddrFrom4([4]byte{192, 168, 1, byte(clientPort % 256)})
-	client.Reset(clientIP, 1)
+	client.Reset(new(lneto.Validator), 1, 0)
+	client.SetAddr4(clientIP.As4())
 	err := conn.Configure(tcp.ConnConfig{
 		RxBuf:             make([]byte, bufsize),
 		TxBuf:             make([]byte, bufsize),
@@ -633,7 +635,7 @@ func setupClient(t *testing.T, client *StackIP, conn *tcp.Conn, serverAddr netip
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = client.Register(conn)
+	err = client.Register4(conn)
 	if err != nil {
 		t.Fatal(err)
 	}

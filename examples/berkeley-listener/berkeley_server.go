@@ -27,6 +27,7 @@ import (
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/internet/pcap"
+	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
 	"github.com/soypat/lneto/x/xnet"
 )
@@ -134,7 +135,8 @@ func run() error {
 			pfbuf = fmt.Appendf(pfbuf[:0], "%-3s %3d", context, len(pkt))
 			pfbuf = append(pfbuf, ' ', '[')
 			pfbuf, err = pf.FormatFrames(pfbuf, frames, pkt)
-			pfbuf = bytes.ReplaceAll(pfbuf, stack.Addr().AppendTo(nil), []byte("us"))
+			addr := stack.Addr4()
+			pfbuf = bytes.ReplaceAll(pfbuf, ipv4.AppendFormatAddr(nil, addr), []byte("us"))
 			pfbuf = bytes.ReplaceAll(pfbuf, ethernet.AppendAddr(nil, stack.HardwareAddress()), []byte("us"))
 			pfbuf = append(pfbuf, ']', '\n')
 			if err != nil {
@@ -158,11 +160,11 @@ func run() error {
 				} else if n != nwrite {
 					log.Fatalf("mismatch written bytes %d!=%d", nwrite, n)
 				}
-				if flagMockClient && mockStack.Addr().IsValid() {
+				if flagMockClient && mockStack.Addr4() != ([4]byte{}) {
 					mockStack.IngressEthernet(buf[:nwrite])
 				}
 			}
-			if flagMockClient && mockStack.Addr().IsValid() {
+			if flagMockClient && mockStack.Addr4() != ([4]byte{}) {
 				n, _ := mockStack.EgressEthernet(buf[:])
 				if n > 0 {
 					stack.IngressEthernet(buf[:n])
@@ -222,7 +224,7 @@ func run() error {
 	if err = stack.AssimilateDHCPResults(results); err != nil {
 		return fmt.Errorf("assimilating DHCP results: %w", err)
 	}
-	slog.Info("dhcp-complete", slog.String("assignedIP", results.AssignedAddr.String()), slog.String("routerIP", results.Router.String()))
+	slog.Info("dhcp-complete", slog.String("assignedIP", string(ipv4.AppendFormatAddr(nil, results.AssignedAddr4))), slog.String("routerIP", results.Router.String()))
 
 	// Resolve router HW and set gateway
 	routerHw, err := rstack.DoResolveHardwareAddress6(results.Router, 2*time.Second, 2)
@@ -246,7 +248,7 @@ func run() error {
 	}
 	defer ln.Close()
 
-	fmt.Printf("Listening (Berkeley) on %s:%d\n", stack.Addr().String(), flagPort)
+	fmt.Printf("Listening (Berkeley) on %s:%d\n", string(ipv4.AppendFormatAddr(nil, stack.Addr4())), flagPort)
 
 	// Optionally run an in-memory mock client that dials the berkeley listener
 	if flagMockClient {
@@ -326,9 +328,9 @@ func tryPoll(iface ltesto.Interface, poll time.Duration) (dataMayBeReady bool, _
 }
 
 func mockClient(stack *xnet.StackAsync, port uint16, subnet netip.Prefix) {
-	target := netip.AddrPortFrom(stack.Addr(), port)
+	target := netip.AddrPortFrom(netip.AddrFrom4(stack.Addr4()), port)
 	err := mockStack.Reset(xnet.StackConfig{
-		StaticAddress:     subnet.Addr().Next(),
+		StaticAddress4:    subnet.Addr().Next().As4(),
 		MaxActiveTCPPorts: 1,
 		HardwareAddress:   stack.Gateway6(),
 		Hostname:          "the-other",
@@ -368,7 +370,7 @@ func mockClient(stack *xnet.StackAsync, port uint16, subnet netip.Prefix) {
 	hdr.SetMethod("GET")
 	hdr.SetRequestURI("/")
 	hdr.SetProtocol("HTTP/1.1")
-	hdr.Set("Host", stack.Addr().String())
+	hdr.Set("Host", string(ipv4.AppendFormatAddr(nil, stack.Addr4())))
 	hdr.Set("User-Agent", "lneto-mock")
 	hdr.Set("Connection", "close")
 	req, err := hdr.AppendRequest(nil)

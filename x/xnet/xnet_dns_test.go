@@ -27,7 +27,7 @@ func TestDNS_QueryReceivesAnswer(t *testing.T) {
 	err := client.Reset(StackConfig{
 		Hostname:        "DNSClient",
 		RandSeed:        seed,
-		StaticAddress:   clientAddr,
+		StaticAddress4:  clientAddr.As4(),
 		DNSServer:       dnsServerAddr,
 		HardwareAddress: clientMAC,
 		MTU:             uint16(MTU),

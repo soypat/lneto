@@ -1,251 +1,68 @@
 package internet
 
 import (
-	"io"
 	"log/slog"
-	"net/netip"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
-	"github.com/soypat/lneto/internal"
-	"github.com/soypat/lneto/ipv4"
-	"github.com/soypat/lneto/tcp"
-	"github.com/soypat/lneto/udp"
 )
 
 var _ lneto.StackNode = (*StackIP)(nil)
 
 type StackIP struct {
-	connID          uint64
-	ipID            uint16
-	ip              [4]byte
-	acceptMulticast bool
-	validator       lneto.Validator
-	handlers        handlers
+	connID uint64
+	stackip4
+	stackip6
 }
 
-func (sb *StackIP) Reset(addr netip.Addr, maxNodes int) error {
-	if maxNodes <= 0 {
+func (stackip *StackIP) Reset(vld *lneto.Validator, maxNodes4, maxNodes6 int) error {
+	if maxNodes4 <= 0 && maxNodes6 <= 0 || vld == nil {
 		return lneto.ErrInvalidConfig
 	}
-	err := sb.SetAddr(addr)
-	if err != nil {
-		return err
-	}
-	sb.handlers.reset("StackIP", maxNodes)
-	*sb = StackIP{
-		connID:          sb.connID + 1,
-		validator:       sb.validator,
-		handlers:        sb.handlers,
-		ip:              sb.ip,
-		acceptMulticast: sb.acceptMulticast,
-	}
+	stackip.connID++
+	stackip.reset4(vld, maxNodes4)
+	stackip.reset6(vld, maxNodes6)
 	return nil
 }
 
-func (sb *StackIP) SetAddr(addr netip.Addr) error {
-	if !addr.IsValid() {
-		return lneto.ErrInvalidAddr
-	} else if !addr.Is4() {
-		return lneto.ErrUnsupported
-	}
-	sb.ip = addr.As4()
-	return nil
+func (stackip *StackIP) ConnectionID() *uint64 {
+	return &stackip.connID
 }
 
-func (sb *StackIP) ConnectionID() *uint64 {
-	return &sb.connID
-}
-
-func (sb *StackIP) Protocol() uint64 {
+func (stackip *StackIP) Protocol() uint64 {
 	return uint64(ethernet.TypeIPv4) // Only support ipv4 for now.
 }
 
-func (sb *StackIP) LocalPort() uint16 { return 0 }
+func (stackip *StackIP) LocalPort() uint16 { return 0 }
 
-func (sb *StackIP) Addr() netip.Addr {
-	return netip.AddrFrom4(sb.ip)
+func (stackip *StackIP) SetLogger(logger *slog.Logger) {
+	stackip.stackip4.handlers.log = logger
+	stackip.stackip6.handlers.log = logger
 }
 
-func (sb *StackIP) SetAcceptMulticast(accept bool) {
-	sb.acceptMulticast = accept
-}
-
-func (sb *StackIP) SetLogger(logger *slog.Logger) {
-	sb.handlers.log = logger
-}
-
-func (sb *StackIP) Demux(carrierData []byte, offset int) error {
+func (stackip *StackIP) Demux(carrierData []byte, offset int) error {
 	debugLog("ip:demux")
-	sb.handlers.info("StackIP.Demux:start")
-	frame := carrierData[offset:] // we don't care about carrier data in IP.
-	ifrm, err := ipv4.NewFrame(frame)
-	if err != nil {
-		return err
+	if len(carrierData) < 1 {
+		return lneto.ErrTruncatedFrame
 	}
-	dst := ifrm.DestinationAddr()
-	if sb.ip != ([4]byte{}) && *dst != sb.ip {
-		if !sb.acceptMulticast || dst[0]&0xF0 != 0xE0 {
-			sb.handlers.debug("ip:not-for-us")
-			return lneto.ErrPacketDrop // Not meant for us.
-		}
+	version := carrierData[offset] >> 4
+	switch version {
+	case 4:
+		return stackip.stackip4.demux4(carrierData, offset)
+	case 6:
+		return stackip.stackip6.demux6(carrierData, offset)
+	default:
+		return lneto.ErrUnsupported
 	}
-
-	sb.validator.ResetErr()
-	ifrm.ValidateExceptCRC(&sb.validator)
-	if err = sb.validator.ErrPop(); err != nil {
-		sb.handlers.error("ip:Demux.validate")
-		return err
-	}
-
-	if ifrm.CalculateHeaderCRC() != 0 {
-		sb.handlers.error("ip:demux.crc")
-		return lneto.ErrBadCRC
-	}
-	off := ifrm.HeaderLength()
-	totalLen := ifrm.TotalLength()
-	proto := ifrm.Protocol()
-	node := sb.handlers.nodeByProto(uint16(proto))
-	// nodeIdx := getNodeByProto(sb.handlers, uint16(proto))
-	if node == nil {
-		// Drop packet.
-		sb.handlers.info("ip:demux.drop", internal.SlogAddr4("dstaddr", ifrm.DestinationAddr()), slog.String("proto", ifrm.Protocol().String()))
-		return lneto.ErrPacketDrop
-	}
-	// Incoming CRC Validation of common IP Protocols.
-	var crc lneto.CRC791
-	switch proto {
-	case lneto.IPProtoTCP:
-		ifrm.CRCWriteTCPPseudo(&crc)
-		if crc.PayloadSum16(ifrm.Payload()) != 0 {
-			sb.handlers.error("ip:demux.tcpcrc")
-			return lneto.ErrBadCRC
-		}
-	case lneto.IPProtoUDP:
-		ufrm, err := udp.NewFrame(ifrm.Payload())
-		if err != nil {
-			return err
-		}
-		ufrm.ValidateSize(&sb.validator)
-		if err = sb.validator.ErrPop(); err != nil {
-			sb.handlers.error("ip:demux.udpvalidatesize")
-			return err
-		}
-		frameLen := ufrm.Length()
-		ifrm.CRCWriteUDPPseudo(&crc, frameLen)
-		if crc.PayloadSum16(ufrm.RawData()[:frameLen]) != 0 {
-			sb.handlers.error("ip:demux.udpcrc")
-			return lneto.ErrBadCRC
-		}
-	}
-	sb.handlers.info("ipDemux", slog.String("ipproto", proto.String()), slog.Int("plen", int(totalLen)))
-	err = node.callbacks.Demux(frame[:totalLen], off)
-	if sb.handlers.tryHandleError(node, err) {
-		sb.handlers.info("ipclose", slog.String("proto", proto.String()))
-		err = nil
-	}
-	return err
 }
 
-func (sb *StackIP) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
-	frame := carrierData[offsetToFrame:]
-	if len(frame) < ipv4.MinimumMTU {
-		return 0, io.ErrShortBuffer
+func (stackip *StackIP) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (n int, err error) {
+	if offsetToFrame != offsetToIP {
+		return 0, lneto.ErrBug
 	}
-	ifrm, _ := ipv4.NewFrame(frame)
-	const ihl = 5
-	const headerlen = ihl * 4
-	const dontFrag = 0x4000
-	ifrm.SetVersionAndIHL(4, ihl)
-	ifrm.SetToS(0)
-	seed := sb.ipID + uint16(sb.connID)
-	id := internal.Prand16(seed)
-	ifrm.SetID(id)
-	ifrm.SetFlags(dontFrag)
-	ifrm.SetTTL(64)
-	*ifrm.SourceAddr() = sb.ip
-	sb.ipID = id
-	// Children (TCP/UDP) start at offset headerlen (20 bytes after IP header start).
-	// offsetToIP is 0 relative to this slice (frame), children's frame starts at headerlen.
-	node, n, err := sb.handlers.encapsulateAny(carrierData, offsetToFrame, offsetToFrame+headerlen)
-	if n == 0 {
-		return n, err
+	n, err = stackip.stackip4.encapsulate4(carrierData, offsetToIP)
+	if len(stackip.stackip6.handlers.nodes) > 0 && n == 0 {
+		n, err = stackip.stackip6.encapsulate6(carrierData, offsetToIP)
 	}
-	proto := lneto.IPProto(node.proto)
-	totalLen := n + headerlen
-	ifrm.SetTotalLength(uint16(totalLen))
-	ifrm.SetProtocol(proto)
-	// Zero the CRC field so its value does not add to the final result.
-	ifrm.SetCRC(0)
-	crcValue := ifrm.CalculateHeaderCRC()
-	ifrm.SetCRC(crcValue)
-	// Calculate CRC for our newly generated packet.
-	var crc lneto.CRC791
-	payload := ifrm.Payload()
-	switch proto {
-	case lneto.IPProtoTCP:
-		ifrm.CRCWriteTCPPseudo(&crc)
-		tfrm, _ := tcp.NewFrame(payload)
-		// Zero the CRC field so its value does not add to the final result.
-		tfrm.SetCRC(0)
-		crcValue = crc.PayloadSum16(payload)
-		tfrm.SetCRC(crcValue)
-	case lneto.IPProtoUDP:
-		ufrm, _ := udp.NewFrame(payload)
-		ifrm.CRCWriteUDPPseudo(&crc, uint16(n))
-		ufrm.SetLength(uint16(n))
-		// Zero the CRC field so its value does not add to the final result.
-		ufrm.SetCRC(0)
-		crcValue = lneto.NeverZeroSum(crc.PayloadSum16(payload))
-		ufrm.SetCRC(crcValue)
-	}
-	return totalLen, err
-}
-
-func (sb *StackIP) Register(h lneto.StackNode) error {
-	proto := h.Protocol()
-	if proto > 255 {
-		return lneto.ErrInvalidConfig
-	}
-	return sb.handlers.registerByPortProto(nodeFromStackNode(h, h.LocalPort(), proto, nil))
-}
-
-func (sb *StackIP) IsRegistered(proto lneto.IPProto) bool {
-	return sb.handlers.nodeByProto(uint16(proto)) != nil
-}
-
-func (sb *StackIP) recvicmp(icmpData []byte) error {
-	var crc lneto.CRC791
-	if crc.PayloadSum16(icmpData) != 0 {
-		return lneto.ErrBadCRC
-	}
-	return nil
-}
-
-type logger struct {
-	log *slog.Logger
-}
-
-func (l logger) error(msg string, attrs ...slog.Attr) {
-	internal.LogAttrs(l.log, slog.LevelError, msg, attrs...)
-}
-func (l logger) info(msg string, attrs ...slog.Attr) {
-	internal.LogAttrs(l.log, slog.LevelInfo, msg, attrs...)
-}
-func (l logger) warn(msg string, attrs ...slog.Attr) {
-	internal.LogAttrs(l.log, slog.LevelWarn, msg, attrs...)
-}
-func (l logger) debug(msg string, attrs ...slog.Attr) {
-	internal.LogAttrs(l.log, slog.LevelDebug, msg, attrs...)
-}
-func (l logger) trace(msg string, attrs ...slog.Attr) {
-	internal.LogAttrs(l.log, internal.LevelTrace, msg, attrs...)
-}
-
-const enableAllocLog = internal.HeapAllocDebugging
-
-func debugLog(msg string) {
-	if enableAllocLog {
-		internal.LogAllocs(msg)
-	}
+	return n, err
 }
