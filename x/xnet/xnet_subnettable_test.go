@@ -106,7 +106,7 @@ func TestStackAsync_ListenerSynAckAddressedToClient(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err = client.DialTCP(&clConn, 54321, netip.AddrPortFrom(sv.Addr(), svPort)); err != nil {
+	if err = client.DialTCP(&clConn, 54321, netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort)); err != nil {
 		t.Fatal(err)
 	}
 

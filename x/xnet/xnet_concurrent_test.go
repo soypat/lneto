@@ -185,10 +185,10 @@ func routePacketToClient(pkt []byte, clients []StackAsync) {
 	if len(pkt) < 20+ethernet.MaxOverheadSize { //  20 min IP header
 		return
 	}
-	dstIP := netip.AddrFrom4([4]byte{pkt[30], pkt[31], pkt[32], pkt[33]})
+	dstIP := [4]byte{pkt[30], pkt[31], pkt[32], pkt[33]}
 
 	for i := range clients {
-		if clients[i].Addr() == dstIP {
+		if clients[i].Addr4() == dstIP {
 			clients[i].IngressEthernet(pkt)
 			return
 		}

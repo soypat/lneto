@@ -105,7 +105,7 @@ func run(ctx context.Context, stack *xnet.StackAsync) error {
 		},
 	})
 
-	laddr := net.TCPAddrFromAddrPort(netip.AddrPortFrom(results.AssignedAddr, 80))
+	laddr := net.TCPAddrFromAddrPort(netip.AddrPortFrom(netip.AddrFrom4(results.AssignedAddr4), 80))
 	// raddr := net.TCPAddr{} // If active (client) connection then set raddr in which case a net.Conn type is returned.
 	const sockstream = 0x1
 	c, err := berkstack.Socket(ctx, "tcp", syscall.AF_INET, sockstream, laddr, nil)

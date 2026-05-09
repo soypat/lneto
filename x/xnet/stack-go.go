@@ -76,7 +76,7 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 	}
 	if laddr.Addr() == netip.IPv4Unspecified() {
 		// Specify address.
-		laddr = netip.AddrPortFrom(s.blk.async.ip.Addr(), laddr.Port())
+		laddr = netip.AddrPortFrom(netip.AddrFrom4(s.blk.async.ip.Addr4()), laddr.Port())
 	} else if laddr.Addr().Is6() {
 		return nil, lneto.ErrUnsupported
 	}

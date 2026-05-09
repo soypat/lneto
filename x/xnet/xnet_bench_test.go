@@ -134,7 +134,7 @@ func BenchmarkTCPHandshake(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		err = client.DialTCP(clconn, 1337, netip.AddrPortFrom(sv.Addr(), svPort))
+		err = client.DialTCP(clconn, 1337, netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort))
 		if err != nil {
 			b.Fatal(err)
 		}

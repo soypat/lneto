@@ -182,7 +182,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	if err != nil {
 		return err
 	}
-	s.ip.SetAcceptMulticast(cfg.AcceptMulticast)
+	s.ip.SetAcceptMulticast4(cfg.AcceptMulticast)
 	s.arpt.passivePeers = uint8(cfg.PassivePeers)
 	err = s.resetARP()
 	if err != nil {
@@ -201,7 +201,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 		if err != nil {
 			return err
 		}
-		err = s.ip.Register(&s.tcps)
+		err = s.ip.Register4(&s.tcps)
 		if err != nil {
 			return err
 		}
@@ -213,7 +213,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	if err != nil {
 		return err
 	}
-	err = s.ip.Register(&s.udps)
+	err = s.ip.Register4(&s.udps)
 	if err != nil {
 		return err
 	}
@@ -243,17 +243,11 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 
 func (s *StackAsync) resetARP() error {
 	mac := s.link.HardwareAddr6()
-	addr := s.ip.Addr()
-	if !addr.IsValid() {
-		return lneto.ErrInvalidAddr
-	}
+	addr := s.ip.Addr4()
 	proto := ethernet.TypeIPv4
-	if addr.Is6() {
-		proto = ethernet.TypeIPv6
-	}
 	err := s.arp.Reset(arp.HandlerConfig{
 		HardwareAddr: mac[:],
-		ProtocolAddr: addr.AsSlice(),
+		ProtocolAddr: addr[:],
 		MaxQueries:   5,
 		MaxPending:   5,
 		HardwareType: 1,
@@ -298,26 +292,21 @@ func (s *StackAsync) prand32() uint32 {
 	return seed
 }
 
-func (s *StackAsync) SetIPAddr(addr netip.Addr) error {
+func (s *StackAsync) SetAddr4(addr [4]byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.setIPAddr(addr)
+	return s.setIPAddr4(addr)
 }
 
-func (s *StackAsync) setIPAddr(addr netip.Addr) error {
-	err := s.ip.SetAddr(addr)
-	if err != nil {
-		return err
-	}
-	ip := addr.As4()
-	err = s.arp.UpdateProtoAddr(ip[:])
-	return err
+func (s *StackAsync) setIPAddr4(addr [4]byte) error {
+	s.ip.SetAddr4(addr)
+	return s.arp.UpdateProtoAddr(addr[:])
 }
 
-func (s *StackAsync) Addr() netip.Addr {
+func (s *StackAsync) Addr4() [4]byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.ip.Addr()
+	return s.ip.Addr4()
 }
 
 func (s *StackAsync) SetSubnet(subnetMask netip.Prefix) {
@@ -359,10 +348,10 @@ func (s *StackAsync) EnableICMP(enabled bool) (err error) {
 		enabled = false // ensure aborted.
 	}
 	if enabled {
-		if s.ip.IsRegistered(lneto.IPProtoICMP) {
+		if s.ip.IsRegistered4(lneto.IPProtoICMP) {
 			return nil
 		}
-		err = s.ip.Register(&s.icmp)
+		err = s.ip.Register4(&s.icmp)
 	} else {
 		s.icmp.Abort()
 	}
@@ -625,7 +614,7 @@ func (s *StackAsync) DiscardResolveHardwareAddress6(ip netip.Addr) error {
 type DHCPResults struct {
 	DNSServers    []netip.Addr
 	Router        netip.Addr
-	AssignedAddr  netip.Addr
+	AssignedAddr4 [4]byte
 	ServerAddr    netip.Addr
 	BroadcastAddr netip.Addr
 	Gateway       netip.Addr
@@ -665,8 +654,8 @@ func (stack *StackAsync) AssimilateDHCPResults(results *DHCPResults) error {
 	if results.Subnet.IsValid() {
 		stack.arpt.subnet = results.Subnet
 	}
-	if results.AssignedAddr.IsValid() {
-		err := stack.setIPAddr(results.AssignedAddr)
+	if !internal.IsZeroed(results.AssignedAddr4) {
+		err := stack.setIPAddr4(results.AssignedAddr4)
 		if err != nil {
 			return err
 		}
@@ -696,7 +685,7 @@ func (s *StackAsync) populateDHCPResults() error {
 	s.dhcpResults = DHCPResults{
 		Router:        router,
 		Subnet:        s.dhcp.SubnetPrefix(),
-		AssignedAddr:  netip.AddrFrom4(assigned4),
+		AssignedAddr4: assigned4,
 		ServerAddr:    addr4(s.dhcp.ServerAddr()),
 		BroadcastAddr: addr4(s.dhcp.BroadcastAddr()),
 		Gateway:       addr4(s.dhcp.GatewayAddr()),

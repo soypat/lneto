@@ -26,6 +26,7 @@ import (
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/internet/pcap"
+	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
 	"github.com/soypat/lneto/x/xnet"
 )
@@ -156,7 +157,8 @@ func run() (err error) {
 			pfbuf = fmt.Appendf(pfbuf[:0], "%-3s %3d", context, len(pkt))
 			pfbuf = append(pfbuf, ' ', '[')
 			pfbuf, err = pf.FormatFrames(pfbuf, frames, pkt)
-			pfbuf = bytes.ReplaceAll(pfbuf, stack.Addr().AppendTo(nil), []byte("us"))
+			addr := stack.Addr4()
+			pfbuf = bytes.ReplaceAll(pfbuf, addr[:], []byte("us"))
 			pfbuf = bytes.ReplaceAll(pfbuf, ethernet.AppendAddr(nil, stack.HardwareAddress()), []byte("us"))
 			pfbuf = append(pfbuf, ']', '\n')
 			if err != nil {
@@ -231,7 +233,7 @@ func run() (err error) {
 	if err != nil {
 		return fmt.Errorf("assimilating DHCP results: %w", err)
 	}
-	slog.Info("dhcp-complete", slog.String("assignedIP", results.AssignedAddr.String()), slog.String("routerIP", results.Router.String()), slog.Any("DNS", results.DNSServers), slog.Any("subnet", results.Subnet.String()))
+	slog.Info("dhcp-complete", slog.String("assignedIP", string(ipv4.AppendFormatAddr(nil, results.AssignedAddr4))), slog.String("routerIP", results.Router.String()), slog.Any("DNS", results.DNSServers), slog.Any("subnet", results.Subnet.String()))
 	const (
 		arpTimeout = 2 * time.Second
 		arpRetries = 2

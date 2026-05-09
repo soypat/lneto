@@ -37,7 +37,7 @@ func TestStackAsync_ICMPEcho(t *testing.T) {
 			sender.SetGateway6(receiver.HardwareAddress())
 			receiver.SetGateway6(sender.HardwareAddress())
 
-			key, err := sender.icmp.PingStart(receiver.Addr().As4(), tt.pattern, tt.size)
+			key, err := sender.icmp.PingStart(receiver.Addr4(), tt.pattern, tt.size)
 			if err != nil {
 				t.Fatal(err)
 			}
