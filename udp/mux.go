@@ -39,6 +39,7 @@ func (ms *MuxHandlerSIMO) Configure(localPort uint16, cfg MuxConfig) (err error)
 	if err != nil {
 		return err
 	}
+	ms.localPort = localPort
 	ms.muxHandler.FilterAddLocalPort(localPort, 1)
 	return nil
 }
