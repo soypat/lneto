@@ -20,11 +20,23 @@ type stackip6 struct {
 	acceptMulticast bool
 }
 
+func (sb *stackip6) Register6(h lneto.StackNode) error {
+	proto := h.Protocol()
+	if proto > 255 {
+		return lneto.ErrInvalidConfig
+	}
+	return sb.handlers.registerByPortProto(nodeFromStackNode(h, h.LocalPort(), proto, nil))
+}
+
+func (sb *stackip6) IsRegistered6(proto lneto.IPProto) bool {
+	return sb.handlers.nodeByProto(uint16(proto)) != nil
+}
+
 func (si6 *stackip6) SetAcceptMulticast6(accept bool) { si6.acceptMulticast = accept }
 func (si6 *stackip6) Addr6() [16]byte                 { return si6.ip6 }
 func (si6 *stackip6) SetAddr6(ip6 [16]byte)           { si6.ip6 = ip6 }
 
-func (si6 *stackip6) reset(vld *lneto.Validator, maxNodes int) {
+func (si6 *stackip6) reset6(vld *lneto.Validator, maxNodes int) {
 	*si6 = stackip6{
 		handlers: si6.handlers,
 		vld:      vld,
@@ -32,7 +44,7 @@ func (si6 *stackip6) reset(vld *lneto.Validator, maxNodes int) {
 	si6.handlers.reset("stackip6", maxNodes)
 }
 
-func (si6 *stackip6) demux(carrierData []byte, offset int) error {
+func (si6 *stackip6) demux6(carrierData []byte, offset int) error {
 	debugLog("ip6:demux")
 	si6.handlers.info("StackIP6.Demux:start")
 	ifrm, err := ipv6.NewFrame(carrierData[offset:])
@@ -96,7 +108,7 @@ func (si6 *stackip6) demux(carrierData []byte, offset int) error {
 	return err
 }
 
-func (si6 *stackip6) encapsulate(carrierData []byte, offsetToIP int) (int, error) {
+func (si6 *stackip6) encapsulate6(carrierData []byte, offsetToIP int) (int, error) {
 	ifrm, err := ipv6.NewFrame(carrierData[offsetToIP:])
 	if err != nil {
 		return 0, err

@@ -57,9 +57,6 @@ type StackBigAsync struct {
 
 func (sb *StackBigAsync) Reset(cfg StackConfig) error {
 	mac := cfg.HardwareAddress
-	if !cfg.StaticAddress.IsValid() {
-		cfg.StaticAddress = netip.AddrFrom4([4]byte{})
-	}
 	if cfg.RandSeed == 0 || cfg.Hostname == "" || cfg.PassivePeers > 255 ||
 		internal.IsZeroed(mac) {
 		return lneto.ErrInvalidConfig
@@ -71,8 +68,11 @@ func (sb *StackBigAsync) Reset(cfg StackConfig) error {
 	var seed [32]byte
 	binary.LittleEndian.PutUint64(seed[:], uint64(cfg.RandSeed))
 	copy(seed[8:], mac[:])
-	n := copy(seed[8+6:], cfg.StaticAddress.AsSlice())
-	n += copy(seed[8+6+n:], cfg.Hostname)
+	copy(seed[8+6:], cfg.StaticAddress4[:])
+	copy(seed[8+6+4:], cfg.Hostname)
+	for i := range cfg.StaticAddress6 {
+		seed[i+16] ^= cfg.StaticAddress6[i]
+	}
 	sb.prng.Seed(seed)
 	// configure link.
 	err := cfg.ConfigureLink(&sb.link, sb.arpt.patchEgressMAC)
@@ -101,19 +101,17 @@ func (sb *StackBigAsync) Reset(cfg StackConfig) error {
 	if err != nil {
 		return err
 	}
-	err = sb.ip.Register(&sb.udps)
+	err = sb.ip.Register4(&sb.udps)
 	if err != nil {
 		return err
 	}
-	err = sb.ip.Register(&sb.tcps)
+	err = sb.ip.Register4(&sb.tcps)
 	if err != nil {
 		return err
 	}
 	if cfg.ICMPQueueLimit > 0 {
-		// shared buffer since only one or the other are active at a time.
-		icmpBuf := make([]byte, cfg.ICMPQueueLimit*64)
 		err = sb.icmp.Configure(icmpv4.ClientConfig{
-			ResponseQueueBuffer: icmpBuf,
+			ResponseQueueBuffer: make([]byte, cfg.ICMPQueueLimit*64),
 			ResponseQueueLimit:  cfg.ICMPQueueLimit,
 			HashSeed:            sb.prand32(),
 			ID:                  id,
@@ -122,7 +120,7 @@ func (sb *StackBigAsync) Reset(cfg StackConfig) error {
 			return err
 		}
 		err = sb.icmp6.Configure(icmpv6.ClientConfig{
-			ResponseQueueBuffer: icmpBuf,
+			ResponseQueueBuffer: make([]byte, cfg.ICMPQueueLimit*64),
 			ResponseQueueLimit:  cfg.ICMPQueueLimit,
 			HashSeed:            sb.prand32(),
 			ID:                  id,
@@ -131,11 +129,15 @@ func (sb *StackBigAsync) Reset(cfg StackConfig) error {
 		if err != nil {
 			return err
 		}
+		sb.icmp6.SetNDPResolveCallback(func(mac [6]byte, addr [16]byte) {
+			sb.arpt.onResolve(mac[:], addr[:])
+		})
 	}
-	err = sb.setIP(cfg.StaticAddress)
+	err = sb.setIP4(cfg.StaticAddress4)
 	if err != nil {
 		return err
 	}
+	sb.setIP6(cfg.StaticAddress6)
 
 	var timebuf [4]int64
 	sb.sysprec = ntp.CalculateSystemPrecision(nil, timebuf[:])
@@ -181,18 +183,11 @@ func (sb *StackBigAsync) EgressEthernetPackets(bufs [][]byte, sizes []int, offse
 
 func (s *StackBigAsync) resetARP() error {
 	mac := s.link.HardwareAddr6()
-	addr := s.ip.Addr()
-	if !addr.IsValid() {
-		return lneto.ErrInvalidAddr
-	}
+	addr := s.ip.Addr4()
 	proto := ethernet.TypeIPv4
-	if addr.Is6() {
-		proto = ethernet.TypeIPv6
-		s.icmp6.Abort()
-	}
 	err := s.arp.Reset(arp.HandlerConfig{
 		HardwareAddr: mac[:],
-		ProtocolAddr: addr.AsSlice(),
+		ProtocolAddr: addr[:],
 		MaxQueries:   5,
 		MaxPending:   5,
 		HardwareType: 1,
@@ -210,39 +205,16 @@ func (s *StackBigAsync) resetARP() error {
 	return nil
 }
 
-func (sb *StackBigAsync) setIP(addr netip.Addr) error {
-	err := sb.ip.SetAddr(addr)
-	if err != nil {
-		return err
-	}
-	if addr.Is6() {
-		sb.icmp.Abort()
-		sb.icmp6.SetAddr(addr.As16()) // Needs address to set.
-		sb.icmp6.SetNDPResolveCallback(func(mac [6]byte, addr [16]byte) {
-			sb.arpt.onResolve(mac[:], addr[:])
-		})
-		err = sb.ip.Register(&sb.icmp6)
-	} else {
-		sb.icmp6.Abort()
-		err = sb.ip.Register(&sb.icmp)
-	}
-	if err != nil {
-		return err
-	}
-	err = sb.resetARP()
-	return err
+func (sb *StackBigAsync) setIP6(addr [16]byte) {
+	sb.ip.SetAddr6(addr)
+	sb.icmp6.SetAddr(addr)
+	sb.icmp6.Reset()
 }
 
-func (sb *StackBigAsync) Addr() netip.Addr {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-	return sb.ip.Addr()
-}
-
-func (sb *StackBigAsync) SetAddr(addr netip.Addr) error {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-	return sb.setIP(addr)
+func (sb *StackBigAsync) setIP4(addr [4]byte) error {
+	sb.ip.SetAddr4(addr)
+	sb.icmp.Reset()
+	return sb.resetARP()
 }
 
 func (s *StackBigAsync) SetSubnet(subnetMask netip.Prefix) {
@@ -300,15 +272,7 @@ func (s *StackBigAsync) EnableICMP(enabled bool) (err error) {
 }
 
 func (s *StackBigAsync) icmpCapable() bool {
-
-	if s.is4() {
-		return s.icmp.IncomingEchoCapacity() > 0
-	}
-	return s.icmp6.PingIncomingCapacity() > 0
-}
-
-func (s *StackBigAsync) is4() bool {
-	return s.ip.Addr().Is4()
+	return s.icmp.IncomingEchoCapacity() > 0
 }
 
 func (sb *StackBigAsync) prand64() uint64 { return sb.prng.Uint64() }

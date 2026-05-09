@@ -23,7 +23,7 @@ type stackip4 struct {
 	acceptMulticast bool
 }
 
-func (si4 *stackip4) reset(vld *lneto.Validator, maxNodes int) {
+func (si4 *stackip4) reset4(vld *lneto.Validator, maxNodes int) {
 	*si4 = stackip4{
 		ip4:             [4]byte{},
 		ipID:            1,
@@ -34,6 +34,18 @@ func (si4 *stackip4) reset(vld *lneto.Validator, maxNodes int) {
 	si4.handlers.reset("stackip4", maxNodes)
 }
 
+func (sb *stackip4) Register4(h lneto.StackNode) error {
+	proto := h.Protocol()
+	if proto > 255 {
+		return lneto.ErrInvalidConfig
+	}
+	return sb.handlers.registerByPortProto(nodeFromStackNode(h, h.LocalPort(), proto, nil))
+}
+
+func (sb *stackip4) IsRegistered4(proto lneto.IPProto) bool {
+	return sb.handlers.nodeByProto(uint16(proto)) != nil
+}
+
 func (si4 *stackip4) SetAcceptMulticast4(accept bool) {
 	si4.acceptMulticast = accept
 }
@@ -42,9 +54,9 @@ func (si4 *stackip4) SetAddr4(ip4 [4]byte) {
 	si4.ip4 = ip4
 }
 
-func (si4 *stackip4) demux(carrierData []byte, offset int) error {
-	debugLog("ip:demux")
-	si4.handlers.info("StackIP.Demux:start")
+func (si4 *stackip4) demux4(carrierData []byte, offset int) error {
+	debugLog("ip4:demux")
+	si4.handlers.info("demux:start")
 	frame := carrierData[offset:] // we don't care about carrier data in IP.
 	ifrm, err := ipv4.NewFrame(frame)
 	if err != nil {
@@ -115,7 +127,7 @@ func (si4 *stackip4) demux(carrierData []byte, offset int) error {
 	return err
 }
 
-func (si4 *stackip4) encapsulate(carrierData []byte, offsetToIP int) (int, error) {
+func (si4 *stackip4) encapsulate4(carrierData []byte, offsetToIP int) (int, error) {
 	frame := carrierData[offsetToIP:]
 	if len(frame) < ipv4.MinimumMTU {
 		return 0, io.ErrShortBuffer

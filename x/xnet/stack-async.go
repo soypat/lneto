@@ -36,6 +36,8 @@ type StackAsync struct {
 	udps     internet.StackPortsMACFiltered
 	tcps     internet.StackPortsMACFiltered
 
+	defaultValidator lneto.Validator
+
 	dhcpUDP     internet.StackUDPPort
 	dhcp        dhcpv4.Client
 	dhcpResults DHCPResults
@@ -65,7 +67,6 @@ type StackAsync struct {
 type StackConfig struct {
 	StaticAddress4 [4]byte
 	StaticAddress6 [16]byte
-	StaticAddress  netip.Addr
 	DNSServer      netip.Addr
 	NTPServer      netip.Addr
 	RandSeed       int64
@@ -153,28 +154,21 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	if cfg.RandSeed == 0 || cfg.Hostname == "" || cfg.PassivePeers > 255 {
 		return lneto.ErrInvalidConfig
 	}
-
-	addr := cfg.StaticAddress
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prng = uint32(cfg.RandSeed)
 
-	if !addr.IsValid() {
-		addr = netip.AddrFrom4([4]byte{}) // If static not set DHCP will be performed and address will be zero.
-	} else if addr.Is6() {
-		return lneto.ErrUnsupported
-	}
 	err := cfg.ConfigureLink(&s.link, s.arpt.patchEgressMAC)
 	if err != nil {
 		return err
 	}
 	s.hostname = cfg.Hostname
 	const ipNodes = 3 // 3 IP protocols possible: UDP, TCP, ICMP.
-	err = s.ip.Reset(addr, ipNodes)
+	err = s.ip.Resetv2(&s.defaultValidator, ipNodes, 0)
 	if err != nil {
 		return err
 	}
-	s.ip.SetAcceptMulticast(cfg.AcceptMulticast)
+	s.ip.SetAcceptMulticast4(cfg.AcceptMulticast)
 	s.arpt.passivePeers = uint8(cfg.PassivePeers)
 	err = s.resetARP()
 	if err != nil {
@@ -193,7 +187,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 		if err != nil {
 			return err
 		}
-		err = s.ip.Register(&s.tcps)
+		err = s.ip.Register4(&s.tcps)
 		if err != nil {
 			return err
 		}
@@ -205,7 +199,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	if err != nil {
 		return err
 	}
-	err = s.ip.Register(&s.udps)
+	err = s.ip.Register4(&s.udps)
 	if err != nil {
 		return err
 	}
@@ -235,17 +229,11 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 
 func (s *StackAsync) resetARP() error {
 	mac := s.link.HardwareAddr6()
-	addr := s.ip.Addr()
-	if !addr.IsValid() {
-		return lneto.ErrInvalidAddr
-	}
+	addr := s.ip.Addr4()
 	proto := ethernet.TypeIPv4
-	if addr.Is6() {
-		proto = ethernet.TypeIPv6
-	}
 	err := s.arp.Reset(arp.HandlerConfig{
 		HardwareAddr: mac[:],
-		ProtocolAddr: addr.AsSlice(),
+		ProtocolAddr: addr[:],
 		MaxQueries:   5,
 		MaxPending:   5,
 		HardwareType: 1,
@@ -290,26 +278,21 @@ func (s *StackAsync) prand32() uint32 {
 	return seed
 }
 
-func (s *StackAsync) SetIPAddr(addr netip.Addr) error {
+func (s *StackAsync) SetAddr4(addr [4]byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.setIPAddr(addr)
+	return s.setIPAddr4(addr)
 }
 
-func (s *StackAsync) setIPAddr(addr netip.Addr) error {
-	err := s.ip.SetAddr(addr)
-	if err != nil {
-		return err
-	}
-	ip := addr.As4()
-	err = s.arp.UpdateProtoAddr(ip[:])
-	return err
+func (s *StackAsync) setIPAddr4(addr [4]byte) error {
+	s.ip.SetAddr4(addr)
+	return s.arp.UpdateProtoAddr(addr[:])
 }
 
-func (s *StackAsync) Addr() netip.Addr {
+func (s *StackAsync) Addr4() [4]byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.ip.Addr()
+	return s.ip.Addr4()
 }
 
 func (s *StackAsync) SetSubnet(subnetMask netip.Prefix) {
@@ -351,10 +334,10 @@ func (s *StackAsync) EnableICMP(enabled bool) (err error) {
 		enabled = false // ensure aborted.
 	}
 	if enabled {
-		if s.ip.IsRegistered(lneto.IPProtoICMP) {
+		if s.ip.IsRegistered4(lneto.IPProtoICMP) {
 			return nil
 		}
-		err = s.ip.Register(&s.icmp)
+		err = s.ip.Register4(&s.icmp)
 	} else {
 		s.icmp.Abort()
 	}
@@ -658,7 +641,10 @@ func (stack *StackAsync) AssimilateDHCPResults(results *DHCPResults) error {
 		stack.arpt.subnet = results.Subnet
 	}
 	if results.AssignedAddr.IsValid() {
-		err := stack.setIPAddr(results.AssignedAddr)
+		if !results.AssignedAddr.Is4() {
+			return lneto.ErrUnsupported
+		}
+		err := stack.setIPAddr4(results.AssignedAddr.As4())
 		if err != nil {
 			return err
 		}

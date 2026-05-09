@@ -1,8 +1,6 @@
 package xnet
 
 import (
-	"net/netip"
-
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internet"
@@ -37,17 +35,11 @@ func (cfg StackConfig) ConfigureLink(link *internet.StackEthernet, patchMAC func
 
 func (cfg *StackConfig) ConfigureIP(ip *internet.StackIP) error {
 	var ipNodes = 3 // 3 IP protocols possible: UDP, TCP, ICMPv4.
-	if !cfg.StaticAddress.IsValid() {
-		// If static not set DHCP will be performed and address will be zero.
-		cfg.StaticAddress = netip.AddrFrom4([4]byte{})
-	}
-	if cfg.StaticAddress.Is6() {
-		ipNodes++ // ICMPv6
-	}
-	err := ip.Reset(cfg.StaticAddress, ipNodes)
+	err := ip.Reset(cfg.StaticAddress4, ipNodes)
 	if err != nil {
 		return err
 	}
-	ip.SetAcceptMulticast(cfg.AcceptMulticast)
+	ip.SetAcceptMulticast4(cfg.AcceptMulticast)
+
 	return nil
 }

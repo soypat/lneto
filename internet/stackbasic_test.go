@@ -127,11 +127,11 @@ func setupClientServer(t *testing.T, rng *rand.Rand, client, server *StackIP, co
 		t.Fatal(err)
 	}
 
-	err = server.Register(connServer)
+	err = server.Register4(connServer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = client.Register(connClient)
+	err = client.Register4(connClient)
 	if err != nil {
 		t.Fatal(err)
 	}

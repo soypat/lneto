@@ -14,27 +14,28 @@ var _ lneto.StackNode = (*StackIP)(nil)
 type StackIP struct {
 	connID uint64
 	stackip4
+	stackip6
 }
 
 func (sb *StackIP) Reset(addr netip.Addr, maxNodes int) error {
 	if maxNodes <= 0 {
 		return lneto.ErrInvalidConfig
-	}
-	sb.reset(new(lneto.Validator), maxNodes)
-	sb.connID++
-	return sb.SetAddr(addr)
-}
-
-// SetAddr deprecated
-//
-// Deprecated: use SetAddr4.
-func (sb *StackIP) SetAddr(addr netip.Addr) error {
-	if !addr.IsValid() {
-		return lneto.ErrInvalidAddr
 	} else if !addr.Is4() {
 		return lneto.ErrUnsupported
 	}
+	sb.connID++
+	sb.reset4(new(lneto.Validator), maxNodes)
 	sb.SetAddr4(addr.As4())
+	return nil
+}
+
+func (sb *StackIP) Resetv2(vld *lneto.Validator, maxNodes4, maxNodes6 int) error {
+	if maxNodes4 <= 0 && maxNodes6 <= 0 || vld == nil {
+		return lneto.ErrInvalidConfig
+	}
+	sb.connID++
+	sb.reset4(vld, maxNodes4)
+	sb.reset6(vld, maxNodes6)
 	return nil
 }
 
@@ -48,31 +49,22 @@ func (sb *StackIP) Protocol() uint64 {
 
 func (sb *StackIP) LocalPort() uint16 { return 0 }
 
-func (sb *StackIP) Addr() netip.Addr {
-	return netip.AddrFrom4(sb.Addr4())
-}
-
-func (sb *StackIP) SetAcceptMulticast(accept bool) {
-	sb.stackip4.acceptMulticast = accept
-}
-
 func (sb *StackIP) SetLogger(logger *slog.Logger) {
 	sb.stackip4.handlers.log = logger
+	sb.stackip6.handlers.log = logger
 }
 
 func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 	debugLog("ip:demux")
-	sb.handlers.info("StackIP.Demux:start")
 	if len(carrierData) < 1 {
 		return lneto.ErrTruncatedFrame
 	}
 	version := carrierData[offset] >> 4
 	switch version {
 	case 4:
-		return sb.stackip4.demux(carrierData, offset)
+		return sb.stackip4.demux4(carrierData, offset)
 	case 6:
-		// Support IPv6
-		fallthrough
+		return sb.stackip6.demux6(carrierData, offset)
 	default:
 		return lneto.ErrUnsupported
 	}
@@ -82,29 +74,9 @@ func (sb *StackIP) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int
 	if offsetToFrame != offsetToIP {
 		return 0, lneto.ErrBug
 	}
-	n, err = sb.stackip4.encapsulate(carrierData, offsetToIP)
+	n, err = sb.stackip4.encapsulate4(carrierData, offsetToIP)
 	// Support IPv6
 	return n, err
-}
-
-func (sb *StackIP) Register(h lneto.StackNode) error {
-	proto := h.Protocol()
-	if proto > 255 {
-		return lneto.ErrInvalidConfig
-	}
-	return sb.handlers.registerByPortProto(nodeFromStackNode(h, h.LocalPort(), proto, nil))
-}
-
-func (sb *StackIP) IsRegistered(proto lneto.IPProto) bool {
-	return sb.handlers.nodeByProto(uint16(proto)) != nil
-}
-
-func (sb *StackIP) recvicmp(icmpData []byte) error {
-	var crc lneto.CRC791
-	if crc.PayloadSum16(icmpData) != 0 {
-		return lneto.ErrBadCRC
-	}
-	return nil
 }
 
 type logger struct {
