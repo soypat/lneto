@@ -343,7 +343,7 @@ func TestListener_RSTOnPoolExhaustion(t *testing.T) {
 	setupClient(t, &client2Stack, &client2Conn, serverStack.Addr(), serverPort, client2Port)
 
 	// Client2 sends SYN.
-	n, err := client2Stack.Encapsulate(buf[:], -1, 0)
+	n, err := client2Stack.Encapsulate(buf[:], 0, 0)
 	if err != nil {
 		t.Fatal("client2 encapsulate:", err)
 	} else if n == 0 {
@@ -356,7 +356,7 @@ func TestListener_RSTOnPoolExhaustion(t *testing.T) {
 	}
 
 	// Server encapsulates — should produce RST (no connection data pending).
-	n, err = serverStack.Encapsulate(buf[:], -1, 0)
+	n, err = serverStack.Encapsulate(buf[:], 0, 0)
 	if err != nil {
 		t.Fatal("server encapsulate RST:", err)
 	} else if n == 0 {

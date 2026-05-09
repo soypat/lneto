@@ -63,10 +63,13 @@ func (sb *StackIP) SetLogger(logger *slog.Logger) {
 func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 	debugLog("ip:demux")
 	sb.handlers.info("StackIP.Demux:start")
+	if len(carrierData) < 1 {
+		return lneto.ErrTruncatedFrame
+	}
 	version := carrierData[offset] >> 4
 	switch version {
 	case 4:
-		return sb.stackip4.Demux(carrierData, offset)
+		return sb.stackip4.demux(carrierData, offset)
 	case 6:
 		// Support IPv6
 		fallthrough
@@ -76,7 +79,10 @@ func (sb *StackIP) Demux(carrierData []byte, offset int) error {
 }
 
 func (sb *StackIP) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (n int, err error) {
-	n, err = sb.stackip4.Encapsulate(carrierData, offsetToIP, offsetToFrame)
+	if offsetToFrame != offsetToIP {
+		return 0, lneto.ErrBug
+	}
+	n, err = sb.stackip4.encapsulate(carrierData, offsetToIP)
 	// Support IPv6
 	return n, err
 }

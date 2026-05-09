@@ -5,7 +5,6 @@ import (
 	"log/slog"
 
 	"github.com/soypat/lneto"
-	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
@@ -17,11 +16,11 @@ import (
 // var _ lneto.StackNode = (*stackip4)(nil)
 
 type stackip4 struct {
-	ip4             [4]byte
-	ipID            uint16
-	acceptMulticast bool
 	handlers        handlers
 	vld             *lneto.Validator
+	ipID            uint16
+	ip4             [4]byte
+	acceptMulticast bool
 }
 
 func (si4 *stackip4) reset(vld *lneto.Validator, maxNodes int) {
@@ -35,7 +34,15 @@ func (si4 *stackip4) reset(vld *lneto.Validator, maxNodes int) {
 	si4.handlers.reset("stackip4", maxNodes)
 }
 
-func (si4 *stackip4) Demux(carrierData []byte, offset int) error {
+func (si4 *stackip4) SetAcceptMulticast4(accept bool) {
+	si4.acceptMulticast = accept
+}
+func (si4 *stackip4) Addr4() [4]byte { return si4.ip4 }
+func (si4 *stackip4) SetAddr4(ip4 [4]byte) {
+	si4.ip4 = ip4
+}
+
+func (si4 *stackip4) demux(carrierData []byte, offset int) error {
 	debugLog("ip:demux")
 	si4.handlers.info("StackIP.Demux:start")
 	frame := carrierData[offset:] // we don't care about carrier data in IP.
@@ -63,7 +70,7 @@ func (si4 *stackip4) Demux(carrierData []byte, offset int) error {
 		return lneto.ErrBadCRC
 	}
 	off := ifrm.HeaderLength()
-	totalLen := ifrm.TotalLength()
+
 	proto := ifrm.Protocol()
 	node := si4.handlers.nodeByProto(uint16(proto))
 	// nodeIdx := getNodeByProto(sb.handlers, uint16(proto))
@@ -98,7 +105,8 @@ func (si4 *stackip4) Demux(carrierData []byte, offset int) error {
 			return lneto.ErrBadCRC
 		}
 	}
-	si4.handlers.info("ipDemux", slog.String("ipproto", proto.String()), slog.Int("plen", int(totalLen)))
+	totalLen := ifrm.TotalLength()
+	si4.handlers.info("ipDemux", slog.String("ipproto", proto.String()), slog.Int("tlen", int(totalLen)))
 	err = node.callbacks.Demux(frame[:totalLen], off)
 	if si4.handlers.tryHandleError(node, err) {
 		si4.handlers.info("ipclose", slog.String("proto", proto.String()))
@@ -107,8 +115,8 @@ func (si4 *stackip4) Demux(carrierData []byte, offset int) error {
 	return err
 }
 
-func (si4 *stackip4) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
-	frame := carrierData[offsetToFrame:]
+func (si4 *stackip4) encapsulate(carrierData []byte, offsetToIP int) (int, error) {
+	frame := carrierData[offsetToIP:]
 	if len(frame) < ipv4.MinimumMTU {
 		return 0, io.ErrShortBuffer
 	}
@@ -127,7 +135,7 @@ func (si4 *stackip4) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame i
 	si4.ipID = id
 	// Children (TCP/UDP) start at offset headerlen (20 bytes after IP header start).
 	// offsetToIP is 0 relative to this slice (frame), children's frame starts at headerlen.
-	node, n, err := si4.handlers.encapsulateAny(carrierData, offsetToFrame, offsetToFrame+headerlen)
+	node, n, err := si4.handlers.encapsulateAny(carrierData, offsetToIP, offsetToIP+headerlen)
 	if n == 0 {
 		return n, err
 	}
@@ -161,14 +169,3 @@ func (si4 *stackip4) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame i
 	}
 	return totalLen, err
 }
-
-func (si4 *stackip4) SetAcceptMulticast(accept bool) {
-	si4.acceptMulticast = accept
-}
-func (si4 *stackip4) Addr4() [4]byte { return si4.ip4 }
-func (si4 *stackip4) SetAddr4(ip4 [4]byte) {
-	si4.ip4 = ip4
-}
-func (si4 *stackip4) Protocol() uint64 { return uint64(ethernet.TypeIPv4) }
-
-func (si4 *stackip4) LocalPort() uint16 { return 0 }
