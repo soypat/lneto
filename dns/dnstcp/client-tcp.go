@@ -16,8 +16,8 @@ var _ lneto.StackNode = (*Client)(nil)
 // ClientTCPConfig configures a [Client].
 type ClientTCPConfig struct {
 	// TxBuf and RxBuf are TCP-level transmit and receive ring buffers.
-	TxBuf      []byte
-	RxBuf      []byte
+	TxBuf []byte
+	RxBuf []byte
 	// TCPPackets is the number of TCP packets the TX ring buffer can hold.
 	TCPPackets int
 	// QueryBuf is scratch space for serializing outgoing DNS queries (2-byte prefix + message body).
@@ -140,7 +140,7 @@ func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) 
 			r.msglen = msgLen
 			r.state = dns.CQueryOutstanding
 			r.msg.Reset() // release query data; response will reuse the capacity
-			break          // one query per Encapsulate call
+			break         // one query per Encapsulate call
 		}
 	}
 	return c.h.Send(carrierData[offsetToFrame:])

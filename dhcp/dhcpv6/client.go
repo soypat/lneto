@@ -300,5 +300,5 @@ func (c *Client) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
 var defaultOptRequestList = []byte{
 	byte(OptDNSServers >> 8), byte(OptDNSServers), // 23
 	byte(OptDomainList >> 8), byte(OptDomainList), // 24
-	byte(OptNTPServer >> 8), byte(OptNTPServer),   // 56
+	byte(OptNTPServer >> 8), byte(OptNTPServer), // 56
 }
