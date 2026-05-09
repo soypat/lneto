@@ -61,6 +61,8 @@ func (stackip *StackIP) Encapsulate(carrierData []byte, offsetToIP, offsetToFram
 		return 0, lneto.ErrBug
 	}
 	n, err = stackip.stackip4.encapsulate4(carrierData, offsetToIP)
-	// Support IPv6
+	if len(stackip.stackip6.handlers.nodes) > 0 && n == 0 {
+		n, err = stackip.stackip6.encapsulate6(carrierData, offsetToIP)
+	}
 	return n, err
 }
