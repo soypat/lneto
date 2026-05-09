@@ -34,9 +34,9 @@ func TestMDNS_QueryResponse(t *testing.T) {
 		Port: 80,
 	}
 
-	responderAddr := netip.AddrFrom4([4]byte{192, 168, 1, 50})
+	responderAddr := [4]byte{192, 168, 1, 50}
 	responderMAC := [6]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x01}
-	querierAddr := netip.AddrFrom4([4]byte{192, 168, 1, 100})
+	querierAddr := [4]byte{192, 168, 1, 100}
 	querierMAC := [6]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x02}
 	mcastAddr := []byte{224, 0, 0, 251}
 
@@ -45,7 +45,7 @@ func TestMDNS_QueryResponse(t *testing.T) {
 	err = responderStack.Reset(StackConfig{
 		Hostname:          "responder",
 		RandSeed:          1234,
-		StaticAddress:     responderAddr,
+		StaticAddress4:    responderAddr,
 		HardwareAddress:   responderMAC,
 		MTU:               MTU,
 		MaxActiveUDPPorts: 1,
@@ -75,7 +75,7 @@ func TestMDNS_QueryResponse(t *testing.T) {
 	err = querierStack.Reset(StackConfig{
 		Hostname:          "querier",
 		RandSeed:          5678,
-		StaticAddress:     querierAddr,
+		StaticAddress4:    querierAddr,
 		HardwareAddress:   querierMAC,
 		MTU:               MTU,
 		MaxActiveUDPPorts: 1,
@@ -280,7 +280,7 @@ func newMDNSStack(t *testing.T, hostname string, seed int64,
 	err := stack.Reset(StackConfig{
 		Hostname:          hostname,
 		RandSeed:          seed,
-		StaticAddress:     addr,
+		StaticAddress4:    addr.As4(),
 		HardwareAddress:   mac,
 		MTU:               MTU,
 		MaxActiveUDPPorts: 1,

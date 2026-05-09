@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"testing"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -619,7 +620,8 @@ func setupClient(t *testing.T, client *StackIP, conn *tcp.Conn, serverAddr netip
 	t.Helper()
 	bufsize := 2048
 	clientIP := netip.AddrFrom4([4]byte{192, 168, 1, byte(clientPort % 256)})
-	client.Reset(clientIP, 1)
+	client.Reset(new(lneto.Validator), 1, 0)
+	client.SetAddr4(clientIP.As4())
 	err := conn.Configure(tcp.ConnConfig{
 		RxBuf:             make([]byte, bufsize),
 		TxBuf:             make([]byte, bufsize),

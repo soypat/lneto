@@ -36,6 +36,8 @@ type StackAsync struct {
 	udps     internet.StackPortsMACFiltered
 	tcps     internet.StackPortsMACFiltered
 
+	defaultValidator lneto.Validator
+
 	dhcpUDP     internet.StackUDPPort
 	dhcp        dhcpv4.Client
 	dhcpResults DHCPResults
@@ -63,11 +65,13 @@ type StackAsync struct {
 }
 
 type StackConfig struct {
-	StaticAddress netip.Addr
-	DNSServer     netip.Addr
-	NTPServer     netip.Addr
-	RandSeed      int64
-	Hostname      string
+	// StaticAddress6 [16]byte
+	StaticAddress4 [4]byte
+
+	DNSServer netip.Addr
+	NTPServer netip.Addr
+	RandSeed  int64
+	Hostname  string
 
 	// MaxActiveTCPPorts and MaxActiveUDPPorts are a memory guardrail to limit
 	// number of simultaneous open TCP/UDP ports. The memory impact at the stack level
@@ -148,16 +152,11 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 		return lneto.ErrInvalidConfig
 	}
 	mac := cfg.HardwareAddress
-	addr := cfg.StaticAddress
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prng = uint32(cfg.RandSeed)
 	s.hostname = cfg.Hostname
-	if !addr.IsValid() {
-		addr = netip.AddrFrom4([4]byte{}) // If static not set DHCP will be performed and address will be zero.
-	} else if addr.Is6() {
-		return lneto.ErrUnsupported
-	}
+
 	const linkNodes = 2 // ARP and IP nodes
 	ecfg := internet.StackEthernetConfig{
 		MTU:         int(cfg.MTU),
@@ -178,10 +177,11 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 		s.link.OnEncapsulate(s.arpt.patchEgressMAC)
 	}
 	const ipNodes = 3 // 3 IP protocols possible: UDP, TCP, ICMP.
-	err = s.ip.Reset(addr, ipNodes)
+	err = s.ip.Reset(&s.defaultValidator, ipNodes, 0)
 	if err != nil {
 		return err
 	}
+	s.ip.SetAddr4(cfg.StaticAddress4)
 	s.ip.SetAcceptMulticast4(cfg.AcceptMulticast)
 	s.arpt.passivePeers = uint8(cfg.PassivePeers)
 	err = s.resetARP()

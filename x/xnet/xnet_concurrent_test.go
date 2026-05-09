@@ -37,7 +37,7 @@ func TestTCPListener_ConcurrentEcho(t *testing.T) {
 	err := serverStack.Reset(StackConfig{
 		Hostname:          "Server",
 		RandSeed:          seed,
-		StaticAddress:     serverIP,
+		StaticAddress4:    serverIP.As4(),
 		MaxActiveTCPPorts: numClients,
 		HardwareAddress:   serverMAC,
 		MTU:               MTU,
@@ -75,11 +75,11 @@ func TestTCPListener_ConcurrentEcho(t *testing.T) {
 
 	for i := range clientStacks {
 		clientMAC := [6]byte{0xaa, 0xbb, 0xcc, 0x00, 0x01, byte(i + 1)}
-		clientIP := netip.AddrFrom4([4]byte{10, 0, 0, byte(i + 10)})
+		clientIP := [4]byte{10, 0, 0, byte(i + 10)}
 		err := clientStacks[i].Reset(StackConfig{
 			Hostname:          fmt.Sprintf("Client%d", i),
 			RandSeed:          int64(seed + i + 1),
-			StaticAddress:     clientIP,
+			StaticAddress4:    clientIP,
 			MaxActiveTCPPorts: 1,
 			HardwareAddress:   clientMAC,
 			MTU:               MTU,

@@ -34,16 +34,16 @@ func (si4 *stackip4) reset4(vld *lneto.Validator, maxNodes int) {
 	si4.handlers.reset("stackip4", maxNodes)
 }
 
-func (sb *stackip4) Register4(h lneto.StackNode) error {
+func (si4 *stackip4) Register4(h lneto.StackNode) error {
 	proto := h.Protocol()
 	if proto > 255 {
 		return lneto.ErrInvalidConfig
 	}
-	return sb.handlers.registerByPortProto(nodeFromStackNode(h, h.LocalPort(), proto, nil))
+	return si4.handlers.registerByPortProto(nodeFromStackNode(h, h.LocalPort(), proto, nil))
 }
 
-func (sb *stackip4) IsRegistered4(proto lneto.IPProto) bool {
-	return sb.handlers.nodeByProto(uint16(proto)) != nil
+func (si4 *stackip4) IsRegistered4(proto lneto.IPProto) bool {
+	return si4.handlers.nodeByProto(uint16(proto)) != nil
 }
 
 func (si4 *stackip4) SetAcceptMulticast4(accept bool) {

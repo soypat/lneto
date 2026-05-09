@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"testing"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -96,9 +97,10 @@ func setupClientServer(t *testing.T, rng *rand.Rand, client, server *StackIP, co
 	// Ensure buffer sizes are OK with reused buffers.
 	svip := netip.AddrPortFrom(netip.AddrFrom4([4]byte{192, 168, 1, 0}), 80)
 	clip := netip.AddrPortFrom(netip.AddrFrom4([4]byte{192, 168, 1, 1}), 1337)
-	server.Reset(svip.Addr(), maxNodes)
-	client.Reset(clip.Addr(), maxNodes)
-
+	server.Reset(new(lneto.Validator), maxNodes, 0)
+	client.Reset(new(lneto.Validator), maxNodes, 0)
+	server.SetAddr4(svip.Addr().As4())
+	client.SetAddr4(clip.Addr().As4())
 	err := connServer.Configure(tcp.ConnConfig{
 		RxBuf:             make([]byte, bufsize),
 		TxBuf:             make([]byte, bufsize),

@@ -53,7 +53,7 @@ func TestStackAsync_ListenerSynAckAddressedToClient(t *testing.T) {
 	err := sv.Reset(StackConfig{
 		Hostname:          "Server1",
 		RandSeed:          1234,
-		StaticAddress:     netip.AddrFrom4([4]byte{10, 0, 0, 2}),
+		StaticAddress4:    [4]byte{10, 0, 0, 2},
 		MaxActiveTCPPorts: 1,
 		HardwareAddress:   serverMAC,
 		MTU:               mtu,
@@ -89,7 +89,7 @@ func TestStackAsync_ListenerSynAckAddressedToClient(t *testing.T) {
 	err = client.Reset(StackConfig{
 		Hostname:          "Client1",
 		RandSeed:          5678,
-		StaticAddress:     netip.AddrFrom4([4]byte{10, 0, 0, 1}),
+		StaticAddress4:    [4]byte{10, 0, 0, 1},
 		MaxActiveTCPPorts: 1,
 		HardwareAddress:   clientMAC,
 		MTU:               mtu,

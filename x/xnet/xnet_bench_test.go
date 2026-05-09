@@ -17,7 +17,7 @@ func BenchmarkARPExchange(b *testing.B) {
 	err := c1.Reset(StackConfig{
 		Hostname:        "C1",
 		RandSeed:        1,
-		StaticAddress:   netip.AddrFrom4([4]byte{192, 168, 1, 1}),
+		StaticAddress4:  [4]byte{192, 168, 1, 1},
 		HardwareAddress: [6]byte{0xde, 0xad, 0xbe, 0xef, 0x00, 0x00},
 		MTU:             MTU,
 	})
@@ -27,7 +27,7 @@ func BenchmarkARPExchange(b *testing.B) {
 	err = c2.Reset(StackConfig{
 		Hostname:        "C2",
 		RandSeed:        2,
-		StaticAddress:   queryAddr,
+		StaticAddress4:  queryAddr.As4(),
 		HardwareAddress: [6]byte{0xc0, 0xff, 0xee, 0xc0, 0xff, 0xee},
 		MTU:             MTU,
 	})
@@ -85,7 +85,7 @@ func BenchmarkTCPHandshake(b *testing.B) {
 	err := sv.Reset(StackConfig{
 		Hostname:          "Server",
 		RandSeed:          1,
-		StaticAddress:     netip.AddrFrom4([4]byte{10, 0, 0, 1}),
+		StaticAddress4:    [4]byte{10, 0, 0, 1},
 		MaxActiveTCPPorts: 1,
 		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 1},
 		MTU:               MTU,
@@ -96,7 +96,7 @@ func BenchmarkTCPHandshake(b *testing.B) {
 	err = client.Reset(StackConfig{
 		Hostname:          "Client",
 		RandSeed:          2,
-		StaticAddress:     netip.AddrFrom4([4]byte{10, 0, 0, 2}),
+		StaticAddress4:    [4]byte{10, 0, 0, 2},
 		MaxActiveTCPPorts: 1,
 		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 2},
 		MTU:               MTU,

@@ -330,7 +330,7 @@ func tryPoll(iface ltesto.Interface, poll time.Duration) (dataMayBeReady bool, _
 func mockClient(stack *xnet.StackAsync, port uint16, subnet netip.Prefix) {
 	target := netip.AddrPortFrom(netip.AddrFrom4(stack.Addr4()), port)
 	err := mockStack.Reset(xnet.StackConfig{
-		StaticAddress:     subnet.Addr().Next(),
+		StaticAddress4:    subnet.Addr().Next().As4(),
 		MaxActiveTCPPorts: 1,
 		HardwareAddress:   stack.Gateway6(),
 		Hostname:          "the-other",

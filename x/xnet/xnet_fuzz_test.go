@@ -275,7 +275,7 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 	v1, v2 := byte(seed1), byte(seed2)
 	cfg1 := StackConfig{
 		Hostname:          "s1",
-		StaticAddress:     netip.AddrFrom4([4]byte{1, 0, 0, v1}),
+		StaticAddress4:    [4]byte{1, 0, 0, v1},
 		RandSeed:          seed1,
 		MaxActiveTCPPorts: 1,
 		MaxActiveUDPPorts: 1,
@@ -291,7 +291,7 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 	}
 	cfg2 := StackConfig{
 		Hostname:          "s2",
-		StaticAddress:     netip.AddrFrom4([4]byte{1, 0, 0, v2}),
+		StaticAddress4:    [4]byte{1, 0, 0, v2},
 		RandSeed:          seed2,
 		MaxActiveTCPPorts: 1,
 		MaxActiveUDPPorts: 1,

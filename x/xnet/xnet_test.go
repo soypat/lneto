@@ -178,7 +178,7 @@ func newTCPStacks(t testing.TB, randSeed int64, mtu int) (s1, s2 *StackAsync, c1
 	err := s1.Reset(StackConfig{
 		Hostname:          "Stack1",
 		RandSeed:          randSeed,
-		StaticAddress:     netip.AddrFrom4([4]byte{10, 0, 0, byte1}),
+		StaticAddress4:    [4]byte{10, 0, 0, byte1},
 		MaxActiveTCPPorts: 1,
 		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, byte1},
 		MTU:               uint16(mtu),
@@ -192,7 +192,7 @@ func newTCPStacks(t testing.TB, randSeed int64, mtu int) (s1, s2 *StackAsync, c1
 	err = s2.Reset(StackConfig{
 		Hostname:          "Stack2",
 		RandSeed:          ^randSeed,
-		StaticAddress:     netip.AddrFrom4([4]byte{10, 0, 0, byte2}),
+		StaticAddress4:    [4]byte{10, 0, 0, byte2},
 		MaxActiveTCPPorts: 1,
 		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, byte2},
 		MTU:               uint16(mtu),
@@ -929,7 +929,7 @@ func TestTCPConn_BufferNotClearedOnPassiveClose(t *testing.T) {
 func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
 	const MTU = ethernet.MaxMTU
 	const MaxFrameLength = MTU + ethernet.MaxOverheadSize // Ethernet header+FCS+VLAN.
-	stackAddr := netip.AddrFrom4([4]byte{192, 168, 1, 99})
+	stackAddr := [4]byte{192, 168, 1, 99}
 	stackMAC := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
 	routerAddr := [4]byte{192, 168, 1, 1}
 	routerMAC := [6]byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}
@@ -938,7 +938,7 @@ func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
 	err := stack.Reset(StackConfig{
 		Hostname:        "ICMPTest",
 		RandSeed:        42,
-		StaticAddress:   stackAddr,
+		StaticAddress4:  stackAddr,
 		HardwareAddress: stackMAC,
 		MTU:             MTU,
 		ICMPQueueLimit:  2,
@@ -954,7 +954,7 @@ func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
 		SrcMAC:  routerMAC,
 		DstMAC:  stackMAC,
 		SrcIPv4: routerAddr,
-		DstIPv4: stackAddr.As4(),
+		DstIPv4: stackAddr,
 	}
 	icmpPayload := []byte("abcdefghijklmnopqrstuvwxyz012345") // 32 bytes, typical ping payload.
 	const (
