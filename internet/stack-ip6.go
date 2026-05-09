@@ -20,16 +20,16 @@ type stackip6 struct {
 	acceptMulticast bool
 }
 
-func (sb *stackip6) Register6(h lneto.StackNode) error {
+func (si6 *stackip6) Register6(h lneto.StackNode) error {
 	proto := h.Protocol()
 	if proto > 255 {
 		return lneto.ErrInvalidConfig
 	}
-	return sb.handlers.registerByPortProto(nodeFromStackNode(h, h.LocalPort(), proto, nil))
+	return si6.handlers.registerByPortProto(nodeFromStackNode(h, h.LocalPort(), proto, nil))
 }
 
-func (sb *stackip6) IsRegistered6(proto lneto.IPProto) bool {
-	return sb.handlers.nodeByProto(uint16(proto)) != nil
+func (si6 *stackip6) IsRegistered6(proto lneto.IPProto) bool {
+	return si6.handlers.nodeByProto(uint16(proto)) != nil
 }
 
 func (si6 *stackip6) SetAcceptMulticast6(accept bool) { si6.acceptMulticast = accept }
@@ -113,18 +113,18 @@ func (si6 *stackip6) encapsulate6(carrierData []byte, offsetToIP int) (int, erro
 	if err != nil {
 		return 0, err
 	}
+	// Set default parameters which node is free to change.
+	ifrm.SetVersionTrafficAndFlow(6, 0, 0)
+	ifrm.SetHopLimit(64)
+	*ifrm.SourceAddr() = si6.ip6
 	const headerlen = 40
 	node, n, err := si6.handlers.encapsulateAny(carrierData, offsetToIP, offsetToIP+headerlen)
 	if n == 0 {
 		return n, err
 	}
 	proto := lneto.IPProto(node.proto)
-	ifrm.SetVersionTrafficAndFlow(6, 0, 0)
-	ifrm.SetHopLimit(64)
 	ifrm.SetNextHeader(proto)
 	ifrm.SetPayloadLength(uint16(n))
-	*ifrm.SourceAddr() = si6.ip6
-
 	var crc lneto.CRC791
 	payload := ifrm.Payload()
 	switch proto {
