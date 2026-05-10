@@ -30,7 +30,8 @@ type StackAsync struct {
 	hostname string
 	clientID string
 	link     internet.StackEthernet
-	ip       internet.StackIP
+	ip4      internet.StackIPv4
+	ip6      internet.StackIPv6
 	arp      arp.Handler
 	icmp     icmpv4.Client
 	udps     internet.StackPortsMACFiltered
@@ -54,7 +55,8 @@ type StackAsync struct {
 
 	userUDPs []internet.StackUDPPort
 
-	sysprec int8 // NTP system precision.
+	sysprec     int8 // NTP system precision.
+	ipv6enabled bool
 
 	prng uint32
 
@@ -65,7 +67,7 @@ type StackAsync struct {
 }
 
 type StackConfig struct {
-	// StaticAddress6 [16]byte
+	StaticAddress6 [16]byte
 	StaticAddress4 [4]byte
 
 	DNSServer netip.Addr
@@ -84,6 +86,7 @@ type StackConfig struct {
 	MTU             uint16
 	// Accept multicast ethernet and IP packets. Needed for MDNS.
 	AcceptMulticast bool
+	EnableIPv6      bool
 	// ICMPQueueLimit sets maximum number of input/output packets queued for processing.
 	// If set to zero ICMP cannot be enabled on the stack.
 	ICMPQueueLimit int
@@ -120,10 +123,22 @@ func (s *StackAsync) EgressEthernet(dstEthernetFrame []byte) (int, error) {
 
 // IngressIP processes an incoming IP frame through the stack and omits ethernet header processing.
 func (s *StackAsync) IngressIP(ipFrame []byte) error {
+	if len(ipFrame) < 1 {
+		return lneto.ErrTruncatedFrame
+	}
+	version := ipFrame[0] >> 4
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.totalrecv += uint64(len(ipFrame))
-	return s.ip.Demux(ipFrame, 0)
+	switch version {
+	case 4:
+		return s.ip4.Demux(ipFrame, 0)
+	case 6:
+		if s.ipv6enabled {
+			return s.ip6.Demux(ipFrame, 0)
+		}
+	}
+	return lneto.ErrPacketDrop
 }
 
 // EgressIP writes the next IP frame to send into dstIPFrame from the stack. The length of dstIPFrame should be at least MTU.
@@ -133,7 +148,10 @@ func (s *StackAsync) EgressIP(dstIPFrame []byte) (int, error) {
 	if len(dstIPFrame) < s.link.MTU() {
 		return 0, lneto.ErrShortBuffer
 	}
-	n, err := s.ip.Encapsulate(dstIPFrame, 0, 0)
+	n, err := s.ip4.Encapsulate(dstIPFrame, 0, 0)
+	if s.ipv6enabled && n == 0 {
+		n, err = s.ip6.Encapsulate(dstIPFrame, 0, 0)
+	}
 	s.totalsent += uint64(n)
 	return n, err
 }
@@ -150,6 +168,8 @@ func (s *StackAsync) MTU() int {
 func (s *StackAsync) Reset(cfg StackConfig) error {
 	if cfg.RandSeed == 0 || cfg.Hostname == "" || cfg.PassivePeers > 255 {
 		return lneto.ErrInvalidConfig
+	} else if !internal.IsZeroed(cfg.StaticAddress6) && !cfg.EnableIPv6 {
+		return lneto.ErrBug // Forgot to EnableIPv6 after setting static address.
 	}
 	mac := cfg.HardwareAddress
 	s.mu.Lock()
@@ -177,12 +197,32 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 		s.link.OnEncapsulate(s.arpt.patchEgressMAC)
 	}
 	const ipNodes = 3 // 3 IP protocols possible: UDP, TCP, ICMP.
-	err = s.ip.Reset(&s.defaultValidator, ipNodes, 0)
+	err = s.ip4.Reset(&s.defaultValidator, ipNodes)
 	if err != nil {
 		return err
 	}
-	s.ip.SetAddr4(cfg.StaticAddress4)
-	s.ip.SetAcceptMulticast4(cfg.AcceptMulticast)
+	s.ip4.SetAddr4(cfg.StaticAddress4)
+	s.ip4.SetAcceptMulticast4(cfg.AcceptMulticast)
+
+	s.ipv6enabled = cfg.EnableIPv6
+	if s.ipv6enabled {
+		s.Debug("ipv6 enabled")
+		err = s.ip6.Reset(&s.defaultValidator, ipNodes)
+		if err != nil {
+			return err
+		}
+		err = s.link.Register(&s.ip6)
+		if err != nil {
+			return err
+		}
+		s.ip6.SetAddr6(cfg.StaticAddress6)
+		s.ip6.SetAcceptMulticast6(cfg.AcceptMulticast)
+		err = s.ip6.Register6(&s.tcps)
+		if err != nil {
+			return err
+		}
+	}
+
 	s.arpt.passivePeers = uint8(cfg.PassivePeers)
 	err = s.resetARP()
 	if err != nil {
@@ -201,7 +241,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 		if err != nil {
 			return err
 		}
-		err = s.ip.Register4(&s.tcps)
+		err = s.ip4.Register4(&s.tcps)
 		if err != nil {
 			return err
 		}
@@ -209,11 +249,12 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 
 	// Now setup stacks.
 	// ARP registered in resetARP.
-	err = s.link.Register(&s.ip) // IPv4 | IPv6
+	err = s.link.Register(&s.ip4) // IPv4
 	if err != nil {
 		return err
 	}
-	err = s.ip.Register4(&s.udps)
+
+	err = s.ip4.Register4(&s.udps)
 	if err != nil {
 		return err
 	}
@@ -243,7 +284,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 
 func (s *StackAsync) resetARP() error {
 	mac := s.link.HardwareAddr6()
-	addr := s.ip.Addr4()
+	addr := s.ip4.Addr4()
 	proto := ethernet.TypeIPv4
 	err := s.arp.Reset(arp.HandlerConfig{
 		HardwareAddr: mac[:],
@@ -299,42 +340,42 @@ func (s *StackAsync) SetAddr4(addr [4]byte) error {
 }
 
 func (s *StackAsync) setIPAddr4(addr [4]byte) error {
-	s.ip.SetAddr4(addr)
+	s.ip4.SetAddr4(addr)
 	return s.arp.UpdateProtoAddr(addr[:])
 }
 
 func (s *StackAsync) Addr4() [4]byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.ip.Addr4()
+	return s.ip4.Addr4()
 }
 
-func (s *StackAsync) SetSubnet(subnetMask netip.Prefix) {
+func (s *StackAsync) SetSubnet4(addr [4]byte, prefixBits uint8) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.arpt.subnet = subnetMask
+	s.arpt.subnet = netip.PrefixFrom(netip.AddrFrom4(addr), int(prefixBits))
 }
 
-func (s *StackAsync) SetHardwareAddress(hw [6]byte) error {
+func (s *StackAsync) SetHardwareAddr(hw [6]byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.link.SetHardwareAddr6(hw)
 	return s.resetARP()
 }
 
-func (s *StackAsync) HardwareAddress() (hw [6]byte) {
+func (s *StackAsync) HardwareAddr() (hw [6]byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.link.HardwareAddr6()
 }
 
-func (s *StackAsync) SetGateway6(gwhw [6]byte) {
+func (s *StackAsync) SetGatewayHardwareAddr(gwhw [6]byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.link.SetGateway6(gwhw)
 }
 
-func (s *StackAsync) Gateway6() [6]byte {
+func (s *StackAsync) GatewayHardwareAddr() [6]byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.link.Gateway6()
@@ -348,10 +389,10 @@ func (s *StackAsync) EnableICMP(enabled bool) (err error) {
 		enabled = false // ensure aborted.
 	}
 	if enabled {
-		if s.ip.IsRegistered4(lneto.IPProtoICMP) {
+		if s.ip4.IsRegistered4(lneto.IPProtoICMP) {
 			return nil
 		}
-		err = s.ip.Register4(&s.icmp)
+		err = s.ip4.Register4(&s.icmp)
 	} else {
 		s.icmp.Abort()
 	}

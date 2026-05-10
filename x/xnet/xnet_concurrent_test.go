@@ -88,7 +88,7 @@ func TestTCPListener_ConcurrentEcho(t *testing.T) {
 			t.Fatalf("client %d reset: %v", i, err)
 		}
 		// Client gateway points to server.
-		clientStacks[i].SetGateway6(serverMAC)
+		clientStacks[i].SetGatewayHardwareAddr(serverMAC)
 
 		// Configure client connection buffers.
 		bufOff := i * tcpBufSize * 2

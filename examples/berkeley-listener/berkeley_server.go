@@ -137,7 +137,7 @@ func run() error {
 			pfbuf, err = pf.FormatFrames(pfbuf, frames, pkt)
 			addr := stack.Addr4()
 			pfbuf = bytes.ReplaceAll(pfbuf, ipv4.AppendFormatAddr(nil, addr), []byte("us"))
-			pfbuf = bytes.ReplaceAll(pfbuf, ethernet.AppendAddr(nil, stack.HardwareAddress()), []byte("us"))
+			pfbuf = bytes.ReplaceAll(pfbuf, ethernet.AppendAddr(nil, stack.HardwareAddr()), []byte("us"))
 			pfbuf = append(pfbuf, ']', '\n')
 			if err != nil {
 				return err
@@ -232,7 +232,7 @@ func run() error {
 		return fmt.Errorf("ARP resolution of router failed: %w", err)
 	}
 	// Set gateway on the async stack (exported API).
-	stack.SetGateway6(routerHw)
+	stack.SetGatewayHardwareAddr(routerHw)
 
 	// Create Berkeley listener via SocketNetip
 	laddr := netip.AddrPortFrom(netip.IPv4Unspecified(), uint16(flagPort))
@@ -332,7 +332,7 @@ func mockClient(stack *xnet.StackAsync, port uint16, subnet netip.Prefix) {
 	err := mockStack.Reset(xnet.StackConfig{
 		StaticAddress4:    subnet.Addr().Next().As4(),
 		MaxActiveTCPPorts: 1,
-		HardwareAddress:   stack.Gateway6(),
+		HardwareAddress:   stack.GatewayHardwareAddr(),
 		Hostname:          "the-other",
 		MTU:               uint16(stack.MTU()),
 		RandSeed:          int64(stack.Prand32()),

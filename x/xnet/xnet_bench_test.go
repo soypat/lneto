@@ -35,8 +35,8 @@ func BenchmarkARPExchange(b *testing.B) {
 		b.Fatal(err)
 	}
 	// Set gateways so ethernet frames are properly addressed.
-	c1.SetGateway6(c2.HardwareAddress())
-	c2.SetGateway6(c1.HardwareAddress())
+	c1.SetGatewayHardwareAddr(c2.HardwareAddr())
+	c2.SetGatewayHardwareAddr(c1.HardwareAddr())
 
 	var buf [frameSize]byte
 
@@ -104,8 +104,8 @@ func BenchmarkTCPHandshake(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	sv.SetGateway6(client.HardwareAddress())
-	client.SetGateway6(sv.HardwareAddress())
+	sv.SetGatewayHardwareAddr(client.HardwareAddr())
+	client.SetGatewayHardwareAddr(sv.HardwareAddr())
 
 	buf := make([]byte, MTU*4)
 	err = clconn.Configure(tcp.ConnConfig{

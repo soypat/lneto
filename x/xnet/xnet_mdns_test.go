@@ -54,7 +54,7 @@ func TestMDNS_QueryResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal("responder reset:", err)
 	}
-	responderStack.SetGateway6(querierMAC)
+	responderStack.SetGatewayHardwareAddr(querierMAC)
 
 	var responderClient mdns.Client
 	err = responderClient.Configure(mdns.ClientConfig{
@@ -84,7 +84,7 @@ func TestMDNS_QueryResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal("querier reset:", err)
 	}
-	querierStack.SetGateway6(responderMAC)
+	querierStack.SetGatewayHardwareAddr(responderMAC)
 
 	var querierClient mdns.Client
 	err = querierClient.Configure(mdns.ClientConfig{
@@ -289,7 +289,7 @@ func newMDNSStack(t *testing.T, hostname string, seed int64,
 	if err != nil {
 		t.Fatal(hostname, "reset:", err)
 	}
-	stack.SetGateway6(gatewayMAC)
+	stack.SetGatewayHardwareAddr(gatewayMAC)
 
 	var client mdns.Client
 	err = client.Configure(mdnsCfg)

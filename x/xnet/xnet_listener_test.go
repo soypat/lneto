@@ -40,8 +40,8 @@ func TestStackAsyncListener_SingleConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client.SetGateway6(sv.HardwareAddress())
-	sv.SetGateway6(client.HardwareAddress())
+	client.SetGatewayHardwareAddr(sv.HardwareAddr())
+	sv.SetGatewayHardwareAddr(client.HardwareAddr())
 
 	// Create client connection.
 	var clConn tcp.Conn
@@ -166,7 +166,7 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 	}
 	caddr := netip.AddrFrom4([4]byte{10, 0, 0, 1})
 	chw := [6]byte{0xbe, 0xef, 0, 0, 0, 1}
-	sv.SetGateway6(chw)
+	sv.SetGatewayHardwareAddr(chw)
 	tst := testerFrom(t, MTU)
 	doRequest := func(caddrp netip.AddrPort, sleep time.Duration, data []byte) {
 		var client StackAsync
@@ -181,7 +181,7 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		client.SetGateway6(sv.HardwareAddress())
+		client.SetGatewayHardwareAddr(sv.HardwareAddr())
 		// Create client connection.
 		var clConn tcp.Conn
 		err = clConn.Configure(tcp.ConnConfig{

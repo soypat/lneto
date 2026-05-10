@@ -33,8 +33,8 @@ func TestStackAsync_ICMPEcho(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 
-			sender.SetGateway6(receiver.HardwareAddress())
-			receiver.SetGateway6(sender.HardwareAddress())
+			sender.SetGatewayHardwareAddr(receiver.HardwareAddr())
+			receiver.SetGatewayHardwareAddr(sender.HardwareAddr())
 
 			key, err := sender.icmp.PingStart(receiver.Addr4(), tt.pattern, tt.size)
 			if err != nil {
