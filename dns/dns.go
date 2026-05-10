@@ -26,6 +26,11 @@ const (
 	MaxSizeUDP = 512
 )
 
+// Message is a convenience type for decoding DNS messages and storing results in a single object.
+// Message is designed for ease of memory reuse. All internal buffers in a Message are reused in methods:
+// - [Message.Decode]: Limited in decode size by [Message.LimitResourceDecoding] which must be called beforehand.
+// - [Message.CopyFrom]
+// - [Message.AddQuestions]
 type Message struct {
 	Questions   []Question
 	Answers     []Resource
@@ -598,8 +603,6 @@ func append32(b []byte, v uint32) []byte {
 }
 
 func visitAllLabels(msg []byte, off uint16, fn func(b []byte), allowCompression bool) (uint16, error) {
-	// currOff is the current working offset.
-	currOff := off
 	if len(msg) > math.MaxUint16 {
 		return off, errResTooLong
 	}
@@ -610,58 +613,84 @@ func visitAllLabels(msg []byte, off uint16, fn func(b []byte), allowCompression 
 	// the usage of this name.
 	var newOff = off
 
-LOOP:
 	for {
-		if currOff >= uint16(len(msg)) {
-			return off, lneto.ErrTruncatedFrame
-		}
-		c := uint16(msg[currOff])
-		currOff++
-		switch c & 0xc0 {
-		case 0x00: // String label (segment).
-			if c == 0x00 {
-				break LOOP // Nominal end of name, always ends with null terminator.
-			}
-			endOff := currOff + c
-			if endOff > uint16(len(msg)) {
-				return off, errCalcLen
-			}
-
-			// Reject names containing dots. See issue golang/go#56246
-			if bytes.IndexByte(msg[currOff:endOff], '.') >= 0 {
-				return off, errInvalidName
-			}
-
-			fn(msg[currOff:endOff])
-			currOff = endOff
-
-		case 0xc0: // Pointer.
-			// https://cs.opensource.google/go/x/net/+/refs/tags/v0.19.0:dns/dnsmessage/message.go;l=2078
-			if !allowCompression {
-				return off, errCompressedSRV
-			}
-			if currOff >= uint16(len(msg)) {
-				return off, errInvalidPtr
-			}
-			c1 := msg[currOff]
-			currOff++
+		start, end, isPtr, err := NextLabel(msg[off:])
+		if err != nil {
+			return off, err
+		} else if start == end {
 			if ptr == 0 {
-				newOff = currOff
+				newOff = off + 1 // advance past the null terminator byte
 			}
-			// Don't follow too many pointers, maybe there's a loop.
-			if ptr++; ptr > 10 {
-				return off, errTooManyPtr
+			break
+		} else if isPtr {
+			if !allowCompression {
+				return newOff, errCompressedSRV
 			}
-			currOff = (c^0xC0)<<8 | uint16(c1)
-		default:
-			// Prefixes 0x80 and 0x40 are reserved.
-			return off, errReserved
+			if ptr == 0 {
+				newOff = off + 2 // next record follows the 2-byte pointer
+			}
+			off = start
+			if int(off) >= len(msg) {
+				return newOff, errInvalidPtr
+			} else if ptr++; ptr > 10 {
+				return newOff, errTooManyPtr
+			}
+		} else {
+			// Is normal label; start/end are relative to msg[off:].
+			fn(msg[off+start : off+end])
+			off += end
 		}
-	}
-	if ptr == 0 {
-		newOff = currOff
 	}
 	return newOff, nil
+}
+
+// NextLabel parses the first control byte of data and returns the position and extent of next DNS label.
+//
+// For a normal string label (RFC 1035 §3.1), isPointer==false and start/end are
+// byte indices into data: data[start:end] holds the raw label bytes.
+// A null terminator (c==0) signals the end of the name: start==end==1, err==nil.
+//
+// For a compression pointer (RFC 1035 §4.1.4), isPointer==true:
+//   - start is the absolute target offset within the full DNS message to jump to.
+//   - end==0 (sentinel; not a data range).
+//
+// Returns [lneto.ErrTruncatedFrame] if data is too short to read the full label or pointer.
+// Returns errReserved for the 0x40 and 0x80 reserved prefix classes.
+func NextLabel(data []byte) (start_RelOrAbs, endRel uint16, isAbsPointer bool, err error) {
+	// Default invalid values
+	start_RelOrAbs, endRel = 0, 0
+	if len(data) == 0 {
+		return start_RelOrAbs, endRel, false, lneto.ErrTruncatedFrame
+	}
+	c := uint16(data[0])
+	switch c & 0xc0 {
+	case 0:
+		start_RelOrAbs = 1
+		// String label segment.
+		if c == 0 {
+			return start_RelOrAbs, start_RelOrAbs, false, nil // Null terminator. String ended.
+		}
+		endRel = start_RelOrAbs + c
+		if int(endRel) > len(data) {
+			return start_RelOrAbs, endRel, false, lneto.ErrTruncatedFrame
+		}
+		// Reject names containing dots. See issue golang/go#56246
+		if bytes.IndexByte(data[start_RelOrAbs:endRel], '.') >= 0 {
+			return start_RelOrAbs, endRel, false, errInvalidName
+		}
+		// Correct label!
+	case 0xc0:
+		// Pointer. Start is absolute index in DNS message.
+		isAbsPointer = true
+		if len(data) < 2 {
+			return start_RelOrAbs, endRel, isAbsPointer, lneto.ErrTruncatedFrame // Need more data to fully read pointer.
+		}
+		c1 := uint16(data[1])
+		start_RelOrAbs = (c^0xC0)<<8 | c1
+	default:
+		err = errReserved
+	}
+	return start_RelOrAbs, endRel, isAbsPointer, err
 }
 
 func (dst *Message) CopyFrom(m Message) {

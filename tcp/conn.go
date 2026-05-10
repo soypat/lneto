@@ -173,6 +173,20 @@ func (conn *Conn) OpenListen(localPort uint16, iss Value) error {
 	return nil
 }
 
+// CloseRead activates local discard mode on the connection. Incoming data is
+// still ACKed normally but payload is dropped; future Read calls return io.EOF.
+// The write side is unaffected.
+func (conn *Conn) CloseRead() error {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	err := conn.checkPipeOpen()
+	if err != nil {
+		return err
+	}
+	conn.h.ShutdownRead()
+	return nil
+}
+
 func (conn *Conn) Close() error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
@@ -294,10 +308,11 @@ func (conn *Conn) Read(b []byte) (int, error) {
 			break
 		} else {
 			state := conn.h.State()
+			rxRefuse := conn.h.shutdownRx
 			conn.mu.Unlock()
 			if state.IsClosed() {
 				return n, net.ErrClosed
-			} else if !state.RxDataOpen() {
+			} else if !state.RxDataOpen() || rxRefuse {
 				return n, io.EOF
 			} else if conn.deadlineExceeded(&conn.rdead) {
 				return n, errDeadlineExceeded

@@ -238,6 +238,17 @@ const (
 	RCodeRefused RCode = 5 // refused
 )
 
+// StateClientQuery is the lifecycle state of a single DNS query.
+type StateClientQuery uint8
+
+const (
+	CQueryIdle        StateClientQuery = iota // no active query (zero value)
+	CQueryPending                             // query built, not yet transmitted
+	CQueryOutstanding                         // transmitted; awaiting response (RFC 7766 §9.3)
+	CQueryDone                                // response received and decoded
+	CQueryAborted                             // query abandoned (connection error or caller abort)
+)
+
 func b2u8(b bool) uint8 {
 	if b {
 		return 1
