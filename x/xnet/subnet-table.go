@@ -34,6 +34,23 @@ func (a *subnetTable) reset(arpentries int, passivePeers uint8) {
 	}
 }
 
+func (a *subnetTable) hwDynamicResolve(addr [4]byte, arph *arp.Handler) (mac []byte, err error) {
+	if !a.subnet4.Contains(addr) {
+		return nil, nil // not in subnet; caller uses gateway/default routing (nil MAC = no filtering)
+	}
+	var mac6 [6]byte
+	hw, err := arph.CacheLookup(addr[:])
+	if err == nil {
+		copy(mac6[:], hw)
+	} else {
+		err = a.startQuery(mac6[:], addr[:], arph)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return mac6[:], nil // mac6 escapes to heap via startQuery or return
+}
+
 func (a *subnetTable) learnFromIngressEthernet(ethernetFrame []byte) {
 	if len(ethernetFrame) > 14+20 &&
 		binary.BigEndian.Uint16(ethernetFrame[12:14]) == uint16(ethernet.TypeIPv4) {

@@ -17,7 +17,6 @@ import (
 	"github.com/soypat/lneto/internet"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/ipv4/icmpv4"
-	"github.com/soypat/lneto/ipv6/icmpv6"
 	"github.com/soypat/lneto/ntp"
 	"github.com/soypat/lneto/tcp"
 	"github.com/soypat/lneto/udp"
@@ -34,10 +33,11 @@ type StackAsync struct {
 	clientID string
 	link     internet.StackEthernet
 	ip4      internet.StackIPv4
-	ip6      internet.StackIPv6
-	arp      arp.Handler
-	icmp     icmpv4.Client
-	icmp6    icmpv6.Client // TODO
+	stack6   *stack6
+	// ip6      internet.StackIPv6
+	arp  arp.Handler
+	icmp icmpv4.Client
+	// icmp6    icmpv6.Client
 	icmp6buf []byte
 	udps     internet.StackPortsMACFiltered
 	tcps     internet.StackPortsMACFiltered
@@ -100,6 +100,10 @@ type StackConfig struct {
 	PassivePeers int
 }
 
+func (cfg *StackConfig) id() uint16 {
+	return uint16(cfg.Hostname[len(cfg.Hostname)-1] - '0')
+}
+
 func (s *StackAsync) Hostname() string {
 	return s.hostname
 }
@@ -140,7 +144,7 @@ func (s *StackAsync) IngressIP(ipFrame []byte) error {
 		return s.ip4.Demux(ipFrame, 0)
 	case 6:
 		if s.ipv6enabled {
-			return s.ip6.Demux(ipFrame, 0)
+			return s.stack6.IngressIP(ipFrame)
 		}
 	}
 	return lneto.ErrPacketDrop
@@ -155,7 +159,7 @@ func (s *StackAsync) EgressIP(dstIPFrame []byte) (int, error) {
 	}
 	n, err := s.ip4.Encapsulate(dstIPFrame, 0, 0)
 	if s.ipv6enabled && n == 0 {
-		n, err = s.ip6.Encapsulate(dstIPFrame, 0, 0)
+		n, err = s.stack6.EgressIP(dstIPFrame)
 	}
 	s.stats.TotalSent += uint64(n)
 	return n, err
@@ -170,7 +174,7 @@ func (s *StackAsync) MTU() int {
 	return s.link.MTU()
 }
 
-func (s *StackAsync) Reset(cfg StackConfig) error {
+func (s *StackAsync) Reset(cfg StackConfig) (err error) {
 	if cfg.RandSeed == 0 || cfg.Hostname == "" || cfg.PassivePeers > 255 {
 		return lneto.ErrInvalidConfig
 	} else if !internal.IsZeroed(cfg.StaticAddress6) && !cfg.EnableIPv6 {
@@ -182,11 +186,17 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	s.prng = uint32(cfg.RandSeed)
 	s.hostname = cfg.Hostname
 	// Treat last character of hostname as number.
-	id := uint16(cfg.Hostname[len(cfg.Hostname)-1] - '0')
-	linkNodes := 2 // ARP and IP nodes
+	id := cfg.id()
+	linkNodes := 2 // ARP and IPv4 nodes
 	s.ipv6enabled = cfg.EnableIPv6
 	if s.ipv6enabled {
-		linkNodes = 3
+		linkNodes = 3 // IPv6
+		s.Debug("ipv6 enabled")
+		err = s.stack6.Reset6(&cfg, &s.defaultValidator)
+		if err != nil {
+			s.ipv6enabled = false
+			return err
+		}
 	}
 	ecfg := internet.StackEthernetConfig{
 		MTU:         int(cfg.MTU),
@@ -196,7 +206,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 		AppendCRC32: cfg.EthernetTxCRC32Update != nil,
 		CRC32Update: cfg.EthernetTxCRC32Update,
 	}
-	err := s.link.Configure(ecfg)
+	err = s.link.Configure(ecfg)
 	if err != nil {
 		return err
 	}
@@ -213,60 +223,19 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	s.ip4.SetAddr4(cfg.StaticAddress4)
 	s.setAcceptMulticast4(cfg.AcceptMulticast)
 
-	if s.ipv6enabled {
-		s.Debug("ipv6 enabled")
-		err = s.ip6.Reset(&s.defaultValidator, ipNodes)
-		if err != nil {
-			return err
-		}
-		err = s.link.Register(&s.ip6)
-		if err != nil {
-			return err
-		}
-		s.ip6.SetAddr6(cfg.StaticAddress6)
-		err = s.ip6.Register6(&s.tcps)
-		if err != nil {
-			return err
-		}
-		s.ip6.SetAcceptMulticast6(true) // IPv6 needs multicast to work.
-		if s.ipv6enabled && cfg.ICMPQueueLimit > 0 {
-			if len(s.icmp6buf) == 0 {
-				s.icmp6buf = make([]byte, cfg.ICMPQueueLimit*icmpEchoSize)
-			}
-			err = s.icmp6.Configure(icmpv6.ClientConfig{
-				ResponseQueueBuffer: s.icmp6buf,
-				ResponseQueueLimit:  cfg.ICMPQueueLimit,
-				HashSeed:            s.prand32(),
-				ID:                  id,
-				OurAddr:             cfg.StaticAddress6,
-				OurMAC:              cfg.HardwareAddress,
-				NDPCache:            16,
-			})
-			if err != nil {
-				return err
-			}
-		}
-
-	}
-
 	s.arpt.passivePeers = uint8(cfg.PassivePeers)
 	err = s.resetARP()
 	if err != nil {
 		return err
 	}
 	udpConns := 3 + cfg.MaxActiveUDPPorts // DHCP, DNS, NTP + user-registered.
-	err = s.udps.ResetUDP(udpConns)
-	if err != nil {
-		return err
-	}
+	s.udps.ResetUDP(udpConns)
+
 	internal.SliceReuse(&s.userUDPs, int(cfg.MaxActiveUDPPorts))
 
 	// Enable TCP if connections present.
 	if cfg.MaxActiveTCPPorts > 0 {
-		err = s.tcps.ResetTCP(cfg.MaxActiveTCPPorts)
-		if err != nil {
-			return err
-		}
+		s.tcps.ResetTCP(cfg.MaxActiveTCPPorts)
 		err = s.ip4.Register4(&s.tcps)
 		if err != nil {
 			return err
@@ -417,72 +386,58 @@ func (s *StackAsync) EnableICMP(enabled bool) (err error) {
 		if !s.ip4.IsRegistered4(lneto.IPProtoICMP) {
 			err = s.ip4.Register4(&s.icmp)
 		}
-		if s.ipv6enabled && !s.ip6.IsRegistered6(lneto.IPProtoIPv6ICMP) {
-			err2 := s.ip6.Register6(&s.icmp6)
-			if err == nil {
-				err = err2
-			}
-		}
 	} else {
 		s.icmp.Abort()
-		s.icmp6.Abort()
+	}
+	if s.ipv6enabled {
+		if err2 := s.stack6.enableICMP(enabled); err2 != nil {
+			err = err2
+		}
 	}
 	return err
 }
 
 func (s *StackAsync) DialUDP(conn *udp.Conn, localPort uint16, addrp netip.AddrPort) (err error) {
+	if !addrp.Addr().Is4() {
+		return lneto.ErrUnsupported
+	}
+	return s.DialUDP4(conn, localPort, addrp.Addr().As4(), addrp.Port())
+}
+
+func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrPort) (err error) {
+	if !addrp.Addr().Is4() {
+		return lneto.ErrUnsupported
+	}
+	return s.DialTCP4(conn, localPort, addrp.Addr().As4(), addrp.Port())
+}
+
+func (s *StackAsync) DialUDP4(conn *udp.Conn, localPort uint16, raddr [4]byte, rport uint16) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var mac []byte
-	addr := addrp.Addr()
-	if addr.Is4() && s.arpt.subnet4.Contains(addr.As4()) {
-		mac = make([]byte, 6)
-		ip := addrp.Addr().As4()
-		hw, err := s.arp.CacheLookup(ip[:])
-		if err == nil {
-			// MAC already contained in results.
-			copy(mac, hw)
-		} else {
-			// StartQuery starts an ARP query for addresses in this network.
-			// On finishing query MAC is set and thus the StackPort will allow encapsulating
-			// data on that connection.
-			err = s.arpt.startQuery(mac, ip[:], &s.arp)
-			if err != nil {
-				return err
-			}
-		}
+	mac, err := s.arpt.hwDynamicResolve(raddr, &s.arp)
+	if err != nil {
+		return err
 	}
-	err = conn.Open(localPort, addrp)
+	err = conn.Open(localPort, netip.AddrPortFrom(netip.AddrFrom4(raddr), rport))
 	if err != nil {
 		return err
 	}
 	err = s.udps.Register(conn, mac)
+	if err != nil {
+		conn.Abort()
+		return err
+	}
 	return nil
 }
 
-func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrPort) (err error) {
+func (s *StackAsync) DialTCP4(conn *tcp.Conn, localPort uint16, raddr [4]byte, rport uint16) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var mac []byte
-	addr := addrp.Addr()
-	if addr.Is4() && s.arpt.subnet4.Contains(addr.As4()) {
-		ip := addrp.Addr().As4()
-		hw, err := s.arp.CacheLookup(ip[:])
-		mac = make([]byte, 6)
-		if err == nil {
-			// Query exists, use pre-existing result.
-			copy(mac, hw)
-		} else {
-			// StartQuery starts an ARP query for addresses in this network.
-			// On finishing query MAC is set and thus the StackPort will allow encapsulating
-			// data on that connection.
-			err = s.arpt.startQuery(mac, ip[:], &s.arp)
-			if err != nil {
-				return err
-			}
-		}
+	mac, err := s.arpt.hwDynamicResolve(raddr, &s.arp)
+	if err != nil {
+		return err
 	}
-	err = conn.OpenActive(localPort, addrp, tcp.Value(s.prand32()))
+	err = conn.OpenActive(localPort, netip.AddrPortFrom(netip.AddrFrom4(raddr), rport), tcp.Value(s.prand32()))
 	if err != nil {
 		return err
 	}
