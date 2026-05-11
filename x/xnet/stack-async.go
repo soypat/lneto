@@ -380,7 +380,7 @@ func (s *StackAsync) Addr4() [4]byte {
 func (s *StackAsync) SetSubnet4(addr [4]byte, prefixBits uint8) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.arpt.subnet4 = ipv4.NewPrefix(addr, prefixBits)
+	s.arpt.subnet4 = ipv4.PrefixFrom(addr, prefixBits)
 }
 
 func (s *StackAsync) SetHardwareAddr(hw [6]byte) error {
@@ -728,7 +728,7 @@ func (stack *StackAsync) AssimilateDHCPResults(results *DHCPResults) error {
 	stack.mu.Lock()
 	defer stack.mu.Unlock()
 	if results.Subnet.IsValid() && results.Subnet.Addr().Is4() {
-		stack.arpt.subnet4 = ipv4.NewPrefixFromNetip(results.Subnet)
+		stack.arpt.subnet4 = ipv4.PrefixFromNetip(results.Subnet)
 	}
 	if !internal.IsZeroed(results.AssignedAddr4) {
 		err := stack.setIPAddr4(results.AssignedAddr4)

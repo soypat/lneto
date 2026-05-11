@@ -18,21 +18,38 @@ type Prefix struct {
 	bitsPlusOne uint8
 }
 
-func NewPrefixFromNetip(pfx netip.Prefix) Prefix {
+func PrefixFromNetip(pfx netip.Prefix) Prefix {
 	addr := pfx.Addr()
 	if addr.Is4() {
-		return NewPrefix(addr.As4(), uint8(pfx.Bits()))
+		return PrefixFrom(addr.As4(), uint8(pfx.Bits()))
 	}
 	return Prefix{}
 }
 
-func NewPrefix(addr [4]byte, bits uint8) Prefix {
+// PrefixFrom constructs a [Prefix] from an address and prefix bit length.
+//
+// It does not allocate and does not mask
+// off the host bits of ip.
+//
+// If bits is less than zero or greater than 32, [Prefix.Bits]
+// will return an invalid value 255.
+func PrefixFrom(addr [4]byte, bits uint8) Prefix {
+	if bits > 32 {
+		bits = 0
+	}
 	return Prefix{addr: addr2bits(addr), bitsPlusOne: bits + 1}
 }
-func (p Prefix) IsValid() bool { return p.bitsPlusOne != 0 }
-func (p Prefix) Addr() [4]byte { return bits2addr(p.addr) }
-func (p Prefix) Bits() uint8   { return p.bitsPlusOne - 1 }
 
+// IsValid returns true if the [Prefix] is valid.
+func (p Prefix) IsValid() bool { return p.bitsPlusOne != 0 }
+
+// Addr returns the IPv4 address.
+func (p Prefix) Addr() [4]byte { return bits2addr(p.addr) }
+
+// Bits returns IPv4 prefix bits 0..32 or 255 for invalid prefixes.
+func (p Prefix) Bits() uint8 { return p.bitsPlusOne - 1 }
+
+// NetipPrefix returns the equivalent [netip.Prefix].
 func (p Prefix) NetipPrefix() netip.Prefix {
 	return netip.PrefixFrom(netip.AddrFrom4(p.Addr()), int(p.Bits()))
 }
@@ -47,6 +64,9 @@ func bits2addr(addrbits uint32) (addr [4]byte) {
 	return addr
 }
 
+// Contains reports whether the network p includes ip.
+//
+// A zero-value IP will not match any prefix.
 func (p Prefix) Contains(addr [4]byte) bool {
 	if !p.IsValid() {
 		return false
@@ -55,6 +75,7 @@ func (p Prefix) Contains(addr [4]byte) bool {
 	return p.addr&mask == addr2bits(addr)&mask
 }
 
+// Masked returns the Prefix with address bits outside of the prefix masked to zero.
 func (p Prefix) Masked() Prefix {
 	return Prefix{addr: p.addrBitmasked(), bitsPlusOne: p.bitsPlusOne}
 }

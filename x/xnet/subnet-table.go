@@ -3,6 +3,7 @@ package xnet
 import (
 	"encoding/binary"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
@@ -16,10 +17,10 @@ import (
 //	[0 : passivePeers]       — owned MAC+IP, permanently retained (learned passively from ingress)
 //	[passivePeers : len]     — externally-owned MAC, evicted by age (pending ARP queries)
 type subnetTable struct {
-	subnet4  ipv4.Prefix
-	resolves []struct {
+	subnet4   ipv4.Prefix
+	resolves4 []struct {
 		mac []byte // externally owned for pending entries; owned for passive entries.
-		ip  []byte
+		ip  [4]byte
 		age uint16
 	}
 	passivePeers uint8
@@ -27,9 +28,9 @@ type subnetTable struct {
 
 func (a *subnetTable) reset(arpentries int, passivePeers uint8) {
 	a.passivePeers = passivePeers
-	if a.resolves == nil {
-		internal.SliceReuse(&a.resolves, arpentries+int(passivePeers))
-		a.resolves = a.resolves[:cap(a.resolves)]
+	if a.resolves4 == nil {
+		internal.SliceReuse(&a.resolves4, arpentries+int(passivePeers))
+		a.resolves4 = a.resolves4[:cap(a.resolves4)]
 	}
 }
 
@@ -47,17 +48,18 @@ func (a *subnetTable) learnPassive(src, mac []byte) {
 	if a.passivePeers == 0 || len(src) != 4 {
 		return
 	}
-	if !a.subnet4.Contains([4]byte(src)) {
+	addr := [4]byte(src)
+	if !a.subnet4.Contains(addr) {
 		return
 	}
 	for i := range a.passivePeers {
-		v := &a.resolves[i]
-		if internal.BytesEqual(v.ip, src) {
+		v := &a.resolves4[i]
+		if v.ip == addr {
 			copy(v.mac, mac) // update in case MAC changed (e.g. NIC swap)
 			return
 		}
-		if len(v.ip) == 0 {
-			v.ip = append(v.ip, src...)
+		if v.ip == ([4]byte{}) {
+			v.ip = addr
 			v.mac = append(v.mac, mac...)
 			return
 		}
@@ -67,9 +69,13 @@ func (a *subnetTable) learnPassive(src, mac []byte) {
 // startQuery copies the MAC into mac immediately if the IP was passively learned,
 // otherwise issues an ARP query via h and registers mac as the externally-owned destination.
 func (a *subnetTable) startQuery(mac, ip []byte, h *arp.Handler) error {
+	if len(ip) != 4 {
+		return lneto.ErrUnsupported
+	}
+	addr := [4]byte(ip)
 	for i := range a.passivePeers {
-		v := &a.resolves[i]
-		if internal.BytesEqual(v.ip, ip) {
+		v := &a.resolves4[i]
+		if v.ip == addr {
 			copy(mac, v.mac)
 			return nil
 		}
@@ -79,33 +85,38 @@ func (a *subnetTable) startQuery(mac, ip []byte, h *arp.Handler) error {
 	}
 	n := int(a.passivePeers)
 	oldest := n
-	for i := n; i < len(a.resolves); i++ {
-		v := &a.resolves[i]
+	for i := n; i < len(a.resolves4); i++ {
+		v := &a.resolves4[i]
 		if len(v.mac) == 0 {
 			oldest = i
 			break
-		} else if v.age > a.resolves[oldest].age {
+		} else if v.age > a.resolves4[oldest].age {
 			oldest = i
 		}
 	}
-	for i := n; i < len(a.resolves); i++ {
-		a.resolves[i].age++
+	for i := n; i < len(a.resolves4); i++ {
+		a.resolves4[i].age++
 	}
-	v := &a.resolves[oldest]
+	v := &a.resolves4[oldest]
 	v.mac = mac
-	v.ip = append(v.ip[:0], ip...)
-	v.age = 0
+	v.ip = addr
+	v.age = 1
 	return nil
 }
 
 // onResolve is the arp.Handler resolve callback; called when an ARP response arrives.
 func (a *subnetTable) onResolve(mac, ip []byte) {
-	for i := int(a.passivePeers); i < len(a.resolves); i++ {
-		v := &a.resolves[i]
-		if internal.BytesEqual(ip, v.ip) {
+	if len(ip) != 4 {
+		return
+	}
+	addr := [4]byte(ip)
+	for i := int(a.passivePeers); i < len(a.resolves4); i++ {
+		v := &a.resolves4[i]
+		if v.ip == addr {
 			copy(v.mac, mac)
 			v.mac = nil
-			v.ip = v.ip[:0]
+			v.ip = [4]byte{}
+			v.age = 0
 			return
 		}
 	}
@@ -129,8 +140,8 @@ func (a *subnetTable) patchEgressMAC(frame []byte) {
 		return
 	}
 	for i := range a.passivePeers {
-		v := &a.resolves[i]
-		if internal.BytesEqual(v.ip, dstIP) {
+		v := &a.resolves4[i]
+		if internal.BytesEqual(v.ip[:], dstIP) {
 			*efrm.DestinationHardwareAddr() = [6]byte(v.mac)
 			return
 		}
