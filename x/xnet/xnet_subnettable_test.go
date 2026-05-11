@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -21,7 +22,7 @@ func TestSubnetTable_PatchEgressMAC_WhenGatewayMAC(t *testing.T) {
 
 	var st subnetTable
 	st.reset(4, 2)
-	st.subnet = netip.MustParsePrefix("10.0.0.0/24")
+	st.subnet4 = ipv4.NewPrefix(clientIP, 24)
 
 	// Learn client MAC from a simulated ingress frame (client→server SYN).
 	ingressFrame := makeMinimalIPv4Frame(serverMAC, clientMAC, clientIP, serverIP)

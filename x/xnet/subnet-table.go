@@ -2,7 +2,6 @@ package xnet
 
 import (
 	"encoding/binary"
-	"net/netip"
 
 	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/ethernet"
@@ -18,10 +17,9 @@ import (
 //	[passivePeers : len]     — externally-owned MAC, evicted by age (pending ARP queries)
 type subnetTable struct {
 	subnet4  ipv4.Prefix
-	subnet   netip.Prefix
 	resolves []struct {
 		mac []byte // externally owned for pending entries; owned for passive entries.
-		ip  []byte // always owned by this struct.
+		ip  []byte
 		age uint16
 	}
 	passivePeers uint8
@@ -46,11 +44,10 @@ func (a *subnetTable) learnFromIngressEthernet(ethernetFrame []byte) {
 // learnPassive stores or updates a passively observed MAC/IP tuple in the reserved slots.
 // It is a no-op if passivePeers is zero, src is not in the local subnet, or all slots are taken.
 func (a *subnetTable) learnPassive(src, mac []byte) {
-	if a.passivePeers == 0 {
+	if a.passivePeers == 0 || len(src) != 4 {
 		return
 	}
-	addr, _ := netip.AddrFromSlice(src)
-	if !a.subnet.Contains(addr) {
+	if !a.subnet4.Contains([4]byte(src)) {
 		return
 	}
 	for i := range a.passivePeers {

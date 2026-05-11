@@ -18,6 +18,14 @@ type Prefix struct {
 	bitsPlusOne uint8
 }
 
+func NewPrefixFromNetip(pfx netip.Prefix) Prefix {
+	addr := pfx.Addr()
+	if addr.Is4() {
+		return NewPrefix(addr.As4(), uint8(pfx.Bits()))
+	}
+	return Prefix{}
+}
+
 func NewPrefix(addr [4]byte, bits uint8) Prefix {
 	return Prefix{addr: addr2bits(addr), bitsPlusOne: bits + 1}
 }
@@ -40,6 +48,9 @@ func bits2addr(addrbits uint32) (addr [4]byte) {
 }
 
 func (p Prefix) Contains(addr [4]byte) bool {
+	if !p.IsValid() {
+		return false
+	}
 	mask := p.bitmask()
 	return p.addr&mask == addr2bits(addr)&mask
 }

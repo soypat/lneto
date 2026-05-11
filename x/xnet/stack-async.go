@@ -15,6 +15,7 @@ import (
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internet"
+	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/ipv4/icmpv4"
 	"github.com/soypat/lneto/ipv6/icmpv6"
 	"github.com/soypat/lneto/ntp"
@@ -379,7 +380,7 @@ func (s *StackAsync) Addr4() [4]byte {
 func (s *StackAsync) SetSubnet4(addr [4]byte, prefixBits uint8) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.arpt.subnet = netip.PrefixFrom(netip.AddrFrom4(addr), int(prefixBits))
+	s.arpt.subnet4 = ipv4.NewPrefix(addr, prefixBits)
 }
 
 func (s *StackAsync) SetHardwareAddr(hw [6]byte) error {
@@ -418,7 +419,7 @@ func (s *StackAsync) EnableICMP(enabled bool) (err error) {
 		if !s.ip4.IsRegistered4(lneto.IPProtoICMP) {
 			err = s.ip4.Register4(&s.icmp)
 		}
-		if !s.ip6.IsRegistered6(lneto.IPProtoIPv6ICMP) {
+		if s.ipv6enabled && !s.ip6.IsRegistered6(lneto.IPProtoIPv6ICMP) {
 			err2 := s.ip6.Register6(&s.icmp6)
 			if err == nil {
 				err = err2
@@ -435,7 +436,8 @@ func (s *StackAsync) DialUDP(conn *udp.Conn, localPort uint16, addrp netip.AddrP
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var mac []byte
-	if s.arpt.subnet.Contains(addrp.Addr()) {
+	addr := addrp.Addr()
+	if addr.Is4() && s.arpt.subnet4.Contains(addr.As4()) {
 		mac = make([]byte, 6)
 		ip := addrp.Addr().As4()
 		hw, err := s.arp.CacheLookup(ip[:])
@@ -464,7 +466,8 @@ func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrP
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var mac []byte
-	if s.arpt.subnet.Contains(addrp.Addr()) {
+	addr := addrp.Addr()
+	if addr.Is4() && s.arpt.subnet4.Contains(addr.As4()) {
 		ip := addrp.Addr().As4()
 		hw, err := s.arp.CacheLookup(ip[:])
 		mac = make([]byte, 6)
@@ -724,8 +727,8 @@ func (s *StackAsync) ReadStatistics(stats *Statistics) {
 func (stack *StackAsync) AssimilateDHCPResults(results *DHCPResults) error {
 	stack.mu.Lock()
 	defer stack.mu.Unlock()
-	if results.Subnet.IsValid() {
-		stack.arpt.subnet = results.Subnet
+	if results.Subnet.IsValid() && results.Subnet.Addr().Is4() {
+		stack.arpt.subnet4 = ipv4.NewPrefixFromNetip(results.Subnet)
 	}
 	if !internal.IsZeroed(results.AssignedAddr4) {
 		err := stack.setIPAddr4(results.AssignedAddr4)
