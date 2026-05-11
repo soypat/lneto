@@ -24,6 +24,7 @@ import (
 
 const (
 	minTCPBuffer = 256
+	icmpEchoSize = 64
 )
 
 type StackAsync struct {
@@ -36,6 +37,7 @@ type StackAsync struct {
 	arp      arp.Handler
 	icmp     icmpv4.Client
 	icmp6    icmpv6.Client // TODO
+	icmp6buf []byte
 	udps     internet.StackPortsMACFiltered
 	tcps     internet.StackPortsMACFiltered
 
@@ -179,8 +181,13 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	defer s.mu.Unlock()
 	s.prng = uint32(cfg.RandSeed)
 	s.hostname = cfg.Hostname
-
-	const linkNodes = 2 // ARP and IP nodes
+	// Treat last character of hostname as number.
+	id := uint16(cfg.Hostname[len(cfg.Hostname)-1] - '0')
+	linkNodes := 2 // ARP and IP nodes
+	s.ipv6enabled = cfg.EnableIPv6
+	if s.ipv6enabled {
+		linkNodes = 3
+	}
 	ecfg := internet.StackEthernetConfig{
 		MTU:         int(cfg.MTU),
 		MaxNodes:    linkNodes,
@@ -206,7 +213,6 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	s.ip4.SetAddr4(cfg.StaticAddress4)
 	s.setAcceptMulticast4(cfg.AcceptMulticast)
 
-	s.ipv6enabled = cfg.EnableIPv6
 	if s.ipv6enabled {
 		s.Debug("ipv6 enabled")
 		err = s.ip6.Reset(&s.defaultValidator, ipNodes)
@@ -223,6 +229,23 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 			return err
 		}
 		s.ip6.SetAcceptMulticast6(true) // IPv6 needs multicast to work.
+		if cfg.ICMPQueueLimit > 0 {
+			if len(s.icmp6buf) == 0 {
+				s.icmp6buf = make([]byte, cfg.ICMPQueueLimit*icmpEchoSize)
+			}
+			err = s.icmp6.Configure(icmpv6.ClientConfig{
+				ResponseQueueBuffer: s.icmp6buf,
+				ResponseQueueLimit:  cfg.ICMPQueueLimit,
+				HashSeed:            s.prand32(),
+				ID:                  id,
+				OurAddr:             cfg.StaticAddress6,
+				OurMAC:              cfg.HardwareAddress,
+				NDPCache:            16,
+			})
+			if err != nil {
+				return err
+			}
+		}
 	}
 
 	s.arpt.passivePeers = uint8(cfg.PassivePeers)
@@ -262,10 +285,10 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	}
 	if cfg.ICMPQueueLimit > 0 {
 		err = s.icmp.Configure(icmpv4.ClientConfig{
-			ResponseQueueBuffer: make([]byte, cfg.ICMPQueueLimit*64),
+			ResponseQueueBuffer: make([]byte, cfg.ICMPQueueLimit*icmpEchoSize),
 			ResponseQueueLimit:  cfg.ICMPQueueLimit,
 			HashSeed:            s.prand32(),
-			ID:                  uint16(cfg.Hostname[len(cfg.Hostname)-1]) - '0', // Treat last character of hostname as number.
+			ID:                  id,
 		})
 		if err != nil {
 			return err
@@ -391,12 +414,18 @@ func (s *StackAsync) EnableICMP(enabled bool) (err error) {
 		enabled = false // ensure aborted.
 	}
 	if enabled {
-		if s.ip4.IsRegistered4(lneto.IPProtoICMP) {
-			return nil
+		if !s.ip4.IsRegistered4(lneto.IPProtoICMP) {
+			err = s.ip4.Register4(&s.icmp)
 		}
-		err = s.ip4.Register4(&s.icmp)
+		if !s.ip6.IsRegistered6(lneto.IPProtoIPv6ICMP) {
+			err2 := s.ip6.Register6(&s.icmp6)
+			if err == nil {
+				err = err2
+			}
+		}
 	} else {
 		s.icmp.Abort()
+		s.icmp6.Abort()
 	}
 	return err
 }
