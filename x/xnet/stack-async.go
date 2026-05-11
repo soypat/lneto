@@ -16,6 +16,7 @@ import (
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internet"
 	"github.com/soypat/lneto/ipv4/icmpv4"
+	"github.com/soypat/lneto/ipv6/icmpv6"
 	"github.com/soypat/lneto/ntp"
 	"github.com/soypat/lneto/tcp"
 	"github.com/soypat/lneto/udp"
@@ -34,6 +35,7 @@ type StackAsync struct {
 	ip6      internet.StackIPv6
 	arp      arp.Handler
 	icmp     icmpv4.Client
+	icmp6    icmpv6.Client // TODO
 	udps     internet.StackPortsMACFiltered
 	tcps     internet.StackPortsMACFiltered
 
@@ -169,7 +171,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	if cfg.RandSeed == 0 || cfg.Hostname == "" || cfg.PassivePeers > 255 {
 		return lneto.ErrInvalidConfig
 	} else if !internal.IsZeroed(cfg.StaticAddress6) && !cfg.EnableIPv6 {
-		return lneto.ErrBug // Forgot to EnableIPv6 after setting static address.
+		return lneto.ErrBug // Forgot to EnableIPv6 after setting static IPv6 address.
 	}
 	mac := cfg.HardwareAddress
 	s.mu.Lock()
@@ -190,7 +192,6 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	if err != nil {
 		return err
 	}
-	s.link.SetAcceptMulticast(cfg.AcceptMulticast)
 	if cfg.PassivePeers == 0 {
 		s.link.OnEncapsulate(nil)
 	} else {
@@ -202,7 +203,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 		return err
 	}
 	s.ip4.SetAddr4(cfg.StaticAddress4)
-	s.ip4.SetAcceptMulticast4(cfg.AcceptMulticast)
+	s.setAcceptMulticast4(cfg.AcceptMulticast)
 
 	s.ipv6enabled = cfg.EnableIPv6
 	if s.ipv6enabled {
@@ -216,11 +217,11 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 			return err
 		}
 		s.ip6.SetAddr6(cfg.StaticAddress6)
-		s.ip6.SetAcceptMulticast6(cfg.AcceptMulticast)
 		err = s.ip6.Register6(&s.tcps)
 		if err != nil {
 			return err
 		}
+		s.ip6.SetAcceptMulticast6(true) // IPv6 needs multicast to work.
 	}
 
 	s.arpt.passivePeers = uint8(cfg.PassivePeers)
@@ -545,7 +546,7 @@ var errDNSNotDone = errors.New("DNS not done")
 func (s *StackAsync) ResultLookupIP(host string) ([]netip.Addr, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	done, err := s.dns.MessageCopyTo(&s.lookup)
+	done, err := s.dns.ResponseCopyTo(&s.lookup)
 	if err != nil {
 		return nil, done, err
 	} else if !done {
@@ -650,6 +651,17 @@ func (s *StackAsync) DiscardResolveHardwareAddress6(ip netip.Addr) error {
 	}
 	addr := ip.As4()
 	return s.arp.CacheRemove(addr[:])
+}
+
+func (s *StackAsync) SetAcceptMulticast4(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.setAcceptMulticast4(enabled)
+}
+
+func (s *StackAsync) setAcceptMulticast4(enabled bool) {
+	s.link.SetAcceptMulticast(enabled)
+	s.ip4.SetAcceptMulticast4(enabled)
 }
 
 type DHCPResults struct {

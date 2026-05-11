@@ -2,6 +2,7 @@ package dns
 
 import (
 	"fmt"
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -288,23 +289,23 @@ func TestClient_ReceivesDNSResponse(t *testing.T) {
 	}
 
 	// Check the client received the answer.
-	answers := client.Answers()
-	if len(answers) != 1 {
-		t.Fatalf("expected 1 answer, got %d", len(answers))
+	var addrs [4]netip.Addr
+	answers, err := client.ResponseAnswerLookup(addrs[:], hostname)
+	if answers != 1 {
+		t.Fatalf("expected 1 answer, got %d", answers)
 	}
-
-	data := answers[0].RawData()
-	if len(data) != 4 {
-		t.Fatalf("expected 4 bytes in answer, got %d", len(data))
+	addr := addrs[0]
+	if !addr.Is4() {
+		t.Fatalf("expected 4 bytes in answer, got %d", addr.BitLen()/8)
 	}
-	if [4]byte(data) != wantIP {
-		t.Errorf("expected IP %v, got %v", wantIP, data)
+	if addr.As4() != wantIP {
+		t.Errorf("expected IP %v, got %v", wantIP, addr.String())
 	}
 
 	// Test MessageCopyTo as well.
 	var lookup Message
 	lookup.LimitResourceDecoding(1, 1, 0, 0)
-	done, err := client.MessageCopyTo(&lookup)
+	done, err := client.ResponseCopyTo(&lookup)
 	if err != nil {
 		t.Fatal("MessageCopyTo error:", err)
 	}
