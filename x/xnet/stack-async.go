@@ -62,7 +62,8 @@ type StackAsync struct {
 
 	prng uint32
 
-	addrBuf [6]byte // Temporary buffer for As4()/HardwareAddr6() results to avoid heap escapes.
+	addrBuf    [6]byte // Temporary buffer for As4()/HardwareAddr6() results to avoid heap escapes.
+	addrbufnip [4]netip.Addr
 
 	totalsent uint64
 	totalrecv uint64
@@ -541,34 +542,23 @@ func (s *StackAsync) StartLookupIP(host string) error {
 	return err
 }
 
-var errDNSNotDone = errors.New("DNS not done")
+var (
+	errDNSNotDone = errors.New("DNS not done")
+	errDNSNoAns   = errors.New("no address in DNS answer")
+)
 
 func (s *StackAsync) ResultLookupIP(host string) ([]netip.Addr, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	done, err := s.dns.ResponseCopyTo(&s.lookup)
-	if err != nil {
-		return nil, done, err
-	} else if !done {
-		return nil, done, errDNSNotDone
+	_, ok := s.dns.ResponseFlags()
+	if !ok {
+		return nil, false, errDNSNotDone
 	}
-
-	var addrs []netip.Addr
-	ans := s.lookup.Answers
-	for i := range ans {
-		data := ans[i].RawData()
-		if len(data) == 4 {
-			addrs = append(addrs, netip.AddrFrom4([4]byte(data)))
-		} else if len(data) == 16 {
-			addrs = append(addrs, netip.AddrFrom16([16]byte(data)))
-		} else {
-			err = lneto.ErrInvalidAddr
-		}
+	n, err := s.dns.ResponseAnswerLookup(s.addrbufnip[:], host)
+	if n == 0 && err == nil {
+		err = errDNSNoAns
 	}
-	if err == nil && len(addrs) == 0 {
-		err = errors.New("no address in DNS answer")
-	}
-	return addrs, done, err
+	return s.addrbufnip[:n], true, err
 }
 
 func (s *StackAsync) StartDHCPv4Request(request [4]byte) error {

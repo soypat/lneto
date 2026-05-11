@@ -128,6 +128,10 @@ func (c *Client) ResponseAnswerLookup(dst []netip.Addr, host string) (uint16, er
 	return c.msg.WriteAnswers(dst, host)
 }
 
+func (c *Client) ResponseFlags() (HeaderFlags, bool) {
+	return c.respFlags, c.respFlags.IsResponse()
+}
+
 func (c *Client) Abort() {
 	c.reset(0, 0, CQueryAborted, false)
 }
