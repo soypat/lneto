@@ -68,8 +68,7 @@ type StackAsync struct {
 	addrBuf    [6]byte // Temporary buffer for As4()/HardwareAddr6() results to avoid heap escapes.
 	addrbufnip [4]netip.Addr
 
-	totalsent uint64
-	totalrecv uint64
+	stats Statistics
 }
 
 type StackConfig struct {
@@ -109,7 +108,7 @@ func (s *StackAsync) Hostname() string {
 func (s *StackAsync) IngressEthernet(ethernetFrame []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.totalrecv += uint64(len(ethernetFrame))
+	s.stats.TotalReceived += uint64(len(ethernetFrame))
 	err := s.link.Demux(ethernetFrame, 0)
 	if err == nil {
 		s.arpt.learnFromIngressEthernet(ethernetFrame)
@@ -123,7 +122,7 @@ func (s *StackAsync) EgressEthernet(dstEthernetFrame []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n, err := s.link.Encapsulate(dstEthernetFrame, -1, 0)
-	s.totalsent += uint64(n)
+	s.stats.TotalSent += uint64(n)
 	return n, err
 }
 
@@ -135,7 +134,7 @@ func (s *StackAsync) IngressIP(ipFrame []byte) error {
 	version := ipFrame[0] >> 4
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.totalrecv += uint64(len(ipFrame))
+	s.stats.TotalReceived += uint64(len(ipFrame))
 	switch version {
 	case 4:
 		return s.ip4.Demux(ipFrame, 0)
@@ -158,7 +157,7 @@ func (s *StackAsync) EgressIP(dstIPFrame []byte) (int, error) {
 	if s.ipv6enabled && n == 0 {
 		n, err = s.ip6.Encapsulate(dstIPFrame, 0, 0)
 	}
-	s.totalsent += uint64(n)
+	s.stats.TotalSent += uint64(n)
 	return n, err
 }
 
@@ -301,8 +300,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 	if s.clientID == "" {
 		s.clientID = "lneto-" + s.hostname
 	}
-	s.totalrecv = 0
-	s.totalsent = 0
+	s.stats = Statistics{}
 	if cfg.DNSServer.IsValid() {
 		s.dnssv = cfg.DNSServer
 	}
@@ -716,8 +714,9 @@ type Statistics struct {
 }
 
 func (s *StackAsync) ReadStatistics(stats *Statistics) {
-	stats.TotalReceived = s.totalrecv
-	stats.TotalSent = s.totalsent
+	s.mu.Lock()
+	*stats = s.stats
+	s.mu.Unlock()
 }
 
 // AssimilateDHCPResults sets the stack's following parameters:
@@ -788,8 +787,8 @@ func addr4(addr [4]byte, ok bool) netip.Addr {
 func (s *StackAsync) Debug(msg string) {
 	internal.LogAttrs(slog.Default(), slog.LevelDebug, "stackasync",
 		slog.String("umsg", msg),
-		slog.Uint64("sent", s.totalsent),
-		slog.Uint64("recv", s.totalrecv),
+		slog.Uint64("sent", s.stats.TotalSent),
+		slog.Uint64("recv", s.stats.TotalReceived),
 	)
 }
 
@@ -801,7 +800,7 @@ func (s *StackAsync) DebugErr(msg, err string) {
 	internal.LogAttrs(slog.Default(), slog.LevelError, "stackasync",
 		slog.String("umsg", msg),
 		slog.String("err", err),
-		slog.Uint64("sent", s.totalsent),
-		slog.Uint64("recv", s.totalrecv),
+		slog.Uint64("sent", s.stats.TotalSent),
+		slog.Uint64("recv", s.stats.TotalReceived),
 	)
 }

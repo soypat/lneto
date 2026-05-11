@@ -12,7 +12,7 @@ import (
 
 func TestListener_SingleConnection(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
-	var clientStack, serverStack StackIP
+	var clientStack, serverStack StackIPv4
 	var clientConn, serverConn tcp.Conn
 	var listener tcp.Listener
 
@@ -66,7 +66,7 @@ func TestListener_SingleConnection(t *testing.T) {
 
 func TestListener_AcceptAfterEstablished(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
-	var client1Stack, serverStack StackIP
+	var client1Stack, serverStack StackIPv4
 	var client1Conn, serverConn tcp.Conn
 	var listener tcp.Listener
 	pool := newMockTCPPool(2, 3, 2048)
@@ -104,7 +104,7 @@ func TestListener_AcceptAfterEstablished(t *testing.T) {
 	}
 
 	// Setup second client and verify we can still accept.
-	var client2Stack StackIP
+	var client2Stack StackIPv4
 	var client2Conn tcp.Conn
 	setupClient(t, &client2Stack, &client2Conn, netip.AddrFrom4(serverStack.Addr4()), serverPort, 1338)
 
@@ -131,13 +131,13 @@ func TestListener_AcceptAfterEstablished(t *testing.T) {
 func TestListener_MultiConn(t *testing.T) {
 	const numClients = 5
 	rng := rand.New(rand.NewSource(1))
-	var serverStack StackIP
+	var serverStack StackIPv4
 	var serverConn tcp.Conn
 	var listener tcp.Listener
 	pool := newMockTCPPool(numClients, 3, 2048)
 
 	// Create slices for clients.
-	clientStacks := make([]StackIP, numClients)
+	clientStacks := make([]StackIPv4, numClients)
 	clientConns := make([]tcp.Conn, numClients)
 	acceptedConns := make([]*tcp.Conn, numClients)
 
@@ -257,7 +257,7 @@ func TestListener_MultiConn(t *testing.T) {
 
 	// Close connections, alternating between client-initiated and server-initiated.
 	for i := range numClients {
-		var closer, responder *StackIP
+		var closer, responder *StackIPv4
 		var closerConn, responderConn *tcp.Conn
 		var serverClosed bool
 		whoCloses := "client"
@@ -313,7 +313,7 @@ func TestListener_MultiConn(t *testing.T) {
 
 func TestListener_RSTOnPoolExhaustion(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
-	var client1Stack, client2Stack, serverStack StackIP
+	var client1Stack, client2Stack, serverStack StackIPv4
 	var client1Conn, client2Conn, serverConn tcp.Conn
 	var listener tcp.Listener
 
@@ -606,21 +606,11 @@ func TestStackPorts_ECN_SYN_RST(t *testing.T) {
 	}
 }
 
-// tryExchange attempts an exchange but doesn't fail if no data to send.
-func tryExchange(t *testing.T, from, to *StackIP, buf []byte) {
-	t.Helper()
-	n, err := from.Encapsulate(buf, -1, 0)
-	if err != nil || n == 0 {
-		return // No data to send.
-	}
-	_ = to.Demux(buf[:n], 0) // Ignore errors during close.
-}
-
-func setupClient(t *testing.T, client *StackIP, conn *tcp.Conn, serverAddr netip.Addr, serverPort, clientPort uint16) {
+func setupClient(t *testing.T, client *StackIPv4, conn *tcp.Conn, serverAddr netip.Addr, serverPort, clientPort uint16) {
 	t.Helper()
 	bufsize := 2048
 	clientIP := netip.AddrFrom4([4]byte{192, 168, 1, byte(clientPort % 256)})
-	client.Reset(new(lneto.Validator), 1, 0)
+	client.Reset(new(lneto.Validator), 1)
 	client.SetAddr4(clientIP.As4())
 	err := conn.Configure(tcp.ConnConfig{
 		RxBuf:             make([]byte, bufsize),
