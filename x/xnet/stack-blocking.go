@@ -168,7 +168,6 @@ func (s StackBlocking) DoLookupIP(host string, timeout time.Duration) (addrs []n
 var errTCPFailedToConnect = errors.New("tcp failed to connect")
 
 func (s StackBlocking) DoDialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrPort, timeout time.Duration) (err error) {
-
 	err = s.async.DialTCP(conn, localPort, addrp)
 	if err != nil {
 		return err

@@ -144,7 +144,7 @@ func (s *StackAsync) IngressIP(ipFrame []byte) error {
 		return s.ip4.Demux(ipFrame, 0)
 	case 6:
 		if s.ipv6enabled {
-			return s.stack6.IngressIP(ipFrame)
+			return s.stack6.IngressIPv6(ipFrame)
 		}
 	}
 	return lneto.ErrPacketDrop
@@ -159,7 +159,7 @@ func (s *StackAsync) EgressIP(dstIPFrame []byte) (int, error) {
 	}
 	n, err := s.ip4.Encapsulate(dstIPFrame, 0, 0)
 	if s.ipv6enabled && n == 0 {
-		n, err = s.stack6.EgressIP(dstIPFrame)
+		n, err = s.stack6.EgressIPv6(dstIPFrame)
 	}
 	s.stats.TotalSent += uint64(n)
 	return n, err
@@ -390,7 +390,7 @@ func (s *StackAsync) EnableICMP(enabled bool) (err error) {
 		s.icmp.Abort()
 	}
 	if s.ipv6enabled {
-		if err2 := s.stack6.enableICMP(enabled); err2 != nil {
+		if err2 := s.stack6.EnableICMP6(enabled); err2 != nil {
 			err = err2
 		}
 	}
