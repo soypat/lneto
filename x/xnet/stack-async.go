@@ -33,7 +33,7 @@ type StackAsync struct {
 	clientID string
 	link     internet.StackEthernet
 	ip4      internet.StackIPv4
-	stack6   *stack6
+
 	// ip6      internet.StackIPv6
 	arp  arp.Handler
 	icmp icmpv4.Client
@@ -60,8 +60,7 @@ type StackAsync struct {
 
 	userUDPs []internet.StackUDPPort
 
-	sysprec     int8 // NTP system precision.
-	ipv6enabled bool
+	sysprec int8 // NTP system precision.
 
 	prng uint32
 
@@ -69,6 +68,9 @@ type StackAsync struct {
 	addrbufnip [4]netip.Addr
 
 	stats Statistics
+
+	ipv6enabled bool
+	stack6      Stack6
 }
 
 type StackConfig struct {
@@ -91,7 +93,8 @@ type StackConfig struct {
 	MTU             uint16
 	// Accept multicast ethernet and IP packets. Needed for MDNS.
 	AcceptMulticast bool
-	EnableIPv6      bool
+
+	IPv6Stack Stack6
 	// ICMPQueueLimit sets maximum number of input/output packets queued for processing.
 	// If set to zero ICMP cannot be enabled on the stack.
 	ICMPQueueLimit int
@@ -175,9 +178,10 @@ func (s *StackAsync) MTU() int {
 }
 
 func (s *StackAsync) Reset(cfg StackConfig) (err error) {
+	ipv6Enabled := cfg.IPv6Stack != nil
 	if cfg.RandSeed == 0 || cfg.Hostname == "" || cfg.PassivePeers > 255 {
 		return lneto.ErrInvalidConfig
-	} else if !internal.IsZeroed(cfg.StaticAddress6) && !cfg.EnableIPv6 {
+	} else if !internal.IsZeroed(cfg.StaticAddress6) && !ipv6Enabled {
 		return lneto.ErrBug // Forgot to EnableIPv6 after setting static IPv6 address.
 	}
 	mac := cfg.HardwareAddress
@@ -188,11 +192,11 @@ func (s *StackAsync) Reset(cfg StackConfig) (err error) {
 	// Treat last character of hostname as number.
 	id := cfg.id()
 	linkNodes := 2 // ARP and IPv4 nodes
-	s.ipv6enabled = cfg.EnableIPv6
+	s.ipv6enabled = ipv6Enabled
 	if s.ipv6enabled {
 		linkNodes = 3 // IPv6
 		s.Debug("ipv6 enabled")
-		err = s.stack6.Reset6(&cfg, &s.defaultValidator)
+		err = s.stack6.Reset6(&cfg)
 		if err != nil {
 			s.ipv6enabled = false
 			return err

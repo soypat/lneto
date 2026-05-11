@@ -11,10 +11,26 @@ import (
 	"github.com/soypat/lneto/udp"
 )
 
+var _ Stack6 = (*stack6)(nil)
+
+type Stack6 interface {
+	Reset6(cfg *StackConfig) error
+	Addr6() [16]byte
+	SetAddr6(addr [16]byte)
+
+	EnableICMP6(enabled bool) error
+	Register6(node lneto.StackNode) error
+	DialUDP6(conn *udp.Conn, localPort uint16, raddr [16]byte, rport uint16) error
+	DialTCP6(conn *tcp.Conn, localPort uint16, raddr [16]byte, rport uint16, iss tcp.Value) error
+	IngressIPv6(ipframe []byte) error
+	EgressIPv6(ipframe []byte) (int, error)
+}
+
 type stack6 struct {
 	ip6      internet.StackIPv6
 	udps6    internet.StackPortsMACFiltered
 	tcps6    internet.StackPortsMACFiltered
+	vld      lneto.Validator
 	icmp6buf []byte
 	icmp6    icmpv6.Client
 	// ndpPending tracks in-flight NDP MAC resolves for outbound connections.
@@ -25,14 +41,21 @@ type stack6 struct {
 	}
 }
 
-func (s *stack6) Reset6(cfg *StackConfig, vld *lneto.Validator) error {
+func (s *stack6) Register6(node lneto.StackNode) error { return s.ip6.Register6(node) }
+func (s *stack6) Addr6() [16]byte                      { return s.ip6.Addr6() }
+func (s *stack6) SetAddr6(addr [16]byte)               { s.ip6.SetAddr6(addr) }
+
+func (s *stack6) IPv6Stack() lneto.StackNode { return &s.ip6 }
+
+func (s *stack6) Reset6(cfg *StackConfig) error {
 	const ipnodes = 3 // ICMP, TCP, UDP.
-	err := s.ip6.Reset(vld, ipnodes)
+	err := s.ip6.Reset(&s.vld, ipnodes)
 	if err != nil {
 		return err
 	}
-
 	s.ip6.SetAddr6(cfg.StaticAddress6)
+	s.ip6.SetAcceptMulticast6(true) // IPv6 needs multicast to work.
+
 	s.tcps6.ResetTCP(cfg.MaxActiveTCPPorts)
 	if cfg.MaxActiveTCPPorts > 0 {
 		err = s.ip6.Register6(&s.tcps6)
@@ -48,13 +71,11 @@ func (s *stack6) Reset6(cfg *StackConfig, vld *lneto.Validator) error {
 		}
 	}
 
-	s.ip6.SetAcceptMulticast6(true) // IPv6 needs multicast to work.
 	if cfg.ICMPQueueLimit > 0 {
-		if len(s.icmp6buf) == 0 {
-			s.icmp6buf = make([]byte, cfg.ICMPQueueLimit*icmpEchoSize)
-		}
+		minSize := cfg.ICMPQueueLimit * icmpEchoSize
+		internal.SliceReuse(&s.icmp6buf, minSize)
 		err = s.icmp6.Configure(icmpv6.ClientConfig{
-			ResponseQueueBuffer: s.icmp6buf,
+			ResponseQueueBuffer: s.icmp6buf[:cap(s.icmp6buf)],
 			ResponseQueueLimit:  cfg.ICMPQueueLimit,
 			HashSeed:            uint32(cfg.RandSeed),
 			ID:                  cfg.id(),
@@ -71,20 +92,6 @@ func (s *stack6) Reset6(cfg *StackConfig, vld *lneto.Validator) error {
 		s.ndpPending = s.ndpPending[:cap(s.ndpPending)] // all slots available for scan
 	}
 	return nil
-}
-
-// macResolve is the NDP resolve callback. It patches the shared macBuf of any
-// pending outbound connection to addr so StackPortsMACFiltered begins forwarding.
-func (s *stack6) macResolve(mac [6]byte, addr [16]byte) {
-	for i := range s.ndpPending {
-		e := &s.ndpPending[i]
-		if e.addr == addr && e.macBuf != nil {
-			// macbuf is externally owned and expects it to be written to on resolve.
-			copy(e.macBuf, mac[:])
-			e.macBuf = nil // free slot for future NDP resolution.
-			e.addr = [16]byte{}
-		}
-	}
 }
 
 func (s *stack6) EnableICMP6(enabled bool) (err error) {
@@ -148,6 +155,20 @@ func (s *stack6) DialUDP6(conn *udp.Conn, localPort uint16, raddr [16]byte, rpor
 		return err
 	}
 	return nil
+}
+
+// macResolve is the NDP resolve callback. It patches the shared macBuf of any
+// pending outbound connection to addr so StackPortsMACFiltered begins forwarding.
+func (s *stack6) macResolve(mac [6]byte, addr [16]byte) {
+	for i := range s.ndpPending {
+		e := &s.ndpPending[i]
+		if e.addr == addr && e.macBuf != nil {
+			// macbuf is externally owned and expects it to be written to on resolve.
+			copy(e.macBuf, mac[:])
+			e.macBuf = nil // free slot for future NDP resolution.
+			e.addr = [16]byte{}
+		}
+	}
 }
 
 // ndpDynamicResolve mirrors hwDynamicResolve for IPv6. It returns a
