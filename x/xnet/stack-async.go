@@ -229,7 +229,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 			return err
 		}
 		s.ip6.SetAcceptMulticast6(true) // IPv6 needs multicast to work.
-		if cfg.ICMPQueueLimit > 0 {
+		if s.ipv6enabled && cfg.ICMPQueueLimit > 0 {
 			if len(s.icmp6buf) == 0 {
 				s.icmp6buf = make([]byte, cfg.ICMPQueueLimit*icmpEchoSize)
 			}
@@ -246,6 +246,7 @@ func (s *StackAsync) Reset(cfg StackConfig) error {
 				return err
 			}
 		}
+
 	}
 
 	s.arpt.passivePeers = uint8(cfg.PassivePeers)

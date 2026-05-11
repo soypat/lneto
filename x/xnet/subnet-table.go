@@ -7,6 +7,7 @@ import (
 	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
+	"github.com/soypat/lneto/ipv4"
 )
 
 // subnetTable manages both passively learned peer MAC/IP tuples and in-flight async ARP resolves.
@@ -16,6 +17,7 @@ import (
 //	[0 : passivePeers]       — owned MAC+IP, permanently retained (learned passively from ingress)
 //	[passivePeers : len]     — externally-owned MAC, evicted by age (pending ARP queries)
 type subnetTable struct {
+	subnet4  ipv4.Prefix
 	subnet   netip.Prefix
 	resolves []struct {
 		mac []byte // externally owned for pending entries; owned for passive entries.
