@@ -7,9 +7,9 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/dns"
+	"github.com/soypat/lneto/dns/mdns"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/ipv4"
-	"github.com/soypat/lneto/mdns"
 	"github.com/soypat/lneto/udp"
 )
 

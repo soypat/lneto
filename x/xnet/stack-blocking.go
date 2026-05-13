@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/soypat/lneto"
-	"github.com/soypat/lneto/dhcpv4"
+	"github.com/soypat/lneto/dhcp/dhcpv4"
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/tcp"
 )

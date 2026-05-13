@@ -78,11 +78,11 @@ func (n Name) EqualString(strname string) bool {
 		}
 		label := data[1 : 1+labelLen]
 		var seg string
-		idx := strings.IndexByte(strname, '.')
-		if idx < 0 {
+		before, after, ok := strings.Cut(strname, ".")
+		if !ok {
 			seg, strname = strname, ""
 		} else {
-			seg, strname = strname[:idx], strname[idx+1:]
+			seg, strname = before, after
 		}
 		if len(seg) != len(label) || seg != string(label) {
 			return false
