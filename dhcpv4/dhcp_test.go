@@ -1,10 +1,10 @@
 package dhcpv4
 
 import (
-	"net/netip"
 	"testing"
 
 	"github.com/soypat/lneto/internal"
+	"github.com/soypat/lneto/ipv4"
 )
 
 func TestClientServer(t *testing.T) {
@@ -29,7 +29,7 @@ func TestClientServer(t *testing.T) {
 	}
 	sv.Configure(ServerConfig{
 		ServerAddr: svAddr,
-		Subnet:     netip.PrefixFrom(netip.AddrFrom4(svAddr), 24),
+		Subnet:     ipv4.PrefixFrom(svAddr, 24),
 	})
 	// CLIENT DISCOVER.
 	assertClState(StateInit)

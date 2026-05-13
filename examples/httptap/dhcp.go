@@ -55,7 +55,7 @@ type arpEntry struct {
 
 // newDHCPInterceptor creates a dhcpInterceptor that wraps iface and serves
 // DHCP from the given server address and subnet.
-func newDHCPInterceptor(iface ltesto.Interface, svIP [4]byte, svMAC [6]byte, subnet netip.Prefix) (*dhcpInterceptor, error) {
+func newDHCPInterceptor(iface ltesto.Interface, svIP [4]byte, svMAC [6]byte, subnet ipv4.Prefix) (*dhcpInterceptor, error) {
 	d := &dhcpInterceptor{
 		inner: iface,
 		svMAC: svMAC,

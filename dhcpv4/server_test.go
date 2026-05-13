@@ -1,14 +1,15 @@
 package dhcpv4
 
 import (
-	"net/netip"
 	"testing"
+
+	"github.com/soypat/lneto/ipv4"
 )
 
 func testServerConfig(svAddr [4]byte) ServerConfig {
 	return ServerConfig{
 		ServerAddr: svAddr,
-		Subnet:     netip.PrefixFrom(netip.AddrFrom4(svAddr), 24),
+		Subnet:     ipv4.PrefixFrom(svAddr, 24),
 	}
 }
 
@@ -180,7 +181,7 @@ func TestServerOfferContainsOptions(t *testing.T) {
 		ServerAddr:   svAddr,
 		Gateway:      gwAddr,
 		DNS:          dnsAddr,
-		Subnet:       netip.PrefixFrom(netip.AddrFrom4(svAddr), 24),
+		Subnet:       ipv4.PrefixFrom(svAddr, 24),
 		LeaseSeconds: 7200,
 	})
 
@@ -295,7 +296,7 @@ func TestServerConfigValidation(t *testing.T) {
 	}
 	err = sv.Configure(ServerConfig{
 		ServerAddr: [4]byte{10, 0, 0, 1},
-		Subnet:     netip.PrefixFrom(netip.AddrFrom4([4]byte{192, 168, 1, 0}), 24),
+		Subnet:     ipv4.PrefixFrom([4]byte{192, 168, 1, 0}, 24),
 	})
 	if err == nil {
 		t.Error("expected error for server address outside subnet")

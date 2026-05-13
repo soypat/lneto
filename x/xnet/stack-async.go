@@ -741,9 +741,10 @@ func (s *StackAsync) populateDHCPResults() error {
 		return errors.New("no DHCP assigned address")
 	}
 	router := netip.AddrFrom4(router4)
+	subnet := s.dhcp.SubnetPrefix()
 	s.dhcpResults = DHCPResults{
 		Router:        router,
-		Subnet:        s.dhcp.SubnetPrefix(),
+		Subnet:        subnet.NetipPrefix(),
 		AssignedAddr4: assigned4,
 		ServerAddr:    addr4(s.dhcp.ServerAddr()),
 		BroadcastAddr: addr4(s.dhcp.BroadcastAddr()),

@@ -18,6 +18,7 @@ import (
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/internet/pcap"
+	"github.com/soypat/lneto/ipv4"
 )
 
 func main() {
@@ -73,8 +74,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+
 	svIP := ipMask.Addr().As4()
-	iface, err = newDHCPInterceptor(iface, svIP, hwaddr, ipMask.Masked())
+	subnet := ipv4.PrefixFromNetip(ipMask)
+	iface, err = newDHCPInterceptor(iface, svIP, hwaddr, subnet.Masked())
 	if err != nil {
 		return fmt.Errorf("DHCP interceptor: %w", err)
 	}
