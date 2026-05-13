@@ -13,6 +13,10 @@ import (
 
 var _ Stack6 = (*stack6)(nil)
 
+func DefaultStack6() Stack6 {
+	return new(stack6)
+}
+
 type Stack6 interface {
 	Reset6(cfg *StackConfig) error
 	Addr6() [16]byte
@@ -24,6 +28,7 @@ type Stack6 interface {
 	DialTCP6(conn *tcp.Conn, localPort uint16, raddr [16]byte, rport uint16, iss tcp.Value) error
 	IngressIPv6(ipframe []byte) error
 	EgressIPv6(ipframe []byte) (int, error)
+	IPv6Stack() lneto.StackNode
 }
 
 type stack6 struct {
@@ -130,7 +135,7 @@ func (s *stack6) DialTCP6(conn *tcp.Conn, localPort uint16, raddr [16]byte, rpor
 	if err != nil {
 		return err
 	}
-	err = s.tcps6.Register(conn, mac)
+	err = s.tcps6.RegisterMACFiltered(conn, mac)
 	if err != nil {
 		conn.Abort()
 		return err
@@ -149,7 +154,7 @@ func (s *stack6) DialUDP6(conn *udp.Conn, localPort uint16, raddr [16]byte, rpor
 	if err != nil {
 		return err
 	}
-	err = s.udps6.Register(conn, mac)
+	err = s.udps6.RegisterMACFiltered(conn, mac)
 	if err != nil {
 		conn.Abort()
 		return err

@@ -35,7 +35,7 @@ func TestARPLocal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = s2.ListenTCP(c2, addr2.Port())
+	err = s2.ListenTCP4(c2, addr2.Port())
 	if err != nil {
 		t.Fatal(err)
 	}

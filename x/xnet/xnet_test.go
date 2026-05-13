@@ -253,7 +253,7 @@ func noExchange(source int) tcpExpectExchange {
 func (tst *tester) TestTCPSetupAndEstablish(svStack, clStack *StackAsync, svConn, clConn *tcp.Conn, svPort, clPort uint16) {
 	t := tst.t
 	// Attach server and client connections to stacks.
-	err := svStack.ListenTCP(svConn, svPort)
+	err := svStack.ListenTCP4(svConn, svPort)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -74,33 +74,37 @@ type StackAsync struct {
 }
 
 type StackConfig struct {
-	StaticAddress6 [16]byte
-	StaticAddress4 [4]byte
+	HardwareAddress [6]byte
+	StaticAddress4  [4]byte
+	StaticAddress6  [16]byte
+
+	IPv6Stack Stack6
 
 	DNSServer netip.Addr
 	NTPServer netip.Addr
 	RandSeed  int64
-	Hostname  string
-
-	// MaxActiveTCPPorts and MaxActiveUDPPorts are a memory guardrail to limit
-	// number of simultaneous open TCP/UDP ports. The memory impact at the stack level
-	// of a port corresponds to ~64 bytes excluding the registered StackNode i.e: [tcp.Conn] or [udp.Conn].
-	MaxActiveTCPPorts, MaxActiveUDPPorts uint16
+	// Hostname is used for DHCP hostname and ICMP ID.
+	Hostname string
 
 	EthernetTxCRC32Update func(crc uint32, b []byte) uint32
 
-	HardwareAddress [6]byte
-	MTU             uint16
-	// Accept multicast ethernet and IP packets. Needed for MDNS.
-	AcceptMulticast bool
-
-	IPv6Stack Stack6
 	// ICMPQueueLimit sets maximum number of input/output packets queued for processing.
 	// If set to zero ICMP cannot be enabled on the stack.
 	ICMPQueueLimit int
 	// PassivePeers limits how many subnet peers the stack passively learns MAC addresses for.
 	// Passively learned entries skip ARP round-trips on the first DialTCP/DialUDP to that peer.
 	PassivePeers int
+
+	// MaxActiveTCPPorts and MaxActiveUDPPorts are a memory guardrail to limit
+	// number of simultaneous open TCP/UDP ports. The memory impact at the stack level
+	// of a port corresponds to ~64 bytes excluding the registered StackNode i.e: [tcp.Conn] or [udp.Conn].
+	MaxActiveTCPPorts, MaxActiveUDPPorts uint16
+	// MTU sets the maximum transmission unit, which is the maximum size of the Ethernet payload
+	// not including ethernet header, ethernet CRC. It is determined by the NIC hardware and the route the packets take over the network.
+	// By far the most common value for MTU is 1500 as specified by IEEE 802.3.
+	MTU uint16
+	// Accept multicast ethernet and IP packets. Needed for MDNS.
+	AcceptMulticast bool
 }
 
 func (cfg *StackConfig) id() uint16 {
@@ -193,15 +197,17 @@ func (s *StackAsync) Reset(cfg StackConfig) (err error) {
 	id := cfg.id()
 	linkNodes := 2 // ARP and IPv4 nodes
 	s.ipv6enabled = ipv6Enabled
+	s.stack6 = nil
 	if s.ipv6enabled {
 		linkNodes = 3 // IPv6
 		s.Debug("ipv6 enabled")
-		err = s.stack6.Reset6(&cfg)
+		err = cfg.IPv6Stack.Reset6(&cfg)
 		if err != nil {
 			s.ipv6enabled = false
 			return err
 		}
 	}
+	s.stack6 = cfg.IPv6Stack
 	ecfg := internet.StackEthernetConfig{
 		MTU:         int(cfg.MTU),
 		MaxNodes:    linkNodes,
@@ -248,7 +254,7 @@ func (s *StackAsync) Reset(cfg StackConfig) (err error) {
 
 	// Now setup stacks.
 	// ARP registered in resetARP.
-	err = s.link.Register(&s.ip4) // IPv4
+	err = s.link.RegisterEthernet(&s.ip4) // IPv4
 	if err != nil {
 		return err
 	}
@@ -277,6 +283,13 @@ func (s *StackAsync) Reset(cfg StackConfig) (err error) {
 	if cfg.DNSServer.IsValid() {
 		s.dnssv = cfg.DNSServer
 	}
+	if s.ipv6enabled {
+		s.Debug("registering IPv6 to ethernet")
+		err = s.link.RegisterEthernet(s.stack6.IPv6Stack())
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -297,7 +310,7 @@ func (s *StackAsync) resetARP() error {
 	}
 	s.arpt.reset(10, s.arpt.passivePeers)
 	s.arp.SetOnResolveCallback(s.arpt.onResolve)
-	err = s.link.Register(&s.arp)
+	err = s.link.RegisterEthernet(&s.arp)
 	if err != nil {
 		return err
 	}
@@ -402,17 +415,27 @@ func (s *StackAsync) EnableICMP(enabled bool) (err error) {
 }
 
 func (s *StackAsync) DialUDP(conn *udp.Conn, localPort uint16, addrp netip.AddrPort) (err error) {
-	if !addrp.Addr().Is4() {
-		return lneto.ErrUnsupported
+	addr := addrp.Addr()
+	if addr.Is4() {
+		err = s.DialUDP4(conn, localPort, addrp.Addr().As4(), addrp.Port())
+	} else if s.ipv6enabled && addr.Is6() {
+		err = s.stack6.DialUDP6(conn, localPort, addr.As16(), addrp.Port())
+	} else {
+		err = lneto.ErrInvalidAddr
 	}
-	return s.DialUDP4(conn, localPort, addrp.Addr().As4(), addrp.Port())
+	return err
 }
 
 func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrPort) (err error) {
-	if !addrp.Addr().Is4() {
-		return lneto.ErrUnsupported
+	addr := addrp.Addr()
+	if addr.Is4() {
+		err = s.DialTCP4(conn, localPort, addrp.Addr().As4(), addrp.Port())
+	} else if s.ipv6enabled && addr.Is6() {
+		err = s.stack6.DialTCP6(conn, localPort, addr.As16(), addrp.Port(), tcp.Value(s.Prand32()))
+	} else {
+		err = lneto.ErrInvalidAddr
 	}
-	return s.DialTCP4(conn, localPort, addrp.Addr().As4(), addrp.Port())
+	return err
 }
 
 func (s *StackAsync) DialUDP4(conn *udp.Conn, localPort uint16, raddr [4]byte, rport uint16) (err error) {
@@ -426,7 +449,7 @@ func (s *StackAsync) DialUDP4(conn *udp.Conn, localPort uint16, raddr [4]byte, r
 	if err != nil {
 		return err
 	}
-	err = s.udps.Register(conn, mac)
+	err = s.udps.RegisterMACFiltered(conn, mac)
 	if err != nil {
 		conn.Abort()
 		return err
@@ -445,7 +468,7 @@ func (s *StackAsync) DialTCP4(conn *tcp.Conn, localPort uint16, raddr [4]byte, r
 	if err != nil {
 		return err
 	}
-	err = s.tcps.Register(conn, mac) // MAC is set later on by ARP response arriving to our network.
+	err = s.tcps.RegisterMACFiltered(conn, mac) // MAC is set later on by ARP response arriving to our network.
 	if err != nil {
 		conn.Abort()
 		return err
@@ -453,14 +476,14 @@ func (s *StackAsync) DialTCP4(conn *tcp.Conn, localPort uint16, raddr [4]byte, r
 	return nil
 }
 
-func (s *StackAsync) ListenTCP(conn *tcp.Conn, localPort uint16) (err error) {
+func (s *StackAsync) ListenTCP4(conn *tcp.Conn, localPort uint16) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	err = conn.OpenListen(localPort, tcp.Value(s.prand32()))
 	if err != nil {
 		return err
 	}
-	err = s.tcps.Register(conn, nil)
+	err = s.tcps.RegisterMACFiltered(conn, nil)
 	if err != nil {
 		conn.Abort()
 		return err
@@ -469,19 +492,21 @@ func (s *StackAsync) ListenTCP(conn *tcp.Conn, localPort uint16) (err error) {
 }
 
 func (s *StackAsync) RegisterListener(listener *tcp.Listener) (err error) {
+	// TODO(pato): Possible to forward both IPv4 and IPv6 packets to the listener and have it selectively mux out correctly?
+	// Can try changing listener to inspect carrierData on demux and get the IPversion to know which tcp.Conns match the IP version.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	lport := listener.LocalPort()
 	if lport == 0 {
 		return lneto.ErrZeroSource
 	}
-	return s.tcps.Register(listener, nil)
+	return s.tcps.RegisterMACFiltered(listener, nil)
 }
 
-// RegisterUDP registers a StackNode on a UDP port with the given remote address and port.
+// RegisterUDP4 registers a StackNode on a UDP port with the given remote address and port.
 // The StackUDPPort wrapping is handled internally. The number of user-registered UDP ports
 // is limited by [StackConfig.MaxUDPConns].
-func (s *StackAsync) RegisterUDP(node lneto.StackNode, remoteAddr []byte, remotePort uint16) error {
+func (s *StackAsync) RegisterUDP4(node lneto.StackNode, remoteAddr []byte, remotePort uint16) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	idx := len(s.userUDPs)
@@ -490,7 +515,7 @@ func (s *StackAsync) RegisterUDP(node lneto.StackNode, remoteAddr []byte, remote
 	}
 	s.userUDPs = s.userUDPs[:idx+1]
 	s.userUDPs[idx].SetStackNode(node, remoteAddr, remotePort)
-	return s.udps.Register(&s.userUDPs[idx], nil)
+	return s.udps.RegisterMACFiltered(&s.userUDPs[idx], nil)
 }
 
 var errNoDNSServer = errors.New("no DNS server- did DHCP complete? You can set a predetermined DNS server in Stack configuration")
@@ -528,7 +553,7 @@ func (s *StackAsync) StartLookupIP(host string) error {
 	}
 	*(*[4]byte)(s.addrBuf[:4]) = s.dnssv.As4()
 	s.dnsUDP.SetStackNode(&s.dns, s.addrBuf[:4], dns.ServerPort)
-	err = s.udps.Register(&s.dnsUDP, nil)
+	err = s.udps.RegisterMACFiltered(&s.dnsUDP, nil)
 	return err
 }
 
@@ -567,7 +592,7 @@ func (s *StackAsync) StartDHCPv4Request(request [4]byte) error {
 	}
 
 	s.dhcpUDP.SetStackNode(&s.dhcp, nil, dhcpv4.DefaultServerPort)
-	err = s.udps.Register(&s.dhcpUDP, nil)
+	err = s.udps.RegisterMACFiltered(&s.dhcpUDP, nil)
 	if err != nil {
 		return err
 	}
@@ -581,7 +606,7 @@ func (s *StackAsync) StartNTP(addr netip.Addr) error {
 
 	*(*[4]byte)(s.addrBuf[:4]) = addr.As4()
 	s.ntpUDP.SetStackNode(&s.ntp, s.addrBuf[:4], ntp.ServerPort)
-	err := s.udps.Register(&s.ntpUDP, nil)
+	err := s.udps.RegisterMACFiltered(&s.ntpUDP, nil)
 	return err
 }
 

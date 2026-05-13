@@ -320,11 +320,6 @@ func (m *Message) WriteAnswers(dst []netip.Addr, host string) (n uint16, err err
 	return n, err
 }
 
-func writeResourceAddrs(dst []netip.Addr, rsc []Resource) (n int, err error) {
-
-	return n, nil
-}
-
 func (m *Message) Len() uint16 {
 	return SizeHeader + m.lenResources()
 }

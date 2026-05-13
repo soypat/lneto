@@ -130,7 +130,7 @@ func BenchmarkTCPHandshake(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		// Setup connections.
-		err = sv.ListenTCP(svconn, svPort)
+		err = sv.ListenTCP4(svconn, svPort)
 		if err != nil {
 			b.Fatal(err)
 		}

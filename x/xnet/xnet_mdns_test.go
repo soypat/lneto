@@ -65,7 +65,7 @@ func TestMDNS_QueryResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal("responder configure:", err)
 	}
-	err = responderStack.RegisterUDP(&responderClient, mcastAddr, mdns.Port)
+	err = responderStack.RegisterUDP4(&responderClient, mcastAddr, mdns.Port)
 	if err != nil {
 		t.Fatal("responder register:", err)
 	}
@@ -105,7 +105,7 @@ func TestMDNS_QueryResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal("start resolve:", err)
 	}
-	err = querierStack.RegisterUDP(&querierClient, mcastAddr, mdns.Port)
+	err = querierStack.RegisterUDP4(&querierClient, mcastAddr, mdns.Port)
 	if err != nil {
 		t.Fatal("querier register:", err)
 	}
@@ -297,7 +297,7 @@ func newMDNSStack(t *testing.T, hostname string, seed int64,
 		t.Fatal(hostname, "mdns configure:", err)
 	}
 
-	err = stack.RegisterUDP(&client, mdnsCfg.MulticastAddr, mdns.Port)
+	err = stack.RegisterUDP4(&client, mdnsCfg.MulticastAddr, mdns.Port)
 	if err != nil {
 		t.Fatal(hostname, "register udp:", err)
 	}

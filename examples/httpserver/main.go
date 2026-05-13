@@ -233,7 +233,7 @@ func run() (err error) {
 			TxBuf:             make([]byte, mtu),
 			TxPacketQueueSize: 3,
 		})
-		err = stack.ListenTCP(&conn, svPort)
+		err = stack.ListenTCP4(&conn, svPort)
 		if err != nil {
 			return fmt.Errorf("listen TCP: %w", err)
 		}
