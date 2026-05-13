@@ -33,8 +33,6 @@ func (ps *StackPorts) ResetTCP(maxNodes uint16) error {
 func (ps *StackPorts) Reset(protocol uint64, dstPortOffset, maxNodes uint16) error {
 	if protocol > math.MaxUint16 {
 		return lneto.ErrInvalidConfig
-	} else if maxNodes <= 0 {
-		return lneto.ErrInvalidConfig
 	}
 	ps.handlers.reset("StackPorts(proto="+strconv.Itoa(int(protocol))+")", int(maxNodes))
 	*ps = StackPorts{
@@ -105,25 +103,29 @@ type StackPortsMACFiltered struct {
 	sp StackPorts
 }
 
-func (mfsp *StackPortsMACFiltered) Register(h lneto.StackNode, addr []byte) error {
+func (mfsp *StackPortsMACFiltered) RegisterMACFiltered(h lneto.StackNode, macAddr []byte) error {
+	// TODO(soypat): We can likely constrain memory and the slice lifetime if StackPortsMACFiltered owns it
+	// or better yet, if the handlers node slice owns the memory. We need to think carefully of who has write access (the ARP and NDP handlers)
+	// and make sure that they never write after the connection has been terminated. Idea:
+	// RegisterMACFiltered(h lneto.StackNode, filterMAC bool) (macAddr *[6]byte, connIDthing *uint8, err error)
 	port := h.LocalPort()
 	proto := h.Protocol()
 	if port <= 0 {
 		return lneto.ErrZeroSource
 	} else if proto != uint64(mfsp.sp.protocol) {
 		return lneto.ErrInvalidConfig
-	} else if addr != nil && len(addr) != 6 {
+	} else if macAddr != nil && len(macAddr) != 6 {
 		return lneto.ErrInvalidAddr
 	}
-	return mfsp.sp.handlers.registerByPortProto(nodeFromStackNode(h, port, proto, addr))
+	return mfsp.sp.handlers.registerByPortProto(nodeFromStackNode(h, port, proto, macAddr))
 }
 
-func (ps *StackPortsMACFiltered) ResetUDP(maxNodes uint16) error {
-	return ps.sp.ResetUDP(maxNodes)
+func (ps *StackPortsMACFiltered) ResetUDP(maxNodes uint16) {
+	ps.sp.ResetUDP(maxNodes) // Can't error.
 }
 
-func (ps *StackPortsMACFiltered) ResetTCP(maxNodes uint16) error {
-	return ps.sp.ResetTCP(maxNodes)
+func (ps *StackPortsMACFiltered) ResetTCP(maxNodes uint16) {
+	ps.sp.ResetTCP(maxNodes) // Can't error.
 }
 
 func (ps *StackPortsMACFiltered) Reset(protocol uint64, dstPortOffset, maxNodes uint16) error {

@@ -135,7 +135,6 @@ func (listener *Listener) Encapsulate(carrierData []byte, offsetToIP, offsetToFr
 	if listener.isClosed() {
 		return 0, net.ErrClosed
 	}
-	//listener.trace("listener:encaps", slog.Uint64("port", uint64(listener.port)))
 	// First try incoming connections (for handshake SYN-ACK).
 	for i := range listener.incoming {
 		conn := listener.incoming[i].conn

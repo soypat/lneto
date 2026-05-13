@@ -14,8 +14,8 @@ func TestARPLocal(t *testing.T) {
 	s1, s2, c1, c2 := newTCPStacks(t, seed, mtu)
 	routerHw := [6]byte{1, 2, 3, 4, 5, 6}
 	// Most common case: we have a router in between computers.
-	s1.SetGateway6(routerHw)
-	s2.SetGateway6(routerHw)
+	s1.SetGatewayHardwareAddr(routerHw)
+	s2.SetGatewayHardwareAddr(routerHw)
 	addr1 := netip.AddrPortFrom(netip.AddrFrom4(s1.Addr4()), 1024) // dialer, client.
 	addr2 := netip.AddrPortFrom(netip.AddrFrom4(s2.Addr4()), 80)   // listener, server.
 	err := s1.AssimilateDHCPResults(&DHCPResults{
@@ -30,12 +30,12 @@ func TestARPLocal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hw2 := s2.HardwareAddress()
+	hw2 := s2.HardwareAddr()
 	err = s1.DialTCP(c1, addr1.Port(), addr2) // addr2 MAC address is unknown and must be resolved by stack.
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = s2.ListenTCP(c2, addr2.Port())
+	err = s2.ListenTCP4(c2, addr2.Port())
 	if err != nil {
 		t.Fatal(err)
 	}

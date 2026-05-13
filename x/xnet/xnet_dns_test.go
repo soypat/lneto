@@ -35,7 +35,7 @@ func TestDNS_QueryReceivesAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal("client Reset failed:", err)
 	}
-	client.SetGateway6(dnsServerMAC)
+	client.SetGatewayHardwareAddr(dnsServerMAC)
 
 	// The IP address we expect to receive from the DNS response.
 	wantAddr := netip.MustParseAddr("93.184.216.34") // example.com's IP

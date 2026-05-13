@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"math"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -59,8 +60,36 @@ type ResourceHeader struct {
 	Length uint16
 }
 
+// Name is a wire representation of a DNS name.
 type Name struct {
 	data []byte
+}
+
+// EqualString checks if the name receiver matches the strname string (non-wire formatted) name.
+func (n Name) EqualString(strname string) bool {
+	data := n.data
+	for len(data) > 0 {
+		labelLen := int(data[0])
+		if labelLen == 0 {
+			return strname == "" || strname == "."
+		}
+		if len(data) < 1+labelLen {
+			return false
+		}
+		label := data[1 : 1+labelLen]
+		var seg string
+		idx := strings.IndexByte(strname, '.')
+		if idx < 0 {
+			seg, strname = strname, ""
+		} else {
+			seg, strname = strname[:idx], strname[idx+1:]
+		}
+		if len(seg) != len(label) || seg != string(label) {
+			return false
+		}
+		data = data[1+labelLen:]
+	}
+	return false
 }
 
 // NamesEqual reports whether two DNS names are equal by comparing
@@ -268,6 +297,27 @@ func (m *Message) AppendTo(buf []byte, txid uint16, flags HeaderFlags) (_ []byte
 		}
 	}
 	return buf, nil
+}
+
+func (m *Message) WriteAnswers(dst []netip.Addr, host string) (n uint16, err error) {
+	for i := range m.Answers {
+		if int(n) >= len(dst) {
+			return n, lneto.ErrExhausted
+		}
+		ans := &m.Answers[i]
+		hdr := ans.Header()
+		if !hdr.Name.EqualString(host) {
+			continue
+		}
+		var ok bool
+		dst[n], ok = netip.AddrFromSlice(ans.RawData())
+		if !ok {
+			err = lneto.ErrInvalidAddr
+		} else {
+			n++
+		}
+	}
+	return n, err
 }
 
 func (m *Message) Len() uint16 {

@@ -175,6 +175,13 @@ func (tcb *ControlBlock) MakeChallengeACK() Segment {
 	}
 }
 
+// recvSpace contains Receive Sequence Space data. Its sequence numbers correspond to remote data.
+type recvSpace struct {
+	IRS Value // initial receive sequence number, defined by remote in SYN segment received.
+	NXT Value // receive next. seqs before this have been acked. this seq and up to NXT+WND-1 are allowed to be sent. Corresponds to remote data.
+	WND Size  // receive window defined by local. Permitted number of remote unacked octets in flight.
+}
+
 // sendSpace contains Send Sequence Space data. Its sequence numbers correspond to local data.
 type sendSpace struct {
 	ISS Value // initial send sequence number, defined locally on connection start
@@ -199,13 +206,6 @@ func (snd *sendSpace) maxSend() Size {
 	} else {
 		return snd.WND - inf
 	}
-}
-
-// recvSpace contains Receive Sequence Space data. Its sequence numbers correspond to remote data.
-type recvSpace struct {
-	IRS Value // initial receive sequence number, defined by remote in SYN segment received.
-	NXT Value // receive next. seqs before this have been acked. this seq and up to NXT+WND-1 are allowed to be sent. Corresponds to remote data.
-	WND Size  // receive window defined by local. Permitted number of remote unacked octets in flight.
 }
 
 // Open implements a passive opening of a connection (wait for incoming packets from an unknown remote port).

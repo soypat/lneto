@@ -4,6 +4,7 @@ import (
 	"log/slog"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/ipv6"
 	"github.com/soypat/lneto/tcp"
 	"github.com/soypat/lneto/udp"
@@ -12,6 +13,41 @@ import (
 // stackip6 is NOT a StackNode implementation.
 // It is meant to be embedded within StackNodes.
 // var _ lneto.StackNode = (*stackip6)(nil)
+type StackIPv6 struct {
+	connID uint64
+	stackip6
+}
+
+func (stackip4 *StackIPv6) Reset(vld *lneto.Validator, maxNodes int) error {
+	stackip4.reset6(vld, maxNodes)
+	return nil
+}
+
+func (stackip *StackIPv6) ConnectionID() *uint64 {
+	return &stackip.connID
+}
+
+func (stackip *StackIPv6) Protocol() uint64 {
+	return uint64(ethernet.TypeIPv6)
+}
+
+func (stackip *StackIPv6) LocalPort() uint16 { return 0 }
+
+func (stackip *StackIPv6) SetLogger(logger *slog.Logger) {
+	stackip.stackip6.handlers.log = logger
+}
+
+func (stackip *StackIPv6) Demux(carrierData []byte, offset int) error {
+	debugLog("ip:demux")
+	return stackip.stackip6.demux6(carrierData, offset)
+}
+
+func (stackip *StackIPv6) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (n int, err error) {
+	if offsetToFrame != offsetToIP {
+		return 0, lneto.ErrBug
+	}
+	return stackip.stackip6.encapsulate6(carrierData, offsetToIP)
+}
 
 type stackip6 struct {
 	handlers        handlers

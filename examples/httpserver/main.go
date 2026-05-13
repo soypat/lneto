@@ -137,7 +137,7 @@ func run() (err error) {
 			pfbuf, err = pf.FormatFrames(pfbuf, frames, pkt)
 
 			pfbuf = bytes.ReplaceAll(pfbuf, ipv4.AppendFormatAddr(nil, stack.Addr4()), []byte("us"))
-			pfbuf = bytes.ReplaceAll(pfbuf, ethernet.AppendAddr(nil, stack.HardwareAddress()), []byte("us"))
+			pfbuf = bytes.ReplaceAll(pfbuf, ethernet.AppendAddr(nil, stack.HardwareAddr()), []byte("us"))
 			pfbuf = append(pfbuf, ']', '\n')
 			if err != nil {
 				return err
@@ -220,7 +220,7 @@ func run() (err error) {
 		return fmt.Errorf("ARP resolution of router failed: %w", err)
 	}
 	timeResolveRouterHW()
-	stack.SetGateway6(routerHw)
+	stack.SetGatewayHardwareAddr(routerHw)
 
 	svPort := uint16(flagPort)
 	fmt.Printf("Listening on %s:%d\n", ipv4.AppendFormatAddr(nil, stack.Addr4()), svPort)
@@ -233,7 +233,7 @@ func run() (err error) {
 			TxBuf:             make([]byte, mtu),
 			TxPacketQueueSize: 3,
 		})
-		err = stack.ListenTCP(&conn, svPort)
+		err = stack.ListenTCP4(&conn, svPort)
 		if err != nil {
 			return fmt.Errorf("listen TCP: %w", err)
 		}

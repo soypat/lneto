@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -21,7 +22,7 @@ func TestSubnetTable_PatchEgressMAC_WhenGatewayMAC(t *testing.T) {
 
 	var st subnetTable
 	st.reset(4, 2)
-	st.subnet = netip.MustParsePrefix("10.0.0.0/24")
+	st.subnet4 = ipv4.PrefixFrom(clientIP, 24)
 
 	// Learn client MAC from a simulated ingress frame (client→server SYN).
 	ingressFrame := makeMinimalIPv4Frame(serverMAC, clientMAC, clientIP, serverIP)
@@ -62,8 +63,8 @@ func TestStackAsync_ListenerSynAckAddressedToClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sv.SetGateway6(routerMAC)
-	sv.SetSubnet(netip.MustParsePrefix("10.0.0.0/24"))
+	sv.SetGatewayHardwareAddr(routerMAC)
+	sv.SetSubnet4(sv.Addr4(), 24)
 
 	pool, err := NewTCPPool(TCPPoolConfig{
 		PoolSize:           1,
@@ -97,7 +98,7 @@ func TestStackAsync_ListenerSynAckAddressedToClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client.SetGateway6(serverMAC)
+	client.SetGatewayHardwareAddr(serverMAC)
 
 	var clConn tcp.Conn
 	if err = clConn.Configure(tcp.ConnConfig{

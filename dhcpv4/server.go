@@ -4,18 +4,18 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"net/netip"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
+	"github.com/soypat/lneto/ipv4"
 )
 
 var errOptionNotFit = errors.New("DHCPv4: options dont fit")
 
 type Server struct {
 	connID       uint64
-	nextAddr     netip.Addr
-	prefix       netip.Prefix
+	nextAddr     [4]byte
+	subnet       ipv4.Prefix
 	hosts        map[[36]byte]serverEntry
 	vld          lneto.Validator
 	pending      int
@@ -35,7 +35,7 @@ type ServerConfig struct {
 	// DNS server address advertised to clients. Zero value omits the option.
 	DNS [4]byte
 	// Subnet defines the network prefix for address allocation and subnet mask responses.
-	Subnet netip.Prefix
+	Subnet ipv4.Prefix
 	// LeaseSeconds is the lease duration. Zero defaults to 3600.
 	LeaseSeconds uint32
 	// Port is the server listening port. Zero defaults to DefaultServerPort.
@@ -63,10 +63,9 @@ type serverEntry struct {
 // The connection ID is incremented on each call to invalidate existing connections.
 // The hosts map is reused across calls to avoid reallocation.
 func (sv *Server) Configure(cfg ServerConfig) error {
-	svAddr := netip.AddrFrom4(cfg.ServerAddr)
 	if !cfg.Subnet.IsValid() {
 		return errors.New("dhcpv4 server: invalid subnet")
-	} else if !cfg.Subnet.Contains(svAddr) {
+	} else if !cfg.Subnet.Contains(cfg.ServerAddr) {
 		return errors.New("dhcpv4 server: server address outside subnet")
 	}
 	port := cfg.Port
@@ -90,10 +89,10 @@ func (sv *Server) Configure(cfg ServerConfig) error {
 		siaddr:       cfg.ServerAddr,
 		gwaddr:       cfg.Gateway,
 		dns:          cfg.DNS,
-		prefix:       cfg.Subnet,
+		subnet:       cfg.Subnet,
 		port:         port,
 		leaseSeconds: lease,
-		nextAddr:     svAddr,
+		nextAddr:     cfg.Subnet.Next(cfg.ServerAddr),
 		hosts:        hosts,
 	}
 	return nil
@@ -263,8 +262,8 @@ func (sv *Server) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 		n, _ = EncodeOption(optBuf[nopt:], OptRouter, sv.gwaddr[:]...)
 		nopt += n
 	}
-	if sv.prefix.IsValid() {
-		bits := uint(sv.prefix.Bits())
+	if sv.subnet.IsValid() {
+		bits := uint(sv.subnet.Bits())
 		mask := ^uint32(0) << (32 - bits)
 		var maskBuf [4]byte
 		binary.BigEndian.PutUint32(maskBuf[:], mask)
@@ -317,18 +316,18 @@ func (sv *Server) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 // it is preferred. Returns false if the pool is exhausted.
 func (sv *Server) allocAddr(reqAddr []byte) ([4]byte, bool) {
 	if len(reqAddr) == 4 {
-		candidate := netip.AddrFrom4([4]byte(reqAddr))
-		if sv.prefix.Contains(candidate) && candidate.As4() != sv.siaddr && !sv.isAddrAssigned(candidate) {
-			return candidate.As4(), true
+		candidate := [4]byte(reqAddr)
+		if sv.subnet.Contains(candidate) && candidate != sv.siaddr && !sv.isAddrAssigned(candidate) {
+			return candidate, true
 		}
 	}
-	sv.nextAddr = sv.nextAddr.Next()
-	if !sv.prefix.Contains(sv.nextAddr) {
-		return [4]byte{}, false
-	}
 	// Reject broadcast address (all host bits set).
-	a := sv.nextAddr.As4()
-	hostBits := uint(32 - sv.prefix.Bits())
+	a := sv.nextAddr
+	sv.nextAddr = sv.subnet.Next(sv.nextAddr)
+	if sv.nextAddr == sv.siaddr {
+		sv.nextAddr = sv.subnet.Next(sv.nextAddr)
+	}
+	hostBits := uint(32 - sv.subnet.Bits())
 	hostMask := ^uint32(0) >> (32 - hostBits)
 	if binary.BigEndian.Uint32(a[:])&hostMask == hostMask {
 		return [4]byte{}, false
@@ -336,10 +335,9 @@ func (sv *Server) allocAddr(reqAddr []byte) ([4]byte, bool) {
 	return a, true
 }
 
-func (sv *Server) isAddrAssigned(addr netip.Addr) bool {
-	a4 := addr.As4()
+func (sv *Server) isAddrAssigned(addr [4]byte) bool {
 	for _, v := range sv.hosts {
-		if v.addr == a4 {
+		if v.addr == addr {
 			return true
 		}
 	}

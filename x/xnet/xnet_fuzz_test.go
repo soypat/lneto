@@ -22,7 +22,7 @@ func FuzzStackPacketHTTP(f *testing.F) {
 	var buf [ethernet.MaxFrameLength]byte
 	s1, s2, c1, c2 := newTCPStacks(f, seed, MTU)
 	var hdr httpraw.Header
-	err := s1.ListenTCP(c1, 80)
+	err := s1.ListenTCP4(c1, 80)
 	if err != nil {
 		f.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func FuzzStackPacketHTTP(f *testing.F) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err := s1.ListenTCP(c1, 80)
+		err := s1.ListenTCP4(c1, 80)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -364,7 +364,7 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 				if err != nil {
 					t.Fatal(i, err)
 				}
-				err = s2.ListenTCP(&tcp2, port2)
+				err = s2.ListenTCP4(&tcp2, port2)
 				if err != nil {
 					t.Fatal(i, err)
 				}

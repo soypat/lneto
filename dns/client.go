@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"math"
 	"net"
+	"net/netip"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -104,7 +105,7 @@ func (c *Client) isClosed() bool {
 	return c.state == CQueryIdle || c.state == CQueryAborted
 }
 
-func (c *Client) MessageCopyTo(dst *Message) (done bool, err error) {
+func (c *Client) ResponseCopyTo(dst *Message) (done bool, err error) {
 	if !c.respFlags.IsResponse() {
 		return false, nil
 	}
@@ -116,11 +117,19 @@ func (c *Client) MessageCopyTo(dst *Message) (done bool, err error) {
 	return true, nil
 }
 
-func (c *Client) Answers() []Resource {
-	if c.state != CQueryDone {
-		return nil
+func (c *Client) ResponseAnswerLookup(dst []netip.Addr, host string) (uint16, error) {
+	if !c.respFlags.IsResponse() {
+		return 0, nil
 	}
-	return c.msg.Answers
+	rcode := c.respFlags.ResponseCode()
+	if rcode != 0 {
+		return 0, rcode
+	}
+	return c.msg.WriteAnswers(dst, host)
+}
+
+func (c *Client) ResponseFlags() (HeaderFlags, bool) {
+	return c.respFlags, c.respFlags.IsResponse()
 }
 
 func (c *Client) Abort() {

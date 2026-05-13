@@ -201,8 +201,8 @@ func newTCPStacks(t testing.TB, randSeed int64, mtu int) (s1, s2 *StackAsync, c1
 	if err != nil {
 		t.Fatal(err)
 	}
-	s1.SetGateway6(s2.HardwareAddress())
-	s2.SetGateway6(s1.HardwareAddress())
+	s1.SetGatewayHardwareAddr(s2.HardwareAddr())
+	s2.SetGatewayHardwareAddr(s1.HardwareAddr())
 	buf := make([]byte, mtu*4)
 	err = c1.Configure(tcp.ConnConfig{
 		RxBuf:             buf[:mtu],
@@ -253,7 +253,7 @@ func noExchange(source int) tcpExpectExchange {
 func (tst *tester) TestTCPSetupAndEstablish(svStack, clStack *StackAsync, svConn, clConn *tcp.Conn, svPort, clPort uint16) {
 	t := tst.t
 	// Attach server and client connections to stacks.
-	err := svStack.ListenTCP(svConn, svPort)
+	err := svStack.ListenTCP4(svConn, svPort)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -453,8 +453,8 @@ func (tst *tester) TCPExchange(expect tcpExpectExchange, stack1, stack2 *StackAs
 	if err != nil {
 		t.Fatal(err)
 	}
-	srcEth := src.HardwareAddress()
-	dstEth := dst.HardwareAddress()
+	srcEth := src.HardwareAddr()
+	dstEth := dst.HardwareAddr()
 	if !bytes.Equal(srcEth[:], tst.getData(protoEthernet, pcap.FieldClassSrc)) {
 		t.Errorf("mismatched ethernet src addr %x", tst.getData(protoEthernet, pcap.FieldClassSrc))
 	}
@@ -511,8 +511,8 @@ func (tst *tester) ARPExchangeOnly(querying, target *StackAsync) {
 	}
 	tst.buf = tst.buf[:n]
 
-	qHw := querying.HardwareAddress()
-	tgtHw := target.HardwareAddress()
+	qHw := querying.HardwareAddr()
+	tgtHw := target.HardwareAddr()
 	broadcast := ethernet.BroadcastAddr()
 	qIP := querying.Addr4()
 	tgtIP := target.Addr4()

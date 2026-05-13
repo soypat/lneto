@@ -1,7 +1,9 @@
 package lneto_test
 
 import (
+	"bytes"
 	"math/rand"
+	"os"
 	"testing"
 
 	"github.com/soypat/lneto"
@@ -154,5 +156,19 @@ func TestIPv4TCPChecksum(t *testing.T) {
 		if wantCRC != gotCRC {
 			t.Errorf("TCP CRC miscalculated. want %x, got %x", wantCRC, gotCRC)
 		}
+	}
+}
+
+func TestNoDeps(t *testing.T) {
+	data, err := os.ReadFile("go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const expect = "module github.com/soypat/lneto\n\ngo 1.2"
+	if !bytes.HasPrefix(data, []byte(expect)) {
+		t.Fatalf("unexpected go.mod file:\nexpect:%sx\ngot:%s", expect, string(data))
+	}
+	if bytes.Contains(data, []byte("require")) {
+		t.Fatal("no dependencies allowed in lneto")
 	}
 }

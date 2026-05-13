@@ -366,12 +366,11 @@ func (d *Client) DNSServerFirst() netip.Addr {
 	return d.dns[0]
 }
 
-func (d *Client) SubnetPrefix() netip.Prefix {
+func (d *Client) SubnetPrefix() ipv4.Prefix {
 	if !d.offer.valid {
-		return netip.Prefix{}
+		return ipv4.Prefix{}
 	}
-	m, _ := netip.AddrFrom4(d.offer.addr).Prefix(int(d.SubnetCIDRBits()))
-	return m
+	return ipv4.PrefixFrom(d.offer.addr, d.SubnetCIDRBits())
 }
 
 func (d *Client) SubnetCIDRBits() uint8 {
