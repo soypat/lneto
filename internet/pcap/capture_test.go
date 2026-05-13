@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/soypat/lneto"
-	"github.com/soypat/lneto/dhcpv4"
+	"github.com/soypat/lneto/dhcp/dhcpv4"
 	"github.com/soypat/lneto/dns"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/http/httpraw"
