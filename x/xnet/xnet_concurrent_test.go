@@ -63,7 +63,7 @@ func TestTCPListener_ConcurrentEcho(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = serverStack.RegisterListener(&listener)
+	err = serverStack.RegisterListenerTCP(&listener)
 	if err != nil {
 		t.Fatal(err)
 	}

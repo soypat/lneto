@@ -72,7 +72,7 @@ func TestStackAsyncListener_SingleConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = sv.RegisterListener(&listener)
+	err = sv.RegisterListenerTCP(&listener)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = sv.RegisterListener(&listener)
+	err = sv.RegisterListenerTCP(&listener)
 	if err != nil {
 		t.Fatal(err)
 	}

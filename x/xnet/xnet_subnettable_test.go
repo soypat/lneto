@@ -81,7 +81,7 @@ func TestStackAsync_ListenerSynAckAddressedToClient(t *testing.T) {
 	if err = listener.Reset(svPort, pool); err != nil {
 		t.Fatal(err)
 	}
-	if err = sv.RegisterListener(&listener); err != nil {
+	if err = sv.RegisterListenerTCP(&listener); err != nil {
 		t.Fatal(err)
 	}
 

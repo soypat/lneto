@@ -187,7 +187,7 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			if err != nil {
 				return nil, err
 			}
-			err = s.blk.async.RegisterListener(&l.l)
+			err = s.blk.async.RegisterListenerTCP(&l.l)
 			if err != nil {
 				return nil, err
 			}

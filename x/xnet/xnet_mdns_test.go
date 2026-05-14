@@ -38,7 +38,7 @@ func TestMDNS_QueryResponse(t *testing.T) {
 	responderMAC := [6]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x01}
 	querierAddr := [4]byte{192, 168, 1, 100}
 	querierMAC := [6]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x02}
-	mcastAddr := []byte{224, 0, 0, 251}
+	mcastAddr := [4]byte{224, 0, 0, 251}
 
 	// Setup responder stack with mDNS service.
 	responderStack := new(StackAsync)
@@ -60,7 +60,7 @@ func TestMDNS_QueryResponse(t *testing.T) {
 	err = responderClient.Configure(mdns.ClientConfig{
 		LocalPort:     mdns.Port,
 		Services:      []mdns.Service{svc},
-		MulticastAddr: mcastAddr,
+		MulticastAddr: mcastAddr[:],
 	})
 	if err != nil {
 		t.Fatal("responder configure:", err)
@@ -89,7 +89,7 @@ func TestMDNS_QueryResponse(t *testing.T) {
 	var querierClient mdns.Client
 	err = querierClient.Configure(mdns.ClientConfig{
 		LocalPort:     mdns.Port,
-		MulticastAddr: mcastAddr,
+		MulticastAddr: mcastAddr[:],
 	})
 	if err != nil {
 		t.Fatal("querier configure:", err)
@@ -297,7 +297,7 @@ func newMDNSStack(t *testing.T, hostname string, seed int64,
 		t.Fatal(hostname, "mdns configure:", err)
 	}
 
-	err = stack.RegisterUDP4(&client, mdnsCfg.MulticastAddr, mdns.Port)
+	err = stack.RegisterUDP4(&client, addr.As4(), mdns.Port)
 	if err != nil {
 		t.Fatal(hostname, "register udp:", err)
 	}

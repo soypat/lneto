@@ -489,7 +489,7 @@ func (s *StackAsync) ListenTCP4(conn *tcp.Conn, localPort uint16) (err error) {
 	return nil
 }
 
-func (s *StackAsync) RegisterListener(listener *tcp.Listener) (err error) {
+func (s *StackAsync) RegisterListenerTCP(listener *tcp.Listener) (err error) {
 	// TODO(pato): Possible to forward both IPv4 and IPv6 packets to the listener and have it selectively mux out correctly?
 	// Can try changing listener to inspect carrierData on demux and get the IPversion to know which tcp.Conns match the IP version.
 	s.mu.Lock()
@@ -500,7 +500,7 @@ func (s *StackAsync) RegisterListener(listener *tcp.Listener) (err error) {
 // RegisterUDP4 registers a StackNode on a UDP port with the given remote address and port.
 // The StackUDPPort wrapping is handled internally. The number of user-registered UDP ports
 // is limited by [StackConfig.MaxUDPConns].
-func (s *StackAsync) RegisterUDP4(node lneto.StackNode, remoteAddr []byte, remotePort uint16) error {
+func (s *StackAsync) RegisterUDP4(node lneto.StackNode, remoteAddr [4]byte, remotePort uint16) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	idx := len(s.userUDPs)
@@ -508,7 +508,7 @@ func (s *StackAsync) RegisterUDP4(node lneto.StackNode, remoteAddr []byte, remot
 		return lneto.ErrExhausted
 	}
 	s.userUDPs = s.userUDPs[:idx+1]
-	s.userUDPs[idx].SetStackNode(node, remoteAddr, remotePort)
+	s.userUDPs[idx].SetStackNode(node, remoteAddr[:], remotePort)
 	return s.udps.RegisterMACFiltered(&s.userUDPs[idx], nil)
 }
 
