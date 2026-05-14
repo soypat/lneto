@@ -20,7 +20,7 @@ func DefaultStack6() Stack6 {
 type Stack6 interface {
 	Reset6(cfg *StackConfig) error
 	Addr6() [16]byte
-	SetAddr6(addr [16]byte)
+	SetAddr6(addr [16]byte) error
 
 	EnableICMP6(enabled bool) error
 	Register6(node lneto.StackNode) error
@@ -48,7 +48,12 @@ type stack6 struct {
 
 func (s *stack6) Register6(node lneto.StackNode) error { return s.ip6.Register6(node) }
 func (s *stack6) Addr6() [16]byte                      { return s.ip6.Addr6() }
-func (s *stack6) SetAddr6(addr [16]byte)               { s.ip6.SetAddr6(addr) }
+func (s *stack6) SetAddr6(addr [16]byte) error {
+	s.ip6.SetAddr6(addr)
+	s.icmp6.SetAddr6(addr)
+	s.dropNDPPending()
+	return nil
+}
 
 func (s *stack6) IPv6Stack() lneto.StackNode { return &s.ip6 }
 
@@ -209,4 +214,11 @@ func (s *stack6) ndpDynamicResolve(raddr [16]byte) ([]byte, error) {
 	e.addr = raddr
 	e.macBuf = macBuf
 	return macBuf, nil
+}
+
+func (s *stack6) dropNDPPending() {
+	for i := range s.ndpPending {
+		s.ndpPending[i].macBuf = nil
+		s.ndpPending[i].addr = [16]byte{}
+	}
 }

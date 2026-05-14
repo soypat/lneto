@@ -76,6 +76,10 @@ func (client *Client) Configure(cfg ClientConfig) error {
 	}
 	return nil
 }
+func (client *Client) SetAddr6(addr [16]byte) {
+	client.ourIP = addr
+	client.Reset()
+}
 
 func (client *Client) Protocol() uint64      { return uint64(lneto.IPProtoIPv6ICMP) }
 func (client *Client) LocalPort() uint16     { return 0 }

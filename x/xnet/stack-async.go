@@ -359,6 +359,24 @@ func (s *StackAsync) Addr4() [4]byte {
 	return s.ip4.Addr4()
 }
 
+func (s *StackAsync) SetAddr6(addr [16]byte) error {
+	if s.ipv6enabled {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.stack6.SetAddr6(addr)
+	}
+	return lneto.ErrUnsupported
+}
+
+func (s *StackAsync) Addr6() [16]byte {
+	if s.ipv6enabled {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.stack6.Addr6()
+	}
+	return [16]byte{}
+}
+
 func (s *StackAsync) SetSubnet4(addr [4]byte, prefixBits uint8) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -405,7 +423,7 @@ func (s *StackAsync) EnableICMP(enabled bool) (err error) {
 		s.icmp.Abort()
 	}
 	if s.ipv6enabled {
-		if err2 := s.stack6.EnableICMP6(enabled); err2 != nil {
+		if err2 := s.stack6.EnableICMP6(enabled); err2 != nil && err == nil {
 			err = err2
 		}
 	}
