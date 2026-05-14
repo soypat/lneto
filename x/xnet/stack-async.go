@@ -34,10 +34,8 @@ type StackAsync struct {
 	link     internet.StackEthernet
 	ip4      internet.StackIPv4
 
-	// ip6      internet.StackIPv6
-	arp  arp.Handler
-	icmp icmpv4.Client
-	// icmp6    icmpv6.Client
+	arp      arp.Handler
+	icmp     icmpv4.Client
 	icmp6buf []byte
 	udps     internet.StackPortsMACFiltered
 	tcps     internet.StackPortsMACFiltered
@@ -496,10 +494,6 @@ func (s *StackAsync) RegisterListener(listener *tcp.Listener) (err error) {
 	// Can try changing listener to inspect carrierData on demux and get the IPversion to know which tcp.Conns match the IP version.
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	lport := listener.LocalPort()
-	if lport == 0 {
-		return lneto.ErrZeroSource
-	}
 	return s.tcps.RegisterMACFiltered(listener, nil)
 }
 
@@ -516,6 +510,12 @@ func (s *StackAsync) RegisterUDP4(node lneto.StackNode, remoteAddr []byte, remot
 	s.userUDPs = s.userUDPs[:idx+1]
 	s.userUDPs[idx].SetStackNode(node, remoteAddr, remotePort)
 	return s.udps.RegisterMACFiltered(&s.userUDPs[idx], nil)
+}
+
+func (s *StackAsync) RegisterListenerUDP(pktconn *udp.PacketConn) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.udps.RegisterMACFiltered(pktconn, nil)
 }
 
 var errNoDNSServer = errors.New("no DNS server- did DHCP complete? You can set a predetermined DNS server in Stack configuration")
