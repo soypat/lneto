@@ -48,13 +48,13 @@ func (s StackGo) Socket(ctx context.Context, network string, family, sotype int,
 	}
 	var local, remote netip.AddrPort
 	if laddr != nil {
-		local, err = netip.ParseAddrPort(laddr.String())
+		local, err = parseNetAddr(laddr)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if raddr != nil {
-		remote, err = netip.ParseAddrPort(raddr.String())
+		remote, err = parseNetAddr(raddr)
 		if err != nil {
 			return nil, err
 		}
@@ -317,4 +317,29 @@ func udpaddr(addr netip.AddrPort) net.Addr {
 		Zone: addr.Addr().Zone(),
 		Port: int(addr.Port()),
 	}
+}
+
+// parseNetAddr converts a [net.Addr] to a [netip.AddrPort]. A nil or empty IP
+// (e.g. ":22" from a listen address with no host) is treated as 0.0.0.0 so
+// that SocketNetip's IPv4Unspecified check can then fill in the stack's
+// configured address. Without this, netip.ParseAddrPort returns "no IP".
+func parseNetAddr(addr net.Addr) (netip.AddrPort, error) {
+	var ip net.IP
+	var port int
+	switch a := addr.(type) {
+	case *net.TCPAddr:
+		ip, port = a.IP, a.Port
+	case *net.UDPAddr:
+		ip, port = a.IP, a.Port
+	default:
+		return netip.AddrPort{}, lneto.ErrUnsupported
+	}
+	if len(ip) == 0 {
+		ip = net.IP{0, 0, 0, 0}
+	}
+	nip, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return netip.AddrPort{}, lneto.ErrInvalidAddr
+	}
+	return netip.AddrPortFrom(nip.Unmap(), uint16(port)), nil
 }
