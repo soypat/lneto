@@ -2,9 +2,11 @@ package xnet
 
 import (
 	"context"
+	"math"
 	"net"
 	"net/netip"
 	"syscall"
+	"time"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/tcp"
@@ -86,7 +88,27 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			return nil, lneto.ErrUnsupported
 		}
 		if !raddr.IsValid() || raddr.Addr() == netip.IPv4Unspecified() {
-			return nil, lneto.ErrZeroDestination
+			// LISTEN UDP: no fixed remote → PacketConn.
+			var pc udppktconn
+			err = pc.c.Configure(udp.PacketConnConfig{
+				TxBuf:       make([]byte, s.plcfg.TxBufSize),
+				RxBuf:       make([]byte, s.plcfg.RxBufSize),
+				TxQueueSize: s.plcfg.QueueSize,
+				RxQueueSize: s.plcfg.QueueSize,
+			})
+			if err != nil {
+				return nil, err
+			}
+			err = pc.c.Open(laddr)
+			if err != nil {
+				return nil, err
+			}
+			pc.laddr = net.UDPAddr{IP: laddr.Addr().AsSlice(), Port: int(laddr.Port())}
+			err = s.blk.async.RegisterListenerUDP(&pc.c)
+			if err != nil {
+				return nil, err
+			}
+			return &pc, nil
 		}
 		var conn udp.Conn
 		err = conn.Configure(udp.ConnConfig{
@@ -174,6 +196,44 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 	}
 	return nil, lneto.ErrUnsupported
 }
+
+// udppktconn implements [net.PacketConn] for [udp.PacketConn].
+type udppktconn struct {
+	c     udp.PacketConn
+	laddr net.UDPAddr
+	raddr net.UDPAddr
+}
+
+var _ net.PacketConn = (*udppktconn)(nil)
+
+func (u *udppktconn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
+	n, ap, err := u.c.ReadFrom(p)
+	if err != nil {
+		return n, nil, err
+	}
+	u.raddr.IP, _ = ap.Addr().AppendBinary(u.raddr.IP[:0])
+	u.raddr.Port = int(ap.Port())
+	u.raddr.Zone = ""
+	return n, &u.raddr, nil
+}
+
+func (u *udppktconn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+	uaddr, ok := addr.(*net.UDPAddr)
+	ip, ok2 := netip.AddrFromSlice(uaddr.IP)
+	if !ok || !ok2 || uaddr.Port <= 0 || uaddr.Port > math.MaxUint16 {
+		return 0, lneto.ErrInvalidAddr
+	}
+	ap := netip.AddrPortFrom(ip, uint16(uaddr.Port))
+	return u.c.WriteTo(p, ap)
+}
+
+func (u *udppktconn) Close() error { return u.c.Close() }
+
+func (u *udppktconn) LocalAddr() net.Addr { return &u.laddr }
+
+func (u *udppktconn) SetDeadline(t time.Time) error      { return u.c.SetDeadline(t) }
+func (u *udppktconn) SetReadDeadline(t time.Time) error  { return u.c.SetReadDeadline(t) }
+func (u *udppktconn) SetWriteDeadline(t time.Time) error { return u.c.SetWriteDeadline(t) }
 
 type tcplistener struct {
 	l         tcp.Listener

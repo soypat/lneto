@@ -3,7 +3,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/soypat/lneto)](https://goreportcard.com/report/github.com/soypat/lneto)
 [![codecov](https://codecov.io/gh/soypat/lneto/branch/main/graph/badge.svg)](https://codecov.io/gh/soypat/lneto)
 [![Go](https://github.com/soypat/lneto/actions/workflows/ci.yaml/badge.svg)](https://github.com/soypat/lneto/actions/workflows/ci.yaml)
-[![sourcegraph](https://sourcegraph.com/github.com/soypat/lneto/-/badge.svg)](https://sourcegraph.com/github.com/soypat/lneto?badge)
+[![sourcegraph](https://sourcegraph.com/github.com/soypat/lneto/-/badge.svg)](https://github.com/soypat/lneto/network/dependents)
 
 Userspace networking primitives.
 
@@ -96,14 +96,14 @@ ok      github.com/soypat/lneto/x/xnet  2.926s
 | UDP | RFC 768 | ✅ | `udp` | — | Handler + thread-safe `Conn` |
 | TCP | RFC 9293 | ✅ | `tcp` | 0 ²³ | Full state machine, SYN cookies, retransmit queue, `Conn`/`Listener` |
 | DNS | RFC 1035 | ✅ | `dns` | — | Client (A/AAAA query) |
-| DHCPv4 | RFC 2131 | ✅ | `dhcpv4` | — | Client + Server |
+| DHCPv4 | RFC 2131 | ✅ | `dhcp/dhcpv4` | — | Client + Server |
 | NTP | RFC 5905 | ✅ | `ntp` | — | Client |
-| mDNS | RFC 6762 | ✅ | `mdns` | — | Client (service announcement + query) |
+| mDNS | RFC 6762 | ✅ | `dns/mdns` | — | Client (service announcement + query) |
 | HTTP/1.1 headers | RFC 9110, RFC 9112 | ✅ | `http/httpraw` | 2 ⁴ | Header parse/format; no field normalization |
 | Ethernet PHY/MDIO | IEEE 802.3 cl.22/45 | ✅ | `phy` | — | Bare-metal PHY management via MDIO |
-| IPv6 | RFC 8200 | 🟡 | `ipv6` | — | Frame parsing only; no stack handler |
-| ICMPv6 | RFC 4443 | ❌ | — | — | Not implemented |
-| DHCPv6 | RFC 8415 | ❌ | — | — | Not implemented |
+| IPv6 | RFC 8200 | ✅ | `ipv6` | — | Frame parsing and stack handling |
+| ICMPv6 | RFC 4443 | ✅ | `ipv6/icmpv6` | — | Echo+NDP frame parsing and stack handling |
+| DHCPv6 | RFC 8415 | 🟡 | `dhcp/dhcpv6` | — | Frame parsing and standalone handling |
 | TLS 1.3 | RFC 8446 | ❌ | — | — | Not implemented |
 
 ¹ `BenchmarkARPExchange` — full ARP request/response exchange over Ethernet: **0 B/op, 0 allocs/op**

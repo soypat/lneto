@@ -22,7 +22,7 @@ func stack6PairConfigs(seed int64, maxports, icmpQueue uint16) (cfg1, cfg2 Stack
 		testMAC6B  = [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x02}
 	)
 	cfg1 = StackConfig{
-		Hostname:          "test-s6-1",
+		Hostname:          "stack6-1",
 		RandSeed:          seed,
 		StaticAddress6:    testAddr6A,
 		HardwareAddress:   testMAC6A,
@@ -32,7 +32,7 @@ func stack6PairConfigs(seed int64, maxports, icmpQueue uint16) (cfg1, cfg2 Stack
 		ICMPQueueLimit:    int(icmpQueue),
 	}
 	cfg2 = StackConfig{
-		Hostname:          "test-s6-2",
+		Hostname:          "stack6-2",
 		RandSeed:          ^seed,
 		StaticAddress6:    testAddr6B,
 		HardwareAddress:   testMAC6B,
