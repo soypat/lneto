@@ -32,8 +32,8 @@ func (netstack *Netstack) Reset(cfg StackConfig, stackBackoff lneto.BackoffStrat
 	return nil
 }
 
-func (netstack *Netstack) IPAddr() netip.Addr {
-	return netstack.stack.Addr()
+func (netstack *Netstack) IPAddr4() [4]byte {
+	return netstack.stack.Addr4()
 }
 
 // EnableICMP enables responding/sending ICMP echo frames.
@@ -58,7 +58,7 @@ func (netstack *Netstack) EnableDHCP(ctx context.Context, enabled bool, requestA
 		timeout = time.Until(deadline)
 	}
 	results, err := netstack.gstack.blk.DoDHCPv4(addr, timeout)
-	return results.AssignedAddr, results.Router, results.Subnet.Bits(), err
+	return netip.AddrFrom4(results.AssignedAddr4), results.Router, results.Subnet.Bits(), err
 }
 
 // Socket is a berkeley socket abstraction. Returns an [net.Listener] or [net.Conn] depending on laddr/raddr combination.
