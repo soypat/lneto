@@ -6,6 +6,9 @@ go.work.sum
 # Dependency directories after running `go mod vendor`
 vendor/
 
+# Wifi credentials
+*.credentials
+
 # Binaries for programs and plugins
 *.elf
 *.uf2
