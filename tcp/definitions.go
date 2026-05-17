@@ -10,6 +10,34 @@ import (
 	"github.com/soypat/lneto"
 )
 
+// CongestionControl decides how the TCP sender reacts to congestion.
+//
+// The implementation may inspect the current handler state and the most recent
+// segment that caused this control decision. The isTx flag reports whether the
+// segment being observed was transmitted by this endpoint (true) or received
+// from the peer (false), which lets the algorithm distinguish between outbound
+// send-side events and inbound acknowledgment/loss signals.
+//
+// The returned retransmit slice contains indices into the handler's transmit
+// buffer for packets that should be resent now. The indices must refer to the
+// sender's current retransmission queue / ring buffer ordering as understood by
+// the Handler. The retransmit slice is owned by the CongestionControl implementation
+// and is only valid until the next ControlCall.
+//
+// haltSendingNewPackets tells the stack whether it should temporarily stop
+// sending brand-new packets while this congestion event is being handled.
+// When true, only retransmissions should be sent until the congestion-control
+// implementation later allows new traffic again.
+//
+// Implementations are expected to maintain any needed internal state, such as
+// congestion window, slow-start threshold, or pacing state.
+type CongestionControl interface {
+	// Control is called when the stack needs to apply congestion-control policy,
+	// typically after loss has been detected or retransmission logic has been
+	// triggered.
+	Control(h *Handler, segment Segment, isTx bool) (retransmit []int, haltSendingNewPackets bool)
+}
+
 //go:generate stringer -type=State,OptionKind -linecomment -output stringers.go .
 
 var (
