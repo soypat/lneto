@@ -297,7 +297,9 @@ func newMDNSStack(t *testing.T, hostname string, seed int64,
 		t.Fatal(hostname, "mdns configure:", err)
 	}
 
-	err = stack.RegisterUDP4(&client, addr.As4(), mdns.Port)
+	var remote [4]byte
+	copy(remote[:], mdnsCfg.MulticastAddr)
+	err = stack.RegisterUDP4(&client, remote, mdns.Port)
 	if err != nil {
 		t.Fatal(hostname, "register udp:", err)
 	}

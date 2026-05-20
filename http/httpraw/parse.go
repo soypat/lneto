@@ -120,7 +120,13 @@ func (hb *headerBuf) free() int { return cap(hb.buf) - len(hb.buf) }
 func (hb *headerBuf) parseNextHeaders(ss *scannerState) {
 	debuglog("http:nexthdr:loop")
 	for kv := hb.next(ss); kv.isValid(); kv = hb.next(ss) {
-		hb.headers = append(hb.headers, kv) // TODO(HEAP): inc=16B slice growth when capacity exceeded
+		if len(hb.headers) == cap(hb.headers) {
+			// Refuse to grow the headers slice: caller must pre-allocate
+			// sufficient capacity via reset or use a larger initial size.
+			ss.err = errOOM
+			return
+		}
+		hb.headers = append(hb.headers, kv)
 	}
 	debuglog("http:nexthdr:done")
 }

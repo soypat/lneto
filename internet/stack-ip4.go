@@ -101,7 +101,7 @@ func (si4 *stackip4) demux4(carrierData []byte, offset int) error {
 	}
 	dst := ifrm.DestinationAddr()
 	if si4.ip4 != ([4]byte{}) && *dst != si4.ip4 {
-		if !si4.acceptMulticast || dst[0]&0xF0 != 0xE0 {
+		if !si4.acceptMulticast || !internal.IsMulticastIPAddr(dst[:]) {
 			si4.handlers.debug("ip:not-for-us")
 			return lneto.ErrPacketDrop // Not meant for us.
 		}

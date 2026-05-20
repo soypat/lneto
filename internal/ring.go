@@ -69,7 +69,7 @@ func (r *Ring) Write(b []byte) (int, error) {
 		n := copy(r.Buf[r.End:r.Off], b)
 		r.End += n
 		if r.End <= 0 {
-			panic("zero end after write") // TODO: remove panics after validation.
+			panic("zero end after write") // invariant: End must be >0 after writing into midFree region
 		}
 		return n, nil
 	} else if r.End == 0 {
@@ -87,7 +87,7 @@ func (r *Ring) Write(b []byte) (int, error) {
 		n += n2
 	}
 	if r.End <= 0 {
-		panic("zero end after write")
+		panic("zero end after write") // invariant: End must be >0 after appending to the tail region
 	}
 	return n, nil
 }
