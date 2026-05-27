@@ -41,7 +41,8 @@ func (netstack *Netstack) EnableICMP(enabled bool) error {
 	return netstack.stack.EnableICMP(enabled)
 }
 
-// EnableDHCP
+// EnableDHCP performs a DHCPv4 request, writes the assigned address into the
+// stack, and resolves the gateway hardware address via ARP.
 func (netstack *Netstack) EnableDHCP(ctx context.Context, enabled bool, requestAddr netip.Addr) (assigned netip.Addr, routerGW netip.Addr, subnetBits int, err error) {
 	var addr [4]byte
 	if !enabled {
@@ -58,7 +59,22 @@ func (netstack *Netstack) EnableDHCP(ctx context.Context, enabled bool, requestA
 		timeout = time.Until(deadline)
 	}
 	results, err := netstack.gstack.blk.DoDHCPv4(addr, timeout)
-	return netip.AddrFrom4(results.AssignedAddr4), results.Router, results.Subnet.Bits(), err
+	if err != nil {
+		return netip.Addr{}, netip.Addr{}, 0, err
+	}
+	// Write IP, subnet and DNS into the stack.
+	if err = netstack.stack.AssimilateDHCPResults(results); err != nil {
+		return netip.AddrFrom4(results.AssignedAddr4), results.Router, results.Subnet.Bits(), err
+	}
+	// Resolve gateway hardware address so egress packets are unicasted to the
+	// router rather than broadcast. Failure is non-fatal.
+	if results.Router.IsValid() {
+		gwHW, gwErr := netstack.gstack.blk.DoResolveHardwareAddress6(results.Router, 2*time.Second)
+		if gwErr == nil {
+			netstack.stack.SetGatewayHardwareAddr(gwHW)
+		}
+	}
+	return netip.AddrFrom4(results.AssignedAddr4), results.Router, results.Subnet.Bits(), nil
 }
 
 // Socket is a berkeley socket abstraction. Returns an [net.Listener] or [net.Conn] depending on laddr/raddr combination.

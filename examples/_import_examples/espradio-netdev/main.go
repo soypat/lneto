@@ -70,6 +70,7 @@ func main() {
 		MaxActiveUDPPorts: 4,
 		ICMPQueueLimit:    1,
 		MTU:               1500,
+		PassivePeers:      4,
 		HardwareAddress:   hw,
 	}, backoff, poolCfg)
 	failIfErr("stack reset", err)
