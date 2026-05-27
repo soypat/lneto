@@ -11,4 +11,6 @@ require (
 	golang.org/x/exp v0.0.0-20240808152545-0cdaa3abc0fa // indirect
 )
 
+// This is an example taken grom github.com/soypat/lneto
+// Remove this replace directive when using as own program.
 replace github.com/soypat/lneto => ../../../.
