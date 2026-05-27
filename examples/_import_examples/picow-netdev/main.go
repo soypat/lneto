@@ -58,7 +58,8 @@ func main() {
 		HardwareAddress:   hw,
 	}, backoff, poolCfg)
 	failIfErr("stack reset", err)
-
+	err = stack.EnableICMP(true)
+	failIfErr("icmp enable", err)
 	err = dev.LinkConnect(globConnectParams)
 	failIfErr("wifi join", err)
 
@@ -162,7 +163,7 @@ func failIfErr(msg string, err error) {
 	if err != nil {
 		fail(msg, err)
 	}
-	println(msg, "PASS")
+	println("PASS", msg)
 }
 func fail(msg string, err error) {
 	var errstr string

@@ -69,10 +69,12 @@ func main() {
 		MaxActiveTCPPorts: 4,
 		MaxActiveUDPPorts: 4,
 		ICMPQueueLimit:    1,
+		MTU:               1500,
 		HardwareAddress:   hw,
 	}, backoff, poolCfg)
 	failIfErr("stack reset", err)
-
+	err = stack.EnableICMP(true)
+	failIfErr("icmp enable", err)
 	dev.LinkNotify(userNotify)
 	var iface netdev.Interface[espradio.STAConfig]
 	err = iface.Init(&dev, &dev, netdev.InterfaceConfig{})
