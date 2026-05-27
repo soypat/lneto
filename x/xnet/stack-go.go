@@ -237,9 +237,11 @@ func (u *udppktconn) SetReadDeadline(t time.Time) error  { return u.c.SetReadDea
 func (u *udppktconn) SetWriteDeadline(t time.Time) error { return u.c.SetWriteDeadline(t) }
 func (u *udppktconn) LnetoPacketConn() *udp.PacketConn   { return &u.c }
 
-func (u *udppktconn) Read(b []byte) (int, error)  { n, _, err := u.ReadFrom(b); return n, err }
-func (u *udppktconn) Write(b []byte) (int, error) { return 0, errors.New("udp: Write requires WriteTo on a packet conn") }
-func (u *udppktconn) RemoteAddr() net.Addr        { return nil }
+func (u *udppktconn) Read(b []byte) (int, error) { n, _, err := u.ReadFrom(b); return n, err }
+func (u *udppktconn) Write(b []byte) (int, error) {
+	return 0, errors.New("udp: Write requires WriteTo on a packet conn")
+}
+func (u *udppktconn) RemoteAddr() net.Addr { return nil }
 
 type tcplistener struct {
 	l         tcp.Listener
