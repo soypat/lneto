@@ -2,6 +2,7 @@ package xnet
 
 import (
 	"context"
+	"errors"
 	"math"
 	"net"
 	"net/netip"
@@ -234,6 +235,13 @@ func (u *udppktconn) LocalAddr() net.Addr { return &u.laddr }
 func (u *udppktconn) SetDeadline(t time.Time) error      { return u.c.SetDeadline(t) }
 func (u *udppktconn) SetReadDeadline(t time.Time) error  { return u.c.SetReadDeadline(t) }
 func (u *udppktconn) SetWriteDeadline(t time.Time) error { return u.c.SetWriteDeadline(t) }
+func (u *udppktconn) LnetoPacketConn() *udp.PacketConn   { return &u.c }
+
+func (u *udppktconn) Read(b []byte) (int, error) { n, _, err := u.ReadFrom(b); return n, err }
+func (u *udppktconn) Write(b []byte) (int, error) {
+	return 0, errors.New("udp: Write requires WriteTo on a packet conn")
+}
+func (u *udppktconn) RemoteAddr() net.Addr { return nil }
 
 type tcplistener struct {
 	l         tcp.Listener
@@ -244,9 +252,14 @@ type tcplistener struct {
 
 var _ net.Listener = (*tcplistener)(nil)
 
+func (l *tcplistener) LnetoListener() *tcp.Listener {
+	return &l.l
+}
 func (l *tcplistener) Addr() net.Addr {
 	return l.localAddr
 }
+
+func (l *tcplistener) Shutdown() { l.Close() }
 
 func (l *tcplistener) Accept() (net.Conn, error) {
 	if l.closed {
@@ -254,6 +267,9 @@ func (l *tcplistener) Accept() (net.Conn, error) {
 	}
 	var backoffs uint
 	for {
+		if l.closed {
+			return nil, net.ErrClosed
+		}
 		n := l.l.NumberOfReadyToAccept()
 		if n == 0 {
 			backoff(l.sleep, backoffs)
@@ -289,6 +305,12 @@ type tcpconn struct {
 
 var _ net.Conn = tcpconn{}
 
+func (c tcpconn) LnetoConn() *tcp.Conn {
+	return c.Conn
+}
+
+func (c tcpconn) CloseWrite() error { return c.Conn.Close() }
+
 func (c tcpconn) LocalAddr() net.Addr {
 	return c.localAddr
 }
@@ -310,7 +332,16 @@ var _ net.Conn = udpconn{}
 
 func (c udpconn) LocalAddr() net.Addr  { return c.localAddr }
 func (c udpconn) RemoteAddr() net.Addr { return c.raddr }
+func (c udpconn) LnetoConn() *udp.Conn { return c.Conn }
 
+func (c udpconn) ReadFrom(b []byte) (int, net.Addr, error) {
+	n, err := c.Conn.Read(b)
+	return n, c.raddr, err
+}
+
+func (c udpconn) WriteTo(b []byte, _ net.Addr) (int, error) {
+	return c.Conn.Write(b) // connected UDP: always writes to dialed remote
+}
 func udpaddr(addr netip.AddrPort) net.Addr {
 	return &net.UDPAddr{
 		IP:   addr.Addr().AsSlice(),
