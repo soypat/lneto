@@ -119,6 +119,7 @@ func (s *StackAsync) IngressEthernet(ethernetFrame []byte) error {
 	defer s.mu.Unlock()
 	s.stats.TotalReceived += uint64(len(ethernetFrame))
 	err := s.link.Demux(ethernetFrame, 0)
+	debugPacket("IN ", ethernetFrame)
 	if err == nil {
 		s.arpt.learnFromIngressEthernet(ethernetFrame)
 	}
@@ -132,6 +133,9 @@ func (s *StackAsync) EgressEthernet(dstEthernetFrame []byte) (int, error) {
 	defer s.mu.Unlock()
 	n, err := s.link.Encapsulate(dstEthernetFrame, -1, 0)
 	s.stats.TotalSent += uint64(n)
+	if n > 0 {
+		debugPacket("OUT", dstEthernetFrame[:n])
+	}
 	return n, err
 }
 
