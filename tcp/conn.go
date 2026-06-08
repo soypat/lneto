@@ -86,6 +86,11 @@ type ConnConfig struct {
 	// LossRecovery is set and unused otherwise. The tcp package reads it only to
 	// stamp the loss-recovery hooks; it holds no clock itself.
 	Nanotime func() int64
+	// CongestionControl optionally installs a congestion controller (such as
+	// those in the lneto/tcp/congestion subpackage) limiting how much new data
+	// is kept in flight. If nil the connection is limited only by the peer's
+	// advertised receive window.
+	CongestionControl CongestionControl
 }
 
 // Configure should be called on any newly created connection before usage. See [ConnConfig].
@@ -108,7 +113,7 @@ func (conn *Conn) Configure(config ConnConfig) (err error) {
 	conn._backoff = config.RWBackoff
 	conn.logger.log = config.Logger
 	conn.h.SetLossRecovery(config.LossRecovery, config.Nanotime)
-	return nil
+	return conn.h.SetCongestionControl(config.CongestionControl)
 }
 
 // LocalPort returns the local port on which the socket is listening or connected to.
