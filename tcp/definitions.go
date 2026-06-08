@@ -10,32 +10,55 @@ import (
 	"github.com/soypat/lneto"
 )
 
-// CongestionControl decides how the TCP sender reacts to congestion.
-//
-// The implementation may inspect the current handler state and the most recent
-// segment that caused this control decision. The isTx flag reports whether the
-// segment being observed was transmitted by this endpoint (true) or received
-// from the peer (false), which lets the algorithm distinguish between outbound
-// send-side events and inbound acknowledgment/loss signals.
-//
-// The returned retransmit slice contains indices into the handler's transmit
-// buffer for packets that should be resent now. The indices must refer to the
-// sender's current retransmission queue / ring buffer ordering as understood by
-// the Handler. The retransmit slice is owned by the CongestionControl implementation
-// and is only valid until the next ControlCall.
-//
-// haltSendingNewPackets tells the stack whether it should temporarily stop
-// sending brand-new packets while this congestion event is being handled.
-// When true, only retransmissions should be sent until the congestion-control
-// implementation later allows new traffic again.
+// CongestionControl decides how much unacknowledged data a TCP sender may keep
+// in flight. It observes every segment crossing the connection and maintains a
+// congestion window from those observations.
 //
 // Implementations are expected to maintain any needed internal state, such as
-// congestion window, slow-start threshold, or pacing state.
+// the congestion window, slow-start threshold, bandwidth/RTT estimates, or
+// pacing state. The lneto/tcp/congestion subpackage provides two
+// implementations: congestion.CUBIC and congestion.BBR.
+//
+// The interface is intentionally decoupled from the [Handler]'s internals: the
+// Handler hands the controller a fully-populated [CongestionEvent], so
+// implementations live in a separate package and never touch unexported state.
 type CongestionControl interface {
-	// Control is called when the stack needs to apply congestion-control policy,
-	// typically after loss has been detected or retransmission logic has been
-	// triggered.
-	Control(h *Handler, segment Segment, isTx bool) (retransmit []int, haltSendingNewPackets bool)
+	// Control feeds a segment crossing the [Handler] boundary into the
+	// controller so it can update its congestion state, and returns the
+	// resulting congestion window: the maximum number of unacknowledged bytes
+	// the sender should allow in flight. The Handler stops sending new data once
+	// the in-flight byte count reaches the returned window; retransmission
+	// scheduling remains the Handler's responsibility. Control is called for
+	// every admitted segment, not only on congestion events.
+	Control(event CongestionEvent) (congestionWindow Size)
+}
+
+// CongestionEvent describes a single TCP segment crossing the connection,
+// together with the sender state needed by a [CongestionControl] to update its
+// estimates. It is built by [ControlBlock.CongestionEvent] for every segment
+// sent or received and passed to [CongestionControl.Control].
+type CongestionEvent struct {
+	// Segment is the TCP segment crossing the connection.
+	Segment Segment
+	// SndUNA is the sender's oldest unacknowledged sequence number after the
+	// segment has been processed by the control block. Successive events let the
+	// controller derive how many new bytes an incoming ACK acknowledged.
+	SndUNA Value
+	// SndNXT is the next sequence number the sender will use. For transmitted
+	// segments it reflects state before the segment advances it, which lets the
+	// controller tell new data (Segment.SEQ == SndNXT) from a retransmission.
+	SndNXT Value
+	// InFlight is the number of unacknowledged bytes in flight after the event.
+	InFlight Size
+	// MSS is the maximum segment size negotiated with the peer, or 0 if unknown.
+	MSS Size
+	// Tx reports whether the segment was transmitted by this endpoint (true) or
+	// received from the peer (false).
+	Tx bool
+	// Dupacks is the control block's count of consecutive duplicate ACKs
+	// received, zero for transmitted segments. Controllers derive loss signals
+	// from it (commonly the fast-retransmit threshold of 3, RFC 5681 §3.2).
+	Dupacks uint8
 }
 
 //go:generate stringer -type=State,OptionKind -linecomment -output stringers.go .

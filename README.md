@@ -98,7 +98,8 @@ ok      github.com/soypat/lneto/x/xnet  2.926s
 | IPv4 | RFC 791 | ✅ | `ipv4` | 0 ² | Frame parsing, ones-complement checksum |
 | ICMPv4 | RFC 792 | ✅ | `ipv4/icmpv4` | — | Echo (ping) client handler |
 | UDP | RFC 768 | ✅ | `udp` | — | Handler + thread-safe `Conn` |
-| TCP | RFC 9293 | ✅ | `tcp` | 0 ²³ | Full state machine, SYN cookies, retransmit queue, `Conn`/`Listener` |
+| TCP | RFC 9293 | ✅ | `tcp` | 0 ²³ | Full state machine, SYN cookies, retransmit queue, `Conn`/`Listener`, pluggable congestion control |
+| TCP congestion control | RFC 9438 (CUBIC), draft-ietf-ccwg-bbr (BBRv3) | 🟡 | `tcp/congestion` | 0 ⁵ | Pluggable `tcp.CongestionControl`; ships CUBIC and a simplified BBRv3 |
 | DNS | RFC 1035 | ✅ | `dns` | — | Client (A/AAAA query) |
 | DHCPv4 | RFC 2131 | ✅ | `dhcp/dhcpv4` | — | Client + Server |
 | IPv4 Link-Local (APIPA) | RFC 3927 | ✅ | `ipv4/linklocal4` | 0 | Heapless claim-and-defend state machine for 169.254.x.x |
@@ -116,6 +117,7 @@ ok      github.com/soypat/lneto/x/xnet  2.926s
 ² `BenchmarkTCPHandshake` — TCP 3-way handshake over Ethernet/IPv4: **0 B/op, 0 allocs/op**
 ³ `BenchmarkSYNCookie_Generate` / `BenchmarkSYNCookie_Validate` — SYN cookie generation and validation: **0 B/op, 0 allocs/op each**
 ⁴ `BenchmarkParseBytes` — HTTP/1.1 request header + body parsing: **240 B/op, 2 allocs/op**
+⁵ `TestCongestionControlNoAllocs` — CUBIC/BBR per-ACK window update: **0 allocs/op**
 
 ## Packages
 - `lneto`: Low-level Networking Operations, or "El Neto", the networking package. Zero copy network frame marshalling and unmarshalling.
@@ -123,7 +125,8 @@ ok      github.com/soypat/lneto/x/xnet  2.926s
 - [`lneto/internet`](./internet): Userspace IP/TCP networking stack. This is where the magic happens. Integrates many of the listed packages.
     - [`lneto/internet/pcap`](./internal/pcap): Packet capture and field breakdown utilities. Wireshark in the making.
 - [`lneto/http/httpraw`](./http/httpraw/): Heapless HTTP header processing and validation. Does no implement header normalization.
-- [`lneto/tcp`](./tcp): TCP implementation and low level logic.
+- [`lneto/tcp`](./tcp): TCP implementation and low level logic. Exposes a pluggable `CongestionControl` interface.
+    - [`lneto/tcp/congestion`](./tcp/congestion): Congestion-control algorithms (CUBIC and a simplified BBRv3) implementing `tcp.CongestionControl`.
 - [`lneto/ipv4/linklocal4`](./ipv4/linklocal4): RFC 3927 IPv4 link-local (APIPA) address autoconfiguration. Heapless claim-and-defend state machine for self-assigned 169.254.x.x addresses when no DHCP server is available.
 - [`lneto/dhcpv4`](./dhcpv4): DHCP version 4 protocol implementation and low level logic.
 - [`lneto/dns`](./dns): DNS protocol implementation and low level logic.
