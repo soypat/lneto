@@ -10,6 +10,9 @@ import (
 )
 
 func (s *StackAsync) StackRetrying(stackProtoBackoff lneto.BackoffStrategy) StackRetrying {
+	if stackProtoBackoff == nil {
+		panic("nil backoff to StackRetrying")
+	}
 	return StackRetrying{
 		block: s.StackBlocking(stackProtoBackoff),
 	}

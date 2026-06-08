@@ -48,6 +48,9 @@ type ConnConfig struct {
 // Configure initializes the connection with the given buffer and queue configuration.
 // Must be called before [Conn.Open]. Calling Configure on an active connection aborts it.
 func (conn *Conn) Configure(cfg ConnConfig) error {
+	if cfg.RWBackoff == nil {
+		return lneto.ErrMissingHALConfig
+	}
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	conn.abort()
@@ -302,11 +305,7 @@ func (conn *Conn) FreeInput() int {
 }
 
 func (conn *Conn) backoff(consecutiveBackoffs uint) {
-	if conn._backoff != nil {
-		conn._backoff.Do(consecutiveBackoffs)
-	} else {
-		internal.BackoffConnRW(consecutiveBackoffs)
-	}
+	conn._backoff.Do(consecutiveBackoffs)
 }
 
 func (conn *Conn) lockPipeConnID() (uint64, error) {

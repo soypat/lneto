@@ -25,6 +25,9 @@ type StackGoConfig struct {
 }
 
 func (s *StackAsync) StackGo(stackProtoBackoff lneto.BackoffStrategy, cfg StackGoConfig) StackGo {
+	if stackProtoBackoff == nil || cfg.ListenerPoolConfig.NewBackoff == nil {
+		panic("nil backoff to StackGo")
+	}
 	return s.StackBlocking(stackProtoBackoff).StackGo(cfg)
 }
 

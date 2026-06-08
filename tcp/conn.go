@@ -62,6 +62,9 @@ type ConnConfig struct {
 }
 
 func (conn *Conn) Configure(config ConnConfig) (err error) {
+	if config.RWBackoff == nil {
+		return lneto.ErrMissingHALConfig
+	}
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	err = conn.h.SetBuffers(config.TxBuf, config.RxBuf, config.TxPacketQueueSize)
@@ -483,9 +486,5 @@ func (conn *Conn) ConnectionID() *uint64 {
 }
 
 func (conn *Conn) backoff(consecutiveBackoffs uint) {
-	if conn._backoff != nil {
-		conn._backoff.Do(consecutiveBackoffs)
-	} else {
-		internal.BackoffConnRW(consecutiveBackoffs)
-	}
+	conn._backoff.Do(consecutiveBackoffs)
 }

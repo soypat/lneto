@@ -8,7 +8,6 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/dhcp/dhcpv4"
-	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -21,6 +20,9 @@ var (
 )
 
 func (s *StackAsync) StackBlocking(stackProtoBackoff lneto.BackoffStrategy) StackBlocking {
+	if stackProtoBackoff == nil {
+		panic("nil backoff to StackBlocking")
+	}
 	return StackBlocking{
 		async:    s,
 		_backoff: stackProtoBackoff,
@@ -206,9 +208,5 @@ func (s StackBlocking) backoff(consecutiveBackoffs uint) {
 }
 
 func backoff(bo lneto.BackoffStrategy, consecutiveBackoffs uint) {
-	if bo != nil {
-		bo.Do(consecutiveBackoffs)
-	} else {
-		internal.BackoffStackProto(consecutiveBackoffs)
-	}
+	bo.Do(consecutiveBackoffs)
 }

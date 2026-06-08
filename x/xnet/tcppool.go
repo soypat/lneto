@@ -59,7 +59,7 @@ type TCPPoolConfig struct {
 }
 
 func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
-	if cfg.EstablishedTimeout <= 0 || cfg.ClosingTimeout <= 0 {
+	if cfg.EstablishedTimeout <= 0 || cfg.ClosingTimeout <= 0 || cfg.NewBackoff == nil {
 		return nil, lneto.ErrInvalidConfig
 	}
 	n := int(cfg.PoolSize)
