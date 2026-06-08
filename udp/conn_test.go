@@ -4,7 +4,9 @@ import (
 	"encoding/binary"
 	"net/netip"
 	"testing"
+	"time"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
 )
 
@@ -26,6 +28,7 @@ func newTestConn(t *testing.T) *Conn {
 		TxBuf:       make([]byte, 256),
 		RxQueueSize: 4,
 		TxQueueSize: 4,
+		RWBackoff:   backoffYield,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -238,4 +241,8 @@ func TestConn_FrameOffset(t *testing.T) {
 	if string(buf[:n]) != "hi" {
 		t.Fatalf("got %q, want %q", string(buf[:n]), "hi")
 	}
+}
+
+func backoffYield(backoffs uint) time.Duration {
+	return lneto.BackoffFlagGosched
 }

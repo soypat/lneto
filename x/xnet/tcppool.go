@@ -59,8 +59,10 @@ type TCPPoolConfig struct {
 }
 
 func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
-	if cfg.EstablishedTimeout <= 0 || cfg.ClosingTimeout <= 0 || cfg.NewBackoff == nil {
+	if cfg.EstablishedTimeout <= 0 || cfg.ClosingTimeout <= 0 {
 		return nil, lneto.ErrInvalidConfig
+	} else if cfg.NewBackoff == nil {
+		return nil, lneto.ErrMissingHALConfig
 	}
 	n := int(cfg.PoolSize)
 	pool := &TCPPool{
@@ -84,9 +86,7 @@ func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
 			TxBuf:             bufSpace[txOff : txOff+cfg.TxBufSize],
 			TxPacketQueueSize: cfg.QueueSize,
 			Logger:            cfg.ConnLogger,
-		}
-		if cfg.NewBackoff != nil {
-			conncfg.RWBackoff = cfg.NewBackoff()
+			RWBackoff:         cfg.NewBackoff(),
 		}
 		err := pool.conns[i].Configure(conncfg)
 		if err != nil {

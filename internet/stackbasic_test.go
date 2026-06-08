@@ -4,6 +4,7 @@ import (
 	"math/rand"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/tcp"
@@ -146,6 +147,7 @@ func setupClientServer6(t *testing.T, rng *rand.Rand, client, server *StackIPv6,
 		RxBuf:             make([]byte, bufsize),
 		TxBuf:             make([]byte, bufsize),
 		TxPacketQueueSize: 3,
+		RWBackoff:         backoffYield,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -154,6 +156,7 @@ func setupClientServer6(t *testing.T, rng *rand.Rand, client, server *StackIPv6,
 		RxBuf:             make([]byte, bufsize),
 		TxBuf:             make([]byte, bufsize),
 		TxPacketQueueSize: 3,
+		RWBackoff:         backoffYield,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -187,6 +190,7 @@ func setupClientServer(t *testing.T, rng *rand.Rand, client, server *StackIPv4, 
 		TxBuf:             make([]byte, bufsize),
 		TxPacketQueueSize: 3,
 		Logger:            nil,
+		RWBackoff:         backoffYield,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -196,6 +200,7 @@ func setupClientServer(t *testing.T, rng *rand.Rand, client, server *StackIPv4, 
 		TxBuf:             make([]byte, bufsize),
 		TxPacketQueueSize: 3,
 		Logger:            nil,
+		RWBackoff:         backoffYield,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -218,4 +223,8 @@ func setupClientServer(t *testing.T, rng *rand.Rand, client, server *StackIPv4, 
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func backoffYield(consecutiveBackoffs uint) time.Duration {
+	return lneto.BackoffFlagGosched
 }

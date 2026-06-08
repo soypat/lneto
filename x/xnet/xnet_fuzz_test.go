@@ -318,6 +318,7 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 		RxBuf:             make([]byte, bufsize),
 		TxBuf:             make([]byte, bufsize),
 		TxPacketQueueSize: 1 + int(uint16(seed1)%10),
+		RWBackoff:         backoffYield,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -326,6 +327,7 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 		RxBuf:             make([]byte, bufsize),
 		TxBuf:             make([]byte, bufsize),
 		TxPacketQueueSize: 1 + int(uint16(seed2)%10),
+		RWBackoff:         backoffYield,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -335,6 +337,7 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 		TxBuf:       make([]byte, bufsize),
 		RxQueueSize: int(1 + uint16(seed1>>32)%10),
 		TxQueueSize: int(1 + uint16(seed1>>32)%10),
+		RWBackoff:   backoffYield,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -344,6 +347,7 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 		TxBuf:       make([]byte, bufsize),
 		RxQueueSize: int(1 + uint16(seed2>>32)%10),
 		TxQueueSize: int(1 + uint16(seed2>>32)%10),
+		RWBackoff:   backoffYield,
 	})
 	if err != nil {
 		t.Fatal(err)

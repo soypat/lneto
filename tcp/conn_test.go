@@ -5,6 +5,8 @@ import (
 	"net/netip"
 	"testing"
 	"time"
+
+	"github.com/soypat/lneto"
 )
 
 func newConfiguredConn(t *testing.T) *Conn {
@@ -14,6 +16,7 @@ func newConfiguredConn(t *testing.T) *Conn {
 		RxBuf:             make([]byte, 512),
 		TxBuf:             make([]byte, 512),
 		TxPacketQueueSize: 4,
+		RWBackoff:         backoffYield,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -121,6 +124,7 @@ func TestConn_Configure_Twice(t *testing.T) {
 		RxBuf:             make([]byte, 1024),
 		TxBuf:             make([]byte, 1024),
 		TxPacketQueueSize: 8,
+		RWBackoff:         backoffYield,
 	})
 	if err != nil {
 		t.Fatalf("reconfigure should succeed: %v", err)
@@ -159,4 +163,8 @@ func TestConn_ImplementsNetConn(t *testing.T) {
 		Close() error
 	} = conn
 	_ = net.ErrClosed
+}
+
+func backoffYield(consecutiveBackoffs uint) time.Duration {
+	return lneto.BackoffFlagGosched
 }
