@@ -161,6 +161,27 @@ func (tcb *ControlBlock) MakeDupACK() Segment {
 	}
 }
 
+// CongestionEvent builds the [CongestionEvent] describing seg crossing the
+// connection for consumption by a [CongestionControl]. tx reports whether the
+// segment is outgoing. For outgoing segments it must be called before
+// [ControlBlock.Send] advances snd.NXT so Segment.SEQ==SndNXT identifies new
+// data (as opposed to a retransmission).
+func (tcb *ControlBlock) CongestionEvent(seg Segment, tx bool) CongestionEvent {
+	var dupacks uint8
+	if !tx {
+		dupacks = tcb.dupack
+	}
+	return CongestionEvent{
+		Segment:  seg,
+		SndUNA:   tcb.snd.UNA,
+		SndNXT:   tcb.snd.NXT,
+		InFlight: tcb.snd.inFlight(),
+		MSS:      tcb.snd.MSS,
+		Tx:       tx,
+		Dupacks:  dupacks,
+	}
+}
+
 // MakeChallengeAck returns a challenge ACK segment for the current ControlBlock state
 // used to respond to unexpected or ambiguous segments that require the remote peer to confirm
 // its connection state. A challenge ACK does not acknowledge new data,
