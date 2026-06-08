@@ -53,7 +53,7 @@ type TCPPoolConfig struct {
 	ClosingTimeout time.Duration
 	// NewUserData is used to create user data used for each individual TCP connection and returned on GetTCP.
 	NewUserData func() any
-	// NewBackoff returns the backoff to use for every newly configured TCP connection.
+	// NewBackoff returns the backoff to use for every newly configured TCP connection. Must be non-nil.
 	// This should always return a static(non-method) function unless you know what you are doing.
 	NewBackoff func() lneto.BackoffStrategy
 }
