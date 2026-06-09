@@ -3,8 +3,12 @@ go.work
 go.work.sum
 # Test binary, built with `go test -c`
 *.test
+# Test coverage profiles.
+profiles/
+
 # Dependency directories after running `go mod vendor`
 vendor/
+
 
 # Binaries for programs and plugins
 *.elf
