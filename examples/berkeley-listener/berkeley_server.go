@@ -347,6 +347,7 @@ func mockClient(stack *xnet.StackAsync, port uint16, subnet netip.Prefix) {
 		TxBuf:             make([]byte, 2048),
 		TxPacketQueueSize: 4,
 		Logger:            slog.Default(),
+		RWBackoff:         tcpBackoff,
 	})
 	if err != nil {
 		panic(err.Error())

@@ -112,6 +112,7 @@ func BenchmarkTCPHandshake(b *testing.B) {
 		RxBuf:             buf[:MTU],
 		TxBuf:             buf[MTU : MTU*2],
 		TxPacketQueueSize: 4,
+		RWBackoff:         backoffYield,
 	})
 	if err != nil {
 		b.Fatal(err)
@@ -120,6 +121,7 @@ func BenchmarkTCPHandshake(b *testing.B) {
 		RxBuf:             buf[2*MTU : 3*MTU],
 		TxBuf:             buf[3*MTU : 4*MTU],
 		TxPacketQueueSize: 4,
+		RWBackoff:         backoffYield,
 	})
 	if err != nil {
 		b.Fatal(err)

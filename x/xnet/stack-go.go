@@ -99,6 +99,7 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 				RxBuf:       make([]byte, s.plcfg.RxBufSize),
 				TxQueueSize: s.plcfg.QueueSize,
 				RxQueueSize: s.plcfg.QueueSize,
+				RWBackoff:   s.plcfg.NewBackoff(),
 			})
 			if err != nil {
 				return nil, err
@@ -120,6 +121,7 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			RxBuf:       make([]byte, s.plcfg.RxBufSize),
 			TxQueueSize: s.plcfg.QueueSize,
 			RxQueueSize: s.plcfg.QueueSize,
+			RWBackoff:   s.plcfg.NewBackoff(),
 		})
 		if err != nil {
 			return nil, err
