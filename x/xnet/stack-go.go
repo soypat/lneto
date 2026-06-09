@@ -25,6 +25,9 @@ type StackGoConfig struct {
 }
 
 func (s *StackAsync) StackGo(stackProtoBackoff lneto.BackoffStrategy, cfg StackGoConfig) StackGo {
+	if stackProtoBackoff == nil || cfg.ListenerPoolConfig.NewBackoff == nil {
+		panic("nil backoff to StackGo")
+	}
 	return s.StackBlocking(stackProtoBackoff).StackGo(cfg)
 }
 
@@ -142,9 +145,11 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			var conn tcp.Conn
 			// DIAL TCP: active connection a.k.a TCP Client branch.
 			err = conn.Configure(tcp.ConnConfig{
+				// TODO(pato): Eventually add UDP configuration. we use TCP for now for simplicity's sake.
 				TxBuf:             make([]byte, s.plcfg.TxBufSize),
 				RxBuf:             make([]byte, s.plcfg.RxBufSize),
 				TxPacketQueueSize: s.plcfg.QueueSize,
+				RWBackoff:         s.plcfg.NewBackoff(),
 			})
 			if err != nil {
 				return nil, err

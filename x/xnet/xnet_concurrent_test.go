@@ -53,6 +53,7 @@ func TestTCPListener_ConcurrentEcho(t *testing.T) {
 		RxBufSize:          512,
 		EstablishedTimeout: 5 * time.Second,
 		ClosingTimeout:     5 * time.Second,
+		NewBackoff:         func() lneto.BackoffStrategy { return backoffYield },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -96,6 +97,7 @@ func TestTCPListener_ConcurrentEcho(t *testing.T) {
 			RxBuf:             connBufs[bufOff : bufOff+tcpBufSize],
 			TxBuf:             connBufs[bufOff+tcpBufSize : bufOff+2*tcpBufSize],
 			TxPacketQueueSize: 4,
+			RWBackoff:         backoffYield,
 		})
 		if err != nil {
 			t.Fatalf("client %d conn configure: %v", i, err)
@@ -327,7 +329,7 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 		RxBuf:             nil,
 		TxBuf:             make([]byte, tx1Buf),
 		TxPacketQueueSize: queueSize,
-		RWBackoff:         backoffGosched,
+		RWBackoff:         backoffYield,
 		Logger:            logger,
 	})
 	if err != nil {
@@ -430,8 +432,4 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 		}
 	}
 
-}
-
-func backoffGosched(consecutiveBackoffs uint) (sleep time.Duration) {
-	return lneto.BackoffFlagGosched
 }

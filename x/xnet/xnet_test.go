@@ -208,6 +208,7 @@ func newTCPStacks(t testing.TB, randSeed int64, mtu int) (s1, s2 *StackAsync, c1
 		RxBuf:             buf[:mtu],
 		TxBuf:             buf[mtu : mtu*2],
 		TxPacketQueueSize: 4,
+		RWBackoff:         backoffYield,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -216,6 +217,7 @@ func newTCPStacks(t testing.TB, randSeed int64, mtu int) (s1, s2 *StackAsync, c1
 		RxBuf:             buf[2*mtu : 3*mtu],
 		TxBuf:             buf[3*mtu : 4*mtu],
 		TxPacketQueueSize: 4,
+		RWBackoff:         backoffYield,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1044,4 +1046,8 @@ func getTCPFrame(etherFrame []byte) (tcp.Frame, bool) {
 		return tcp.Frame{}, false
 	}
 	return tfrm, true
+}
+
+func backoffYield(consecutiveBackoffs uint) time.Duration {
+	return lneto.BackoffFlagGosched
 }

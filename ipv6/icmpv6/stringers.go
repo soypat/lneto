@@ -48,7 +48,6 @@ func (i Type) String() string {
 		return "Type(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
 }
-
 func _() {
 	// An "invalid array index" compiler error signifies that the constant values have changed.
 	// Re-run the stringer command to generate them again.
@@ -72,7 +71,6 @@ func (i CodeDestinationUnreachable) String() string {
 	}
 	return _CodeDestinationUnreachable_name[_CodeDestinationUnreachable_index[i]:_CodeDestinationUnreachable_index[i+1]]
 }
-
 func _() {
 	// An "invalid array index" compiler error signifies that the constant values have changed.
 	// Re-run the stringer command to generate them again.

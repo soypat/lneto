@@ -25,11 +25,12 @@ func _() {
 	_ = x[FieldClassBinaryText-14]
 	_ = x[FieldClassOperation-15]
 	_ = x[FieldClassTimestamp-16]
+	_ = x[FieldClassDNSName-17]
 }
 
-const _FieldClass_name = "undefinedsourcedestinationprotocolversiontypesizeflagsidentificationchecksumoptionspayloadtextaddressbinary-textoptimestamp"
+const _FieldClass_name = "undefinedsourcedestinationprotocolversiontypesizeflagsidentificationchecksumoptionspayloadtextaddressbinary-textoptimestampdns name"
 
-var _FieldClass_index = [...]uint8{0, 9, 15, 26, 34, 41, 45, 49, 54, 68, 76, 83, 90, 94, 101, 112, 114, 123}
+var _FieldClass_index = [...]uint8{0, 9, 15, 26, 34, 41, 45, 49, 54, 68, 76, 83, 90, 94, 101, 112, 114, 123, 131}
 
 func (i FieldClass) String() string {
 	if i >= FieldClass(len(_FieldClass_index)-1) {

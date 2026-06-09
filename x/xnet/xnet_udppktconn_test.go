@@ -60,6 +60,7 @@ func TestStackAsyncRegisterListenerUDP_ReceiveData(t *testing.T) {
 	if err := pc.Configure(udp.PacketConnConfig{
 		RxBuf: make([]byte, testUDPBufSize), TxBuf: make([]byte, testUDPBufSize),
 		RxQueueSize: testUDPQueueSize, TxQueueSize: testUDPQueueSize,
+		RWBackoff: backoffYield,
 	}); err != nil {
 		t.Fatal("pc Configure:", err)
 	}
@@ -74,6 +75,7 @@ func TestStackAsyncRegisterListenerUDP_ReceiveData(t *testing.T) {
 	if err := conn.Configure(udp.ConnConfig{
 		RxBuf: make([]byte, testUDPBufSize), TxBuf: make([]byte, testUDPBufSize),
 		RxQueueSize: testUDPQueueSize, TxQueueSize: testUDPQueueSize,
+		RWBackoff: backoffYield,
 	}); err != nil {
 		t.Fatal("conn Configure:", err)
 	}
@@ -119,6 +121,7 @@ func TestStackAsyncRegisterListenerUDP_ReplyToClient(t *testing.T) {
 	if err := pc.Configure(udp.PacketConnConfig{
 		RxBuf: make([]byte, testUDPBufSize), TxBuf: make([]byte, testUDPBufSize),
 		RxQueueSize: testUDPQueueSize, TxQueueSize: testUDPQueueSize,
+		RWBackoff: backoffYield,
 	}); err != nil {
 		t.Fatal("pc Configure:", err)
 	}
@@ -133,6 +136,7 @@ func TestStackAsyncRegisterListenerUDP_ReplyToClient(t *testing.T) {
 	if err := conn.Configure(udp.ConnConfig{
 		RxBuf: make([]byte, testUDPBufSize), TxBuf: make([]byte, testUDPBufSize),
 		RxQueueSize: testUDPQueueSize, TxQueueSize: testUDPQueueSize,
+		RWBackoff: backoffYield,
 	}); err != nil {
 		t.Fatal("conn Configure:", err)
 	}
@@ -228,6 +232,7 @@ func TestStackAsyncRegisterListenerUDP_MultiSource(t *testing.T) {
 	if err := pc.Configure(udp.PacketConnConfig{
 		RxBuf: make([]byte, testUDPBufSize), TxBuf: make([]byte, testUDPBufSize),
 		RxQueueSize: testUDPQueueSize, TxQueueSize: testUDPQueueSize,
+		RWBackoff: backoffYield,
 	}); err != nil {
 		t.Fatal("pc Configure:", err)
 	}
@@ -243,6 +248,7 @@ func TestStackAsyncRegisterListenerUDP_MultiSource(t *testing.T) {
 	if err := conn1.Configure(udp.ConnConfig{
 		RxBuf: make([]byte, testUDPBufSize), TxBuf: make([]byte, testUDPBufSize),
 		RxQueueSize: testUDPQueueSize, TxQueueSize: testUDPQueueSize,
+		RWBackoff: backoffYield,
 	}); err != nil {
 		t.Fatal("conn1 Configure:", err)
 	}
@@ -260,6 +266,7 @@ func TestStackAsyncRegisterListenerUDP_MultiSource(t *testing.T) {
 	if err := conn2.Configure(udp.ConnConfig{
 		RxBuf: make([]byte, testUDPBufSize), TxBuf: make([]byte, testUDPBufSize),
 		RxQueueSize: testUDPQueueSize, TxQueueSize: testUDPQueueSize,
+		RWBackoff: backoffYield,
 	}); err != nil {
 		t.Fatal("conn2 Configure:", err)
 	}

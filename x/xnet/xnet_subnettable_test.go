@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"testing"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
@@ -73,6 +74,7 @@ func TestStackAsync_ListenerSynAckAddressedToClient(t *testing.T) {
 		RxBufSize:          mtu,
 		EstablishedTimeout: 10e9,
 		ClosingTimeout:     10e9,
+		NewBackoff:         func() lneto.BackoffStrategy { return backoffYield },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -104,6 +106,7 @@ func TestStackAsync_ListenerSynAckAddressedToClient(t *testing.T) {
 	if err = clConn.Configure(tcp.ConnConfig{
 		RxBuf: make([]byte, mtu), TxBuf: make([]byte, mtu),
 		TxPacketQueueSize: 4,
+		RWBackoff:         backoffYield,
 	}); err != nil {
 		t.Fatal(err)
 	}

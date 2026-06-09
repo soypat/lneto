@@ -206,21 +206,33 @@ func _() {
 	_ = x[ErrMismatch-10]
 	_ = x[ErrMismatchLen-11]
 	_ = x[ErrInvalidConfig-12]
-	_ = x[ErrInvalidField-13]
-	_ = x[ErrInvalidLengthField-14]
-	_ = x[ErrExhausted-15]
-	_ = x[ErrAlreadyRegistered-16]
-	_ = x[ErrTruncatedFrame-17]
+	_ = x[ErrInvalidField-14]
+	_ = x[ErrInvalidLengthField-15]
+	_ = x[ErrExhausted-16]
+	_ = x[ErrAlreadyRegistered-17]
+	_ = x[ErrTruncatedFrame-18]
+	_ = x[ErrMissingHALConfig-19]
 }
 
-const _errGeneric_name = "lneto-bug(use build tag \"debugheaplog\")packet droppedincorrect checksumzero source(port/addr)zero destination(port/addr)short bufferbuffer fullinvalid addressunsupportedmismatchmismatched lengthinvalid configurationinvalid fieldinvalid length fieldresource exhaustedprotocol already registeredtruncated frame"
+const (
+	_errGeneric_name_0 = "lneto-bug(use build tag \"debugheaplog\")packet droppedincorrect checksumzero source(port/addr)zero destination(port/addr)short bufferbuffer fullinvalid addressunsupportedmismatchmismatched lengthinvalid configuration"
+	_errGeneric_name_1 = "invalid fieldinvalid length fieldresource exhaustedprotocol already registeredtruncated framemissing HAL configuration"
+)
 
-var _errGeneric_index = [...]uint16{0, 39, 53, 71, 93, 120, 132, 143, 158, 169, 177, 194, 215, 228, 248, 266, 293, 308}
+var (
+	_errGeneric_index_0 = [...]uint8{0, 39, 53, 71, 93, 120, 132, 143, 158, 169, 177, 194, 215}
+	_errGeneric_index_1 = [...]uint8{0, 13, 33, 51, 78, 93, 118}
+)
 
 func (i errGeneric) String() string {
-	i -= 1
-	if i >= errGeneric(len(_errGeneric_index)-1) {
-		return "errGeneric(" + strconv.FormatInt(int64(i+1), 10) + ")"
+	switch {
+	case 1 <= i && i <= 12:
+		i -= 1
+		return _errGeneric_name_0[_errGeneric_index_0[i]:_errGeneric_index_0[i+1]]
+	case 14 <= i && i <= 19:
+		i -= 14
+		return _errGeneric_name_1[_errGeneric_index_1[i]:_errGeneric_index_1[i+1]]
+	default:
+		return "errGeneric(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _errGeneric_name[_errGeneric_index[i]:_errGeneric_index[i+1]]
 }

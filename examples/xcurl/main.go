@@ -281,6 +281,7 @@ func run() (err error) {
 		RxBuf:             make([]byte, mtu),
 		TxBuf:             make([]byte, mtu),
 		TxPacketQueueSize: 3,
+		RWBackoff:         tcpBackoff,
 	})
 
 	timeHTTPCreate := timer("create HTTP GET request")
@@ -392,4 +393,15 @@ func stackBackoff(consecutiveBackoffs uint) time.Duration {
 		return time.Millisecond
 	}
 	return 10 * time.Millisecond
+}
+func tcpBackoff(consecutiveBackoffs uint) time.Duration {
+	const (
+		minWait        = uint32(time.Microsecond)
+		maxWait        = 5 * uint32(time.Millisecond)
+		maxShift       = 22
+		_overflowCheck = minWait << maxShift
+	)
+	shifted := minWait << min(consecutiveBackoffs, maxShift)
+	wait := min(shifted, maxWait)
+	return time.Duration(wait)
 }
