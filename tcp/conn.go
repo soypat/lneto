@@ -59,6 +59,11 @@ type ConnConfig struct {
 	// If not set a default backoff strategy will be used. See [internal.BackoffConnRW].
 	RWBackoff lneto.BackoffStrategy
 	Logger    *slog.Logger
+	// CongestionControl optionally installs a congestion controller (such as
+	// those in the lneto/tcp/congestion subpackage) limiting how much new data
+	// is kept in flight. If nil the connection is limited only by the peer's
+	// advertised receive window.
+	CongestionControl CongestionControl
 }
 
 func (conn *Conn) Configure(config ConnConfig) (err error) {
@@ -73,7 +78,7 @@ func (conn *Conn) Configure(config ConnConfig) (err error) {
 	}
 	conn._backoff = config.RWBackoff
 	conn.logger.log = config.Logger
-	return nil
+	return conn.h.SetCongestionControl(config.CongestionControl)
 }
 
 // LocalPort returns the local port on which the socket is listening or connected to.

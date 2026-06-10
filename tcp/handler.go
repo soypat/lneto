@@ -28,11 +28,38 @@ type Handler struct {
 	// connection is established via Open calls. This disambiguates whether
 	// Read and Write calls belong to the current connection.
 
-	optcodec   OptionCodec
+	optcodec OptionCodec
+	// cc is the optional congestion controller. When nil the Handler is only
+	// limited by the receive window advertised by the peer (no congestion
+	// control). See [Handler.SetCongestionControl].
+	cc CongestionControl
+	// congestWnd caches the window returned by the last cc.Control call.
+	// invalidCongestWnd means no window has been reported yet (no gating).
+	congestWnd Size
 	closing    bool
 	shutdownRx bool
 	// nRetransmit stores the number of times the oldest packet was retransmit.
 	nRetransmit uint8
+}
+
+// invalidCongestWnd marks Handler.congestWnd as not-yet-reported by the
+// congestion controller, in which case no congestion gating is applied.
+const invalidCongestWnd = 0xffff_ffff
+
+// SetCongestionControl installs cc as the connection's congestion controller,
+// or removes it when cc is nil. It limits how much new (unacknowledged) data
+// the Handler keeps in flight to the window returned by cc.Control, which is
+// fed every segment crossing the connection. The controller is retained across
+// connection re-opens. Returns an error if the connection is open: the
+// controller cannot be changed mid-connection (see
+// [ConnConfig.CongestionControl] to configure it on a [Conn]).
+func (h *Handler) SetCongestionControl(cc CongestionControl) error {
+	if !h.scb.State().IsClosed() {
+		return lneto.ErrInvalidConfig
+	}
+	h.cc = cc
+	h.congestWnd = invalidCongestWnd
+	return nil
 }
 
 func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
@@ -128,6 +155,8 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 		remotePort: remotePort,
 		validator:  h.validator,
 		logger:     h.logger,
+		cc:         h.cc,
+		congestWnd: invalidCongestWnd,
 		closing:    false,
 		shutdownRx: false,
 	}
@@ -218,6 +247,11 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 			h.remotePort = remotePort
 		}
 	}
+	if h.cc != nil {
+		// Feed the received segment (ACKs, duplicate ACKs/loss, RTT samples) into
+		// the congestion controller after the TCB has updated snd.UNA/dupack.
+		h.congestWnd = h.cc.Control(h.scb.CongestionEvent(segIncoming, false))
+	}
 	if h.logenabled(internal.LevelTrace) {
 		h.trace("tcp.Handler:rx-done",
 			slog.Uint64("lport", uint64(h.localPort)),
@@ -294,6 +328,21 @@ func (h *Handler) Send(b []byte) (int, error) {
 	} else {
 		var ok bool
 		maxPayload := len(b) - sizeHeaderTCP
+		if h.cc != nil && h.congestWnd != invalidCongestWnd && !h.scb.HasPendingRetransmit() {
+			// Limit new data to the congestion window reported by the last
+			// cc.Control call. Retransmissions and pure control segments are
+			// exempt: PendingSegment still emits them when the available window is
+			// zero (it only suppresses new data).
+			// Compared as uint64 so a large window cannot wrap on 32-bit int.
+			inflight := h.scb.snd.inFlight()
+			var avail Size
+			if h.congestWnd > inflight {
+				avail = h.congestWnd - inflight
+			}
+			if maxPayload > 0 && uint64(avail) < uint64(maxPayload) {
+				maxPayload = int(avail)
+			}
+		}
 		segment, ok = h.scb.PendingSegment(maxPayload)
 		segment.WND = Size(h.bufRx.Free())
 		if !ok {
@@ -314,6 +363,11 @@ func (h *Handler) Send(b []byte) (int, error) {
 		}
 	}
 	prevState := h.scb.State()
+	if h.cc != nil {
+		// Observe the outgoing segment before scb.Send advances snd.NXT so the
+		// controller can tell new data from a retransmission and time RTTs.
+		h.congestWnd = h.cc.Control(h.scb.CongestionEvent(segment, true))
+	}
 	err = h.scb.Send(segment)
 	if err != nil {
 		return 0, err
