@@ -131,11 +131,9 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			return nil, err
 		}
 		uc := udpconn{
-			Conn: &conn,
-			// TODO: use udpaddr until UDPAddrFromAddrPort added to tinygo.
-			// https://github.com/tinygo-org/net/issues/45
-			localAddr: udpaddr(laddr),
-			raddr:     udpaddr(raddr),
+			Conn:      &conn,
+			localAddr: net.UDPAddrFromAddrPort(laddr),
+			raddr:     net.UDPAddrFromAddrPort(raddr),
 		}
 		return uc, nil
 	case "tcp", "tcp4":
@@ -348,13 +346,6 @@ func (c udpconn) ReadFrom(b []byte) (int, net.Addr, error) {
 
 func (c udpconn) WriteTo(b []byte, _ net.Addr) (int, error) {
 	return c.Conn.Write(b) // connected UDP: always writes to dialed remote
-}
-func udpaddr(addr netip.AddrPort) net.Addr {
-	return &net.UDPAddr{
-		IP:   addr.Addr().AsSlice(),
-		Zone: addr.Addr().Zone(),
-		Port: int(addr.Port()),
-	}
 }
 
 // parseNetAddr converts a [net.Addr] to a [netip.AddrPort]. A nil or empty IP
