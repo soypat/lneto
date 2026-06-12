@@ -18,6 +18,14 @@ func IsMulticast(addr [4]byte) bool {
 	return addr[0]&0xf0 == 0xe0
 }
 
+// IsLinkLocal reports whether addr is within the IPv4 link-local prefix
+// 169.254.0.0/16 reserved for dynamic link-local configuration as defined in [RFC3927].
+//
+// [RFC3927]: https://datatracker.ietf.org/doc/html/rfc3927
+func IsLinkLocal(addr [4]byte) bool {
+	return addr[0] == 169 && addr[1] == 254
+}
+
 // ToS represents the Traffic Class (a.k.a Type of Service). It is 8 bits long. 6 MSB are Differentiated Services; 2 LSB are Explicit Congenstion Notification.
 type ToS uint8
 
