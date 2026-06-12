@@ -156,6 +156,14 @@ go mod download github.com/soypat/lneto@latest
 
 ## Developing (linux)
 
+When testing lneto through a Linux network interface, disable receive offloading if packets are unexpectedly dropped with checksum errors. Generic receive offload (GRO) can merge TCP frames before delivery to raw sockets without recalculating the full checksum.
+
+```sh
+sudo ethtool -K <network-interface> gro off
+```
+
+Depending on the interface and driver, other offloading features may also need to be disabled.
+
 - [`examples/httptap`](./examples/httptap) (linux only, root privilidges required) Program opens a TAP interface and assigns an IP address to it and exposes the interface via a HTTP interface. This program is run with root privilidges to facilitate debugging of lneto since no root privilidges are required to interact with the HTTP interface exposed.
     - `POST http://127.0.0.1:7070/send`: Receives a POST with request body containing JSON string of data to send over TAP interface. Response contains only status code.
     - `GET http://127.0.0.1:7070/recv`: Receives a GET request. Response contains a JSON string of oldest unread TAP interface packet. If string is empty then there is no more data to read.
