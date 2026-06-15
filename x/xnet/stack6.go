@@ -26,6 +26,8 @@ type Stack6 interface {
 	Register6(node lneto.StackNode) error
 	DialUDP6(conn *udp.Conn, localPort uint16, raddr [16]byte, rport uint16) error
 	DialTCP6(conn *tcp.Conn, localPort uint16, raddr [16]byte, rport uint16, iss tcp.Value) error
+	RegisterListenerTCP6(listener *tcp.Listener) error
+	RegisterListenerUDP6(pktconn *udp.PacketConn) error
 	IngressIPv6(ipframe []byte) error
 	EgressIPv6(ipframe []byte) (int, error)
 	IPv6Stack() lneto.StackNode
@@ -117,6 +119,18 @@ func (s *stack6) EnableICMP6(enabled bool) (err error) {
 		s.icmp6.Abort()
 	}
 	return err
+}
+
+// RegisterListenerTCP6 registers a passive TCP listener on the IPv6 stack so it
+// receives inbound IPv6 segments. Mirrors StackAsync.RegisterListenerTCP for IPv4.
+func (s *stack6) RegisterListenerTCP6(listener *tcp.Listener) error {
+	return s.tcps6.RegisterMACFiltered(listener, nil)
+}
+
+// RegisterListenerUDP6 registers a UDP packet connection on the IPv6 stack so it
+// receives inbound IPv6 datagrams. Mirrors StackAsync.RegisterListenerUDP for IPv4.
+func (s *stack6) RegisterListenerUDP6(pktconn *udp.PacketConn) error {
+	return s.udps6.RegisterMACFiltered(pktconn, nil)
 }
 
 func (s *stack6) IngressIPv6(ipFrame []byte) error {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/dhcp/dhcpv4"
+	"github.com/soypat/lneto/dns"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -147,7 +148,13 @@ func (s StackBlocking) DoResolveHardwareAddress6(addr netip.Addr, timeout time.D
 }
 
 func (s StackBlocking) DoLookupIP(host string, timeout time.Duration) (addrs []netip.Addr, err error) {
-	err = s.async.StartLookupIP(host)
+	return s.DoLookupIPType(host, timeout, dns.TypeA)
+}
+
+// DoLookupIPType resolves host for the given record type (dns.TypeA or dns.TypeAAAA),
+// blocking until a response arrives or the timeout elapses.
+func (s StackBlocking) DoLookupIPType(host string, timeout time.Duration, qtype dns.Type) (addrs []netip.Addr, err error) {
+	err = s.async.StartLookupIPType(host, qtype)
 	if err != nil {
 		return nil, err
 	}
@@ -180,7 +187,7 @@ func (s StackBlocking) DoDialTCP(conn *tcp.Conn, localPort uint16, addrp netip.A
 		state := conn.State()
 		if state == tcp.StateEstablished {
 			return nil
-		} else if state == tcp.StateSynSent || state == tcp.StateSynRcvd || conn.InternalHandler().AwaitingSynSend() {
+		} else if state == tcp.StateSynSent || state == tcp.StateSynRcvd || conn.AwaitingSynSend() {
 			if err = s.checkDeadline(deadline); err != nil {
 				conn.Abort()
 				return err
