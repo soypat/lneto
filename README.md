@@ -35,8 +35,8 @@ go run ./examples/gen/gen-binary-bench # generate table
 
 | Program | Extra Protocols | Packet capture printing | amd64 Go | WASM Go | amd64 TinyGo | WASM TinyGo | Pico TinyGo |
 |---|:---:|:---:|---|---|---|---|---|
-| [Lneto MWE](./examples/min-working-example/) | DNS,NTP,DHCP | ✅ | 3.8MB | 4.3MB | 1.6MB | 1.2MB | 185kB |
-| [Gvisor MWE w/ go-net](./examples/_import_examples/gvisor-mwe/) | None | ❌ | 6.6MB | 7.4MB | DNC | DNC | DNC |
+| [Lneto MWE](./examples/min-working-example/) | DNS,NTP,DHCP | ✅ | 3.9MB | 4.4MB | 1.6MB | 1.2MB | 189kB |
+| [Gvisor MWE w/ go-net](./examples/_import_examples/gvisor-mwe/) | None | ❌ | 6.6MB | 7.5MB | DNC | DNC | DNC |
 ## `xcurl` example
 You may try lneto out on linux with the [xcurl example](./examples/xcurl/) which gets an HTTP page by doing all the low-level networking part using absolutely no standard library.
 

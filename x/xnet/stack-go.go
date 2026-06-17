@@ -47,6 +47,10 @@ type StackGo struct {
 func (s StackGo) Socket(ctx context.Context, network string, family, sotype int, laddr, raddr net.Addr) (c any, err error) {
 	switch family {
 	case syscall.AF_INET:
+	case syscall.AF_INET6:
+		if !s.blk.async.IsIPv6Enabled() {
+			return nil, errors.ErrUnsupported
+		}
 	default:
 		return nil, lneto.ErrUnsupported
 	}
@@ -67,31 +71,38 @@ func (s StackGo) Socket(ctx context.Context, network string, family, sotype int,
 }
 
 func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype int, laddr, raddr netip.AddrPort) (c any, err error) {
+	var isV6 bool
 	switch family {
 	case syscall.AF_INET:
+	case syscall.AF_INET6:
+		if !s.blk.async.IsIPv6Enabled() {
+			return nil, errors.ErrUnsupported
+		}
+		isV6 = true
 	default:
 		return nil, lneto.ErrUnsupported
 	}
+	// A dial targets a specified (non-unspecified) remote; a listen does not.
+	isDial := raddr.IsValid() && !raddr.Addr().IsUnspecified()
 	if laddr.Port() == 0 {
-		if raddr.IsValid() && raddr.Addr() != netip.IPv4Unspecified() {
-			// Outbound (dial) connection: auto-assign ephemeral port.
-			laddr = netip.AddrPortFrom(laddr.Addr(), uint16(49152+s.blk.async.Prand32()%16384))
+		// Auto-assign an ephemeral port for both outbound dials and for listeners
+		// that did not request a fixed port.
+		laddr = netip.AddrPortFrom(laddr.Addr(), uint16(49152+s.blk.async.Prand32()%16384))
+	}
+	if laddr.Addr().IsUnspecified() {
+		// Fill in the stack's configured address for the requested family.
+		if isV6 {
+			laddr = netip.AddrPortFrom(netip.AddrFrom16(s.blk.async.Addr6()), laddr.Port())
 		} else {
-			return nil, lneto.ErrZeroSource
+			laddr = netip.AddrPortFrom(netip.AddrFrom4(s.blk.async.ip4.Addr4()), laddr.Port())
 		}
 	}
-	if laddr.Addr() == netip.IPv4Unspecified() {
-		// Specify address.
-		laddr = netip.AddrPortFrom(netip.AddrFrom4(s.blk.async.ip4.Addr4()), laddr.Port())
-	} else if laddr.Addr().Is6() {
-		return nil, lneto.ErrUnsupported
-	}
 	switch network {
-	case "udp", "udp4":
+	case "udp", "udp4", "udp6":
 		if sotype != sockDGRAM {
 			return nil, lneto.ErrUnsupported
 		}
-		if !raddr.IsValid() || raddr.Addr() == netip.IPv4Unspecified() {
+		if !isDial {
 			// LISTEN UDP: no fixed remote → PacketConn.
 			var pc udppktconn
 			err = pc.c.Configure(udp.PacketConnConfig{
@@ -109,7 +120,11 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 				return nil, err
 			}
 			pc.laddr = net.UDPAddr{IP: laddr.Addr().AsSlice(), Port: int(laddr.Port())}
-			err = s.blk.async.RegisterListenerUDP(&pc.c)
+			if isV6 {
+				err = s.blk.async.RegisterListenerUDP6(&pc.c)
+			} else {
+				err = s.blk.async.RegisterListenerUDP(&pc.c)
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -138,12 +153,12 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			raddr:     udpaddr(raddr),
 		}
 		return uc, nil
-	case "tcp", "tcp4":
+	case "tcp", "tcp4", "tcp6":
 		if sotype != sockSTREAM {
 			return nil, lneto.ErrUnsupported
 		}
 
-		if raddr.IsValid() && raddr.Addr() != netip.IPv4Unspecified() {
+		if isDial {
 			var conn tcp.Conn
 			// DIAL TCP: active connection a.k.a TCP Client branch.
 			err = conn.Configure(tcp.ConnConfig{
@@ -171,7 +186,7 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 						localAddr: net.TCPAddrFromAddrPort(laddr),
 					}
 					return tc, nil
-				} else if state == tcp.StateSynSent || state == tcp.StateSynRcvd || conn.InternalHandler().AwaitingSynSend() {
+				} else if state == tcp.StateSynSent || state == tcp.StateSynRcvd || conn.AwaitingSynSend() {
 					if err = ctx.Err(); err != nil {
 						conn.Abort()
 						return nil, err
@@ -195,7 +210,11 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			if err != nil {
 				return nil, err
 			}
-			err = s.blk.async.RegisterListenerTCP(&l.l)
+			if isV6 {
+				err = s.blk.async.RegisterListenerTCP6(&l.l)
+			} else {
+				err = s.blk.async.RegisterListenerTCP(&l.l)
+			}
 			if err != nil {
 				return nil, err
 			}

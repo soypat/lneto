@@ -103,6 +103,16 @@ func (conn *Conn) State() State {
 	return conn.h.State()
 }
 
+// AwaitingSynSend reports whether the connection has been opened actively but has
+// not yet emitted its SYN. It locks the connection so it is safe to poll from a
+// goroutine other than the one driving the stack (unlike reaching through
+// [Conn.InternalHandler]).
+func (conn *Conn) AwaitingSynSend() bool {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.h.AwaitingSynSend()
+}
+
 // BufferedInput returns the number of bytes in the socket's receive(input) buffer
 // and available to read via a [Conn.Read] call.
 func (conn *Conn) BufferedInput() int {

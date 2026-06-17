@@ -364,18 +364,18 @@ func (s *StackAsync) Addr4() [4]byte {
 }
 
 func (s *StackAsync) SetAddr6(addr [16]byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.ipv6enabled {
-		s.mu.Lock()
-		defer s.mu.Unlock()
 		return s.stack6.SetAddr6(addr)
 	}
 	return lneto.ErrUnsupported
 }
 
 func (s *StackAsync) Addr6() [16]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.ipv6enabled {
-		s.mu.Lock()
-		defer s.mu.Unlock()
 		return s.stack6.Addr6()
 	}
 	return [16]byte{}
@@ -412,6 +412,13 @@ func (s *StackAsync) GatewayHardwareAddr() [6]byte {
 	return s.link.Gateway6()
 }
 
+func (s *StackAsync) IsIPv6Enabled() bool {
+	s.mu.Lock()
+	enabled := s.ipv6enabled
+	s.mu.Unlock()
+	return enabled
+}
+
 // EnableICMP registers an ICMP handler to the stack when enabled is true.
 // If enabled=false the currently registered ICMP handler is unregistered and state reset.
 func (s *StackAsync) EnableICMP(enabled bool) (err error) {
@@ -437,25 +444,32 @@ func (s *StackAsync) EnableICMP(enabled bool) (err error) {
 func (s *StackAsync) DialUDP(conn *udp.Conn, localPort uint16, addrp netip.AddrPort) (err error) {
 	addr := addrp.Addr()
 	if addr.Is4() {
-		err = s.DialUDP4(conn, localPort, addrp.Addr().As4(), addrp.Port())
+		return s.DialUDP4(conn, localPort, addrp.Addr().As4(), addrp.Port())
 	} else if s.ipv6enabled && addr.Is6() {
-		err = s.stack6.DialUDP6(conn, localPort, addr.As16(), addrp.Port())
-	} else {
-		err = lneto.ErrInvalidAddr
+		// stack6 is guarded by s.mu (the single stack lock), just like the IPv4
+		// path locks inside DialUDP4. Hold it here so the port-handler mutation is
+		// serialized against the Ingress/Egress demux.
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.stack6.DialUDP6(conn, localPort, addr.As16(), addrp.Port())
 	}
-	return err
+	return lneto.ErrInvalidAddr
 }
 
 func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrPort) (err error) {
 	addr := addrp.Addr()
 	if addr.Is4() {
-		err = s.DialTCP4(conn, localPort, addrp.Addr().As4(), addrp.Port())
+		return s.DialTCP4(conn, localPort, addrp.Addr().As4(), addrp.Port())
 	} else if s.ipv6enabled && addr.Is6() {
-		err = s.stack6.DialTCP6(conn, localPort, addr.As16(), addrp.Port(), tcp.Value(s.Prand32()))
-	} else {
-		err = lneto.ErrInvalidAddr
+		// stack6 is guarded by s.mu (the single stack lock), just like the IPv4
+		// path locks inside DialTCP4. Hold it here so the port-handler mutation is
+		// serialized against the Ingress/Egress demux. Use the unlocked prand32
+		// since we already hold s.mu (Prand32 would deadlock).
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.stack6.DialTCP6(conn, localPort, addr.As16(), addrp.Port(), tcp.Value(s.prand32()))
 	}
-	return err
+	return lneto.ErrInvalidAddr
 }
 
 func (s *StackAsync) DialUDP4(conn *udp.Conn, localPort uint16, raddr [4]byte, rport uint16) (err error) {
@@ -540,13 +554,43 @@ func (s *StackAsync) RegisterListenerUDP(pktconn *udp.PacketConn) (err error) {
 	return s.udps.RegisterMACFiltered(pktconn, nil)
 }
 
+func (s *StackAsync) RegisterListenerTCP6(listener *tcp.Listener) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.ipv6enabled {
+		return lneto.ErrUnsupported
+	}
+	return s.stack6.RegisterListenerTCP6(listener)
+}
+
+func (s *StackAsync) RegisterListenerUDP6(pktconn *udp.PacketConn) (err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.ipv6enabled {
+		return lneto.ErrUnsupported
+	}
+	return s.stack6.RegisterListenerUDP6(pktconn)
+}
+
 var errNoDNSServer = errors.New("no DNS server- did DHCP complete? You can set a predetermined DNS server in Stack configuration")
 
+var errDNSv6Transport = errors.New("DNS query over IPv6 transport not supported; configure an IPv4 DNS server")
+
 func (s *StackAsync) StartLookupIP(host string) error {
+	return s.StartLookupIPType(host, dns.TypeA)
+}
+
+// StartLookupIPType begins resolving host for the given record type (e.g. dns.TypeA
+// or dns.TypeAAAA). The DNS query is always carried over IPv4 to the configured DNS
+// server; resolving over an IPv6 DNS transport is not yet supported.
+func (s *StackAsync) StartLookupIPType(host string, qtype dns.Type) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.dnssv.IsValid() {
 		return errNoDNSServer
+	}
+	if !s.dnssv.Is4() {
+		return errDNSv6Transport
 	}
 	name, err := dns.NewName(host)
 	if err != nil {
@@ -561,7 +605,7 @@ func (s *StackAsync) StartLookupIP(host string) error {
 		Questions: []dns.Question{
 			{
 				Name:  name,
-				Type:  dns.TypeA,
+				Type:  qtype,
 				Class: dns.ClassINET,
 			},
 		},
