@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internet/pcap"
 )
 
@@ -50,7 +51,20 @@ func (stack *CapturePrinter) Formatter() *pcap.Formatter {
 	return &stack.pfmt
 }
 
-func (stack *CapturePrinter) PrintPacket(prefix string, pkt []byte) {
+// PrintIP formats and writes a breakdown of the IPv4 or IPv6 packet, prefixed by prefix.
+func (stack *CapturePrinter) PrintIP(prefix string, ipPkt []byte) {
+	stack.printPacket(prefix, true, ipPkt)
+}
+
+// PrintEthernet formats and writes a breakdown of the Ethernet frame, prefixed by prefix.
+func (stack *CapturePrinter) PrintEthernet(prefix string, ethPkt []byte) {
+	stack.printPacket(prefix, false, ethPkt)
+}
+
+func (stack *CapturePrinter) printPacket(prefix string, ip bool, pkt []byte) {
+	if len(pkt) == 0 {
+		return
+	}
 	fmtbuf := stack.fmtPcapBuf[:0]
 	useTimestamps := stack.printTimestamps()
 	var captime time.Time
@@ -58,7 +72,18 @@ func (stack *CapturePrinter) PrintPacket(prefix string, pkt []byte) {
 		captime = stack.now()
 	}
 	var err error
-	stack.frms, err = stack.cap.CaptureEthernet(stack.frms[:0], pkt, 0)
+	if ip {
+		switch pkt[0] >> 4 {
+		case 4:
+			stack.frms, err = stack.cap.CaptureIPv4(stack.frms[:0], pkt, 0)
+		case 6:
+			stack.frms, err = stack.cap.CaptureIPv6(stack.frms[:0], pkt, 0)
+		default:
+			err = lneto.ErrUnsupported
+		}
+	} else {
+		stack.frms, err = stack.cap.CaptureEthernet(stack.frms[:0], pkt, 0)
+	}
 	if err == nil {
 		if useTimestamps {
 			diff := captime.Sub(stack.origin)

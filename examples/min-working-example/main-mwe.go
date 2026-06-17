@@ -148,7 +148,7 @@ func stackLoop(ctx context.Context, stack *xnet.StackAsync) {
 			fmt.Println("encaps err:", err)
 		} else if nwrite > 0 {
 			network.SendEth(buf[:nwrite])
-			cap.PrintPacket("OUT", buf[:nwrite])
+			cap.PrintEthernet("OUT", buf[:nwrite])
 		}
 		nread, err := network.RecvEth(buf[:])
 		if err != nil {
@@ -158,7 +158,7 @@ func stackLoop(ctx context.Context, stack *xnet.StackAsync) {
 			if err != nil && err != lneto.ErrPacketDrop {
 				fmt.Println("demux err:", err)
 			} else {
-				cap.PrintPacket("IN ", buf[:nread])
+				cap.PrintEthernet("IN ", buf[:nread])
 			}
 		}
 		if nwrite == 0 && nread == 0 {

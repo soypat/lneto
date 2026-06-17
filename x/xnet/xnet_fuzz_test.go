@@ -503,7 +503,7 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 					betsAreOff = true
 				}
 				if verbose {
-					fzppr.PrintPacket(first.Hostname(), buf[:n])
+					fzppr.PrintEthernet(first.Hostname(), buf[:n])
 				}
 				err = second.IngressEthernet(buf[:n])
 				if err != nil && !betsAreOff && err != lneto.ErrPacketDrop && err != lneto.ErrExhausted {
@@ -524,7 +524,7 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 					betsAreOff = true
 				}
 				if verbose {
-					fzppr.PrintPacket(second.Hostname(), buf[:n])
+					fzppr.PrintEthernet(second.Hostname(), buf[:n])
 				}
 				err = first.IngressEthernet(buf[:n])
 				if err != nil && !betsAreOff && err != lneto.ErrPacketDrop && err != lneto.ErrExhausted {
@@ -542,21 +542,21 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 			limit := d == drainLimit-1
 			n, err := first.EgressEthernet(buf[:])
 			if (err != nil || n > 0) && limit {
-				fzppr.PrintPacket(first.Hostname(), buf[:n])
+				fzppr.PrintEthernet(first.Hostname(), buf[:n])
 				t.Fatal(i, "stuck in data/error loop:", err)
 			} else if n > 0 {
 				if verbose {
-					fzppr.PrintPacket(first.Hostname(), buf[:n])
+					fzppr.PrintEthernet(first.Hostname(), buf[:n])
 				}
 				second.IngressEthernet(buf[:n])
 			}
 			n, err = second.EgressEthernet(buf[:])
 			if (err != nil || n > 0) && limit {
-				fzppr.PrintPacket("(2) ", buf[:n])
+				fzppr.PrintEthernet("(2) ", buf[:n])
 				t.Fatal(i, "stuck in data/error loop:", err)
 			} else if n > 0 {
 				if verbose {
-					fzppr.PrintPacket(second.Hostname(), buf[:n])
+					fzppr.PrintEthernet(second.Hostname(), buf[:n])
 				}
 				first.IngressEthernet(buf[:n])
 			}

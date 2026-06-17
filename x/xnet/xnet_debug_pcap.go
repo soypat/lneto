@@ -13,5 +13,5 @@ func init() {
 }
 
 func debugPacket(msg string, b []byte) {
-	_pcap.PrintPacket(msg, b)
+	_pcap.PrintEthernet(msg, b)
 }
