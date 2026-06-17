@@ -46,7 +46,11 @@ type StackGo struct {
 
 func (s StackGo) Socket(ctx context.Context, network string, family, sotype int, laddr, raddr net.Addr) (c any, err error) {
 	switch family {
-	case syscall.AF_INET, syscall.AF_INET6:
+	case syscall.AF_INET:
+	case syscall.AF_INET6:
+		if !s.blk.async.IsIPv6Enabled() {
+			return nil, errors.ErrUnsupported
+		}
 	default:
 		return nil, lneto.ErrUnsupported
 	}
@@ -71,6 +75,9 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 	switch family {
 	case syscall.AF_INET:
 	case syscall.AF_INET6:
+		if !s.blk.async.IsIPv6Enabled() {
+			return nil, errors.ErrUnsupported
+		}
 		isV6 = true
 	default:
 		return nil, lneto.ErrUnsupported

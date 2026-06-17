@@ -360,18 +360,18 @@ func (s *StackAsync) Addr4() [4]byte {
 }
 
 func (s *StackAsync) SetAddr6(addr [16]byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.ipv6enabled {
-		s.mu.Lock()
-		defer s.mu.Unlock()
 		return s.stack6.SetAddr6(addr)
 	}
 	return lneto.ErrUnsupported
 }
 
 func (s *StackAsync) Addr6() [16]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.ipv6enabled {
-		s.mu.Lock()
-		defer s.mu.Unlock()
 		return s.stack6.Addr6()
 	}
 	return [16]byte{}
@@ -406,6 +406,13 @@ func (s *StackAsync) GatewayHardwareAddr() [6]byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.link.Gateway6()
+}
+
+func (s *StackAsync) IsIPv6Enabled() bool {
+	s.mu.Lock()
+	enabled := s.ipv6enabled
+	s.mu.Unlock()
+	return enabled
 }
 
 // EnableICMP registers an ICMP handler to the stack when enabled is true.
