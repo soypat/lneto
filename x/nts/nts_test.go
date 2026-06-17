@@ -174,7 +174,10 @@ func TestPerformKE_E2E(t *testing.T) {
 		t.Fatal(err)
 	}
 	secrets, err := PerformKE(tc, KEConfig{})
-	tc.Close()
+	// Close the underlying pipe rather than tc.Close(): a TLS close_notify
+	// write over the synchronous net.Pipe would otherwise block on crypto/tls'
+	// 5s close deadline since the peer is no longer reading.
+	clientConn.Close()
 	<-done
 
 	if err != nil {
@@ -653,7 +656,10 @@ func TestHandleKE_E2E(t *testing.T) {
 		t.Fatal(err)
 	}
 	clientSecrets, err := PerformKE(tc, KEConfig{})
-	tc.Close()
+	// Close the underlying pipe rather than tc.Close(): a TLS close_notify
+	// write over the synchronous net.Pipe would otherwise block on crypto/tls'
+	// 5s close deadline since the peer is no longer reading.
+	clientConn.Close()
 
 	select {
 	case err := <-errc:
