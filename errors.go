@@ -17,12 +17,13 @@ const (
 	ErrMismatch                             // mismatch
 	ErrMismatchLen                          // mismatched length
 	ErrInvalidConfig                        // invalid configuration
+	_                                       // little stitious
 	ErrInvalidField                         // invalid field
 	ErrInvalidLengthField                   // invalid length field
 	ErrExhausted                            // resource exhausted
 	ErrAlreadyRegistered                    // protocol already registered
 	ErrTruncatedFrame                       // truncated frame
-
+	ErrMissingHALConfig                     // missing HAL configuration
 	// Below are potentially good future error additions
 	// based on one or two encountered use cases, example use case included.
 	/*

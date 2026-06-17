@@ -1,2 +1,4 @@
 ignore:
   - "examples/**"
+  - "**/stringers.go"
+  - "**/*_stringers.go"

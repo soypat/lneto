@@ -210,6 +210,7 @@ func run() error {
 			RxBufSize:          mtu,
 			EstablishedTimeout: 5 * time.Second,
 			ClosingTimeout:     5 * time.Second,
+			NewBackoff:         func() lneto.BackoffStrategy { return tcpBackoff },
 		},
 	})
 
@@ -346,6 +347,7 @@ func mockClient(stack *xnet.StackAsync, port uint16, subnet netip.Prefix) {
 		TxBuf:             make([]byte, 2048),
 		TxPacketQueueSize: 4,
 		Logger:            slog.Default(),
+		RWBackoff:         tcpBackoff,
 	})
 	if err != nil {
 		panic(err.Error())
@@ -407,4 +409,16 @@ func stackBackoff(consecutiveBackoffs uint) time.Duration {
 		return time.Millisecond
 	}
 	return 10 * time.Millisecond
+}
+
+func tcpBackoff(consecutiveBackoffs uint) time.Duration {
+	const (
+		minWait        = uint32(time.Microsecond)
+		maxWait        = 5 * uint32(time.Millisecond)
+		maxShift       = 22
+		_overflowCheck = minWait << maxShift
+	)
+	shifted := minWait << min(consecutiveBackoffs, maxShift)
+	wait := min(shifted, maxWait)
+	return time.Duration(wait)
 }

@@ -98,6 +98,7 @@ ok      github.com/soypat/lneto/x/xnet  2.926s
 | DNS | RFC 1035 | ✅ | `dns` | — | Client (A/AAAA query) |
 | DHCPv4 | RFC 2131 | ✅ | `dhcp/dhcpv4` | — | Client + Server |
 | NTP | RFC 5905 | ✅ | `ntp` | — | Client |
+| NTS | RFC 8915 | ✅ | `x/nts` | — | Client + Server; key exchange over TLS 1.3, authenticated NTP. Requires caller-supplied AEAD_AES_SIV_CMAC_256 |
 | mDNS | RFC 6762 | ✅ | `dns/mdns` | — | Client (service announcement + query) |
 | HTTP/1.1 headers | RFC 9110, RFC 9112 | ✅ | `http/httpraw` | 2 ⁴ | Header parse/format; no field normalization |
 | Ethernet PHY/MDIO | IEEE 802.3 cl.22/45 | ✅ | `phy` | — | Bare-metal PHY management via MDIO |
@@ -124,6 +125,7 @@ ok      github.com/soypat/lneto/x/xnet  2.926s
 - [`lneto/internal`](./internal): Lightweight and flexible ring buffer implementation and debugging primitives.
 - [`lneto/x`](./x): Experimental packages.
     - [`lneto/x/xnet`](./x/xnet/): `net` package like abstractions of stack implementations for ease of reuse. Still in testing phase and likely subject to breaking API change.
+    - [`lneto/x/nts`](./x/nts/): Network Time Security (RFC 8915). NTS-KE key exchange over TLS 1.3 and AEAD-authenticated NTP client/server. Ships no cryptography itself; the caller supplies the mandated `AEAD_AES_SIV_CMAC_256` `cipher.AEAD` implementation.
 
 ### Abstractions
 The following interface is implemented by networking stack nodes and the stack themselves.
@@ -155,6 +157,14 @@ go mod download github.com/soypat/lneto@latest
 
 
 ## Developing (linux)
+
+When testing lneto through a Linux network interface, disable receive offloading if packets are unexpectedly dropped with checksum errors. Generic receive offload (GRO) can merge TCP frames before delivery to raw sockets without recalculating the full checksum.
+
+```sh
+sudo ethtool -K <network-interface> gro off
+```
+
+Depending on the interface and driver, other offloading features may also need to be disabled.
 
 - [`examples/httptap`](./examples/httptap) (linux only, root privilidges required) Program opens a TAP interface and assigns an IP address to it and exposes the interface via a HTTP interface. This program is run with root privilidges to facilitate debugging of lneto since no root privilidges are required to interact with the HTTP interface exposed.
     - `POST http://127.0.0.1:7070/send`: Receives a POST with request body containing JSON string of data to send over TAP interface. Response contains only status code.

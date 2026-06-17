@@ -70,6 +70,7 @@ func newUDPConn6(t testing.TB) *udp.Conn {
 		TxBuf:       make([]byte, bufSize),
 		RxQueueSize: 4,
 		TxQueueSize: 4,
+		RWBackoff:   backoffYield,
 	}); err != nil {
 		t.Fatal("UDP Configure:", err)
 	}
@@ -85,6 +86,7 @@ func newTCPConn6(t testing.TB) *tcp.Conn {
 		RxBuf:             make([]byte, bufSize),
 		TxBuf:             make([]byte, bufSize),
 		TxPacketQueueSize: 4,
+		RWBackoff:         backoffYield,
 	}); err != nil {
 		t.Fatal("TCP Configure:", err)
 	}

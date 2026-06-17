@@ -616,6 +616,7 @@ func setupClient(t *testing.T, client *StackIPv4, conn *tcp.Conn, serverAddr net
 		RxBuf:             make([]byte, bufsize),
 		TxBuf:             make([]byte, bufsize),
 		TxPacketQueueSize: 3,
+		RWBackoff:         backoffYield,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -649,6 +650,7 @@ func newMockTCPPool(n, queuesize, bufsize int) *mockTCPPool {
 			RxBuf:             make([]byte, bufsize),
 			TxBuf:             make([]byte, bufsize),
 			TxPacketQueueSize: queuesize,
+			RWBackoff:         backoffYield,
 		})
 		if err != nil {
 			panic(err)

@@ -53,7 +53,7 @@ type TCPPoolConfig struct {
 	ClosingTimeout time.Duration
 	// NewUserData is used to create user data used for each individual TCP connection and returned on GetTCP.
 	NewUserData func() any
-	// NewBackoff returns the backoff to use for every newly configured TCP connection.
+	// NewBackoff returns the backoff to use for every newly configured TCP connection. Must be non-nil.
 	// This should always return a static(non-method) function unless you know what you are doing.
 	NewBackoff func() lneto.BackoffStrategy
 }
@@ -61,6 +61,8 @@ type TCPPoolConfig struct {
 func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
 	if cfg.EstablishedTimeout <= 0 || cfg.ClosingTimeout <= 0 {
 		return nil, lneto.ErrInvalidConfig
+	} else if cfg.NewBackoff == nil {
+		return nil, lneto.ErrMissingHALConfig
 	}
 	n := int(cfg.PoolSize)
 	pool := &TCPPool{
@@ -84,9 +86,7 @@ func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
 			TxBuf:             bufSpace[txOff : txOff+cfg.TxBufSize],
 			TxPacketQueueSize: cfg.QueueSize,
 			Logger:            cfg.ConnLogger,
-		}
-		if cfg.NewBackoff != nil {
-			conncfg.RWBackoff = cfg.NewBackoff()
+			RWBackoff:         cfg.NewBackoff(),
 		}
 		err := pool.conns[i].Configure(conncfg)
 		if err != nil {

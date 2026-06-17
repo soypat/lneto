@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/tcp"
 )
@@ -49,6 +50,7 @@ func TestStackAsyncListener_SingleConnection(t *testing.T) {
 		RxBuf:             make([]byte, MTU),
 		TxBuf:             make([]byte, MTU),
 		TxPacketQueueSize: 4,
+		RWBackoff:         backoffYield,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -62,6 +64,7 @@ func TestStackAsyncListener_SingleConnection(t *testing.T) {
 		RxBufSize:          MTU,
 		EstablishedTimeout: 10e9,
 		ClosingTimeout:     10e9,
+		NewBackoff:         func() lneto.BackoffStrategy { return backoffYield },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -150,6 +153,7 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 		RxBufSize:          bufsize,
 		EstablishedTimeout: 10e9,
 		ClosingTimeout:     10e9,
+		NewBackoff:         func() lneto.BackoffStrategy { return backoffYield },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -188,6 +192,7 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 			RxBuf:             make([]byte, bufsize),
 			TxBuf:             make([]byte, bufsize),
 			TxPacketQueueSize: 4,
+			RWBackoff:         backoffYield,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -239,6 +244,7 @@ func TestListener_Close(t *testing.T) {
 		RxBufSize:          512,
 		EstablishedTimeout: 10e9,
 		ClosingTimeout:     10e9,
+		NewBackoff:         func() lneto.BackoffStrategy { return backoffYield },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -278,6 +284,7 @@ func TestListener_ResetAfterClose(t *testing.T) {
 		RxBufSize:          512,
 		EstablishedTimeout: 10e9,
 		ClosingTimeout:     10e9,
+		NewBackoff:         func() lneto.BackoffStrategy { return backoffYield },
 	})
 	if err != nil {
 		t.Fatal(err)

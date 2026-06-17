@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/soypat/lneto"
-	"github.com/soypat/lneto/internal"
 )
 
 // lnetopacketconn is the lneto interpretation of
@@ -53,6 +52,9 @@ type PacketConnConfig struct {
 // Configure initializes the PacketConn with the given buffer and queue configuration.
 // Must be called before [PacketConn.Open]. Calling Configure on an active connection aborts it.
 func (pc *PacketConn) Configure(cfg PacketConnConfig) error {
+	if cfg.RWBackoff == nil {
+		return lneto.ErrMissingHALConfig
+	}
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 	pc.abort()
@@ -243,11 +245,7 @@ func (pc *PacketConn) deadlineExceeded(deadline *time.Time) bool {
 }
 
 func (pc *PacketConn) backoff(n uint) {
-	if pc._backoff != nil {
-		pc._backoff.Do(n)
-	} else {
-		internal.BackoffConnRW(n)
-	}
+	pc._backoff.Do(n)
 }
 
 func (pc *PacketConn) lockConnID() (uint64, error) {
