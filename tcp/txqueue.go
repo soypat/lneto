@@ -45,6 +45,12 @@ type ringidx struct {
 	seq Value
 	// size is the size of the packet in bytes.
 	size Size
+	// sacked is set when the peer has selectively acknowledged this packet
+	// (RFC 2018), so it must not be retransmitted.
+	sacked bool
+	// rexmit is set once the packet has been retransmitted in the current
+	// recovery round, so SACK recovery sends each hole only once per round.
+	rexmit bool
 }
 
 // Reset resets the RingTx's internal state to use buf as the main ring buffer and creates or reuses
@@ -239,6 +245,56 @@ func (rtx *ringTx) RetransmitFromUNA() {
 	}
 	// Clear packet metadata; sequence tracking restarts from UNA.
 	rtx.slist.Reset(cap(rtx.slist.pkts), unaSeq)
+}
+
+// MarkSACKed flags every fully-covered sent packet in the range [start, end)
+// as selectively acknowledged (RFC 2018) so it is excluded from retransmission.
+func (rtx *ringTx) MarkSACKed(start, end Value) {
+	for i := range rtx.slist.pkts {
+		pkt := &rtx.slist.pkts[i]
+		if pkt.size == 0 {
+			continue
+		}
+		if !pkt.seq.LessThan(start) && pkt.endSeq().LessThanEq(end) {
+			pkt.sacked = true
+		}
+	}
+}
+
+// NextSACKRetransmit returns the sequence number of the oldest sent-but-unacked
+// packet that is neither selectively acknowledged nor already retransmitted in
+// this recovery round, marking it retransmitted. It is the next hole to resend
+// during SACK recovery; it returns false when none remain.
+func (rtx *ringTx) NextSACKRetransmit() (Value, bool) {
+	for i := range rtx.slist.pkts {
+		pkt := &rtx.slist.pkts[i]
+		if pkt.size == 0 || pkt.sacked || pkt.rexmit {
+			continue
+		}
+		pkt.rexmit = true
+		return pkt.seq, true
+	}
+	return 0, false
+}
+
+// ClearRetransmitMarks resets the per-packet retransmit flags, starting a fresh
+// recovery round (e.g. after a cumulative ACK advances or a timeout).
+func (rtx *ringTx) ClearRetransmitMarks() {
+	for i := range rtx.slist.pkts {
+		rtx.slist.pkts[i].rexmit = false
+	}
+}
+
+// HasSACKRetransmit reports whether any outstanding packet still needs
+// retransmitting this recovery round (not SACKed, not yet retransmitted).
+func (rtx *ringTx) HasSACKRetransmit() bool {
+	for i := range rtx.slist.pkts {
+		pkt := &rtx.slist.pkts[i]
+		if pkt.size != 0 && !pkt.sacked && !pkt.rexmit {
+			return true
+		}
+	}
+	return false
 }
 
 func (rtx *ringTx) consolidateBufs() {

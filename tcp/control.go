@@ -331,11 +331,28 @@ func (tcb *ControlBlock) HasPending() bool {
 	return tcb.pending[0] != 0 || tcb.pendingChallengeAck() || tcb.HasPendingRetransmit()
 }
 
-// HasPending returns true if the control block is pending a retransmit according to simple optmist
-// retransmit strategy.
+// HasPendingRetransmit returns true if the control block is pending a retransmit
+// according to the simple optimist retransmit strategy. When SACK (RFC 2018) is
+// negotiated this returns false: retransmission is driven selectively by the
+// SACK scoreboard instead of this dup-ACK heuristic.
 func (tcb *ControlBlock) HasPendingRetransmit() bool {
+	if tcb.sackEnabled {
+		return false
+	}
 	// Force retransmit after 3 consecutive acks of UNA.
 	return tcb._state.TxDataOpen() && tcb.dupack >= retransmitAfterDupacks && tcb.nRetransmit <= tcb.dupack-retransmitAfterDupacks
+}
+
+// RetransmitSegment builds an ACK segment that retransmits already-sent data
+// beginning at seq. The caller fills DATALEN from the transmit buffer. Used by
+// SACK recovery to resend a specific hole (RFC 2018).
+func (tcb *ControlBlock) RetransmitSegment(seq Value) Segment {
+	return Segment{
+		SEQ:   seq,
+		ACK:   tcb.rcv.NXT,
+		WND:   tcb.rcv.WND,
+		Flags: FlagACK,
+	}
 }
 
 // PendingSegment calculates a suitable next segment to send from a payload length.
@@ -771,6 +788,18 @@ func (tcb *ControlBlock) Retransmit() {
 // congestion controller. Returns false when the timer has not expired or there
 // is no unacknowledged data outstanding.
 func (tcb *ControlBlock) CheckRetransmitTimeout(now time.Time) bool {
+	if !tcb.timeoutFired(now) {
+		return false
+	}
+	tcb.Retransmit()
+	return true
+}
+
+// timeoutFired reports whether the retransmission timer has expired with data
+// outstanding and, if so, applies the RFC 6298 §5.4–§5.5 backoff without
+// rewinding the send sequence. Used by the SACK recovery path, which
+// retransmits selected holes instead of doing go-back-N.
+func (tcb *ControlBlock) timeoutFired(now time.Time) bool {
 	if !tcb.rto.expired(now) {
 		return false
 	}
@@ -779,8 +808,13 @@ func (tcb *ControlBlock) CheckRetransmitTimeout(now time.Time) bool {
 		return false
 	}
 	tcb.rto.onTimeout(now)
-	tcb.Retransmit()
 	return true
+}
+
+// InFastRecovery reports whether the connection has seen at least the
+// fast-retransmit threshold of duplicate ACKs (RFC 5681 §3.2).
+func (tcb *ControlBlock) InFastRecovery() bool {
+	return tcb._state.TxDataOpen() && tcb.dupack >= retransmitAfterDupacks
 }
 
 // Abort sets ControlBlock state to Closed and resets all sequence numbers and pending flag.

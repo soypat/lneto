@@ -3,6 +3,7 @@ package congestion_test
 import (
 	"errors"
 	"net"
+	"slices"
 	"testing"
 	"time"
 
@@ -61,8 +62,8 @@ type emuPacket struct {
 type emuLink struct {
 	rate  float64       // bytes/sec; 0 means infinite bandwidth (no serialization).
 	delay time.Duration // one-way propagation delay.
-	// lossAt drops the single packet at this 1-based offered index (0 = lossless).
-	lossAt int
+	// lossAt drops the packets at these 1-based offered indices (nil = lossless).
+	lossAt []int
 
 	inflight  []emuPacket // accepted packets ordered by deliverAt (monotonic).
 	busyUntil time.Time   // time the serializer becomes free.
@@ -75,7 +76,7 @@ type emuLink struct {
 // inflight stays ordered.
 func (l *emuLink) offer(data []byte, now time.Time) {
 	l.offered++
-	if l.lossAt > 0 && l.offered == l.lossAt {
+	if slices.Contains(l.lossAt, l.offered) {
 		l.dropped++
 		return
 	}
@@ -121,7 +122,7 @@ func (l *emuLink) nextDeliver() (time.Time, bool) {
 type emuParams struct {
 	rate       float64       // forward-path bottleneck bandwidth, bytes/sec.
 	delay      time.Duration // one-way propagation delay applied to both paths.
-	lossAt     int           // forward-path: drop the single packet at this index (0 = lossless).
+	lossAt     []int         // forward-path: drop packets at these offered indices (nil = lossless).
 	bufSize    int           // per-handler tx/rx buffer size in bytes.
 	packets    int           // tx ring packet slots (must exceed segments in flight).
 	reasmSegs  int           // receiver out-of-order reassembly slots (0 = disabled).
@@ -493,6 +494,52 @@ func TestEmuTimestampsNegotiateAndMeasureRTT(t *testing.T) {
 	t.Logf("timestamps: negotiated; SRTT=%v (propagation RTT %v)", srtt, propRTT)
 }
 
+// TestEmuSACKRecoversMultipleLosses drops two segments in one window with SACK
+// and reassembly enabled. The receiver advertises the byte ranges it buffered,
+// and the sender retransmits only the two holes (skipping the SACKed data in
+// between) rather than going back N. The test asserts SACK is negotiated and the
+// full stream is delivered intact after exactly two drops.
+func TestEmuSACKRecoversMultipleLosses(t *testing.T) {
+	const (
+		rate    = 1_000_000.0
+		delay   = 10 * time.Millisecond
+		bufSize = 32 * 1024
+	)
+	en := newEmuNet(t, emuParams{
+		rate:       rate,
+		delay:      delay,
+		lossAt:     []int{4, 9}, // two holes in the same window.
+		bufSize:    bufSize,
+		packets:    64,
+		reasmSegs:  32,
+		timestamps: true,
+	})
+	en.client.EnableSACK(true)
+	en.server.EnableSACK(true)
+
+	var cubic congestion.CUBIC
+	if err := cubic.Configure(congestion.CUBICConfig{InitialCwnd: 16, Now: en.now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := en.client.SetCongestionControl(&cubic); err != nil {
+		t.Fatal(err)
+	}
+
+	payload := patternPayload(18 * 1024) // ~13 segments: one window with two gaps.
+	openPair(t, en.client, en.server)
+	received := en.transfer(payload)
+
+	verifyStream(t, payload, received)
+	if !en.client.SACKEnabled() || !en.server.SACKEnabled() {
+		t.Fatalf("SACK not negotiated: client=%v server=%v",
+			en.client.SACKEnabled(), en.server.SACKEnabled())
+	}
+	if en.fwd.dropped != 2 {
+		t.Errorf("expected exactly 2 injected drops, got %d", en.fwd.dropped)
+	}
+	t.Logf("SACK recovery: delivered %d B intact after 2 losses in one window", len(received))
+}
+
 // sawWindowGrowth reports whether the sampled congestion window ever increased
 // between consecutive samples.
 func sawWindowGrowth(samples []tcp.Size) bool {
@@ -530,7 +577,7 @@ func TestEmuRTORecoversLoss(t *testing.T) {
 	en := newEmuNet(t, emuParams{
 		rate:    rate,
 		delay:   delay,
-		lossAt:  5, // an early forward segment, in a small window.
+		lossAt:  []int{5}, // an early forward segment, in a small window.
 		bufSize: bufSize,
 		packets: 64,
 	})
@@ -581,7 +628,7 @@ func TestEmuReassemblyRecoversManyFollowers(t *testing.T) {
 	en := newEmuNet(t, emuParams{
 		rate:      rate,
 		delay:     delay,
-		lossAt:    3, // 2nd data segment: ~11 segments follow the gap (> 8).
+		lossAt:    []int{3}, // 2nd data segment: ~11 segments follow the gap (> 8).
 		bufSize:   bufSize,
 		packets:   64,
 		reasmSegs: 32, // slab (32*MTU) exceeds the receive buffer.
