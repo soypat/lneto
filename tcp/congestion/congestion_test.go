@@ -81,20 +81,20 @@ func TestRTTSampler(t *testing.T) {
 func TestCongestionControlNoAllocs(t *testing.T) {
 	clock := time.Unix(0, 0)
 	var cubic CUBIC
-	cubic.Reset(CUBICConfig{MSS: 1000, Now: func() time.Time { return clock }})
+	cubic.Configure(CUBICConfig{MSS: 1000, Now: func() time.Time { return clock }})
 	cubic.ssthresh = 50
 	if allocs := testing.AllocsPerRun(200, func() {
-		cubic.OnACK(1000, 20*time.Millisecond)
+		cubic.onACK(1000, 20*time.Millisecond)
 	}); allocs != 0 {
-		t.Errorf("CUBIC.OnACK allocates %v objects/op, want 0", allocs)
+		t.Errorf("CUBIC.onACK allocates %v objects/op, want 0", allocs)
 	}
 
 	var bbr BBR
-	bbr.Reset(BBRConfig{MSS: 1000, Now: func() time.Time { return clock }})
+	bbr.Configure(BBRConfig{MSS: 1000, Now: func() time.Time { return clock }})
 	if allocs := testing.AllocsPerRun(200, func() {
-		bbr.OnACK(1000, 1000, 20*time.Millisecond)
+		bbr.onACK(1000, 1000, 20*time.Millisecond)
 	}); allocs != 0 {
-		t.Errorf("BBR.OnACK allocates %v objects/op, want 0", allocs)
+		t.Errorf("BBR.onACK allocates %v objects/op, want 0", allocs)
 	}
 }
 

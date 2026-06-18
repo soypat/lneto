@@ -67,7 +67,7 @@ func TestHandlerCongestionGating(t *testing.T) {
 
 	clock := time.Unix(0, 0)
 	var cubic congestion.CUBIC
-	if err := cubic.Reset(congestion.CUBICConfig{InitialCwnd: 2, Now: func() time.Time { return clock }}); err != nil {
+	if err := cubic.Configure(congestion.CUBICConfig{InitialCwnd: 2, Now: func() time.Time { return clock }}); err != nil {
 		t.Fatal(err)
 	}
 	if err := client.SetCongestionControl(&cubic); err != nil {
@@ -172,7 +172,7 @@ func TestHandlerBBRWiring(t *testing.T) {
 
 	clock := time.Unix(0, 0)
 	var bbr congestion.BBR
-	if err := bbr.Reset(congestion.BBRConfig{InitialCwnd: 10, Now: func() time.Time { return clock }}); err != nil {
+	if err := bbr.Configure(congestion.BBRConfig{InitialCwnd: 10, Now: func() time.Time { return clock }}); err != nil {
 		t.Fatal(err)
 	}
 	if err := client.SetCongestionControl(&bbr); err != nil {

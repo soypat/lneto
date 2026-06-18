@@ -70,7 +70,7 @@ const (
 // (ProbeBW_DOWN, §5.3.3.1) and the unity phases cruise at the estimated
 // bandwidth (ProbeBW_CRUISE/REFILL, §5.3.3.2, §5.3.3.3). Each phase lasts
 // about one min_rtt rather than using the draft's adaptive phase durations.
-var bbrPacingGainCycle = [8]float64{1.25, 0.9, 1, 1, 1, 1, 1, 1}
+var bbrPacingGainCycle = [8]float32{1.25, 0.9, 1, 1, 1, 1, 1, 1}
 
 // bbrState enumerates the BBR state machine phases.
 type bbrState uint8
@@ -97,7 +97,7 @@ func (s bbrState) String() string {
 	}
 }
 
-// BBRConfig configures a [BBR] controller. See [BBR.Reset].
+// BBRConfig configures a [BBR] controller. See [BBR.Configure].
 type BBRConfig struct {
 	// MSS is the maximum segment size in bytes. If zero, a default of 1460 is used.
 	MSS tcp.Size
@@ -123,6 +123,9 @@ type BBRConfig struct {
 // (§5.5.9) are not implemented.
 type BBR struct {
 	base ccBase
+	// cfg retains the normalized configuration so [BBR.Reset] can restore the
+	// initial per-connection state without reconfiguration.
+	cfg bbrConfig
 
 	state bbrState
 
@@ -134,14 +137,14 @@ type BBR struct {
 	rtProp      time.Duration
 	rtPropStamp time.Time
 
-	pacingGain float64
-	cwndGain   float64
+	pacingGain float32
+	cwndGain   float32
 	cwnd       tcp.Size // congestion window, bytes.
 
 	cycleIndex int       // current phase within bbrPacingGainCycle.
 	cycleStamp time.Time // when the current ProbeBW phase began.
 
-	fullBw        float64 // bandwidth at the last full-pipe check, bytes/sec.
+	fullBw        float32 // bandwidth at the last full-pipe check, bytes/sec.
 	fullBwCount   int
 	fullBwReached bool
 
@@ -149,28 +152,53 @@ type BBR struct {
 	probeRTTDoneInit bool
 }
 
-// Reset (re)initializes the controller with cfg, returning an error if the
-// configuration is invalid. It follows the package Reset/Configure convention.
-func (bbr *BBR) Reset(cfg BBRConfig) error {
-	mss := cfg.MSS
-	if mss == 0 {
-		mss = defaultMSS
-	}
+// bbrConfig is the normalized [BBRConfig] retained for [BBR.Reset].
+type bbrConfig struct {
+	clock    func() time.Time
+	mss      tcp.Size
+	initCwnd tcp.Size
+}
+
+// Configure validates and stores cfg and resets the controller to its initial
+// state. Configure is the static configuration step and is not part of
+// tcp.CongestionControl; call it before installing the controller on a Handler.
+// See [BBR.Reset].
+func (bbr *BBR) Configure(cfg BBRConfig) error {
 	icwnd := cfg.InitialCwnd
 	if icwnd == 0 {
 		icwnd = 10
 	}
+	bbr.cfg = bbrConfig{
+		clock:    cfg.Now,
+		mss:      cfg.MSS,
+		initCwnd: icwnd,
+	}
+	bbr.Reset()
+	return nil
+}
+
+// Reset clears the per-connection state, restoring the initial window from the
+// configuration applied by [BBR.Configure]. It implements
+// tcp.CongestionControl and is called by the Handler when a connection opens or
+// is torn down. The peer-negotiated MSS is forgotten; the static configuration
+// is preserved.
+func (bbr *BBR) Reset() {
+	cfg := bbr.cfg
+	smss := cfg.mss
+	if smss == 0 {
+		smss = defaultMSS
+	}
 	*bbr = BBR{
 		base: ccBase{
-			mss:   cfg.MSS,
-			clock: cfg.Now,
+			mss:   cfg.mss,
+			clock: cfg.clock,
 		},
+		cfg:        cfg,
 		state:      bbrStartup,
 		pacingGain: bbrStartupPacingGain,
 		cwndGain:   bbrDefaultCwndGain,
-		cwnd:       icwnd * mss,
+		cwnd:       cfg.initCwnd * smss,
 	}
-	return nil
 }
 
 // State returns the current BBR state-machine phase as a human-readable string
@@ -182,20 +210,20 @@ func (bbr *BBR) CongestionWindow() tcp.Size { return bbr.cwnd }
 
 // BandwidthEstimate returns the current maximum delivery rate estimate (max_bw)
 // in bytes per second, or 0 before the first delivery-rate sample.
-func (bbr *BBR) BandwidthEstimate() float64 { return float64(bbr.bwFilter.get()) }
+func (bbr *BBR) BandwidthEstimate() float32 { return float32(bbr.bwFilter.get()) }
 
 // MinRTT returns the current minimum round-trip time estimate (min_rtt), or 0
 // before the first RTT sample.
 func (bbr *BBR) MinRTT() time.Duration { return bbr.rtProp }
 
-// PacingRate returns the rate, in bytes per second, at which the sender should
+// pacingRate returns the rate, in bytes per second, at which the sender should
 // pace transmissions: pacing_gain * max_bw.
-func (bbr *BBR) PacingRate() float64 { return bbr.pacingGain * bbr.BandwidthEstimate() }
+func (bbr *BBR) pacingRate() float32 { return bbr.pacingGain * bbr.BandwidthEstimate() }
 
-// BDP returns the bandwidth-delay product in bytes: max_bw * min_rtt. It is the
+// bdp returns the bandwidth-delay product in bytes: max_bw * min_rtt. It is the
 // amount of in-flight data needed to keep the bottleneck fully utilized.
-func (bbr *BBR) BDP() float64 {
-	return bbr.BandwidthEstimate() * bbr.rtProp.Seconds()
+func (bbr *BBR) bdp() float32 {
+	return bbr.BandwidthEstimate() * float32(bbr.rtProp.Seconds())
 }
 
 // Control implements tcp.CongestionControl. On every completed RTT sample it
@@ -214,12 +242,12 @@ func (bbr *BBR) Control(ev tcp.CongestionEvent) tcp.Size {
 	return bbr.CongestionWindow()
 }
 
-// OnACK feeds an acknowledgment into the model: acked is the number of bytes
+// onACK feeds an acknowledgment into the model: acked is the number of bytes
 // delivered over the round-trip sample rtt, and inflight is the number of bytes
 // still in flight after the ACK. The controller updates its bandwidth/RTT
 // estimates, advances its state machine, and recomputes the pacing rate and
 // congestion window.
-func (bbr *BBR) OnACK(acked, inflight tcp.Size, rtt time.Duration) {
+func (bbr *BBR) onACK(acked, inflight tcp.Size, rtt time.Duration) {
 	if acked == 0 || rtt <= 0 {
 		return
 	}
@@ -246,7 +274,7 @@ func (bbr *BBR) update(rate float64, inflight tcp.Size, rtt time.Duration) {
 			bbr.enterDrain()
 		}
 	case bbrDrain:
-		if tcp.Size(bbr.BDP()) >= inflight {
+		if tcp.Size(bbr.bdp()) >= inflight {
 			bbr.enterProbeBW(now)
 		}
 	case bbrProbeBW:
@@ -382,7 +410,7 @@ func (bbr *BBR) maybeProbeRTT(now time.Time, inflight tcp.Size) {
 // max(bbrProbeRTTCwndGain*BDP, MinPipeCwnd) ([draft-ietf-ccwg-bbr] §5.6.4.5).
 func (bbr *BBR) probeRTTCwnd() tcp.Size {
 	minWnd := tcp.Size(bbrMinPipeCwnd) * bbr.base.segMSS()
-	return max(tcp.Size(bbrProbeRTTCwndGain*bbr.BDP()), minWnd)
+	return max(tcp.Size(bbrProbeRTTCwndGain*bbr.bdp()), minWnd)
 }
 
 func (bbr *BBR) setPacingAndCwnd() {
@@ -391,7 +419,7 @@ func (bbr *BBR) setPacingAndCwnd() {
 		bbr.cwnd = bbr.probeRTTCwnd()
 		return
 	}
-	bdp := bbr.BDP()
+	bdp := bbr.bdp()
 	if bdp <= 0 {
 		// No estimate yet: stay at the initial/minimum window.
 		if bbr.cwnd < minWnd {
@@ -402,11 +430,3 @@ func (bbr *BBR) setPacingAndCwnd() {
 	target := max(tcp.Size(bbr.cwndGain*bdp), minWnd)
 	bbr.cwnd = target
 }
-
-// OnLoss is provided for symmetry with [CUBIC]. BBR is not loss-based: it does
-// not collapse its window on packet loss the way Reno/CUBIC do, so this is
-// intentionally a no-op. The draft's loss-driven short-term model
-// (BBR.Beta = 0.7 and BBR.LossThresh = 2%, [draft-ietf-ccwg-bbr] §2.7,
-// §5.5.10) is not implemented; bandwidth and RTT estimation alone drive the
-// window via OnACK.
-func (bbr *BBR) OnLoss() {}

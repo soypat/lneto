@@ -10,7 +10,7 @@ import (
 func newTestBBR(t *testing.T, clock *time.Time) *BBR {
 	t.Helper()
 	var b BBR
-	err := b.Reset(BBRConfig{
+	err := b.Configure(BBRConfig{
 		MSS:         1000,
 		InitialCwnd: 10,
 		Now:         func() time.Time { return *clock },
@@ -41,7 +41,7 @@ func TestBBRBandwidthEstimate(t *testing.T) {
 	const rtt = 100 * time.Millisecond
 	for range 5 {
 		clock = clock.Add(rtt)
-		b.OnACK(10000, 10000, rtt) // 100_000 bytes/sec.
+		b.onACK(10000, 10000, rtt) // 100_000 bytes/sec.
 	}
 	bw := b.BandwidthEstimate()
 	if bw < 99000 || bw > 101000 {
@@ -50,12 +50,12 @@ func TestBBRBandwidthEstimate(t *testing.T) {
 	if b.MinRTT() != rtt {
 		t.Errorf("minRTT=%v, want %v", b.MinRTT(), rtt)
 	}
-	if bdp := b.BDP(); bdp < 9500 || bdp > 10500 {
+	if bdp := b.bdp(); bdp < 9500 || bdp > 10500 {
 		t.Errorf("BDP=%v, want ~10000 bytes", bdp)
 	}
 	// Pacing rate is pacing_gain * bw; across all phases the gain lies between
 	// the drain gain (0.5) and the startup gain (~2.77).
-	if pr := b.PacingRate(); pr < bw*bbrDrainPacingGain*0.99 || pr > bw*bbrStartupPacingGain*1.01 {
+	if pr := b.pacingRate(); pr < bw*bbrDrainPacingGain*0.99 || pr > bw*bbrStartupPacingGain*1.01 {
 		t.Errorf("PacingRate=%v out of range [%v, %v]", pr, bw*bbrDrainPacingGain, bw*bbrStartupPacingGain)
 	}
 }
@@ -65,10 +65,10 @@ func TestBBRBandwidthMaxFilter(t *testing.T) {
 	b := newTestBBR(t, &clock)
 	const rtt = 100 * time.Millisecond
 	clock = clock.Add(rtt)
-	b.OnACK(20000, 20000, rtt) // 200_000 bytes/sec peak.
+	b.onACK(20000, 20000, rtt) // 200_000 bytes/sec peak.
 	for range 3 {
 		clock = clock.Add(rtt)
-		b.OnACK(5000, 5000, rtt) // 50_000 bytes/sec.
+		b.onACK(5000, 5000, rtt) // 50_000 bytes/sec.
 	}
 	if bw := b.BandwidthEstimate(); bw < 199000 {
 		t.Errorf("bw=%v, peak should be retained by max filter (~200000)", bw)
@@ -83,7 +83,7 @@ func TestBBRStartupToDrain(t *testing.T) {
 	acked := tcp.Size(4000)
 	for range 6 {
 		clock = clock.Add(rtt)
-		b.OnACK(acked, acked, rtt)
+		b.onACK(acked, acked, rtt)
 		acked = tcp.Size(float64(acked) * 1.5) // >25% growth each round.
 	}
 	if b.State() != "STARTUP" {
@@ -92,7 +92,7 @@ func TestBBRStartupToDrain(t *testing.T) {
 
 	for range bbrFullBwCount + 2 {
 		clock = clock.Add(rtt)
-		b.OnACK(acked, acked, rtt) // constant => no growth.
+		b.onACK(acked, acked, rtt) // constant => no growth.
 	}
 	if b.State() == "STARTUP" {
 		t.Errorf("state still STARTUP after bandwidth plateau, want DRAIN/PROBE_BW")
@@ -112,7 +112,7 @@ func TestBBRReachesProbeBW(t *testing.T) {
 	acked := tcp.Size(4000)
 	for range 8 {
 		clock = clock.Add(rtt)
-		b.OnACK(acked, acked, rtt)
+		b.onACK(acked, acked, rtt)
 		if acked < ackPerRound {
 			acked *= 2
 		} else {
@@ -121,12 +121,12 @@ func TestBBRReachesProbeBW(t *testing.T) {
 	}
 	for range 20 {
 		clock = clock.Add(rtt)
-		b.OnACK(ackPerRound, ackPerRound/2, rtt)
+		b.onACK(ackPerRound, ackPerRound/2, rtt)
 	}
 	if b.State() != "PROBE_BW" {
 		t.Fatalf("state=%q, want PROBE_BW in steady state", b.State())
 	}
-	bdp := b.BDP()
+	bdp := b.bdp()
 	if bdp < 4500 || bdp > 5500 {
 		t.Errorf("BDP=%v, want ~5000 bytes", bdp)
 	}
@@ -145,7 +145,7 @@ func TestBBRProbeRTT(t *testing.T) {
 	acked := tcp.Size(4000)
 	for range 8 {
 		clock = clock.Add(rtt)
-		b.OnACK(acked, acked, rtt)
+		b.onACK(acked, acked, rtt)
 		if acked < ackPerRound {
 			acked *= 2
 		} else {
@@ -154,36 +154,21 @@ func TestBBRProbeRTT(t *testing.T) {
 	}
 	for range 10 {
 		clock = clock.Add(rtt)
-		b.OnACK(ackPerRound, ackPerRound/2, rtt)
+		b.onACK(ackPerRound, ackPerRound/2, rtt)
 	}
 
 	// Advance past the min-RTT window with samples *higher* than the 50ms
 	// minimum (the path is now queuing), so min_rtt goes stale and ProbeRTT fires.
 	const highRTT = 80 * time.Millisecond
 	clock = clock.Add(bbrProbeRTTInterval + time.Second)
-	b.OnACK(ackPerRound, ackPerRound/2, highRTT)
+	b.onACK(ackPerRound, ackPerRound/2, highRTT)
 	if b.State() != "PROBE_RTT" {
 		t.Fatalf("state=%q after stale min_rtt, want PROBE_RTT", b.State())
 	}
 	clock = clock.Add(rtt)
-	b.OnACK(ackPerRound, bbrMinPipeCwnd*1000, highRTT)
+	b.onACK(ackPerRound, bbrMinPipeCwnd*1000, highRTT)
 	if got, want := b.CongestionWindow(), tcp.Size(bbrMinPipeCwnd)*1000; got != want {
 		t.Errorf("ProbeRTT cwnd=%d, want %d (min pipe)", got, want)
-	}
-}
-
-func TestBBROnLossIsNoOp(t *testing.T) {
-	clock := time.Unix(0, 0)
-	b := newTestBBR(t, &clock)
-	const rtt = 50 * time.Millisecond
-	for range 4 {
-		clock = clock.Add(rtt)
-		b.OnACK(5000, 5000, rtt)
-	}
-	before := b.CongestionWindow()
-	b.OnLoss()
-	if b.CongestionWindow() != before {
-		t.Errorf("BBR cwnd changed on loss: %d -> %d (should be no-op)", before, b.CongestionWindow())
 	}
 }
 

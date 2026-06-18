@@ -22,6 +22,12 @@ import (
 // The interface is intentionally decoupled from the [Handler]'s internals: the
 // Handler hands the controller a fully-populated [CongestionEvent], so
 // implementations live in a separate package and never touch unexported state.
+//
+// Static, per-controller configuration (MSS defaults, initial window, clock
+// injection, …) is deliberately kept off this interface: it is supplied through
+// an implementation-specific method (e.g. congestion.CUBIC.Configure) before
+// the controller is installed on a [Handler]. This keeps the interface minimal
+// and lets a configured controller be reused across connections.
 type CongestionControl interface {
 	// Control feeds a segment crossing the [Handler] boundary into the
 	// controller so it can update its congestion state, and returns the
@@ -31,6 +37,13 @@ type CongestionControl interface {
 	// scheduling remains the Handler's responsibility. Control is called for
 	// every admitted segment, not only on congestion events.
 	Control(event CongestionEvent) (congestionWindow Size)
+	// Reset clears the controller's per-connection state (windows, estimates,
+	// state machine) so it is ready for a fresh connection, while preserving any
+	// static configuration applied beforehand. The Handler calls Reset whenever
+	// it opens or tears down a connection (Open/Abort), so a single configured
+	// controller can be reused across the connection's lifecycle without being
+	// reconfigured.
+	Reset()
 }
 
 // CongestionEvent describes a single TCP segment crossing the connection,
