@@ -31,6 +31,27 @@ func TestAppendFormatAddr(t *testing.T) {
 	}
 }
 
+func TestIsLinkLocal(t *testing.T) {
+	tests := []struct {
+		addr [4]byte
+		want bool
+	}{
+		{addr: [4]byte{169, 254, 0, 0}, want: true},
+		{addr: [4]byte{169, 254, 1, 1}, want: true},
+		{addr: [4]byte{169, 254, 254, 255}, want: true},
+		{addr: [4]byte{169, 254, 255, 255}, want: true},
+		{addr: [4]byte{169, 253, 1, 1}, want: false},
+		{addr: [4]byte{169, 255, 1, 1}, want: false},
+		{addr: [4]byte{192, 168, 1, 1}, want: false},
+		{addr: [4]byte{0, 0, 0, 0}, want: false},
+	}
+	for _, tc := range tests {
+		if got := IsLinkLocal(tc.addr); got != tc.want {
+			t.Errorf("IsLinkLocal(%v): got %v, want %v", tc.addr, got, tc.want)
+		}
+	}
+}
+
 func TestAppendFormatAddr_noAllocs(t *testing.T) {
 	var buf [24]byte
 	addr := [4]byte{192, 168, 1, 1}

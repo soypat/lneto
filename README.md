@@ -11,11 +11,14 @@ Userspace networking primitives.
 
 ## Features
 `lneto` provides the following features:
+- Zero Operating System required. ***Zero***. All protocols (including TCP, excepting NTP) are time-independent.
+    - Explicit HAL needed. Lneto performs no `time.Sleep` nor `time.Now` calls unless configured by user.
+    - Zero scheduling required. No goroutines/channels use in Lneto. Can be run in event loop.
 - Heapless packet processing
     - [`httpraw`](https://github.com/soypat/lneto/tree/main/http/httpraw) is likely the most performant HTTP/1.1 processing package in the Go ecosystem. Based on [`fasthttp`](https://github.com/valyala/fasthttp) but simpler and more thoughtful memory use.
 - Lean memory footprint
     - HTTP header struct is 80 bytes with no runtime usage nor heap usage other than buffer
-    - Entire Ethernet+IPv4+UDP+DHCP+DNS+NTP stack in ~1kB.
+    - Entire Ethernet+IPv4+UDP+DHCP+DNS+NTP stack in ~2kB RAM.
 - Empty go.mod file. No dependencies except for basic standard library packages such as `bytes`, `errors`, `io`.
     - `net` only imported for `net.ErrClosed`.
     - Can produce **very** small binaries. Ideal for embedded systems.
@@ -97,6 +100,7 @@ ok      github.com/soypat/lneto/x/xnet  2.926s
 | TCP | RFC 9293 | ✅ | `tcp` | 0 ²³ | Full state machine, SYN cookies, retransmit queue, `Conn`/`Listener` |
 | DNS | RFC 1035 | ✅ | `dns` | — | Client (A/AAAA query) |
 | DHCPv4 | RFC 2131 | ✅ | `dhcp/dhcpv4` | — | Client + Server |
+| IPv4 Link-Local (APIPA) | RFC 3927 | ✅ | `ipv4/linklocal4` | 0 | Heapless claim-and-defend state machine for 169.254.x.x |
 | NTP | RFC 5905 | ✅ | `ntp` | — | Client |
 | NTS | RFC 8915 | ✅ | `x/nts` | — | Client + Server; key exchange over TLS 1.3, authenticated NTP. Requires caller-supplied AEAD_AES_SIV_CMAC_256 |
 | mDNS | RFC 6762 | ✅ | `dns/mdns` | — | Client (service announcement + query) |
@@ -119,6 +123,7 @@ ok      github.com/soypat/lneto/x/xnet  2.926s
     - [`lneto/internet/pcap`](./internal/pcap): Packet capture and field breakdown utilities. Wireshark in the making.
 - [`lneto/http/httpraw`](./http/httpraw/): Heapless HTTP header processing and validation. Does no implement header normalization.
 - [`lneto/tcp`](./tcp): TCP implementation and low level logic.
+- [`lneto/ipv4/linklocal4`](./ipv4/linklocal4): RFC 3927 IPv4 link-local (APIPA) address autoconfiguration. Heapless claim-and-defend state machine for self-assigned 169.254.x.x addresses when no DHCP server is available.
 - [`lneto/dhcpv4`](./dhcpv4): DHCP version 4 protocol implementation and low level logic.
 - [`lneto/dns`](./dns): DNS protocol implementation and low level logic.
 - [`lneto/ntp`](./ntp): NTP implementation and low level logic. Includes NTP time primitives manipulation and conversion to Go native types.
