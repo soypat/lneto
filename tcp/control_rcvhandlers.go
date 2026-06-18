@@ -111,14 +111,10 @@ func (tcb *ControlBlock) rcvFinWait2(seg Segment) (pending Flags, err error) {
 		tcb._state = StateTimeWait
 		return FlagACK, nil
 	}
+	// Bare ACKs and data are valid in FIN-WAIT-2 per RFC 9293 §3.10.7.4.
+	// The remote side hasn't closed yet; it may still send data.
 	if seg.DATALEN > 0 {
-		// soypat/lneto#50: FIN sent via Close() means no reader (no Shutdown(WR)
-		// in lneto). Tell the peer the data was not processed instead of ACKing
-		// and dropping it (RFC 9293 reset; Linux SO_LINGER=0 behaviour).
-		tcb.pending[0] = FlagRST
-		tcb.rstPtr = seg.ACK
-		return 0, errDropSegment
+		return FlagACK, nil
 	}
-	// Bare ACKs are valid and ignored in FIN-WAIT-2 per RFC 9293 §3.10.7.4.
 	return 0, nil
 }

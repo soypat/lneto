@@ -186,6 +186,14 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 	if prevState != h.scb.State() {
 		h.info("tcp.Handler:rx-statechange", slog.Uint64("port", uint64(h.localPort)), slog.String("old", prevState.String()), slog.String("new", h.scb.State().String()), slog.String("rxflags", segIncoming.Flags.String()))
 	}
+	if segIncoming.DATALEN != 0 && h.shutdownRx && (h.scb.State() == StateFinWait1 || h.scb.State() == StateFinWait2) {
+		// soypat/lneto#50: the application is done in both directions — read side
+		// shut down (CloseRead) and our FIN sent (Close) — so inbound data has no
+		// consumer. Reply RST instead of the silent ACK-and-drop that leaves the
+		// peer waiting; the connection is torn down once the RST is sent.
+		h.scb.QueueRST(segIncoming.ACK)
+		return nil
+	}
 	if segIncoming.DATALEN != 0 && !h.shutdownRx {
 		_, err = h.bufRx.Write(payload)
 		if err != nil {
@@ -328,6 +336,10 @@ func (h *Handler) Send(b []byte) (int, error) {
 	closedSuccess := prevState == StateTimeWait && segment.Flags.HasAny(FlagACK)
 	if closedSuccess {
 		h.reset(0, 0, 0)
+	} else if segment.Flags.HasAny(FlagRST) {
+		// A sent RST aborts the connection: tear down local state now that the
+		// reset has been written to the wire (frame already in b).
+		h.Abort()
 	}
 	return datalen, nil
 }

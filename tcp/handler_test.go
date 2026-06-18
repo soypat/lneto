@@ -1155,88 +1155,142 @@ func TestHandler_RetransmitAfterMultipleLossesBothDirections(t *testing.T) {
 	}
 }
 
-// TestDataInFinWait2_RST is a regression test for soypat/lneto#50.
-// After the local app calls Close() and the connection reaches FIN-WAIT-2
-// there is no reader (lneto has no Shutdown(WR); Close means fully done).
-// A new data segment from the peer (e.g. a pipelined HTTP request) must be
-// answered with RST (issue Option A / Linux SO_LINGER=0), NOT a bare ACK that
-// silently drops the data and leaves the peer waiting.
-func TestDataInFinWait2_RST(t *testing.T) {
-	const mtu = ethernet.MaxMTU
-	const maxpackets = 3
-	rng := rand.New(rand.NewSource(50))
-	client, server := newHandler(t, mtu, maxpackets), newHandler(t, mtu, maxpackets)
-	setupClientServer(t, rng, client, server)
-	var rawbuf [mtu]byte
-	establish(t, client, server, rawbuf[:])
-
-	// Client (the lneto side) closes: app fully done. Sends FIN → FIN-WAIT-1.
+// driveToFinWait2 performs an active close from client: Close() → FIN, the
+// server ACKs it (no FIN of its own), leaving client in FIN-WAIT-2.
+func driveToFinWait2(t *testing.T, client, server *Handler, buf []byte) {
+	t.Helper()
 	if err := client.Close(); err != nil {
 		t.Fatal("client close:", err)
 	}
-	clear(rawbuf[:])
-	n, err := client.Send(rawbuf[:])
+	clear(buf)
+	n, err := client.Send(buf)
 	if err != nil {
-		t.Fatal("client sending FIN:", err)
+		t.Fatal("client send FIN:", err)
 	}
 	if client.State() != StateFinWait1 {
-		t.Fatal("client not in FIN_WAIT_1:", client.State())
+		t.Fatal("client not FIN-WAIT-1:", client.State())
 	}
-
-	// Server receives FIN → CLOSE-WAIT, then ACKs it (no Close → no FIN of its own).
-	if err := server.Recv(rawbuf[:n]); err != nil {
+	if err := server.Recv(buf[:n]); err != nil {
 		t.Fatal("server recv FIN:", err)
 	}
-	if server.State() != StateCloseWait {
-		t.Fatal("server not in CLOSE_WAIT:", server.State())
-	}
-	clear(rawbuf[:])
-	n, err = server.Send(rawbuf[:]) // pure ACK of the FIN.
+	clear(buf)
+	n, err = server.Send(buf) // pure ACK of the FIN.
 	if err != nil {
-		t.Fatal("server sending ACK:", err)
+		t.Fatal("server send ACK:", err)
 	}
-
-	// Client receives the ACK → FIN-WAIT-2.
-	if err := client.Recv(rawbuf[:n]); err != nil {
+	if err := client.Recv(buf[:n]); err != nil {
 		t.Fatal("client recv ACK:", err)
 	}
 	if client.State() != StateFinWait2 {
-		t.Fatal("client not in FIN_WAIT_2:", client.State())
+		t.Fatal("client not FIN-WAIT-2:", client.State())
 	}
+}
 
-	// Peer pipelines a new request on the half-closed connection.
-	req := []byte("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-	if _, err := server.Write(req); err != nil {
-		t.Fatal("server write req:", err)
+// serverSendData writes data on the server and emits it as one packet, returning
+// the packet length in buf.
+func serverSendData(t *testing.T, server *Handler, data, buf []byte) int {
+	t.Helper()
+	if _, err := server.Write(data); err != nil {
+		t.Fatal("server write:", err)
 	}
-	clear(rawbuf[:])
-	n, err = server.Send(rawbuf[:])
+	clear(buf)
+	n, err := server.Send(buf)
 	if err != nil {
-		t.Fatal("server send req:", err)
+		t.Fatal("server send data:", err)
 	}
+	if n <= sizeHeaderTCP {
+		t.Fatal("server emitted no data segment")
+	}
+	return n
+}
 
-	// Client receives data in FIN-WAIT-2. Post-fix this returns a dropped-segment
-	// error (RST queued); pre-fix it returns nil (data ACKed). Tolerate both.
-	err = client.Recv(rawbuf[:n])
+// TestFinWait2_FullClose_RST: when the application is done in BOTH directions —
+// read side shut down (CloseRead/ShutdownRead) AND our FIN sent (Close) — inbound
+// data in FIN-WAIT-2 has no consumer. The Handler must reply RST (not silently
+// ACK-and-drop, which leaves the peer waiting) and tear down the local
+// connection. Regression for soypat/lneto#50, reworked to gate on the read
+// shutdown so RFC half-close is preserved (see TestFinWait2_HalfClose_DataReadable).
+func TestFinWait2_FullClose_RST(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	rng := rand.New(rand.NewSource(50))
+	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
+	setupClientServer(t, rng, client, server)
+	var buf [mtu]byte
+	establish(t, client, server, buf[:])
+
+	client.ShutdownRead() // application is done reading.
+	driveToFinWait2(t, client, server, buf[:])
+
+	// Peer pipelines a request on the fully-closed connection.
+	n := serverSendData(t, server, []byte("GET / HTTP/1.1\r\nHost: x\r\n\r\n"), buf[:])
+	err := client.Recv(buf[:n])
 	if err != nil && !IsDroppedErr(err) {
 		t.Fatal("client recv data:", err)
 	}
 
-	// Client's response MUST be a RST, not a bare ACK.
-	clear(rawbuf[:])
-	n, err = client.Send(rawbuf[:])
+	// Response must be RST.
+	clear(buf[:])
+	n, err = client.Send(buf[:])
 	if err != nil {
 		t.Fatal("client send response:", err)
 	}
 	if n < sizeHeaderTCP {
-		t.Fatal("client produced no response to data in FIN-WAIT-2")
+		t.Fatal("no response emitted to data in fully-closed FIN-WAIT-2")
 	}
-	respFrm, err := NewFrame(rawbuf[:n])
+	resp, _ := NewFrame(buf[:n])
+	if !resp.Segment(0).Flags.HasAny(FlagRST) {
+		t.Fatalf("data after full close must elicit RST; got flags=%s", resp.Segment(0).Flags)
+	}
+
+	// Post-RST teardown: the local connection must be gone, not stuck in FIN-WAIT-2.
+	if client.State() != StateClosed {
+		t.Fatalf("connection not torn down after RST: state=%s (want CLOSED)", client.State())
+	}
+}
+
+// TestFinWait2_HalfClose_DataReadable guards the RFC half-close model: when only
+// Close() was called (write side done) but the read side is still open, data
+// arriving in FIN-WAIT-2 must be ACKed and delivered to the application — never
+// reset. This is the case the original #50 fix wrongly broke.
+func TestFinWait2_HalfClose_DataReadable(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	rng := rand.New(rand.NewSource(51))
+	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
+	setupClientServer(t, rng, client, server)
+	var buf [mtu]byte
+	establish(t, client, server, buf[:])
+
+	// NOTE: no ShutdownRead — app closed the write half only, still reading.
+	driveToFinWait2(t, client, server, buf[:])
+
+	data := []byte("late peer data")
+	n := serverSendData(t, server, data, buf[:])
+	if err := client.Recv(buf[:n]); err != nil {
+		t.Fatalf("half-close: data in FIN-WAIT-2 must be accepted, not dropped: %v", err)
+	}
+	if client.State() != StateFinWait2 {
+		t.Fatalf("state changed on half-close data: got %s want FIN-WAIT-2", client.State())
+	}
+
+	// Data must be readable by the application.
+	var rd [64]byte
+	rn, err := client.Read(rd[:])
 	if err != nil {
-		t.Fatal("parse response:", err)
+		t.Fatal("client read:", err)
 	}
-	resp := respFrm.Segment(0)
-	if !resp.Flags.HasAny(FlagRST) {
-		t.Fatalf("data in FIN-WAIT-2 after Close() must elicit RST (issue #50 Option A); got flags=%s", resp.Flags)
+	if string(rd[:rn]) != string(data) {
+		t.Fatalf("read %q; want %q", rd[:rn], data)
+	}
+
+	// The response must never be a RST.
+	clear(buf[:])
+	n, err = client.Send(buf[:])
+	if err != nil {
+		t.Fatal("client send:", err)
+	}
+	if n >= sizeHeaderTCP {
+		if s, _ := NewFrame(buf[:n]); s.Segment(0).Flags.HasAny(FlagRST) {
+			t.Fatal("half-close reader must not RST inbound data")
+		}
 	}
 }

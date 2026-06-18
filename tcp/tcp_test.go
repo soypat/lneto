@@ -710,32 +710,30 @@ func TestRcvFinWait2(t *testing.T) {
 		checkNoPending(t, &tcb)
 	})
 
-	// In-window data: soypat/lneto#50. FIN was sent via Close() so there is no
-	// reader (lneto has no Shutdown(WR)). New data must elicit a RST, not an ACK
-	// that silently drops it. The segment is dropped, RCV.NXT does not advance.
+	// In-window data: ACK generated, RCV.NXT advanced by payload length.
 	t.Run("InWindowData", func(t *testing.T) {
 		tcb := enterFinWait2(t)
 		rcvNxtBefore := tcb.RecvNext()
 		const dataLen = 50
 		err := tcb.Recv(tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: PSHACK, WND: windowB, DATALEN: dataLen})
-		if err == nil {
-			t.Fatal("data in FIN-WAIT-2 after Close() must be dropped (RST), not accepted")
+		if err != nil {
+			t.Fatalf("in-window data rejected: %v", err)
 		}
 		if tcb.State() != tcp.StateFinWait2 {
 			t.Fatalf("want FIN-WAIT-2; got %s", tcb.State())
 		}
 		seg, ok := tcb.PendingSegment(0)
 		if !ok {
-			t.Fatal("expected RST pending for data received in FIN-WAIT-2")
+			t.Fatal("expected ACK pending for received data")
 		}
-		if !seg.Flags.HasAll(tcp.FlagRST) {
-			t.Fatalf("pending flags: want RST; got %s", seg.Flags)
+		if !seg.Flags.HasAll(tcp.FlagACK) {
+			t.Fatalf("pending flags: want ACK; got %s", seg.Flags)
 		}
-		if seg.SEQ != issA+1 {
-			t.Fatalf("RST SEQ: want %d (peer's ACK of our FIN); got %d", issA+1, seg.SEQ)
+		if seg.ACK != rcvNxtBefore+dataLen {
+			t.Fatalf("pending ACK: want %d; got %d", rcvNxtBefore+dataLen, seg.ACK)
 		}
-		if tcb.RecvNext() != rcvNxtBefore {
-			t.Fatalf("RCV.NXT must not advance for dropped data: want %d; got %d", rcvNxtBefore, tcb.RecvNext())
+		if tcb.RecvNext() != rcvNxtBefore+dataLen {
+			t.Fatalf("RCV.NXT: want %d; got %d", rcvNxtBefore+dataLen, tcb.RecvNext())
 		}
 	})
 
