@@ -88,7 +88,25 @@ type ControlBlock struct {
 	// clock injects the current time for RTT measurement and the retransmission
 	// timer. When nil, time.Now is used. Set via SetClock for deterministic tests.
 	clock func() time.Time
+
+	// tsEnabled reports whether the TCP Timestamps option (RFC 7323) was
+	// negotiated on both ends during the handshake.
+	tsEnabled bool
+	// tsRecent is the most recent timestamp received from the peer (TS.Recent,
+	// RFC 7323 §4.3), echoed back as TSecr so the peer can measure RTT.
+	tsRecent uint32
 }
+
+// tsValue returns the local timestamp-clock value for the TSval field, a
+// millisecond-resolution monotonic counter derived from the injected clock
+// (RFC 7323 §4.1).
+func (tcb *ControlBlock) tsValue() uint32 {
+	return uint32(tcb.now().UnixMilli())
+}
+
+// TimestampsEnabled reports whether the RFC 7323 Timestamps option was
+// negotiated for this connection.
+func (tcb *ControlBlock) TimestampsEnabled() bool { return tcb.tsEnabled }
 
 // now returns the current time from the injected clock, or time.Now if unset.
 func (tcb *ControlBlock) now() time.Time {

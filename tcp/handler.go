@@ -38,6 +38,9 @@ type Handler struct {
 	// (no buffer set) the Handler only accepts in-order segments, as before.
 	// See [Handler.SetReassemblyBuffer].
 	reasm reassembly
+	// tsPermit enables offering/accepting the RFC 7323 Timestamps option during
+	// the handshake. Off by default. See [Handler.EnableTimestamps].
+	tsPermit bool
 	// congestWnd caches the window returned by the last cc.Control call.
 	// invalidCongestWnd means no window has been reported yet (no gating).
 	congestWnd Size
@@ -93,6 +96,19 @@ func (h *Handler) SetReassemblyBuffer(buf []byte, maxSegments int) error {
 	return nil
 }
 
+// EnableTimestamps enables the RFC 7323 TCP Timestamps option, which is then
+// offered on the SYN and, if the peer also supports it, used to measure the
+// round-trip time on every acknowledgment (RTTM). It is disabled by default and
+// must be set before the connection is opened. Returns [lneto.ErrBadState] if
+// the connection is open.
+func (h *Handler) EnableTimestamps(enable bool) error {
+	if !h.scb.State().IsClosed() {
+		return lneto.ErrBadState
+	}
+	h.tsPermit = enable
+	return nil
+}
+
 // SetLoggers sets the [slog.Logger] for the Handler and internal [ControlBlock].
 func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
 	h.logger.log = handler
@@ -126,6 +142,14 @@ func (h *Handler) now() time.Time {
 func (h *Handler) RetransmitDeadline() (time.Time, bool) {
 	return h.scb.rto.deadline, h.scb.rto.running
 }
+
+// TimestampsEnabled reports whether the RFC 7323 Timestamps option was
+// negotiated for the current connection.
+func (h *Handler) TimestampsEnabled() bool { return h.scb.tsEnabled }
+
+// SmoothedRTT returns the current smoothed round-trip-time estimate (SRTT,
+// RFC 6298), or zero before the first measurement.
+func (h *Handler) SmoothedRTT() time.Duration { return h.scb.rto.srtt }
 
 func (h *Handler) CheckRetransmitTimeout() bool {
 	if !h.scb.CheckRetransmitTimeout(h.now()) {
@@ -231,6 +255,7 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 		logger:     h.logger,
 		cc:         h.cc,
 		reasm:      h.reasm,
+		tsPermit:   h.tsPermit,
 		congestWnd: invalidCongestWnd,
 		clock:      h.clock,
 		closing:    false,
@@ -288,7 +313,8 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 	}
 
 	prevState := h.scb.State()
-	prevUNA := h.scb.snd.UNA // Capture before Recv updates snd.UNA (RFC 6298 §5.3).
+	prevUNA := h.scb.snd.UNA       // Capture before Recv updates snd.UNA (RFC 6298 §5.3).
+	prevRcvNxt := h.scb.RecvNext() // Capture before Recv to detect in-order delivery.
 	err = h.scb.Recv(segIncoming)
 	if err != nil {
 		if h.scb.State() == StateClosed {
@@ -333,6 +359,7 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 			h.bufTx.RecvACK(segIncoming.ACK)
 		}
 	}
+	h.processTimestamps(tfrm.Options(), segIncoming, prevRcvNxt, prevUNA)
 	if segIncoming.Flags.HasAny(FlagSYN) {
 		// Parse remote MSS from TCP options.
 		h.optcodec.ForEachOption(tfrm.Options(), func(kind OptionKind, data []byte) error {
@@ -417,6 +444,100 @@ func (h *Handler) flushReassembly() {
 	}
 }
 
+// reservedOptionsLen returns the number of option bytes to reserve ahead of the
+// payload on an established-state segment (a multiple of 4). Data segments carry
+// only the Timestamps option when negotiated.
+func (h *Handler) reservedOptionsLen() int {
+	if h.scb.tsEnabled {
+		return 12 // NOP, NOP, Timestamps(10).
+	}
+	return 0
+}
+
+// appendSegmentOptions writes the TCP options for an outgoing segment into dst
+// (which begins right after the 20-byte fixed header) and returns the number of
+// bytes written, always a multiple of 4 (NOP-padded). mss is advertised on SYN
+// segments.
+func (h *Handler) appendSegmentOptions(dst []byte, seg Segment, mss uint16) int {
+	n := 0
+	if seg.Flags.HasAny(FlagSYN) {
+		m, _ := h.optcodec.PutOption16(dst[n:], OptMaxSegmentSize, mss)
+		n += m
+	}
+	// Timestamps (RFC 7323): offer on a bare SYN when locally permitted;
+	// otherwise include only once negotiated (SYN-ACK and established segments).
+	includeTS := h.scb.tsEnabled
+	if seg.Flags == FlagSYN {
+		includeTS = h.tsPermit
+	}
+	if includeTS {
+		dst[n] = byte(OptNop)
+		dst[n+1] = byte(OptNop)
+		n += 2
+		var ts [8]byte
+		putUint32BE(ts[0:], h.scb.tsValue())
+		putUint32BE(ts[4:], h.scb.tsRecent)
+		m, _ := h.optcodec.PutOption(dst[n:], OptTimestamps, ts[:]...)
+		n += m
+	}
+	for n%4 != 0 { // pad to a 32-bit boundary.
+		dst[n] = byte(OptNop)
+		n++
+	}
+	return n
+}
+
+// timestampFromOptions extracts the TCP Timestamps option (RFC 7323) from opts.
+func (h *Handler) timestampFromOptions(opts []byte) (tsval, tsecr uint32, present bool) {
+	h.optcodec.ForEachOption(opts, func(kind OptionKind, data []byte) error {
+		if kind == OptTimestamps && len(data) == 8 {
+			tsval = uint32BE(data[0:])
+			tsecr = uint32BE(data[4:])
+			present = true
+		}
+		return nil
+	})
+	return tsval, tsecr, present
+}
+
+// processTimestamps negotiates and applies the RFC 7323 Timestamps option for
+// an accepted incoming segment: it negotiates support on the SYN, refreshes the
+// echoed TS.Recent value for in-order segments (§4.3), and measures the RTT from
+// the echoed TSecr when the segment acknowledges new data (RTTM, §4.2).
+func (h *Handler) processTimestamps(opts []byte, seg Segment, prevRcvNxt, prevUNA Value) {
+	tsval, tsecr, present := h.timestampFromOptions(opts)
+	if seg.Flags.HasAny(FlagSYN) {
+		if present && h.tsPermit {
+			h.scb.tsEnabled = true
+			h.scb.tsRecent = tsval
+		}
+		return
+	}
+	if !h.scb.tsEnabled || !present {
+		return
+	}
+	if seg.SEQ == prevRcvNxt {
+		h.scb.tsRecent = tsval // update echo only for in-order segments (§4.3).
+	}
+	if tsecr != 0 && h.scb.snd.UNA != prevUNA {
+		// This ACK advanced our send sequence; the echoed TSecr yields an RTT.
+		if rttMS := int32(h.scb.tsValue() - tsecr); rttMS >= 0 {
+			h.scb.rto.sampleTS(time.Duration(rttMS) * time.Millisecond)
+		}
+	}
+}
+
+func putUint32BE(b []byte, v uint32) {
+	b[0] = byte(v >> 24)
+	b[1] = byte(v >> 16)
+	b[2] = byte(v >> 8)
+	b[3] = byte(v)
+}
+
+func uint32BE(b []byte) uint32 {
+	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+}
+
 // ShutdownRead activates local discard mode: incoming payload bytes are dropped
 // (ACK/SEQ still advance normally) and Read returns [io.EOF] immediately.
 // Not reversible within the lifetime of a connection.
@@ -481,8 +602,8 @@ func (h *Handler) Send(b []byte) (int, error) {
 	if awaitingSyn || requeueControl && h.scb.State() == StateSynSent {
 		// Handling init syn segment.
 		segment = ClientSynSegment(h.bufTx.iss, Size(h.bufRx.Size()))
-		h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
-		offset++
+		optLen := h.appendSegmentOptions(b[sizeHeaderTCP:], segment, mss)
+		offset += uint8(optLen / 4)
 		if requeueControl {
 			h.info("tcp.Handler:requeue-syn", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("rport", uint64(h.remotePort)))
 		}
@@ -493,15 +614,17 @@ func (h *Handler) Send(b []byte) (int, error) {
 			WND:   Size(h.bufRx.Free()),
 			Flags: synack,
 		}
-		h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
-		offset++
+		optLen := h.appendSegmentOptions(b[sizeHeaderTCP:], segment, mss)
+		offset += uint8(optLen / 4)
 		h.info("tcp.Handler:requeue-synack", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("rport", uint64(h.remotePort)))
 	} else if requeueControl {
 		h.requeueControl = false
 		return 0, nil
 	} else {
 		var ok bool
-		maxPayload := len(b) - sizeHeaderTCP
+		// Reserve room for this segment's TCP options ahead of the payload.
+		optLen := h.reservedOptionsLen()
+		maxPayload := len(b) - sizeHeaderTCP - optLen
 		if h.cc != nil && h.congestWnd != invalidCongestWnd && !h.scb.HasPendingRetransmit() {
 			// Limit new data to the congestion window reported by the last
 			// cc.Control call. Retransmissions and pure control segments are
@@ -522,11 +645,12 @@ func (h *Handler) Send(b []byte) (int, error) {
 		if !ok {
 			// No pending control segment or data to send. Yield.
 			return 0, nil
-		} else if segment.Flags == synack {
-			h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
-			offset++
-		} else if segment.DATALEN > 0 {
-			n, err := h.bufTx.MakePacket(b[sizeHeaderTCP:sizeHeaderTCP+segment.DATALEN], segment.SEQ)
+		}
+		optLen = h.appendSegmentOptions(b[sizeHeaderTCP:], segment, mss)
+		offset += uint8(optLen / 4)
+		if segment.DATALEN > 0 {
+			dataStart := sizeHeaderTCP + optLen
+			n, err := h.bufTx.MakePacket(b[dataStart:dataStart+int(segment.DATALEN)], segment.SEQ)
 			if err != nil {
 				return 0, err
 			}

@@ -119,12 +119,13 @@ func (l *emuLink) nextDeliver() (time.Time, bool) {
 
 // emuParams configures an [emuNet].
 type emuParams struct {
-	rate      float64       // forward-path bottleneck bandwidth, bytes/sec.
-	delay     time.Duration // one-way propagation delay applied to both paths.
-	lossAt    int           // forward-path: drop the single packet at this index (0 = lossless).
-	bufSize   int           // per-handler tx/rx buffer size in bytes.
-	packets   int           // tx ring packet slots (must exceed segments in flight).
-	reasmSegs int           // receiver out-of-order reassembly slots (0 = disabled).
+	rate       float64       // forward-path bottleneck bandwidth, bytes/sec.
+	delay      time.Duration // one-way propagation delay applied to both paths.
+	lossAt     int           // forward-path: drop the single packet at this index (0 = lossless).
+	bufSize    int           // per-handler tx/rx buffer size in bytes.
+	packets    int           // tx ring packet slots (must exceed segments in flight).
+	reasmSegs  int           // receiver out-of-order reassembly slots (0 = disabled).
+	timestamps bool          // enable RFC 7323 TCP Timestamps on both ends.
 }
 
 // emuNet runs a client→server bulk transfer across an emulated network: a
@@ -174,6 +175,14 @@ func newEmuNet(t *testing.T, p emuParams) *emuNet {
 		slab := make([]byte, p.reasmSegs*int(ethernet.MaxMTU))
 		if err := en.server.SetReassemblyBuffer(slab, p.reasmSegs); err != nil {
 			t.Fatalf("SetReassemblyBuffer: %v", err)
+		}
+	}
+	if p.timestamps {
+		if err := en.client.EnableTimestamps(true); err != nil {
+			t.Fatalf("client EnableTimestamps: %v", err)
+		}
+		if err := en.server.EnableTimestamps(true); err != nil {
+			t.Fatalf("server EnableTimestamps: %v", err)
 		}
 	}
 	return en
@@ -438,6 +447,50 @@ func TestEmuBBRBandwidthEstimate(t *testing.T) {
 	}
 	t.Logf("BBR: bw=%.0f B/s (%.0f%% of link) min_rtt=%v (prop RTT %v) cwnd=%d B",
 		bw, 100*bw/rate, bbr.MinRTT(), propRTT, bbr.CongestionWindow())
+}
+
+// TestEmuTimestampsNegotiateAndMeasureRTT enables RFC 7323 Timestamps on both
+// ends and runs a lossless transfer, verifying the option is negotiated and the
+// smoothed RTT converges to the link's propagation round trip via per-ACK RTTM.
+func TestEmuTimestampsNegotiateAndMeasureRTT(t *testing.T) {
+	const (
+		rate    = 1_000_000.0
+		delay   = 10 * time.Millisecond
+		propRTT = 2 * delay
+		bufSize = 60_000
+	)
+	en := newEmuNet(t, emuParams{
+		rate:       rate,
+		delay:      delay,
+		bufSize:    bufSize,
+		packets:    64,
+		timestamps: true,
+	})
+
+	var cubic congestion.CUBIC
+	if err := cubic.Configure(congestion.CUBICConfig{Now: en.now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := en.client.SetCongestionControl(&cubic); err != nil {
+		t.Fatal(err)
+	}
+
+	openPair(t, en.client, en.server)
+	received := en.transfer(patternPayload(64 * 1024))
+	verifyStream(t, patternPayload(64*1024), received)
+
+	if !en.client.TimestampsEnabled() || !en.server.TimestampsEnabled() {
+		t.Fatalf("timestamps not negotiated: client=%v server=%v",
+			en.client.TimestampsEnabled(), en.server.TimestampsEnabled())
+	}
+	srtt := en.client.SmoothedRTT()
+	if srtt <= 0 {
+		t.Fatal("no RTT measured from timestamps")
+	}
+	if srtt < propRTT/2 || srtt > 3*propRTT {
+		t.Errorf("SRTT %v not near propagation RTT %v", srtt, propRTT)
+	}
+	t.Logf("timestamps: negotiated; SRTT=%v (propagation RTT %v)", srtt, propRTT)
 }
 
 // sawWindowGrowth reports whether the sampled congestion window ever increased

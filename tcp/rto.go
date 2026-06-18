@@ -154,6 +154,18 @@ func (r *rtoControl) onTimeout(now time.Time) {
 	r.deadline = now.Add(r.currentRTO())
 }
 
+// sampleTS folds an RTT measurement obtained from the RFC 7323 Timestamps echo
+// into the estimator and resets exponential backoff (RFC 6298 §5.7). Unlike the
+// Karn single-sample path, a timestamp echo yields a measurement on every
+// acknowledgment.
+func (r *rtoControl) sampleTS(rtt time.Duration) {
+	if rtt <= 0 {
+		return
+	}
+	r.updateRTT(rtt)
+	r.backoff = 0
+}
+
 // onRetransmit notifies the estimator that the timed segment was retransmitted
 // for a reason other than a timer expiry (e.g. fast retransmit), so its RTT
 // sample must be discarded per Karn's algorithm.
