@@ -11,7 +11,7 @@ import (
 func newTestCUBIC(t *testing.T, clock *time.Time) *CUBIC {
 	t.Helper()
 	var c CUBIC
-	err := c.Reset(CUBICConfig{
+	err := c.Configure(CUBICConfig{
 		MSS:             1000,
 		InitialCwnd:     10,
 		FastConvergence: true,
@@ -31,7 +31,7 @@ func TestCUBICSlowStart(t *testing.T) {
 	start := c.WindowSegments()
 	segBytes := tcp.Size(1000)
 	for range int(start) {
-		c.OnACK(segBytes, 50*time.Millisecond)
+		c.onACK(segBytes, 50*time.Millisecond)
 	}
 	if got := c.WindowSegments(); got < 2*start-0.001 {
 		t.Errorf("after one RTT of slow start cwnd=%.2f, want ~%.2f (doubled)", got, 2*start)
@@ -45,7 +45,7 @@ func TestCUBICMultiplicativeDecrease(t *testing.T) {
 	clock := time.Unix(0, 0)
 	c := newTestCUBIC(t, &clock)
 	c.cwnd = 100
-	c.OnLoss()
+	c.onLoss()
 	if math.Abs(c.cwnd-70) > 1e-9 {
 		t.Errorf("cwnd after loss=%.4f, want 70 (0.7*100)", c.cwnd)
 	}
@@ -61,9 +61,9 @@ func TestCUBICLossEpochCoalesces(t *testing.T) {
 	clock := time.Unix(0, 0)
 	c := newTestCUBIC(t, &clock)
 	c.cwnd = 100
-	c.OnLoss()
+	c.onLoss()
 	first := c.cwnd
-	c.OnLoss() // same congestion event, must not cut twice.
+	c.onLoss() // same congestion event, must not cut twice.
 	if c.cwnd != first {
 		t.Errorf("second OnLoss in same epoch cut window again: %.4f -> %.4f", first, c.cwnd)
 	}
@@ -76,9 +76,9 @@ func TestCUBICCurveShape(t *testing.T) {
 	clock := time.Unix(0, 0)
 	c := newTestCUBIC(t, &clock)
 	c.cwnd = 100
-	c.OnLoss() // wMax=100, cwnd=70, ssthresh=70.
+	c.onLoss() // wMax=100, cwnd=70, ssthresh=70.
 
-	c.OnACK(1000, 50*time.Millisecond) // establish epoch origin.
+	c.onACK(1000, 50*time.Millisecond) // establish epoch origin.
 	if c.epoch.IsZero() {
 		t.Fatal("epoch not established after congestion-avoidance ACK")
 	}
@@ -104,14 +104,14 @@ func TestCUBICRecoversTowardWmax(t *testing.T) {
 	clock := time.Unix(0, 0)
 	c := newTestCUBIC(t, &clock)
 	c.cwnd = 100
-	c.OnLoss()
+	c.onLoss()
 	const rtt = 20 * time.Millisecond
 	prev := c.WindowSegments()
 	for round := range 30 {
 		clock = clock.Add(rtt)
 		w := int(c.WindowSegments())
 		for range w {
-			c.OnACK(1000, rtt)
+			c.onACK(1000, rtt)
 		}
 		cur := c.WindowSegments()
 		if cur < prev-1e-6 {
@@ -139,7 +139,7 @@ func TestCUBICTargetClamp(t *testing.T) {
 	// One round trip of ACKs at a large RTT (cubic curve well past K).
 	const rtt = 10 * time.Second
 	for range int(start) {
-		c.OnACK(1000, rtt)
+		c.onACK(1000, rtt)
 	}
 	// Reno-friendly region adds at most ~1 extra segment per RTT on top of the
 	// clamped cubic growth of 0.5*cwnd.
@@ -153,7 +153,7 @@ func TestCUBICOnRTO(t *testing.T) {
 	c := newTestCUBIC(t, &clock)
 	c.cwnd = 100
 	c.ssthresh = 100
-	c.OnRTO()
+	c.onRTO()
 	if c.cwnd != 1 {
 		t.Errorf("cwnd after RTO=%.3f, want 1 (RFC 9438 §4.8 / RFC 5681 loss window)", c.cwnd)
 	}
@@ -170,10 +170,10 @@ func TestCUBICOnRTO(t *testing.T) {
 
 func TestCUBICResetValidation(t *testing.T) {
 	var c CUBIC
-	if err := c.Reset(CUBICConfig{InitialCwnd: -1}); err == nil {
+	if err := c.Configure(CUBICConfig{InitialCwnd: -1}); err == nil {
 		t.Error("expected error for negative InitialCwnd")
 	}
-	if err := c.Reset(CUBICConfig{}); err != nil {
+	if err := c.Configure(CUBICConfig{}); err != nil {
 		t.Errorf("default Reset failed: %v", err)
 	}
 	if !c.InSlowStart() {

@@ -51,12 +51,12 @@ const invalidCongestWnd = 0xffff_ffff
 // or removes it when cc is nil. It limits how much new (unacknowledged) data
 // the Handler keeps in flight to the window returned by cc.Control, which is
 // fed every segment crossing the connection. The controller is retained across
-// connection re-opens. Returns an error if the connection is open: the
-// controller cannot be changed mid-connection (see
+// connection re-opens. Returns [lneto.ErrBadState] if the connection is open:
+// the controller cannot be changed mid-connection (see
 // [ConnConfig.CongestionControl] to configure it on a [Conn]).
 func (h *Handler) SetCongestionControl(cc CongestionControl) error {
 	if !h.scb.State().IsClosed() {
-		return lneto.ErrInvalidConfig
+		return lneto.ErrBadState
 	}
 	h.cc = cc
 	h.congestWnd = invalidCongestWnd
@@ -165,6 +165,11 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 	}
 	h.bufTx.ResetOrReuse(nil, 0, iss)
 	h.bufRx.Reset()
+	if h.cc != nil {
+		// Notify the controller a connection is (re)opening or tearing down so it
+		// starts from a clean per-connection state while keeping its configuration.
+		h.cc.Reset()
+	}
 }
 
 // Recv receives an incoming TCP packet frame with the first byte being the first octet of the TCP frame.

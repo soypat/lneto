@@ -34,7 +34,7 @@ const (
 	cubicMaxTargetRatio = 1.5
 )
 
-// CUBICConfig configures a [CUBIC] controller. See [CUBIC.Reset].
+// CUBICConfig configures a [CUBIC] controller. See [CUBIC.Configure].
 type CUBICConfig struct {
 	// MSS is the maximum segment size in bytes. If zero, a default of 1460 is used.
 	MSS tcp.Size
@@ -67,6 +67,9 @@ type CUBICConfig struct {
 // [RFC9438]: https://www.rfc-editor.org/rfc/rfc9438
 type CUBIC struct {
 	base ccBase
+	// cfg retains the normalized configuration so [CUBIC.Reset] can restore the
+	// initial per-connection state without reconfiguration.
+	cfg cubicConfig
 
 	cwnd     float64 // congestion window, segments.
 	ssthresh float64 // slow-start threshold, segments.
@@ -92,9 +95,20 @@ type CUBIC struct {
 	fastConvergence bool
 }
 
-// Reset (re)initializes the controller with cfg, returning an error if the
-// configuration is invalid. It follows the package Reset/Configure convention.
-func (cubic *CUBIC) Reset(cfg CUBICConfig) error {
+// cubicConfig is the normalized [CUBICConfig] retained for [CUBIC.Reset].
+type cubicConfig struct {
+	clock           func() time.Time
+	mss             tcp.Size
+	initCwnd        float64
+	ssthresh        float64
+	fastConvergence bool
+}
+
+// Configure validates and stores cfg, returning an error if the configuration
+// is invalid, and resets the controller to its initial state. Configure is the
+// static configuration step and is not part of tcp.CongestionControl; call it
+// before installing the controller on a Handler. See [CUBIC.Reset].
+func (cubic *CUBIC) Configure(cfg CUBICConfig) error {
 	if cfg.InitialCwnd < 0 || cfg.SlowStartThresh < 0 {
 		return lneto.ErrInvalidConfig
 	}
@@ -106,17 +120,35 @@ func (cubic *CUBIC) Reset(cfg CUBICConfig) error {
 	if ssthresh == 0 {
 		ssthresh = math.Inf(1)
 	}
-	*cubic = CUBIC{
-		base: ccBase{
-			mss:   cfg.MSS,
-			clock: cfg.Now,
-		},
-		cwnd:            icwnd,
+	cubic.cfg = cubicConfig{
+		clock:           cfg.Now,
+		mss:             cfg.MSS,
+		initCwnd:        icwnd,
 		ssthresh:        ssthresh,
-		wEst:            icwnd,
 		fastConvergence: cfg.FastConvergence,
 	}
+	cubic.Reset()
 	return nil
+}
+
+// Reset clears the per-connection state, restoring the initial window from the
+// configuration applied by [CUBIC.Configure]. It implements
+// tcp.CongestionControl and is called by the Handler when a connection opens or
+// is torn down. The peer-negotiated MSS is forgotten; the static configuration
+// is preserved.
+func (cubic *CUBIC) Reset() {
+	cfg := cubic.cfg
+	*cubic = CUBIC{
+		base: ccBase{
+			mss:   cfg.mss,
+			clock: cfg.clock,
+		},
+		cfg:             cfg,
+		cwnd:            cfg.initCwnd,
+		ssthresh:        cfg.ssthresh,
+		wEst:            cfg.initCwnd,
+		fastConvergence: cfg.fastConvergence,
+	}
 }
 
 // CongestionWindow returns the current congestion window in bytes: the maximum
@@ -145,20 +177,20 @@ func (cubic *CUBIC) InSlowStart() bool { return cubic.cwnd < cubic.ssthresh }
 func (cubic *CUBIC) Control(ev tcp.CongestionEvent) tcp.Size {
 	s := cubic.base.observe(ev)
 	if s.loss {
-		cubic.OnLoss()
+		cubic.onLoss()
 	}
 	if s.acked > 0 {
-		cubic.OnACK(s.acked, s.rtt)
+		cubic.onACK(s.acked, s.rtt)
 	}
 	return cubic.CongestionWindow()
 }
 
-// OnACK informs the controller that acked bytes of new data were
+// onACK informs the controller that acked bytes of new data were
 // acknowledged with the given round-trip estimate. In slow start the window
 // grows by one segment per acknowledged segment (exponential per RTT,
 // [RFC9438] §4.10); in congestion avoidance it follows the cubic window
 // increase function ([RFC9438] §4.2).
-func (cubic *CUBIC) OnACK(acked tcp.Size, rtt time.Duration) {
+func (cubic *CUBIC) onACK(acked tcp.Size, rtt time.Duration) {
 	if acked == 0 {
 		return
 	}
@@ -233,7 +265,7 @@ func (cubic *CUBIC) cubicTarget(t float64) float64 {
 // cwnd rather than flight size, the variant §4.6 permits for senders that do
 // not grow cwnd while under-utilized. Repeated calls within the same loss
 // epoch are coalesced into a single reduction.
-func (cubic *CUBIC) OnLoss() {
+func (cubic *CUBIC) onLoss() {
 	if cubic.base.lossEpoch {
 		return // already reduced for this congestion event.
 	}
@@ -265,7 +297,7 @@ func (cubic *CUBIC) OnLoss() {
 // Reno ([RFC5681] §3.1). W_max is cleared so the first congestion avoidance
 // stage after the timeout starts a fresh cubic epoch with K=0 and W_max set
 // to the window at the beginning of that stage.
-func (cubic *CUBIC) OnRTO() {
+func (cubic *CUBIC) onRTO() {
 	cubic.ssthresh = cubic.cwnd * cubicBeta
 	if cubic.ssthresh < cubicMinCwnd {
 		cubic.ssthresh = cubicMinCwnd
