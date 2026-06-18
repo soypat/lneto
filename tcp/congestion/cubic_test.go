@@ -213,6 +213,22 @@ func TestCUBICControlEvents(t *testing.T) {
 	}
 }
 
+func TestCUBICControlRTO(t *testing.T) {
+	clock := time.Unix(0, 0)
+	c := newTestCUBIC(t, &clock)
+	c.cwnd = 100
+	c.ssthresh = 100
+	// A retransmission-timeout event must collapse the window to the loss window
+	// and re-enter slow start (RFC 9438 §4.8).
+	c.Control(tcp.CongestionEvent{RTO: true})
+	if c.cwnd != 1 {
+		t.Errorf("cwnd after RTO=%.3f, want 1", c.cwnd)
+	}
+	if !c.InSlowStart() {
+		t.Error("RTO should re-enter slow start (cwnd < ssthresh)")
+	}
+}
+
 func TestCUBICControlLoss(t *testing.T) {
 	clock := time.Unix(0, 0)
 	c := newTestCUBIC(t, &clock)

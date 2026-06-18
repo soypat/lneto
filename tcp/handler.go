@@ -672,6 +672,11 @@ func (h *Handler) Send(b []byte) (int, error) {
 				h.scb.Retransmit()
 				h.bufTx.RetransmitFromUNA()
 			}
+			if h.cc != nil {
+				// Notify the controller of the timeout so it collapses its window
+				// (RFC 6298 §5 / RFC 5681 §3.1) before retransmission resumes.
+				h.congestWnd = h.cc.Control(h.scb.CongestionRTOEvent())
+			}
 		}
 	}
 	awaitingSyn := h.AwaitingSynSend()

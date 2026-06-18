@@ -231,6 +231,14 @@ func (bbr *BBR) bdp() float32 {
 // sample completions divided by the elapsed time) and the RTT into the BBR
 // model, updates the congestion window and returns it in bytes.
 func (bbr *BBR) Control(ev tcp.CongestionEvent) tcp.Size {
+	if ev.RTO {
+		// BBR is not loss-based and has no short-term loss model in this
+		// implementation; a retransmission timeout only invalidates the
+		// outstanding RTT sample (Karn). The bandwidth/RTT model and window are
+		// left to recover through normal probing.
+		bbr.base.rtt.pending = false
+		return bbr.CongestionWindow()
+	}
 	s := bbr.base.observe(ev)
 	if s.rttOK {
 		var rate float64
