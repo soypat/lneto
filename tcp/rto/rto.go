@@ -84,7 +84,10 @@ type Control struct {
 	backoff  uint8 // consecutive timeouts, for exponential backoff.
 }
 
-var _ tcp.LossRecovery = (*Control)(nil)
+var (
+	_ tcp.LossRecovery = (*Control)(nil)
+	_ tcp.RTTObserver  = (*Control)(nil)
+)
 
 // Reset returns the estimator to its pre-connection state with the initial RTO.
 // It implements [tcp.LossRecovery] and is called when the connection opens or
@@ -226,4 +229,17 @@ func (r *Control) UpdateRTT(sample time.Duration) {
 		r.srtt += (sample - r.srtt) >> rttGainShift
 	}
 	r.rto = r.srtt + rttvarK*r.rttvar
+}
+
+// ObserveRTT folds a round-trip measurement obtained out of band — such as from
+// the RFC 7323 Timestamps echo, which yields a sample on every acknowledgment
+// rather than the single Karn sample — into the estimator and resets the
+// exponential backoff (RFC 6298 §5.7). rtt is in nanoseconds. It satisfies the
+// optional tcp.RTTObserver interface.
+func (r *Control) ObserveRTT(rtt int64) {
+	if rtt <= 0 {
+		return
+	}
+	r.UpdateRTT(time.Duration(rtt))
+	r.backoff = 0
 }

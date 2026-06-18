@@ -69,6 +69,19 @@ type TxDirective struct {
 	HoldNew bool
 }
 
+// RTTObserver is an optional interface a [LossRecovery] may also implement to
+// accept round-trip-time measurements obtained out of band — for example from
+// the RFC 7323 Timestamps option, which yields a sample on every acknowledgment
+// rather than the single sample Karn's algorithm allows — in addition to the
+// samples the implementation derives from the [LossRecovery] hooks. The tcp
+// package feeds such a measurement when it has one and the configured
+// LossRecovery satisfies this interface.
+type RTTObserver interface {
+	// ObserveRTT folds a round-trip measurement, in nanoseconds, into the
+	// implementation's estimator. Non-positive samples are ignored.
+	ObserveRTT(rtt int64)
+}
+
 // RxDirective is returned by [LossRecovery.PreRx].
 //
 // NOTE: its shape is the minimum viable contract — it mirrors the original
