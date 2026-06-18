@@ -166,6 +166,66 @@ func TestRTOKarnDiscardsRetransmittedSample(t *testing.T) {
 	}
 }
 
+// TestControlBlockRTOSampleAndStop drives a ControlBlock through a data send and
+// its acknowledgment, verifying the retransmission timer is armed on send, an
+// RTT sample is taken on the ACK, and the timer stops once all data is acked.
+func TestControlBlockRTOSampleAndStop(t *testing.T) {
+	clock := time.Unix(0, 0)
+	var tcb ControlBlock
+	tcb.SetClock(func() time.Time { return clock })
+	tcb.rto.init()
+	const iss, irs = Value(1000), Value(500)
+	tcb.HelperInitState(StateEstablished, iss, iss, 4096)
+	tcb.HelperInitRcv(irs, irs, 4096)
+
+	if err := tcb.Send(Segment{SEQ: iss, ACK: irs, DATALEN: 100, Flags: pshack, WND: 4096}); err != nil {
+		t.Fatalf("send data: %v", err)
+	}
+	if !tcb.rto.running {
+		t.Fatal("retransmission timer must be armed after sending data")
+	}
+
+	clock = clock.Add(40 * time.Millisecond) // ACK arrives one RTT later.
+	if err := tcb.Recv(Segment{SEQ: irs, ACK: iss + 100, Flags: FlagACK, WND: 4096}); err != nil {
+		t.Fatalf("recv ack: %v", err)
+	}
+	if tcb.rto.running {
+		t.Error("timer must stop once all data is acknowledged")
+	}
+	if tcb.rto.srtt != 40*time.Millisecond {
+		t.Errorf("srtt=%v, want 40ms RTT sample", tcb.rto.srtt)
+	}
+}
+
+// TestControlBlockRTORetransmit verifies that when no ACK arrives, the timer
+// expires and rewinds snd.NXT to snd.UNA for go-back-N retransmission.
+func TestControlBlockRTORetransmit(t *testing.T) {
+	clock := time.Unix(0, 0)
+	var tcb ControlBlock
+	tcb.SetClock(func() time.Time { return clock })
+	tcb.rto.init()
+	const iss, irs = Value(1000), Value(500)
+	tcb.HelperInitState(StateEstablished, iss, iss, 4096)
+	tcb.HelperInitRcv(irs, irs, 4096)
+
+	if err := tcb.Send(Segment{SEQ: iss, ACK: irs, DATALEN: 100, Flags: pshack, WND: 4096}); err != nil {
+		t.Fatalf("send data: %v", err)
+	}
+	if tcb.CheckRetransmitTimeout(clock) {
+		t.Fatal("timer must not fire before its deadline")
+	}
+	clock = clock.Add(rtoInitial + time.Millisecond)
+	if !tcb.CheckRetransmitTimeout(clock) {
+		t.Fatal("RTO must fire after the deadline with data outstanding")
+	}
+	if tcb.snd.NXT != tcb.snd.UNA {
+		t.Errorf("snd.NXT=%d not rewound to snd.UNA=%d", tcb.snd.NXT, tcb.snd.UNA)
+	}
+	if tcb.rto.backoff != 1 {
+		t.Errorf("backoff=%d, want 1 after timeout", tcb.rto.backoff)
+	}
+}
+
 func TestRTOTimeoutPreservesNonBackoffAfterValidSample(t *testing.T) {
 	var r rtoControl
 	r.init()

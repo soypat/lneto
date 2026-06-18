@@ -3,6 +3,7 @@ package tcp
 import (
 	"io"
 	"net"
+	"time"
 
 	"log/slog"
 
@@ -36,6 +37,9 @@ type Handler struct {
 	// congestWnd caches the window returned by the last cc.Control call.
 	// invalidCongestWnd means no window has been reported yet (no gating).
 	congestWnd Size
+	// clock injects the time source shared by the RFC 6298 retransmission timer
+	// and (typically) the congestion controller. nil uses time.Now.
+	clock      func() time.Time
 	closing    bool
 	shutdownRx bool
 	// nRetransmit stores the number of times the oldest packet was retransmit.
@@ -67,6 +71,35 @@ func (h *Handler) SetCongestionControl(cc CongestionControl) error {
 func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
 	h.logger.log = handler
 	h.scb.logger.log = scb
+}
+
+// SetClock injects the time source used by the RFC 6298 retransmission timer
+// (and shared with a congestion controller for deterministic testing). It must
+// be set before the connection is opened; a nil clock falls back to time.Now.
+func (h *Handler) SetClock(clock func() time.Time) {
+	h.clock = clock
+	h.scb.SetClock(clock)
+}
+
+func (h *Handler) now() time.Time {
+	if h.clock != nil {
+		return h.clock()
+	}
+	return time.Now()
+}
+
+// CheckRetransmitTimeout drives the RFC 6298 retransmission timer and should be
+// called periodically (e.g. once per stack poll). When the timer has expired it
+// rewinds the send sequence and transmit buffer so the next Send retransmits
+// unacknowledged data from snd.UNA (go-back-N), and returns true. The next call
+// to Send emits the retransmission. Congestion-controller notification of the
+// timeout is wired separately.
+func (h *Handler) CheckRetransmitTimeout() bool {
+	if !h.scb.CheckRetransmitTimeout(h.now()) {
+		return false
+	}
+	h.bufTx.RetransmitFromUNA()
+	return true
 }
 
 // ConnectionID returns the connection identifier which is incremented every time the connection is closed or open.
@@ -160,6 +193,7 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 		logger:     h.logger,
 		cc:         h.cc,
 		congestWnd: invalidCongestWnd,
+		clock:      h.clock,
 		closing:    false,
 		shutdownRx: false,
 	}
