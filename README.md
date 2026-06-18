@@ -11,11 +11,13 @@ Userspace networking primitives.
 
 ## Features
 `lneto` provides the following features:
+- Zero Operating System. ***Zero***. All protocols (including TCP, excepting NTP) are time-independent.
+    - Explicit HAL needed. Lneto performs no `time.Sleep` nor `time.Now` calls unless configured by user.
 - Heapless packet processing
     - [`httpraw`](https://github.com/soypat/lneto/tree/main/http/httpraw) is likely the most performant HTTP/1.1 processing package in the Go ecosystem. Based on [`fasthttp`](https://github.com/valyala/fasthttp) but simpler and more thoughtful memory use.
 - Lean memory footprint
     - HTTP header struct is 80 bytes with no runtime usage nor heap usage other than buffer
-    - Entire Ethernet+IPv4+UDP+DHCP+DNS+NTP stack in ~1kB.
+    - Entire Ethernet+IPv4+UDP+DHCP+DNS+NTP stack in ~2kB RAM.
 - Empty go.mod file. No dependencies except for basic standard library packages such as `bytes`, `errors`, `io`.
     - `net` only imported for `net.ErrClosed`.
     - Can produce **very** small binaries. Ideal for embedded systems.
