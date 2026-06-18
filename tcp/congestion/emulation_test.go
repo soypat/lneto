@@ -119,11 +119,12 @@ func (l *emuLink) nextDeliver() (time.Time, bool) {
 
 // emuParams configures an [emuNet].
 type emuParams struct {
-	rate    float64       // forward-path bottleneck bandwidth, bytes/sec.
-	delay   time.Duration // one-way propagation delay applied to both paths.
-	lossAt  int           // forward-path: drop the single packet at this index (0 = lossless).
-	bufSize int           // per-handler tx/rx buffer size in bytes.
-	packets int           // tx ring packet slots (must exceed segments in flight).
+	rate      float64       // forward-path bottleneck bandwidth, bytes/sec.
+	delay     time.Duration // one-way propagation delay applied to both paths.
+	lossAt    int           // forward-path: drop the single packet at this index (0 = lossless).
+	bufSize   int           // per-handler tx/rx buffer size in bytes.
+	packets   int           // tx ring packet slots (must exceed segments in flight).
+	reasmSegs int           // receiver out-of-order reassembly slots (0 = disabled).
 }
 
 // emuNet runs a client→server bulk transfer across an emulated network: a
@@ -167,6 +168,14 @@ func newEmuNet(t *testing.T, p emuParams) *emuNet {
 	// deterministic and aligned with the congestion controllers' clock.
 	en.client.SetClock(en.now)
 	en.server.SetClock(en.now)
+	if p.reasmSegs > 0 {
+		// Enable out-of-order reassembly on the receiver. Slots are sized for a
+		// full-MTU segment payload.
+		slab := make([]byte, p.reasmSegs*int(ethernet.MaxMTU))
+		if err := en.server.SetReassemblyBuffer(slab, p.reasmSegs); err != nil {
+			t.Fatalf("SetReassemblyBuffer: %v", err)
+		}
+	}
 	return en
 }
 
@@ -500,4 +509,50 @@ func TestEmuRTORecoversLoss(t *testing.T) {
 	}
 	t.Logf("RTO recovery: delivered %d B intact after 1 loss; final cwnd=%d B",
 		len(received), cubic.CongestionWindow())
+}
+
+// TestEmuReassemblyRecoversManyFollowers drops a segment near the head of a
+// window with more than eight segments queued behind it. Without out-of-order
+// buffering the receiver would issue throttled challenge ACKs and abort after 8
+// consecutive out-of-order segments; with reassembly enabled it buffers them,
+// fast retransmit fills the single gap, and the buffered tail is delivered
+// without go-back-N. The test asserts the full stream arrives intact after
+// exactly one drop. The slab is sized larger than the receive buffer so any
+// in-window out-of-order segment fits.
+func TestEmuReassemblyRecoversManyFollowers(t *testing.T) {
+	const (
+		rate    = 1_000_000.0
+		delay   = 10 * time.Millisecond
+		bufSize = 32 * 1024
+	)
+	en := newEmuNet(t, emuParams{
+		rate:      rate,
+		delay:     delay,
+		lossAt:    3, // 2nd data segment: ~11 segments follow the gap (> 8).
+		bufSize:   bufSize,
+		packets:   64,
+		reasmSegs: 32, // slab (32*MTU) exceeds the receive buffer.
+	})
+
+	var cubic congestion.CUBIC
+	if err := cubic.Configure(congestion.CUBICConfig{
+		InitialCwnd: 16, // whole transfer fits one window: a single burst with one gap.
+		Now:         en.now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := en.client.SetCongestionControl(&cubic); err != nil {
+		t.Fatal(err)
+	}
+
+	payload := patternPayload(18 * 1024) // ~13 segments, < window and < slab.
+	openPair(t, en.client, en.server)
+	received := en.transfer(payload)
+
+	verifyStream(t, payload, received)
+	if en.fwd.dropped != 1 {
+		t.Errorf("expected exactly 1 injected drop, got %d", en.fwd.dropped)
+	}
+	t.Logf("reassembly recovery: delivered %d B intact; one gap with >8 buffered followers",
+		len(received))
 }
