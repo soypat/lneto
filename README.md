@@ -11,8 +11,9 @@ Userspace networking primitives.
 
 ## Features
 `lneto` provides the following features:
-- Zero Operating System. ***Zero***. All protocols (including TCP, excepting NTP) are time-independent.
+- Zero Operating System required. ***Zero***. All protocols (including TCP, excepting NTP) are time-independent.
     - Explicit HAL needed. Lneto performs no `time.Sleep` nor `time.Now` calls unless configured by user.
+    - Zero scheduling required. No goroutines/channels use in Lneto. Can be run in event loop.
 - Heapless packet processing
     - [`httpraw`](https://github.com/soypat/lneto/tree/main/http/httpraw) is likely the most performant HTTP/1.1 processing package in the Go ecosystem. Based on [`fasthttp`](https://github.com/valyala/fasthttp) but simpler and more thoughtful memory use.
 - Lean memory footprint
