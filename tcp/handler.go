@@ -94,11 +94,23 @@ func (h *Handler) now() time.Time {
 // unacknowledged data from snd.UNA (go-back-N), and returns true. The next call
 // to Send emits the retransmission. Congestion-controller notification of the
 // timeout is wired separately.
+// RetransmitDeadline returns the time at which the retransmission timer will
+// next fire and whether it is currently running. A poller uses it to schedule
+// the next CheckRetransmitTimeout call.
+func (h *Handler) RetransmitDeadline() (time.Time, bool) {
+	return h.scb.rto.deadline, h.scb.rto.running
+}
+
 func (h *Handler) CheckRetransmitTimeout() bool {
 	if !h.scb.CheckRetransmitTimeout(h.now()) {
 		return false
 	}
 	h.bufTx.RetransmitFromUNA()
+	if h.cc != nil {
+		// Notify the controller of the timeout so it collapses its window
+		// (RFC 6298 §5 / RFC 5681 §3.1) before retransmission resumes.
+		h.congestWnd = h.cc.Control(h.scb.CongestionRTOEvent())
+	}
 	return true
 }
 

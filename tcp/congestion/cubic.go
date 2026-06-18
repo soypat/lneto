@@ -175,6 +175,14 @@ func (cubic *CUBIC) InSlowStart() bool { return cubic.cwnd < cubic.ssthresh }
 // loss events from the event crossing the Handler boundary, updates the CUBIC
 // window accordingly and returns it in bytes.
 func (cubic *CUBIC) Control(ev tcp.CongestionEvent) tcp.Size {
+	if ev.RTO {
+		// Retransmission timeout (RFC 6298): collapse to the loss window and
+		// re-enter slow start (RFC 9438 §4.8). Discard any timed RTT sample
+		// since the segment is being retransmitted (Karn).
+		cubic.base.rtt.pending = false
+		cubic.onRTO()
+		return cubic.CongestionWindow()
+	}
 	s := cubic.base.observe(ev)
 	if s.loss {
 		cubic.onLoss()

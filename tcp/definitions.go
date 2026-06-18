@@ -68,6 +68,11 @@ type CongestionEvent struct {
 	// Tx reports whether the segment was transmitted by this endpoint (true) or
 	// received from the peer (false).
 	Tx bool
+	// RTO reports that the event is a retransmission-timeout notification
+	// (RFC 6298) rather than a segment crossing the connection. When set, Segment
+	// is zero and the controller should treat it as a severe loss signal
+	// (e.g. CUBIC collapses its window to the loss window per RFC 5681 §3.1).
+	RTO bool
 	// Dupacks is the control block's count of consecutive duplicate ACKs
 	// received, zero for transmitted segments. Controllers derive loss signals
 	// from it (commonly the fast-retransmit threshold of 3, RFC 5681 §3.2).

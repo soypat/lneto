@@ -23,17 +23,20 @@ import (
 // builds a standing queue (inflated RTT), while one that under-shoots leaves the
 // pipe idle.
 //
-// Scope and a stack limitation worth recording: these tests emulate congestion
-// through rate/delay limiting, not packet loss. lneto's ControlBlock accepts
-// only in-order segments (it buffers no out-of-order data), recovers loss solely
-// via duplicate-ACK fast retransmit with no RTO timer in the Handler, and the
-// receiver aborts after maxChallengeRejects (8) consecutive out-of-order
-// segments. A single mid-stream loss therefore forces go-back-N recovery that
-// deadlocks as soon as the sender runs out of new data to elicit further dup
-// ACKs. Robust loss-based recovery needs RTO support and/or out-of-order
-// buffering at a higher layer; until then, end-to-end loss-recovery testing is
-// out of scope here. CUBIC's loss response itself is covered at the controller
-// level (see cubic_test.go: TestCUBICMultiplicativeDecrease, TestCUBICControlLoss).
+// Congestion is emulated both through rate/delay limiting and through packet
+// loss (emuLink.lossAt). Loss recovery is driven by the RFC 6298 retransmission
+// timer: the pump folds each Handler's RetransmitDeadline into its event
+// schedule and calls CheckRetransmitTimeout, so an RTO fires even when the links
+// are idle after a loss. With the timer in place a single loss is recovered
+// go-back-N and the transfer completes.
+//
+// Remaining limitation: lneto's ControlBlock still accepts only in-order
+// segments (no out-of-order buffering) and the receiver issues throttled
+// challenge ACKs, aborting after maxChallengeRejects (8) consecutive
+// out-of-order segments. Loss is therefore kept to a single early drop in a
+// small window so the gap raises fewer than 8 out-of-order segments. Once
+// out-of-order buffering and SACK land, larger and repeated loss patterns can be
+// exercised.
 //
 // Potential follow-up: property/fuzz testing on top of this same harness.
 // Rather than asserting throughput/estimate ranges for fixed scenarios,
@@ -53,22 +56,29 @@ type emuPacket struct {
 }
 
 // emuLink is a one-way bottleneck link. Offered packets are serialized at rate
-// bytes/sec, then delayed by a fixed propagation delay. When the bottleneck
-// queue (the bytes already waiting to be serialized) would exceed queueCap the
-// packet is tail-dropped, modelling congestive loss without injecting synthetic
-// duplicate ACKs.
+// bytes/sec, then delayed by a fixed propagation delay. lossAt optionally drops
+// a single packet to model an isolated loss.
 type emuLink struct {
 	rate  float64       // bytes/sec; 0 means infinite bandwidth (no serialization).
 	delay time.Duration // one-way propagation delay.
+	// lossAt drops the single packet at this 1-based offered index (0 = lossless).
+	lossAt int
 
 	inflight  []emuPacket // accepted packets ordered by deliverAt (monotonic).
 	busyUntil time.Time   // time the serializer becomes free.
+	offered   int         // total packets offered, for the loss counter.
+	dropped   int
 }
 
 // offer submits a copy of data to the link at simulated time now. deliverAt is
 // monotonically non-decreasing across calls made in non-decreasing now order, so
 // inflight stays ordered.
 func (l *emuLink) offer(data []byte, now time.Time) {
+	l.offered++
+	if l.lossAt > 0 && l.offered == l.lossAt {
+		l.dropped++
+		return
+	}
 	start := now
 	if l.busyUntil.After(start) {
 		start = l.busyUntil // queue behind packets still being serialized.
@@ -111,6 +121,7 @@ func (l *emuLink) nextDeliver() (time.Time, bool) {
 type emuParams struct {
 	rate    float64       // forward-path bottleneck bandwidth, bytes/sec.
 	delay   time.Duration // one-way propagation delay applied to both paths.
+	lossAt  int           // forward-path: drop the single packet at this index (0 = lossless).
 	bufSize int           // per-handler tx/rx buffer size in bytes.
 	packets int           // tx ring packet slots (must exceed segments in flight).
 }
@@ -143,15 +154,20 @@ func newEmuNet(t *testing.T, p emuParams) *emuNet {
 		}
 		return h
 	}
-	return &emuNet{
+	en := &emuNet{
 		t:      t,
 		clock:  time.Unix(0, 0),
 		client: newHandler(),
 		server: newHandler(),
-		fwd:    &emuLink{rate: p.rate, delay: p.delay},
+		fwd:    &emuLink{rate: p.rate, delay: p.delay, lossAt: p.lossAt},
 		rev:    &emuLink{rate: 0, delay: p.delay}, // reverse path: infinite bandwidth.
 		buf:    make([]byte, ethernet.MaxMTU),
 	}
+	// Share the simulated clock with both handlers' RFC 6298 timers so RTO is
+	// deterministic and aligned with the congestion controllers' clock.
+	en.client.SetClock(en.now)
+	en.server.SetClock(en.now)
+	return en
 }
 
 // now returns the simulated clock. It is installed as the controller's Now func
@@ -203,9 +219,16 @@ func (en *emuNet) transfer(payload []byte) (received []byte) {
 			en.samples = append(en.samples, en.probe())
 		}
 
+		// The next event is the soonest of a packet delivery or a retransmission
+		// timer firing. Folding the RFC 6298 timers in lets the clock jump to an
+		// RTO when the links are idle (e.g. after a loss with no ACK feedback).
 		next, ok := earliestEvent(en.fwd, en.rev)
+		cd, crun := en.client.RetransmitDeadline()
+		next, ok = earlierDeadline(next, ok, cd, crun)
+		sd, srun := en.server.RetransmitDeadline()
+		next, ok = earlierDeadline(next, ok, sd, srun)
 		if !ok {
-			break // nothing left in flight: transfer complete.
+			break // nothing in flight and no timer pending: transfer complete.
 		}
 		if next.After(en.clock) {
 			en.clock = next
@@ -213,6 +236,11 @@ func (en *emuNet) transfer(payload []byte) (received []byte) {
 		if en.clock.After(deadline) {
 			en.t.Fatal("transfer exceeded simulated-time deadline")
 		}
+
+		// Fire any expired retransmission timers; the rewound data is sent on the
+		// next iteration's drain.
+		en.client.CheckRetransmitTimeout()
+		en.server.CheckRetransmitTimeout()
 
 		for _, pkt := range en.fwd.due(en.clock) {
 			_ = en.server.Recv(pkt) // rejects under loss/reorder are normal (yield dup ACKs).
@@ -245,6 +273,18 @@ func (en *emuNet) transfer(payload []byte) (received []byte) {
 		}
 	}
 	return received
+}
+
+// earlierDeadline folds a candidate timer deadline (valid only when running)
+// into the running earliest-event time.
+func earlierDeadline(cur time.Time, haveCur bool, cand time.Time, running bool) (time.Time, bool) {
+	if !running {
+		return cur, haveCur
+	}
+	if !haveCur || cand.Before(cur) {
+		return cand, true
+	}
+	return cur, true
 }
 
 // earliestEvent returns the soonest pending delivery across both links.
@@ -400,4 +440,64 @@ func sawWindowGrowth(samples []tcp.Size) bool {
 		}
 	}
 	return false
+}
+
+// sawWindowReduction reports whether the sampled congestion window ever
+// decreased between consecutive samples.
+func sawWindowReduction(samples []tcp.Size) bool {
+	for i := 1; i < len(samples); i++ {
+		if samples[i] < samples[i-1] {
+			return true
+		}
+	}
+	return false
+}
+
+// TestEmuRTORecoversLoss drives CUBIC across a link that drops a single early
+// segment in a small window. With no out-of-order buffering yet, the receiver
+// discards everything past the gap; recovery therefore relies on the RFC 6298
+// retransmission timer (and/or fast retransmit) rewinding to snd.UNA. The test
+// proves the loss is recovered end-to-end (full stream delivered intact), that
+// exactly one drop occurred, and that the controller reacted to the loss.
+func TestEmuRTORecoversLoss(t *testing.T) {
+	const (
+		rate    = 1_000_000.0
+		delay   = 10 * time.Millisecond
+		bufSize = 60_000
+	)
+	en := newEmuNet(t, emuParams{
+		rate:    rate,
+		delay:   delay,
+		lossAt:  5, // an early forward segment, in a small window.
+		bufSize: bufSize,
+		packets: 64,
+	})
+
+	var cubic congestion.CUBIC
+	if err := cubic.Configure(congestion.CUBICConfig{
+		InitialCwnd:     4, // keep the window small so the gap raises < 8 out-of-order
+		SlowStartThresh: 6, // segments, staying under the challenge-ACK abort threshold.
+		Now:             en.now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := en.client.SetCongestionControl(&cubic); err != nil {
+		t.Fatal(err)
+	}
+	en.probe = cubic.CongestionWindow
+
+	openPair(t, en.client, en.server)
+
+	payload := patternPayload(32 * 1024)
+	received := en.transfer(payload)
+
+	verifyStream(t, payload, received)
+	if en.fwd.dropped != 1 {
+		t.Errorf("expected exactly 1 injected drop, got %d", en.fwd.dropped)
+	}
+	if !sawWindowReduction(en.samples) {
+		t.Error("CUBIC congestion window never decreased despite the loss")
+	}
+	t.Logf("RTO recovery: delivered %d B intact after 1 loss; final cwnd=%d B",
+		len(received), cubic.CongestionWindow())
 }

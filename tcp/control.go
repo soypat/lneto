@@ -213,6 +213,19 @@ func (tcb *ControlBlock) CongestionEvent(seg Segment, tx bool) CongestionEvent {
 	}
 }
 
+// CongestionRTOEvent builds the [CongestionEvent] describing a retransmission
+// timeout (RFC 6298) for consumption by a [CongestionControl]. It carries no
+// segment; the RTO flag signals a severe loss the controller should react to.
+func (tcb *ControlBlock) CongestionRTOEvent() CongestionEvent {
+	return CongestionEvent{
+		SndUNA:   tcb.snd.UNA,
+		SndNXT:   tcb.snd.NXT,
+		InFlight: tcb.snd.inFlight(),
+		MSS:      tcb.snd.MSS,
+		RTO:      true,
+	}
+}
+
 // MakeChallengeAck returns a challenge ACK segment for the current ControlBlock state
 // used to respond to unexpected or ambiguous segments that require the remote peer to confirm
 // its connection state. A challenge ACK does not acknowledge new data,
