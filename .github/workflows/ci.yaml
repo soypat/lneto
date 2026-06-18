@@ -35,7 +35,7 @@ jobs:
 
       - name: go fix
         run: |
-          diff=$(go fix -diff ./... 2>&1)
+          diff=$(go fix -diff ./... 2>&1) || true
           if [ -n "$diff" ]; then
             echo "$diff"
             echo "::error::Files need go tool fix. Run: go tool fix ./..."
