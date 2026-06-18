@@ -1154,3 +1154,89 @@ func TestHandler_RetransmitAfterMultipleLossesBothDirections(t *testing.T) {
 		sendWithLoss(server, client, payload)
 	}
 }
+
+// TestDataInFinWait2_RST is a regression test for soypat/lneto#50.
+// After the local app calls Close() and the connection reaches FIN-WAIT-2
+// there is no reader (lneto has no Shutdown(WR); Close means fully done).
+// A new data segment from the peer (e.g. a pipelined HTTP request) must be
+// answered with RST (issue Option A / Linux SO_LINGER=0), NOT a bare ACK that
+// silently drops the data and leaves the peer waiting.
+func TestDataInFinWait2_RST(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	const maxpackets = 3
+	rng := rand.New(rand.NewSource(50))
+	client, server := newHandler(t, mtu, maxpackets), newHandler(t, mtu, maxpackets)
+	setupClientServer(t, rng, client, server)
+	var rawbuf [mtu]byte
+	establish(t, client, server, rawbuf[:])
+
+	// Client (the lneto side) closes: app fully done. Sends FIN → FIN-WAIT-1.
+	if err := client.Close(); err != nil {
+		t.Fatal("client close:", err)
+	}
+	clear(rawbuf[:])
+	n, err := client.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("client sending FIN:", err)
+	}
+	if client.State() != StateFinWait1 {
+		t.Fatal("client not in FIN_WAIT_1:", client.State())
+	}
+
+	// Server receives FIN → CLOSE-WAIT, then ACKs it (no Close → no FIN of its own).
+	if err := server.Recv(rawbuf[:n]); err != nil {
+		t.Fatal("server recv FIN:", err)
+	}
+	if server.State() != StateCloseWait {
+		t.Fatal("server not in CLOSE_WAIT:", server.State())
+	}
+	clear(rawbuf[:])
+	n, err = server.Send(rawbuf[:]) // pure ACK of the FIN.
+	if err != nil {
+		t.Fatal("server sending ACK:", err)
+	}
+
+	// Client receives the ACK → FIN-WAIT-2.
+	if err := client.Recv(rawbuf[:n]); err != nil {
+		t.Fatal("client recv ACK:", err)
+	}
+	if client.State() != StateFinWait2 {
+		t.Fatal("client not in FIN_WAIT_2:", client.State())
+	}
+
+	// Peer pipelines a new request on the half-closed connection.
+	req := []byte("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+	if _, err := server.Write(req); err != nil {
+		t.Fatal("server write req:", err)
+	}
+	clear(rawbuf[:])
+	n, err = server.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("server send req:", err)
+	}
+
+	// Client receives data in FIN-WAIT-2. Post-fix this returns a dropped-segment
+	// error (RST queued); pre-fix it returns nil (data ACKed). Tolerate both.
+	err = client.Recv(rawbuf[:n])
+	if err != nil && !IsDroppedErr(err) {
+		t.Fatal("client recv data:", err)
+	}
+
+	// Client's response MUST be a RST, not a bare ACK.
+	clear(rawbuf[:])
+	n, err = client.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("client send response:", err)
+	}
+	if n < sizeHeaderTCP {
+		t.Fatal("client produced no response to data in FIN-WAIT-2")
+	}
+	respFrm, err := NewFrame(rawbuf[:n])
+	if err != nil {
+		t.Fatal("parse response:", err)
+	}
+	resp := respFrm.Segment(0)
+	if !resp.Flags.HasAny(FlagRST) {
+		t.Fatalf("data in FIN-WAIT-2 after Close() must elicit RST (issue #50 Option A); got flags=%s", resp.Flags)
+	}
+}
