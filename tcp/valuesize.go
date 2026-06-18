@@ -1,5 +1,5 @@
 /*
-package ltcp implements TCP control flow.
+package tcp implements TCP control flow.
 
 # Transmission Control Block
 
@@ -12,6 +12,30 @@ pending control segment flags.
 
 All arithmetic dealing with sequence numbers must be performed modulo 2**32
 which brings with it subtleties to computer modulo arithmetic.
+
+# Supported standards
+
+The package implements the core TCP protocol (RFC 9293) and the following
+reliability extensions:
+
+  - RFC 6298 — Computing TCP's Retransmission Timer. A SRTT/RTTVAR estimator
+    drives a single retransmission timer with Karn's algorithm and exponential
+    backoff. Always on; drive it by calling [Handler.CheckRetransmitTimeout]
+    periodically (see [Handler.RetransmitDeadline]).
+  - RFC 2018 — TCP Selective Acknowledgment. Opt-in via [Handler.EnableSACK]:
+    SACK-permitted is negotiated on the handshake, a receiver advertises the
+    ranges it holds out of order, and a sender retransmits only the missing
+    segments. Requires an out-of-order buffer (see [Handler.SetReassemblyBuffer]).
+  - RFC 7323 — TCP Timestamps. Opt-in via [Handler.EnableTimestamps]: the option
+    is negotiated on the handshake and used to measure the round-trip time on
+    every acknowledgment (RTTM). PAWS is not implemented.
+  - Out-of-order segment reassembly. Opt-in via [Handler.SetReassemblyBuffer]:
+    a bounded buffer holds in-window segments that arrive ahead of the next
+    expected sequence number so a single gap is filled without go-back-N. When
+    disabled the [ControlBlock] accepts only in-order segments.
+
+Congestion control is pluggable through [CongestionControl]; the
+lneto/tcp/congestion subpackage ships CUBIC (RFC 9438) and a simplified BBRv3.
 */
 package tcp
 
