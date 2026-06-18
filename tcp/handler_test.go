@@ -1292,6 +1292,8 @@ func TestFinWait2_HalfClose_DataReadable(t *testing.T) {
 		if s, _ := NewFrame(buf[:n]); s.Segment(0).Flags.HasAny(FlagRST) {
 			t.Fatal("half-close reader must not RST inbound data")
 		}
+	}
+}
 
 // TestRetransmit_CumulativeACK_NoSpurious reproduces soypat/lneto#57.
 // lneto streams 4 segments (TX queue=4); the first is "lost". A Linux-style
