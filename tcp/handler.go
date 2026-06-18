@@ -34,7 +34,10 @@ type Handler struct {
 	reasm reassembly
 	// tsPermit enables offering/accepting the RFC 7323 Timestamps option during
 	// the handshake. Off by default. See [Handler.EnableTimestamps].
-	tsPermit   bool
+	tsPermit bool
+	// sackPermit enables offering/accepting Selective Acknowledgment (RFC 2018)
+	// during the handshake. Off by default. See [Handler.EnableSACK].
+	sackPermit bool
 	closing    bool
 	shutdownRx bool
 	// nRetransmit stores the number of times the oldest packet was retransmit.
@@ -84,6 +87,20 @@ func (h *Handler) EnableTimestamps(enable bool) error {
 	return nil
 }
 
+// EnableSACK enables Selective Acknowledgment (RFC 2018). When enabled it is
+// offered on the SYN and, if the peer also supports it, the receiver advertises
+// the byte ranges it holds out of order (built from the reassembly buffer) so
+// the sender can retransmit only the gaps. It has effect only together with
+// [Handler.SetBuffers]. Disabled by default; must be set before the connection
+// is opened. Returns [lneto.ErrBadState] if the connection is open.
+func (h *Handler) EnableSACK(enable bool) error {
+	if !h.scb.State().IsClosed() {
+		return lneto.ErrBadState
+	}
+	h.sackPermit = enable
+	return nil
+}
+
 // nanosPerMilli converts the monotonic nanosecond time source to the
 // millisecond-resolution TCP timestamp clock (RFC 7323 §4.1).
 const nanosPerMilli = 1_000_000
@@ -107,6 +124,10 @@ func (h *Handler) tsValue() uint32 {
 // TimestampsEnabled reports whether the RFC 7323 Timestamps option was
 // negotiated for the current connection.
 func (h *Handler) TimestampsEnabled() bool { return h.scb.tsEnabled }
+
+// SACKEnabled reports whether Selective Acknowledgment (RFC 2018) was
+// negotiated for the current connection.
+func (h *Handler) SACKEnabled() bool { return h.scb.sackEnabled }
 
 // SetLoggers sets the [slog.Logger] for the Handler and internal [ControlBlock].
 func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
@@ -206,6 +227,7 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 		logger:     h.logger,
 		reasm:      h.reasm,
 		tsPermit:   h.tsPermit,
+		sackPermit: h.sackPermit,
 		closing:    false,
 		shutdownRx: false,
 		loss:       h.loss,     // configuration persists across reopen.
@@ -313,7 +335,7 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 			h.bufTx.RecvACK(segIncoming.ACK)
 		}
 	}
-	h.processTimestamps(tfrm.Options(), segIncoming, prevRcvNxt, prevUNA)
+	h.processOptions(tfrm.Options(), segIncoming, prevRcvNxt, prevUNA)
 	if segIncoming.Flags.HasAny(FlagSYN) {
 		// Parse remote MSS from TCP options.
 		h.optcodec.ForEachOption(tfrm.Options(), func(kind OptionKind, data []byte) error {
@@ -407,7 +429,8 @@ func (h *Handler) reservedOptionsLen() int {
 // segments.
 func (h *Handler) appendSegmentOptions(dst []byte, seg Segment, mss uint16) int {
 	n := 0
-	if seg.Flags.HasAny(FlagSYN) {
+	isSyn := seg.Flags.HasAny(FlagSYN)
+	if isSyn {
 		m, _ := h.optcodec.PutOption16(dst[n:], OptMaxSegmentSize, mss)
 		n += m
 	}
@@ -417,6 +440,16 @@ func (h *Handler) appendSegmentOptions(dst []byte, seg Segment, mss uint16) int 
 	// capped at 65535 bytes, which throttles throughput on high bandwidth-delay
 	// paths and limits the congestion controllers. Implemented in a later part of
 	// the patch train.
+	// SACK-permitted (RFC 2018 §2): offer on a bare SYN when locally permitted;
+	// echo on the SYN-ACK only once negotiated.
+	sackPerm := h.scb.sackEnabled
+	if seg.Flags == FlagSYN {
+		sackPerm = h.sackPermit
+	}
+	if isSyn && sackPerm {
+		m, _ := h.optcodec.PutOption(dst[n:], OptSACKPermitted)
+		n += m
+	}
 	// Timestamps (RFC 7323): offer on a bare SYN when locally permitted;
 	// otherwise include only once negotiated (SYN-ACK and established segments).
 	// The option carries a clock reading, so it is only ever emitted when a
@@ -434,6 +467,20 @@ func (h *Handler) appendSegmentOptions(dst []byte, seg Segment, mss uint16) int 
 		putUint32BE(ts[4:], h.scb.tsRecent)
 		m, _ := h.optcodec.PutOption(dst[n:], OptTimestamps, ts[:]...)
 		n += m
+	}
+	// SACK blocks (RFC 2018 §3): advertised on a pure ACK when we hold
+	// out-of-order data, so the sender can retransmit only the gaps.
+	if !isSyn && h.scb.sackEnabled && seg.DATALEN == 0 && !seg.Flags.HasAny(FlagFIN|FlagRST) && h.reasm.buffered() > 0 {
+		var blocks [3]sackBlock
+		if nb := h.reasm.sackBlocks(blocks[:]); nb > 0 {
+			var data [3 * 8]byte
+			for i := range nb {
+				putUint32BE(data[i*8:], uint32(blocks[i].start))
+				putUint32BE(data[i*8+4:], uint32(blocks[i].end))
+			}
+			m, _ := h.optcodec.PutOption(dst[n:], OptSACK, data[:nb*8]...)
+			n += m
+		}
 	}
 	for n%4 != 0 { // pad to a 32-bit boundary.
 		dst[n] = byte(OptNop)
@@ -455,11 +502,12 @@ func (h *Handler) timestampFromOptions(opts []byte) (tsval, tsecr uint32, presen
 	return tsval, tsecr, present
 }
 
-// processTimestamps negotiates and applies the RFC 7323 Timestamps option for
-// an accepted incoming segment: it negotiates support on the SYN, refreshes the
-// echoed TS.Recent value for in-order segments (§4.3), and measures the RTT from
-// the echoed TSecr when the segment acknowledges new data (RTTM, §4.2).
-func (h *Handler) processTimestamps(opts []byte, seg Segment, prevRcvNxt, prevUNA Value) {
+// processOptions negotiates and applies the negotiated TCP options for an
+// accepted incoming segment: SACK-permitted (RFC 2018) and Timestamps
+// (RFC 7323). For Timestamps it refreshes the echoed TS.Recent value for
+// in-order segments (§4.3) and measures the RTT from the echoed TSecr when the
+// segment acknowledges new data (RTTM, §4.2).
+func (h *Handler) processOptions(opts []byte, seg Segment, prevRcvNxt, prevUNA Value) {
 	tsval, tsecr, present := h.timestampFromOptions(opts)
 	if seg.Flags.HasAny(FlagSYN) {
 		// Only negotiate when a time source is available: the option is
@@ -467,6 +515,9 @@ func (h *Handler) processTimestamps(opts []byte, seg Segment, prevRcvNxt, prevUN
 		if present && h.tsPermit && h.clockReady() {
 			h.scb.tsEnabled = true
 			h.scb.tsRecent = tsval
+		}
+		if h.sackPermit && h.optionPresent(opts, OptSACKPermitted) {
+			h.scb.sackEnabled = true
 		}
 		return
 	}
@@ -486,6 +537,17 @@ func (h *Handler) processTimestamps(opts []byte, seg Segment, prevRcvNxt, prevUN
 			}
 		}
 	}
+}
+
+// optionPresent reports whether an option of the given kind appears in opts.
+func (h *Handler) optionPresent(opts []byte, want OptionKind) (found bool) {
+	h.optcodec.ForEachOption(opts, func(kind OptionKind, _ []byte) error {
+		if kind == want {
+			found = true
+		}
+		return nil
+	})
+	return found
 }
 
 func putUint32BE(b []byte, v uint32) {
