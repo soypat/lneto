@@ -118,6 +118,43 @@ func (r *reassembly) prune(nxt Value) int {
 	return n
 }
 
+// sackBlock is a contiguous range [start, end) of received out-of-order data,
+// as advertised in a SACK option (RFC 2018 §3).
+type sackBlock struct {
+	start, end Value
+}
+
+// sackBlocks fills dst with the coalesced contiguous ranges of currently held
+// out-of-order data and returns the number written (capped at len(dst)). Held
+// segments are sorted in place by sequence number (small N, no allocation) and
+// adjacent ones merged into a single block.
+func (r *reassembly) sackBlocks(dst []sackBlock) int {
+	n := len(r.held)
+	if n == 0 || len(dst) == 0 {
+		return 0
+	}
+	// Insertion sort held segments by sequence number.
+	for i := 1; i < n; i++ {
+		for j := i; j > 0 && r.held[j].seq.LessThan(r.held[j-1].seq); j-- {
+			r.held[j], r.held[j-1] = r.held[j-1], r.held[j]
+		}
+	}
+	count := 0
+	for i := 0; i < n && count < len(dst); {
+		start := r.held[i].seq
+		end := Add(r.held[i].seq, Size(r.held[i].n))
+		j := i + 1
+		for j < n && r.held[j].seq == end { // merge adjacent ranges.
+			end = Add(r.held[j].seq, Size(r.held[j].n))
+			j++
+		}
+		dst[count] = sackBlock{start: start, end: end}
+		count++
+		i = j
+	}
+	return count
+}
+
 // freeSlot returns an unused slab slot index, or -1 when all are occupied.
 func (r *reassembly) freeSlot() int {
 	for s := 0; s < cap(r.held); s++ {
