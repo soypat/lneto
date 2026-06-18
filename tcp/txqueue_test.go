@@ -487,7 +487,7 @@ func testQueueSanity(t *testing.T, rtx *ringTx) {
 	last := rtx.slist.Newest()
 	first := rtx.slist.Oldest()
 	if first == nil && last != nil || last == nil && first != nil {
-		t.Fatalf("found first/last(%d,%d) but did not find last/first", first, last)
+		t.Fatalf("found first/last(%v,%v) but did not find last/first", first, last)
 	}
 	// Check sent data or return if no sent data available.
 	if sent == 0 {
@@ -660,6 +660,100 @@ func (rtx *ringTx) appendString(b []byte) []byte {
 		result = append(result, err.Error()...)
 	}
 	return result
+}
+
+// TestRingTx_sackScoreboard exercises the per-packet SACK scoreboard
+// (MarkSACKed/NextSACKRetransmit/HasSACKRetransmit/ClearRetransmitMarks)
+// directly, since the reordered branch series defers the harness-based SACK
+// integration tests to the congestion package.
+func TestRingTx_sackScoreboard(t *testing.T) {
+	const iss = 1
+	var rtx ringTx
+	buf := make([]byte, 64)
+	if err := rtx.Reset(buf, 3, iss); err != nil {
+		t.Fatal(err)
+	}
+	// Write 12 bytes and emit three 4-byte packets at seq 1, 5 and 9.
+	if _, err := rtx.Write(make([]byte, 12)); err != nil {
+		t.Fatal(err)
+	}
+	var pkt [4]byte
+	for _, seq := range []Value{1, 5, 9} {
+		if _, err := rtx.MakePacket(pkt[:], seq); err != nil {
+			t.Fatalf("MakePacket seq=%d: %v", seq, err)
+		}
+	}
+	if !rtx.HasSACKRetransmit() {
+		t.Fatal("expected outstanding holes before any SACK")
+	}
+	// Peer selectively acknowledges the middle packet [5,9).
+	rtx.MarkSACKed(5, 9)
+
+	// Recovery should retransmit the holes (seq 1 then seq 9) and skip seq 5.
+	got1, ok := rtx.NextSACKRetransmit()
+	if !ok || got1 != 1 {
+		t.Fatalf("first hole: got (%d,%v), want (1,true)", got1, ok)
+	}
+	got2, ok := rtx.NextSACKRetransmit()
+	if !ok || got2 != 9 {
+		t.Fatalf("second hole: got (%d,%v), want (9,true)", got2, ok)
+	}
+	if _, ok := rtx.NextSACKRetransmit(); ok {
+		t.Fatal("expected no further holes once all are SACKed or retransmitted")
+	}
+	if rtx.HasSACKRetransmit() {
+		t.Fatal("expected no outstanding holes after retransmitting both")
+	}
+
+	// A fresh recovery round re-arms retransmission of the still-unSACKed holes.
+	rtx.ClearRetransmitMarks()
+	if !rtx.HasSACKRetransmit() {
+		t.Fatal("expected holes to re-arm after ClearRetransmitMarks")
+	}
+	if got, ok := rtx.NextSACKRetransmit(); !ok || got != 1 {
+		t.Fatalf("after clear: got (%d,%v), want (1,true)", got, ok)
+	}
+}
+
+// TestSACK_noAllocs verifies the SACK data path allocates nothing: the sender
+// scoreboard reuses per-packet flags on the pre-sized send queue and the
+// receiver's sackBlocks fills a caller-provided array, so a peer cannot drive
+// heap growth through SACK options or selective retransmission.
+func TestSACK_noAllocs(t *testing.T) {
+	var rtx ringTx
+	if err := rtx.Reset(make([]byte, 64), 3, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rtx.Write(make([]byte, 12)); err != nil {
+		t.Fatal(err)
+	}
+	var pkt [4]byte
+	for _, seq := range []Value{1, 5, 9} {
+		if _, err := rtx.MakePacket(pkt[:], seq); err != nil {
+			t.Fatalf("MakePacket seq=%d: %v", seq, err)
+		}
+	}
+	var r reassembly
+	r.reset(4)
+	rx := internal.Ring{Buf: make([]byte, 32)}
+	seg := []byte("DATA")
+	var blocks [3]sackBlock
+	allocs := testing.AllocsPerRun(100, func() {
+		// Sender scoreboard recovery round.
+		rtx.ClearRetransmitMarks()
+		rtx.MarkSACKed(5, 9)
+		_ = rtx.HasSACKRetransmit()
+		_, _ = rtx.NextSACKRetransmit()
+		// Receiver advertises buffered out-of-order ranges as SACK blocks.
+		r.clear()
+		rx.Reset()
+		r.store(&rx, 100, 108, seg)
+		r.store(&rx, 100, 104, seg)
+		_ = r.sackBlocks(blocks[:])
+	})
+	if allocs != 0 {
+		t.Errorf("SACK data path must not allocate, got %v allocs/op", allocs)
+	}
 }
 
 func (rtx *ringTx) mustAppendString(b []byte) []byte {

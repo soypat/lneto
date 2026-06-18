@@ -38,6 +38,9 @@ type Handler struct {
 	// sackPermit enables offering/accepting Selective Acknowledgment (RFC 2018)
 	// during the handshake. Off by default. See [Handler.EnableSACK].
 	sackPermit bool
+	// sackRTO marks that a retransmission timeout opened a fresh SACK recovery
+	// round; cleared once every outstanding hole has been retransmitted.
+	sackRTO    bool
 	closing    bool
 	shutdownRx bool
 	// nRetransmit stores the number of times the oldest packet was retransmit.
@@ -133,6 +136,12 @@ func (h *Handler) SACKEnabled() bool { return h.scb.sackEnabled }
 func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
 	h.logger.log = handler
 	h.scb.logger.log = scb
+}
+
+// sackRetransmitPending reports whether SACK recovery has an outstanding hole to
+// retransmit this round.
+func (h *Handler) sackRetransmitPending() bool {
+	return h.scb.SACKEnabled() && (h.scb.InFastRecovery() || h.sackRTO) && h.bufTx.HasSACKRetransmit()
 }
 
 // ConnectionID returns the connection identifier which is incremented every time the connection is closed or open.
@@ -537,6 +546,19 @@ func (h *Handler) processOptions(opts []byte, seg Segment, prevRcvNxt, prevUNA V
 			}
 		}
 	}
+	if h.scb.sackEnabled && seg.Flags.HasAny(FlagACK) {
+		// Record selectively acknowledged ranges so recovery skips them.
+		h.optcodec.ForEachOption(opts, func(kind OptionKind, data []byte) error {
+			if kind == OptSACK {
+				for off := 0; off+8 <= len(data); off += 8 {
+					start := Value(uint32BE(data[off:]))
+					end := Value(uint32BE(data[off+4:]))
+					h.bufTx.MarkSACKed(start, end)
+				}
+			}
+			return nil
+		})
+	}
 }
 
 // optionPresent reports whether an option of the given kind appears in opts.
@@ -594,12 +616,20 @@ func (h *Handler) Send(b []byte) (int, error) {
 	if h.loss != nil {
 		now = h.nanotime()
 		if h.loss.PreTx(now).Retransmit {
-			// Go-back-N retransmission directed by loss recovery: rewind the
-			// send sequence and transmit buffer so unacknowledged data is resent
-			// from snd.UNA. Done before the early short-circuit below so an
-			// expired RTO retransmits even with no new data queued.
-			h.scb.Retransmit()
-			h.bufTx.RetransmitFromUNA()
+			// Loss recovery signalled a retransmission timeout. Done before the
+			// early short-circuit below so an expired RTO retransmits even with
+			// no new data queued.
+			if h.scb.SACKEnabled() {
+				// SACK recovery (RFC 2018) resends holes selectively rather than
+				// doing go-back-N: open a fresh recovery round.
+				h.bufTx.ClearRetransmitMarks()
+				h.sackRTO = true
+			} else {
+				// Go-back-N: rewind the send sequence and transmit buffer so
+				// unacknowledged data is resent from snd.UNA.
+				h.scb.Retransmit()
+				h.bufTx.RetransmitFromUNA()
+			}
 		}
 	}
 	awaitingSyn := h.AwaitingSynSend()
@@ -611,7 +641,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 		// before Send is called, implementing the half-close per RFC 9293 §3.5.
 		h.closing = true
 	}
-	if !awaitingSyn && !requeueControl && buffered == 0 && !h.closing && !h.scb.HasPending() {
+	if !awaitingSyn && !requeueControl && buffered == 0 && !h.closing && !h.scb.HasPending() && !h.sackRetransmitPending() {
 		// Early nop short circuit.
 		return 0, nil
 	}
@@ -655,6 +685,29 @@ func (h *Handler) Send(b []byte) (int, error) {
 	} else if requeueControl {
 		h.requeueControl = false
 		return 0, nil
+	} else if h.sackRetransmitPending() {
+		// SACK recovery (RFC 2018): retransmit the next outstanding hole,
+		// skipping selectively-acknowledged and already-retransmitted segments,
+		// instead of go-back-N.
+		optLen := h.reservedOptionsLen()
+		maxPayload := len(b) - sizeHeaderTCP - optLen
+		holeSeq, _ := h.bufTx.NextSACKRetransmit()
+		segment = h.scb.RetransmitSegment(holeSeq)
+		segment.WND = h.recvWindow()
+		dataStart := sizeHeaderTCP + optLen
+		n, err := h.bufTx.MakePacket(b[dataStart:dataStart+maxPayload], holeSeq)
+		if err != nil {
+			return 0, err
+		}
+		segment.DATALEN = Size(n)
+		if n > 0 {
+			segment.Flags |= FlagPSH
+		}
+		optLen = h.appendSegmentOptions(b[sizeHeaderTCP:], segment, mss)
+		offset += uint8(optLen / 4)
+		if !h.bufTx.HasSACKRetransmit() {
+			h.sackRTO = false // all holes retransmitted this round.
+		}
 	} else {
 		var ok bool
 		// Reserve room for this segment's TCP options ahead of the payload.
