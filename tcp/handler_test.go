@@ -1154,3 +1154,99 @@ func TestHandler_RetransmitAfterMultipleLossesBothDirections(t *testing.T) {
 		sendWithLoss(server, client, payload)
 	}
 }
+
+// TestRetransmit_CumulativeACK_NoSpurious reproduces soypat/lneto#57.
+// lneto streams 4 segments (TX queue=4); the first is "lost". A Linux-style
+// remote buffers the rest out of order and dup-ACKs the hole. After 3 dup ACKs
+// lneto fast-retransmits the lost segment; the remote then cumulatively ACKs
+// ALL data it received. On the buggy design (snd.NXT rewound to UNA on
+// retransmit) lneto treated that ACK as acknowledging unsent data, dropped it,
+// and emitted spurious retransmissions of already-acked segments.
+// Correct behaviour: the cumulative ACK is accepted and nothing further is sent.
+//
+// Note: an lneto Handler cannot act as the server here (it rejects out-of-order
+// segments per errRequireSequential), so the remote's ACKs are hand-crafted from
+// captured sequence numbers, using only public API / observed packets.
+func TestRetransmit_CumulativeACK_NoSpurious(t *testing.T) {
+	const mtu = 1500
+	const maxpackets = 4 // TX packet queue size 4, per issue.
+	rng := rand.New(rand.NewSource(57))
+	client := newHandler(t, mtu, maxpackets)
+	server := newHandler(t, mtu, maxpackets)
+	setupClientServer(t, rng, client, server)
+	var pkt [mtu]byte
+	establish(t, client, server, pkt[:])
+
+	// Emit one small in-flight data segment and return it as observed on the wire.
+	emit := func(payload string) Segment {
+		clear(pkt[:])
+		if _, err := client.Write([]byte(payload)); err != nil {
+			t.Fatal("client write:", err)
+		}
+		n, err := client.Send(pkt[:])
+		if err != nil {
+			t.Fatal("client send data:", err)
+		}
+		if n <= sizeHeaderTCP {
+			t.Fatal("expected data segment, got header-only")
+		}
+		f, _ := NewFrame(pkt[:n])
+		return f.Segment(n - sizeHeaderTCP)
+	}
+
+	// 3 segments in flight (queue=4 leaves a slot for the retransmit). seg1 is
+	// "lost"; seg2/seg3 reach the remote.
+	seg1 := emit("aaaa")
+	emit("bbbb")
+	seg3 := emit("cccc")
+
+	remoteSeq := seg1.ACK                    // remote's seq (sends no data) == client.rcv.NXT.
+	hole := seg1.SEQ                         // snd.UNA: the lost (first unacked) segment.
+	cumAck := seg3.SEQ + Value(seg3.DATALEN) // all data sent == client snd.NXT.
+
+	recvACK := func(seqv, ackv Value) error {
+		clear(pkt[:])
+		f, _ := NewFrame(pkt[:])
+		f.SetSourcePort(server.LocalPort())
+		f.SetDestinationPort(client.LocalPort())
+		f.SetSegment(Segment{SEQ: seqv, ACK: ackv, Flags: FlagACK, WND: 64000}, 5)
+		return client.Recv(pkt[:sizeHeaderTCP])
+	}
+
+	// Remote dup-ACKs the hole 3 times → fast-retransmit trigger.
+	for i := range 3 {
+		if err := recvACK(remoteSeq, hole); err != nil {
+			t.Fatalf("client.Recv dupACK #%d: %v", i+1, err)
+		}
+	}
+
+	// lneto fast-retransmits the lost segment.
+	clear(pkt[:])
+	n, err := client.Send(pkt[:])
+	if err != nil {
+		t.Fatal("client send fast-retransmit:", err)
+	}
+	if n <= sizeHeaderTCP {
+		t.Fatal("expected fast-retransmit data segment")
+	}
+	if rt, _ := NewFrame(pkt[:n]); rt.Segment(0).SEQ != hole {
+		t.Fatalf("fast retransmit SEQ=%d; want hole=%d", rt.Segment(0).SEQ, hole)
+	}
+
+	// Remote got the retransmit and cumulatively ACKs ALL data.
+	if err := recvACK(remoteSeq, cumAck); err != nil {
+		t.Fatalf("cumulative ACK (covers all sent data) must be accepted, not dropped (issue #57): %v", err)
+	}
+
+	// No spurious retransmission: everything acked, nothing left to send.
+	clear(pkt[:])
+	n, err = client.Send(pkt[:])
+	if err != nil {
+		t.Fatal("client send after cumulative ACK:", err)
+	}
+	if n > sizeHeaderTCP {
+		s, _ := NewFrame(pkt[:n])
+		seg := s.Segment(n - sizeHeaderTCP)
+		t.Fatalf("spurious retransmission after cumulative ACK: SEQ=%d len=%d (issue #57)", seg.SEQ, seg.DATALEN)
+	}
+}
