@@ -1214,7 +1214,7 @@ func TestRetransmit_CumulativeACK_NoSpurious(t *testing.T) {
 	}
 
 	// Remote dup-ACKs the hole 3 times → fast-retransmit trigger.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := recvACK(remoteSeq, hole); err != nil {
 			t.Fatalf("client.Recv dupACK #%d: %v", i+1, err)
 		}
