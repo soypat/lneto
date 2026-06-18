@@ -99,6 +99,10 @@ ok      github.com/soypat/lneto/x/xnet  2.926s
 | ICMPv4 | RFC 792 | ✅ | `ipv4/icmpv4` | — | Echo (ping) client handler |
 | UDP | RFC 768 | ✅ | `udp` | — | Handler + thread-safe `Conn` |
 | TCP | RFC 9293 | ✅ | `tcp` | 0 ²³ | Full state machine, SYN cookies, retransmit queue, `Conn`/`Listener`, pluggable congestion control |
+| TCP retransmission timeout | RFC 6298 | ✅ | `tcp` | 0 | SRTT/RTTVAR estimator, single retransmission timer, Karn's algorithm, exponential backoff |
+| TCP selective acknowledgment | RFC 2018 | 🟡 | `tcp` | 0 | Opt-in; SACK-permitted negotiation, receiver blocks from the reassembly buffer, sender selective retransmit. Needs `SetReassemblyBuffer` |
+| TCP timestamps | RFC 7323 | 🟡 | `tcp` | 0 | Opt-in; option negotiation and per-ACK RTT measurement (RTTM). PAWS not implemented |
+| TCP out-of-order reassembly | RFC 9293 | 🟡 | `tcp` | 0 | Opt-in bounded buffer via `SetReassemblyBuffer`; default remains in-order only |
 | TCP congestion control | RFC 9438 (CUBIC), draft-ietf-ccwg-bbr (BBRv3) | 🟡 | `tcp/congestion` | 0 ⁵ | Pluggable `tcp.CongestionControl`; ships CUBIC and a simplified BBRv3 |
 | DNS | RFC 1035 | ✅ | `dns` | — | Client (A/AAAA query) |
 | DHCPv4 | RFC 2131 | ✅ | `dhcp/dhcpv4` | — | Client + Server |
