@@ -193,6 +193,7 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		// shut down (CloseRead) and our FIN sent (Close) — so inbound data has no
 		// consumer. Reply RST instead of the silent ACK-and-drop that leaves the
 		// peer waiting; the connection is torn down once the RST is sent.
+		h.info("tcp.Handler:rst-data-after-fullclose", slog.Uint64("lport", uint64(h.localPort)), slog.Uint64("rport", uint64(h.remotePort)), slog.Uint64("datalen", uint64(segIncoming.DATALEN)))
 		h.scb.QueueRST(segIncoming.ACK)
 		return nil
 	}
