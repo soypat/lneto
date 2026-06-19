@@ -162,7 +162,7 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		return lneto.ErrMismatch
 	}
 	payload := tfrm.Payload()
-	if len(payload) > h.bufRx.Free() {
+	if !h.shutdownRx && len(payload) > h.bufRx.Free() {
 		return lneto.ErrBufferFull
 	}
 	segIncoming := tfrm.Segment(len(payload))
