@@ -146,6 +146,15 @@ func (tcb *ControlBlock) MakeKeepalive() Segment {
 	}
 }
 
+// QueueRST queues a RST segment to be emitted on the next send, overriding any
+// other pending flags. seq is the sequence number the RST will carry (per RFC
+// 9293 reset generation, the acknowledged value SEG.ACK of the offending
+// segment). The connection should be torn down once the RST is sent.
+func (tcb *ControlBlock) QueueRST(seq Value) {
+	tcb.pending = [2]Flags{0: FlagRST}
+	tcb.rstPtr = seq
+}
+
 // MakeDupACK returns a duplicate ACK segment suitable for fast-retransmit
 // recovery signaling, without advancing the sender ACK boundary. Useful for:
 //   - constructing an explicit duplicate ACK from local state (e.g. test harness),
