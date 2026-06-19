@@ -3,6 +3,7 @@ package tcp
 import (
 	"io"
 	"net"
+	"time"
 
 	"log/slog"
 
@@ -33,7 +34,16 @@ type Handler struct {
 	shutdownRx bool
 	// nRetransmit stores the number of times the oldest packet was retransmit.
 	nRetransmit uint8
+	// synLastTx and synRTO track active-open SYN retransmission while waiting
+	// for the remote SYN-ACK. They are reset with each new connection.
+	synLastTx time.Time
+	synRTO    time.Duration
 }
+
+const (
+	initialSynRTO = time.Second
+	maxSynRTO     = 4 * time.Second
+)
 
 func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
 	h.logger.log = handler
@@ -256,6 +266,8 @@ func (h *Handler) Send(b []byte) (int, error) {
 		return 0, net.ErrClosed
 	}
 	awaitingSyn := h.AwaitingSynSend()
+	now := time.Now()
+	retransmitSyn := !awaitingSyn && h.shouldRetransmitSyn(now)
 	buffered := h.bufTx.BufferedUnsent()
 	if h.scb.State() == StateCloseWait && !h.closing && buffered == 0 && !h.scb.HasPending() {
 		// Remote closed with no application data left to send: initiate our own close.
@@ -263,7 +275,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 		// before Send is called, implementing the half-close per RFC 9293 §3.5.
 		h.closing = true
 	}
-	if !awaitingSyn && buffered == 0 && !h.closing && !h.scb.HasPending() {
+	if !awaitingSyn && !retransmitSyn && buffered == 0 && !h.closing && !h.scb.HasPending() {
 		// Early nop short circuit.
 		return 0, nil
 	}
@@ -286,11 +298,14 @@ func (h *Handler) Send(b []byte) (int, error) {
 	offset := uint8(5)
 	mss := uint16(len(b) - sizeHeaderTCP)
 	var segment Segment
-	if awaitingSyn {
+	if awaitingSyn || retransmitSyn {
 		// Handling init syn segment.
 		segment = ClientSynSegment(h.bufTx.iss, Size(h.bufRx.Size()))
 		h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
 		offset++
+		if retransmitSyn {
+			h.info("tcp.Handler:retransmit-syn", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("rport", uint64(h.remotePort)))
+		}
 	} else {
 		var ok bool
 		maxPayload := len(b) - sizeHeaderTCP
@@ -320,6 +335,9 @@ func (h *Handler) Send(b []byte) (int, error) {
 	} else if prevState != h.scb.State() && h.logenabled(slog.LevelInfo) {
 		h.info("tcp.Handler:tx-statechange", slog.Uint64("port", uint64(h.localPort)), slog.String("oldState", prevState.String()), slog.String("newState", h.scb.State().String()), slog.String("txflags", segment.Flags.String()))
 	}
+	if segment.Flags == FlagSYN && h.scb.State() == StateSynSent {
+		h.markSynSent(now)
+	}
 	tfrm.SetSourcePort(h.localPort)
 	tfrm.SetDestinationPort(h.remotePort)
 	tfrm.SetSegment(segment, offset)
@@ -330,6 +348,22 @@ func (h *Handler) Send(b []byte) (int, error) {
 		h.reset(0, 0, 0)
 	}
 	return datalen, nil
+}
+
+func (h *Handler) shouldRetransmitSyn(now time.Time) bool {
+	return h.AwaitingSynResponse() && !h.synLastTx.IsZero() && !now.Before(h.synLastTx.Add(h.synRTO))
+}
+
+func (h *Handler) markSynSent(now time.Time) {
+	h.synLastTx = now
+	if h.synRTO == 0 {
+		h.synRTO = initialSynRTO
+		return
+	}
+	h.synRTO *= 2
+	if h.synRTO > maxSynRTO {
+		h.synRTO = maxSynRTO
+	}
 }
 
 // Write implements [io.Writer] by copying b to a internal buffer to be sent over the network on the next
