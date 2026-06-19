@@ -1205,7 +1205,7 @@ func serverSendData(t *testing.T, server *Handler, data, buf []byte) int {
 }
 
 // TestFinWait2_FullClose_RST: when the application is done in BOTH directions —
-// read side shut down (CloseRead/ShutdownRead) AND our FIN sent (Close) — inbound
+// read side shut down ([Handler.ShutdownRead]) AND our FIN sent (Close) — inbound
 // data in FIN-WAIT-2 has no consumer. The Handler must reply RST (not silently
 // ACK-and-drop, which leaves the peer waiting) and tear down the local
 // connection. Regression for soypat/lneto#50, reworked to gate on the read

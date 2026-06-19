@@ -14,7 +14,7 @@ import (
 // related to data buffering, frame sequencing and connection state handling.
 // Does NOT implement IP related logic, so no CRC calculation/validation or pseudo header logic.
 //
-// See [Conn] for a higher level abstraction of a TCP connection, and see [ControlBlock] for the lower level bits of a TCP connection.
+// See [Conn] for a higher level abstraction of a TCP connection, and see [ControlBlock] for the low level state machine of a TCP connection.
 type Handler struct {
 	connid uint64
 	scb    ControlBlock
@@ -35,6 +35,7 @@ type Handler struct {
 	nRetransmit uint8
 }
 
+// SetLoggers sets the [slog.Logger] for the Handler and internal [ControlBlock].
 func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
 	h.logger.log = handler
 	h.scb.logger.log = scb
@@ -118,6 +119,7 @@ func (h *Handler) Abort() {
 	h.reset(0, 0, 0)
 }
 
+// reset clears all state except [ControlBlock] state. So [Handler.State] will remain unchanged.
 func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 	*h = Handler{
 		connid:     h.connid + 1,
@@ -239,12 +241,16 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 }
 
 // ShutdownRead activates local discard mode: incoming payload bytes are dropped
-// (ACK/SEQ still advance normally) and Read returns io.EOF immediately.
-// Not reversible within the lifetime of a connection; reset clears it.
+// (ACK/SEQ still advance normally) and Read returns [io.EOF] immediately.
+// Not reversible within the lifetime of a connection.
+// If [Handler.Close] and this method are both called then connection will be terminated.
 func (h *Handler) ShutdownRead() {
 	h.shutdownRx = true
 }
 
+// Close will initiate the TCP close sequence.
+// After Close is called [Handler.Write] will fail with [net.ErrClosed].
+// The connection may still receive data to read after Close called.
 func (h *Handler) Close() error {
 	h.trace("tcp.Handler.Close")
 	if h.closing {

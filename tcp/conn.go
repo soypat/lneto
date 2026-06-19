@@ -51,16 +51,25 @@ func (conn *Conn) reset(h Handler) {
 	conn.ipID = 0
 }
 
+// ConnConfig provides configuration parameters for [Conn].
 type ConnConfig struct {
-	RxBuf             []byte
-	TxBuf             []byte
+	RxBuf []byte // Fixed size buffer for incoming data via [Conn.Read].
+	TxBuf []byte // Fixed size buffer for egress data via [Conn.Write].
+	// TxPacketQueueSize is the maximum number of sent-but-unacknowledged segments
+	// the connection tracks at once for retransmission. Each queued entry records the
+	// sequence range of one outgoing segment and is released when the peer ACKs it;
+	// once the queue is full no further segments are emitted until an ACK frees a slot.
+	// Must be greater than zero and no larger than len(TxBuf).
 	TxPacketQueueSize int
 	// RWBackoff sets the backoff policy for backoff when data unavailable on Read or buffer full on Write.
 	// If not set a default backoff strategy will be used. See [internal.BackoffConnRW].
 	RWBackoff lneto.BackoffStrategy
-	Logger    *slog.Logger
+	// Logger sets the [Conn] logger.
+	// Lower level logging available at [Handler.SetLoggers] via [Conn.InternalHandler].
+	Logger *slog.Logger
 }
 
+// Configure should be called on any newly created connection before usage. See [ConnConfig].
 func (conn *Conn) Configure(config ConnConfig) (err error) {
 	if config.RWBackoff == nil {
 		return lneto.ErrMissingHALConfig
@@ -90,6 +99,7 @@ func (conn *Conn) RemotePort() uint16 {
 	return conn.h.RemotePort()
 }
 
+// RemoteAddr returns the address of the peer Conn is exchanging data with.
 func (conn *Conn) RemoteAddr() []byte {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
@@ -200,6 +210,7 @@ func (conn *Conn) CloseRead() error {
 	return nil
 }
 
+// Close will initiate TCP close sequence. After Close is called future [Conn.Write] calls will fail with [net.ErrClosed].
 func (conn *Conn) Close() error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
@@ -272,6 +283,7 @@ func (conn *Conn) Write(b []byte) (int, error) {
 	return n, err
 }
 
+// Flush blocks until all buffered TCP data has been sent.
 func (conn *Conn) Flush() error {
 	connid, err := conn.lockPipeConnID()
 	if err != nil {
@@ -371,6 +383,7 @@ func (conn *Conn) checkPipeOpen() error {
 	return nil
 }
 
+// Demux implements [lneto.StackNode].
 func (conn *Conn) Demux(buf []byte, off int) (err error) {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
@@ -398,6 +411,7 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 	return nil
 }
 
+// Encapsulate implements [lneto.StackNode].
 func (conn *Conn) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (n int, err error) {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
@@ -427,6 +441,7 @@ func (conn *Conn) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 	return n, nil
 }
 
+// Protocol implements [lneto.StackNode].
 func (conn *Conn) Protocol() uint64 {
 	return uint64(lneto.IPProtoTCP)
 }
@@ -491,6 +506,7 @@ func (conn *Conn) deadlineExceeded(deadline *time.Time) bool {
 	return !deadline.IsZero() && time.Since(*deadline) > 0
 }
 
+// ConnectionID implements [lneto.StackNode].
 func (conn *Conn) ConnectionID() *uint64 {
 	return conn.h.ConnectionID()
 }
