@@ -175,7 +175,6 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			if err != nil {
 				return nil, err
 			}
-			controlRetryAt := time.Now().Add(controlRetryInterval)
 			var backoffs uint
 			for {
 				s.blk.backoff(backoffs)
@@ -191,10 +190,6 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 					if err = ctx.Err(); err != nil {
 						conn.Abort()
 						return nil, err
-					}
-					if conn.IsAwaitingControl() && time.Since(controlRetryAt) >= 0 {
-						conn.RequeueControl()
-						controlRetryAt = time.Now().Add(controlRetryInterval)
 					}
 				} else {
 					// Unexpected state, abort and terminate connection.

@@ -13,8 +13,7 @@ import (
 )
 
 const (
-	maxIter              = 1000
-	controlRetryInterval = time.Second
+	maxIter = 1000
 )
 
 var (
@@ -182,8 +181,15 @@ func (s StackBlocking) DoDialTCP(conn *tcp.Conn, localPort uint16, addrp netip.A
 	if err != nil {
 		return err
 	}
+	err = s.waitDialTCP(conn, timeout)
+	if err != nil {
+		conn.Abort()
+	}
+	return err
+}
+
+func (s StackBlocking) waitDialTCP(conn *tcp.Conn, timeout time.Duration) (err error) {
 	deadline := time.Now().Add(timeout)
-	controlRetryAt := time.Now().Add(controlRetryInterval)
 	var backoffs uint
 	for range maxIter {
 		state := conn.State()
@@ -191,16 +197,10 @@ func (s StackBlocking) DoDialTCP(conn *tcp.Conn, localPort uint16, addrp netip.A
 			return nil
 		} else if state == tcp.StateSynSent || state == tcp.StateSynRcvd || conn.AwaitingSynSend() {
 			if err = s.checkDeadline(deadline); err != nil {
-				conn.Abort()
 				return err
-			}
-			if conn.IsAwaitingControl() && time.Since(controlRetryAt) >= 0 {
-				conn.RequeueControl()
-				controlRetryAt = time.Now().Add(controlRetryInterval)
 			}
 		} else {
 			// Unexpected state, abort and terminate connection.
-			conn.Abort()
 			return errTCPFailedToConnect
 		}
 		s.backoff(backoffs)
