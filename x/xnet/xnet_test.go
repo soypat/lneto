@@ -2,10 +2,12 @@ package xnet
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"math/rand"
 	"net/netip"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -102,6 +104,57 @@ func TestTCPConn_ReadBlocksUntilDataAvailable(t *testing.T) {
 	}
 	if !bytes.Equal(readBuf[:readN], sendData) {
 		t.Fatalf("read data mismatch: got %q, want %q", readBuf[:readN], sendData)
+	}
+}
+
+func TestStackGoTCPDialRetriesPendingControl(t *testing.T) {
+	const seed = 5678
+	const MTU = ethernet.MaxMTU
+
+	client, sv, _, _ := newTCPStacks(t, seed, MTU)
+	sg := client.StackBlocking(backoffYield).StackGo(StackGoConfig{
+		ListenerPoolConfig: TCPPoolConfig{
+			QueueSize: 4,
+			TxBufSize: MTU,
+			RxBufSize: MTU,
+			NewBackoff: func() lneto.BackoffStrategy {
+				return backoffYield
+			},
+		},
+		TCPDialTimeout: 10 * time.Millisecond,
+		TCPDialRetries: 2,
+	})
+
+	laddr := netip.AddrPortFrom(netip.AddrFrom4(client.Addr4()), 1234)
+	raddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), 22)
+	done := make(chan error, 1)
+	go func() {
+		_, err := sg.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockSTREAM, laddr, raddr)
+		done <- err
+	}()
+
+	var buf [ethernet.MaxMTU + ethernet.MaxOverheadSize]byte
+	waitForEgress := func() {
+		t.Helper()
+		deadline := time.Now().Add(100 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			n, err := client.EgressEthernet(buf[:])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n > 0 {
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+		t.Fatal("timed out waiting for TCP dial egress packet")
+	}
+	waitForEgress()
+	waitForEgress()
+
+	err := <-done
+	if err == nil {
+		t.Fatal("expected TCP dial to fail after retries without peer response")
 	}
 }
 
