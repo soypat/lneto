@@ -42,7 +42,8 @@ type TCPPoolConfig struct {
 	ConnLogger *slog.Logger
 
 	// NanoTime returns the current monotonic time in nanoseconds.
-	// Used for pool timeout tracking. If nil, defaults to time.Now().UnixNano().
+	// Used for pool timeout tracking and passed to each [tcp.Conn] for
+	// retransmission timing (RFC 6298). If nil, defaults to time.Now().UnixNano().
 	NanoTime func() int64
 	// EstablishedTimeout sets the timeout for a TCP connection since it is acquired until it is established.
 	// If the connection does not establish in this time it will be closed by the pool.
