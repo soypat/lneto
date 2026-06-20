@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math/rand"
 	"testing"
-	"time"
 
 	"github.com/soypat/lneto/ethernet"
 )
@@ -21,7 +20,7 @@ func TestHandler(t *testing.T) {
 	sendDataFull(t, client, server, []byte("hello"), rawbuf[:])
 }
 
-func TestHandler_RetransmitSYNAfterRTO(t *testing.T) {
+func TestHandler_RequeueControlRetransmitsSYN(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	const maxpackets = 3
 	rng := rand.New(rand.NewSource(1))
@@ -46,12 +45,12 @@ func TestHandler_RetransmitSYNAfterRTO(t *testing.T) {
 	clear(rawbuf[:])
 	n, err = client.Send(rawbuf[:])
 	if err != nil {
-		t.Fatal("client sending before SYN RTO:", err)
+		t.Fatal("client sending before RequeueControl:", err)
 	} else if n != 0 {
-		t.Fatalf("Send before SYN RTO wrote %d bytes, want 0", n)
+		t.Fatalf("Send before RequeueControl wrote %d bytes, want 0", n)
 	}
 
-	client.synLastTx = time.Now().Add(-client.synRTO)
+	client.RequeueControl()
 	clear(rawbuf[:])
 	n, err = client.Send(rawbuf[:])
 	if err != nil {
@@ -98,7 +97,7 @@ func TestHandler_RetransmitSYNAfterRTO(t *testing.T) {
 		t.Fatal("server receiving final ACK:", err)
 	}
 
-	client.synLastTx = time.Now().Add(-maxSynRTO)
+	client.RequeueControl()
 	clear(rawbuf[:])
 	n, err = client.Send(rawbuf[:])
 	if err != nil {
