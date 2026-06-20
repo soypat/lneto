@@ -697,7 +697,7 @@ func (pc *PacketBreakdown) CaptureDHCPv4(dst []Frame, pkt []byte, bitOffset int)
 				field.Class = FieldClassSize
 
 			// Time/duration options (seconds).
-			case dhcpv4.OptIPAddressLeaseTime, dhcpv4.OptRenewTimeValue, dhcpv4.OptRebindingTimeValue,
+			case dhcpv4.OptIPAddressLeaseTime, dhcpv4.OptT1Renewal, dhcpv4.OptT2Rebinding,
 				dhcpv4.OptTimeOffset, dhcpv4.OptARPCacheTimeout, dhcpv4.OptPathMTUAgingTimeout,
 				dhcpv4.OptTCPKeepaliveInterval, dhcpv4.OptDefaultIPTTL, dhcpv4.OptDefaultTCPTimetoLive:
 				field.Class = FieldClassTimestamp

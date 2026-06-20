@@ -265,11 +265,11 @@ func (c *Client) getMessageType(frm Frame) MessageType {
 func (c *Client) setOptions(frm Frame) error {
 	err := frm.ForEachOption(func(_ int, opt OptNum, data []byte) error {
 		switch opt {
-		case OptRenewTimeValue:
+		case OptT1Renewal:
 			c.tRenew = maybeU32(data)
 		case OptIPAddressLeaseTime:
 			c.tIPLease = maybeU32(data)
-		case OptRebindingTimeValue:
+		case OptT2Rebinding:
 			c.tRebind = maybeU32(data)
 		case OptServerIdentification:
 			c.svip.setmaybe(data)

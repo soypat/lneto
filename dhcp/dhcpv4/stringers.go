@@ -67,8 +67,8 @@ func _() {
 	_ = x[OptParameterRequestList-55]
 	_ = x[OptMessage-56]
 	_ = x[OptMaximumMessageSize-57]
-	_ = x[OptRenewTimeValue-58]
-	_ = x[OptRebindingTimeValue-59]
+	_ = x[OptT1Renewal-58]
+	_ = x[OptT2Rebinding-59]
 	_ = x[OptClientIdentifier-60]
 	_ = x[OptClientIdentifier1-61]
 }
