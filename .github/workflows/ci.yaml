@@ -20,9 +20,9 @@ jobs:
 
       - name: gofmt
         run: |
-          unformatted=$(gofmt -l .)
+          unformatted=$(gofmt -l -d . 2>&1) || true
           if [ -n "$unformatted" ]; then
-            echo "::error::Files not formatted with gofmt:"
+            echo "::error::File(s) not formatted with gofmt:"
             echo "$unformatted"
             exit 1
           fi
