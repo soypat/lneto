@@ -51,7 +51,6 @@ func run() (err error) {
 		flagHostToResolve = ""
 		flagRequestedIP   = ""
 		flagLocalTCPPort  = 0
-		flagDebugTCP      = false
 		flagDoNTP         = false
 		flagNoPcap        = false
 		flagPprof         = false
@@ -61,7 +60,6 @@ func run() (err error) {
 	flag.StringVar(&flagHostToResolve, "host", flagHostToResolve, "Hostname to resolve via DNS.")
 	flag.StringVar(&flagRequestedIP, "addr", flagRequestedIP, "IP address to request via DHCP.")
 	flag.IntVar(&flagLocalTCPPort, "port", flagLocalTCPPort, "Local TCP source port to use. Zero chooses a pseudo-random port.")
-	flag.BoolVar(&flagDebugTCP, "debugtcp", flagDebugTCP, "Print TCP tuple, sequence, checksum, and HTTP request diagnostics.")
 	flag.BoolVar(&flagDoNTP, "ntp", flagDoNTP, "Do NTP round and print result time")
 	flag.BoolVar(&flagNoPcap, "nopcap", flagNoPcap, "Disable pcap logging.")
 	flag.BoolVar(&flagPprof, "pprof", flagPprof, "Enable CPU profiling.")
@@ -139,13 +137,6 @@ func run() (err error) {
 	}
 	fmt.Println("NIC hardware address:", net.HardwareAddr(nicHW[:]).String(), "bridgeHW:", net.HardwareAddr(brHW[:]).String(), "mtu:", mtu, "addr:", nicAddr.String())
 	var stack xnet.StackAsync
-	var tcpDebug xnet.CapturePrinter
-	if flagDebugTCP {
-		err = tcpDebug.Configure(os.Stdout, xnet.CapturePrinterConfig{NamespaceWidth: 7})
-		if err != nil {
-			return err
-		}
-	}
 
 	err = stack.Reset(xnet.StackConfig{
 		Hostname:          "xnet-test",
@@ -191,9 +182,6 @@ func run() (err error) {
 				return err
 			}
 			_, err = os.Stdout.Write(pfbuf)
-			if flagDebugTCP {
-				tcpDebug.PrintEthernet("TCP "+context, pkt)
-			}
 			return err
 		}
 		for {
@@ -328,9 +316,6 @@ func run() (err error) {
 	req, err := hdr.AppendRequest(nil)
 	if err != nil {
 		return err
-	}
-	if flagDebugTCP {
-		fmt.Printf("HTTP request bytes=%d:\n%s", len(req), req)
 	}
 	timeHTTPCreate()
 

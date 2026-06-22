@@ -183,7 +183,7 @@ sudo ./examples/xcurl/xcurl -i <network-interface> -port 2300 -host example.com
 sudo iptables -D OUTPUT -p tcp --sport 2300 --tcp-flags RST RST -j DROP
 ```
 
-This is a debugging workaround, not the preferred operating mode. Prefer `-ihttp`, a TAP interface, a network namespace, or an otherwise isolated interface/IP when testing xcurl without host TCP stack interference. Add `-debugtcp` to print TCP tuple, sequence, checksum, and HTTP request diagnostics.
+This is a debugging workaround, not the preferred operating mode. Prefer `-ihttp`, a TAP interface, a network namespace, or an otherwise isolated interface/IP when testing xcurl without host TCP stack interference.
 
 - [`examples/httptap`](./examples/httptap) (linux only, root privilidges required) Program opens a TAP interface and assigns an IP address to it and exposes the interface via a HTTP interface. This program is run with root privilidges to facilitate debugging of lneto since no root privilidges are required to interact with the HTTP interface exposed.
     - `POST http://127.0.0.1:7070/send`: Receives a POST with request body containing JSON string of data to send over TAP interface. Response contains only status code.
