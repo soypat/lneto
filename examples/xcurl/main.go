@@ -50,6 +50,7 @@ func run() (err error) {
 		flagUseHTTP       = false
 		flagHostToResolve = ""
 		flagRequestedIP   = ""
+		flagLocalTCPPort  = 0
 		flagDoNTP         = false
 		flagNoPcap        = false
 		flagPprof         = false
@@ -58,6 +59,7 @@ func run() (err error) {
 	flag.BoolVar(&flagUseHTTP, "ihttp", flagUseHTTP, "Use HTTP tap interface.")
 	flag.StringVar(&flagHostToResolve, "host", flagHostToResolve, "Hostname to resolve via DNS.")
 	flag.StringVar(&flagRequestedIP, "addr", flagRequestedIP, "IP address to request via DHCP.")
+	flag.IntVar(&flagLocalTCPPort, "port", flagLocalTCPPort, "Local TCP source port to use. Zero chooses a pseudo-random port.")
 	flag.BoolVar(&flagDoNTP, "ntp", flagDoNTP, "Do NTP round and print result time")
 	flag.BoolVar(&flagNoPcap, "nopcap", flagNoPcap, "Disable pcap logging.")
 	flag.BoolVar(&flagPprof, "pprof", flagPprof, "Enable CPU profiling.")
@@ -78,6 +80,21 @@ func run() (err error) {
 	if err != nil {
 		flag.Usage()
 		return err
+	}
+	reqAddr := [4]byte{192, 168, 1, 96}
+	requestedAddrSet := false
+	if flagRequestedIP != "" {
+		addr, err := netip.ParseAddr(flagRequestedIP)
+		if err != nil || !addr.Is4() {
+			flag.Usage()
+			return fmt.Errorf("invalid requested IPv4 address %q", flagRequestedIP)
+		}
+		reqAddr = addr.As4()
+		requestedAddrSet = true
+	}
+	if flagLocalTCPPort < 0 || flagLocalTCPPort > math.MaxUint16 {
+		flag.Usage()
+		return fmt.Errorf("invalid local TCP port %d", flagLocalTCPPort)
 	}
 	fmt.Println("softrand", softRand)
 	var iface ltesto.Interface
@@ -223,11 +240,14 @@ func run() (err error) {
 		dhcpRetries = 2
 	)
 	timeDHCP := timer("DHCP request completed")
-	results, err := rstack.DoDHCPv4([4]byte{192, 168, 1, 96}, dhcpTimeout, dhcpRetries)
+	results, err := rstack.DoDHCPv4(reqAddr, dhcpTimeout, dhcpRetries)
 	if err != nil {
 		return fmt.Errorf("DHCP failed: %w", err)
 	}
 	timeDHCP()
+	if requestedAddrSet && results.AssignedAddr4 != reqAddr {
+		return fmt.Errorf("DHCP assigned %s, not requested %s", netip.AddrFrom4(results.AssignedAddr4), netip.AddrFrom4(reqAddr))
+	}
 
 	err = stack.AssimilateDHCPResults(results)
 	if err != nil {
@@ -302,7 +322,12 @@ func run() (err error) {
 	timeTCPDial := timer("TCP dial (handshake)")
 	const tcpDialTimeout = 8 * time.Second // Was 60 * time.Minute causing 3.6s sleep per iteration!
 	target := netip.AddrPortFrom(addrs[0], 80)
-	err = rstack.DoDialTCP(&conn, uint16(softRand&0xefff)+1024, target, tcpDialTimeout, internetRetries)
+	localPort := uint16(flagLocalTCPPort)
+	if localPort == 0 {
+		localPort = uint16(softRand&0xefff) + 1024
+	}
+	fmt.Printf("TCP target %s local-port=%d\n", target, localPort)
+	err = rstack.DoDialTCP(&conn, localPort, target, tcpDialTimeout, internetRetries)
 	if err != nil {
 		return fmt.Errorf("TCP failed: %w", err)
 	}

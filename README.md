@@ -49,6 +49,7 @@ You may try lneto out on linux with the [xcurl example](./examples/xcurl/) which
 - HTTP over TCP/IPv4/Ethernet connection using
 - NTP time check (optional)
 - Print packet captures using lneto's [internet/pcap](./internet/pcap) package
+- Optional fixed TCP source port with `-port`, useful when debugging raw-socket interactions with the host OS
 
 See Developing section below for more information.
 
@@ -170,6 +171,19 @@ sudo ethtool -K <network-interface> gro off
 ```
 
 Depending on the interface and driver, other offloading features may also need to be disabled.
+
+When running `xcurl` directly on a normal Linux interface (for example `-i wlan0` or `-i eth0`), lneto shares the host interface IP and MAC address. The Linux TCP stack also sees incoming packets for that IP. If xcurl's TCP handshake succeeds but the HTTP request is followed by a TCP RST from the server, the host kernel may have sent its own outbound RST for xcurl's raw TCP flow because no kernel socket owns that source port.
+
+For a short validation test, use a fixed xcurl source port and temporarily drop kernel-generated outbound RSTs for that port:
+
+```sh
+go build -o examples/xcurl/xcurl ./examples/xcurl
+sudo iptables -I OUTPUT -p tcp --sport 2300 --tcp-flags RST RST -j DROP
+sudo ./examples/xcurl/xcurl -i <network-interface> -port 2300 -host example.com
+sudo iptables -D OUTPUT -p tcp --sport 2300 --tcp-flags RST RST -j DROP
+```
+
+This is a debugging workaround, not the preferred operating mode. Prefer `-ihttp`, a TAP interface, a network namespace, or an otherwise isolated interface/IP when testing xcurl without host TCP stack interference.
 
 - [`examples/httptap`](./examples/httptap) (linux only, root privilidges required) Program opens a TAP interface and assigns an IP address to it and exposes the interface via a HTTP interface. This program is run with root privilidges to facilitate debugging of lneto since no root privilidges are required to interact with the HTTP interface exposed.
     - `POST http://127.0.0.1:7070/send`: Receives a POST with request body containing JSON string of data to send over TAP interface. Response contains only status code.
