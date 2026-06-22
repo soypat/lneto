@@ -13,9 +13,11 @@ func (s *StackAsync) StackRetrying(stackProtoBackoff lneto.BackoffStrategy) Stac
 	if stackProtoBackoff == nil {
 		panic("nil backoff to StackRetrying")
 	}
-	return StackRetrying{
-		block: s.StackBlocking(stackProtoBackoff),
-	}
+	return s.StackBlocking(stackProtoBackoff).StackRetrying()
+}
+
+func (s StackBlocking) StackRetrying() StackRetrying {
+	return StackRetrying{block: s}
 }
 
 var (
