@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/soypat/lneto"
@@ -29,6 +30,13 @@ type Conn struct {
 	h          Handler
 	remoteAddr []byte
 
+	// writeLock holds the connection ID ([Handler.connid]) of the goroutine
+	// that currently owns the write side via [Conn.Write] or [Conn.Flush].
+	// A zero value means no write is in progress. It serializes concurrent
+	// writers and lets [Conn.Close] acquire the write side before closing so it
+	// does not drop in-flight data (see issue #82).
+	writeLock atomic.Uint64
+
 	_backoff lneto.BackoffStrategy
 	rdead    time.Time
 	wdead    time.Time
@@ -49,6 +57,7 @@ func (conn *Conn) reset(h Handler) {
 	conn.wdead = time.Time{}
 	conn.abortErr = nil
 	conn.ipID = 0
+	conn.writeLock.Store(0)
 }
 
 // ConnConfig provides configuration parameters for [Conn].
@@ -213,6 +222,11 @@ func (conn *Conn) CloseRead() error {
 
 // Close will initiate TCP close sequence. After Close is called future [Conn.Write] calls will fail with [net.ErrClosed].
 func (conn *Conn) Close() error {
+	connid, err := conn.acquireWriteLock(nil)
+	if err != nil {
+		return err
+	}
+	defer conn.releaseWriteLock(connid)
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	conn.trace("TCPConn.Close", slog.Uint64("lport", uint64(conn.h.localPort)), slog.Uint64("rport", uint64(conn.h.remotePort)))
@@ -237,10 +251,11 @@ func (conn *Conn) InternalHandler() *Handler {
 
 // Write writes argument data to the TCPConns's output buffer which is queued to be sent.
 func (conn *Conn) Write(b []byte) (int, error) {
-	connid, err := conn.lockPipeConnID()
+	connid, err := conn.acquireWriteLock(&conn.wdead)
 	if err != nil {
 		return 0, err
 	}
+	defer conn.releaseWriteLock(connid)
 	rport := conn.RemotePort()
 	plen := len(b)
 	lport := conn.LocalPort()
@@ -286,10 +301,11 @@ func (conn *Conn) Write(b []byte) (int, error) {
 
 // Flush blocks until all buffered TCP data has been sent.
 func (conn *Conn) Flush() error {
-	connid, err := conn.lockPipeConnID()
+	connid, err := conn.acquireWriteLock(&conn.wdead)
 	if err != nil {
 		return err
 	}
+	defer conn.releaseWriteLock(connid)
 	var backoffs uint
 	for conn.BufferedUnsent() != 0 {
 		if err := conn.checkPipe(connid, &conn.wdead); err != nil {
@@ -350,14 +366,31 @@ func (conn *Conn) Read(b []byte) (int, error) {
 	return n, nil
 }
 
-func (conn *Conn) lockPipeConnID() (uint64, error) {
+// acquireWriteLock validates the connection is open and acquires the write lock
+// for the current connection, returning its connection ID. It serializes
+// concurrent writers: while another goroutine owns the write side it blocks with
+// backoff until that writer releases, the connection closes, or deadline elapses.
+// The returned connID must be released with [Conn.releaseWriteLock].
+func (conn *Conn) acquireWriteLock(deadline *time.Time) (connID uint64, err error) {
 	conn.mu.Lock()
-	defer conn.mu.Unlock()
-	err := conn.checkPipeOpen()
-	if err != nil {
-		return 0, err
+	connID = conn.h.connid
+	conn.mu.Unlock()
+	var backoffs uint
+	for {
+		if err := conn.checkPipe(connID, deadline); err != nil {
+			return 0, err
+		}
+		if conn.writeLock.CompareAndSwap(0, connID) {
+			return connID, nil
+		}
+		conn.backoff(backoffs)
+		backoffs++
 	}
-	return conn.h.connid, nil
+}
+
+// releaseWriteLock releases a write lock previously acquired by [Conn.acquireWriteLock].
+func (conn *Conn) releaseWriteLock(connID uint64) {
+	conn.writeLock.CompareAndSwap(connID, 0)
 }
 
 func (conn *Conn) checkPipe(connID uint64, deadline *time.Time) (err error) {
@@ -365,9 +398,9 @@ func (conn *Conn) checkPipe(connID uint64, deadline *time.Time) (err error) {
 	defer conn.mu.Unlock()
 	if conn.abortErr != nil {
 		err = conn.abortErr
-	} else if connID != conn.h.connid {
+	} else if connID != conn.h.connid || conn.h.State().IsClosed() {
 		err = net.ErrClosed
-	} else if !deadline.IsZero() && time.Since(*deadline) > 0 {
+	} else if deadline != nil && !deadline.IsZero() && time.Since(*deadline) > 0 {
 		err = errDeadlineExceeded
 	}
 	return err
