@@ -14,7 +14,7 @@ import (
 // related to data buffering, frame sequencing and connection state handling.
 // Does NOT implement IP related logic, so no CRC calculation/validation or pseudo header logic.
 //
-// See [Conn] for a higher level abstraction of a TCP connection, and see [ControlBlock] for the lower level bits of a TCP connection.
+// See [Conn] for a higher level abstraction of a TCP connection, and see [ControlBlock] for the low level state machine of a TCP connection.
 type Handler struct {
 	connid uint64
 	scb    ControlBlock
@@ -36,6 +36,7 @@ type Handler struct {
 	requeueControl bool
 }
 
+// SetLoggers sets the [slog.Logger] for the Handler and internal [ControlBlock].
 func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
 	h.logger.log = handler
 	h.scb.logger.log = scb
@@ -119,6 +120,7 @@ func (h *Handler) Abort() {
 	h.reset(0, 0, 0)
 }
 
+// reset clears all state except [ControlBlock] state. So [Handler.State] will remain unchanged.
 func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 	*h = Handler{
 		connid:     h.connid + 1,
@@ -161,7 +163,7 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		return lneto.ErrMismatch
 	}
 	payload := tfrm.Payload()
-	if len(payload) > h.bufRx.Free() {
+	if !h.shutdownRx && len(payload) > h.bufRx.Free() {
 		return lneto.ErrBufferFull
 	}
 	segIncoming := tfrm.Segment(len(payload))
@@ -186,6 +188,15 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 	}
 	if prevState != h.scb.State() {
 		h.info("tcp.Handler:rx-statechange", slog.Uint64("port", uint64(h.localPort)), slog.String("old", prevState.String()), slog.String("new", h.scb.State().String()), slog.String("rxflags", segIncoming.Flags.String()))
+	}
+	if segIncoming.DATALEN != 0 && h.shutdownRx && (h.scb.State() == StateFinWait1 || h.scb.State() == StateFinWait2) {
+		// soypat/lneto#50: the application is done in both directions — read side
+		// shut down (CloseRead) and our FIN sent (Close) — so inbound data has no
+		// consumer. Reply RST instead of the silent ACK-and-drop that leaves the
+		// peer waiting; the connection is torn down once the RST is sent.
+		h.info("tcp.Handler:rst-data-after-fullclose", slog.Uint64("lport", uint64(h.localPort)), slog.Uint64("rport", uint64(h.remotePort)), slog.Uint64("datalen", uint64(segIncoming.DATALEN)))
+		h.scb.QueueRST(segIncoming.ACK)
+		return nil
 	}
 	if segIncoming.DATALEN != 0 && !h.shutdownRx {
 		_, err = h.bufRx.Write(payload)
@@ -232,12 +243,16 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 }
 
 // ShutdownRead activates local discard mode: incoming payload bytes are dropped
-// (ACK/SEQ still advance normally) and Read returns io.EOF immediately.
-// Not reversible within the lifetime of a connection; reset clears it.
+// (ACK/SEQ still advance normally) and Read returns [io.EOF] immediately.
+// Not reversible within the lifetime of a connection.
+// If [Handler.Close] and this method are both called then connection will be terminated.
 func (h *Handler) ShutdownRead() {
 	h.shutdownRx = true
 }
 
+// Close will initiate the TCP close sequence.
+// After Close is called [Handler.Write] will fail with [net.ErrClosed].
+// The connection may still receive data to read after Close called.
 func (h *Handler) Close() error {
 	h.trace("tcp.Handler.Close")
 	if h.closing {
@@ -347,6 +362,10 @@ func (h *Handler) Send(b []byte) (int, error) {
 	closedSuccess := prevState == StateTimeWait && segment.Flags.HasAny(FlagACK)
 	if closedSuccess {
 		h.reset(0, 0, 0)
+	} else if segment.Flags.HasAny(FlagRST) {
+		// A sent RST aborts the connection: tear down local state now that the
+		// reset has been written to the wire (frame already in b).
+		h.Abort()
 	}
 	return datalen, nil
 }
