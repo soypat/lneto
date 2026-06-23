@@ -170,8 +170,8 @@ func TestCUBICOnRTO(t *testing.T) {
 
 func TestCUBICResetValidation(t *testing.T) {
 	var c CUBIC
-	if err := c.Configure(CUBICConfig{InitialCwnd: -1}); err == nil {
-		t.Error("expected error for negative InitialCwnd")
+	if err := c.Configure(CUBICConfig{SlowStartThresh: -1}); err == nil {
+		t.Error("expected error for negative SlowStartThresh")
 	}
 	if err := c.Configure(CUBICConfig{}); err != nil {
 		t.Errorf("default Reset failed: %v", err)

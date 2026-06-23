@@ -40,7 +40,7 @@ type CUBICConfig struct {
 	MSS tcp.Size
 	// InitialCwnd is the initial congestion window in segments. If zero, the
 	// [RFC6928] recommended value of 10 segments is used.
-	InitialCwnd float64
+	InitialCwnd tcp.Size
 	// SlowStartThresh is the initial slow-start threshold in segments. If zero,
 	// the controller starts in unbounded slow start (threshold = +Inf).
 	SlowStartThresh float64
@@ -109,7 +109,7 @@ type cubicConfig struct {
 // static configuration step and is not part of tcp.CongestionControl; call it
 // before installing the controller on a Handler. See [CUBIC.Reset].
 func (cubic *CUBIC) Configure(cfg CUBICConfig) error {
-	if cfg.InitialCwnd < 0 || cfg.SlowStartThresh < 0 {
+	if cfg.SlowStartThresh < 0 {
 		return lneto.ErrInvalidConfig
 	}
 	icwnd := cfg.InitialCwnd
@@ -123,7 +123,7 @@ func (cubic *CUBIC) Configure(cfg CUBICConfig) error {
 	cubic.cfg = cubicConfig{
 		clock:           cfg.Now,
 		mss:             cfg.MSS,
-		initCwnd:        icwnd,
+		initCwnd:        float64(icwnd),
 		ssthresh:        ssthresh,
 		fastConvergence: cfg.FastConvergence,
 	}

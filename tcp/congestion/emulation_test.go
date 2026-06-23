@@ -165,14 +165,19 @@ func newEmuNet(t *testing.T, p emuParams) *emuNet {
 	}
 	// Share the simulated clock with both handlers' RFC 6298 timers so RTO is
 	// deterministic and aligned with the congestion controllers' clock.
-	en.client.SetClock(en.now)
-	en.server.SetClock(en.now)
+	en.client.SetClock(en.nowNanos)
+	en.server.SetClock(en.nowNanos)
 	return en
 }
 
 // now returns the simulated clock. It is installed as the controller's Now func
 // so controller timing and link timing share one clock.
 func (en *emuNet) now() time.Time { return en.clock }
+
+// nowNanos returns the simulated clock in monotonic nanoseconds, as required by
+// the Handler's func() int64 clock (RFC 6298 timer). It is derived from the same
+// en.clock so the Handler timer and the congestion controllers stay aligned.
+func (en *emuNet) nowNanos() int64 { return en.clock.UnixNano() }
 
 // drain repeatedly pulls segments out of h and offers them to link until h has
 // nothing more to send (it self-limits via the congestion/receive window).
@@ -224,9 +229,9 @@ func (en *emuNet) transfer(payload []byte) (received []byte) {
 		// RTO when the links are idle (e.g. after a loss with no ACK feedback).
 		next, ok := earliestEvent(en.fwd, en.rev)
 		cd, crun := en.client.RetransmitDeadline()
-		next, ok = earlierDeadline(next, ok, cd, crun)
+		next, ok = earlierDeadline(next, ok, time.Unix(0, cd), crun)
 		sd, srun := en.server.RetransmitDeadline()
-		next, ok = earlierDeadline(next, ok, sd, srun)
+		next, ok = earlierDeadline(next, ok, time.Unix(0, sd), srun)
 		if !ok {
 			break // nothing in flight and no timer pending: transfer complete.
 		}
