@@ -13,9 +13,11 @@ func (s *StackAsync) StackRetrying(stackProtoBackoff lneto.BackoffStrategy) Stac
 	if stackProtoBackoff == nil {
 		panic("nil backoff to StackRetrying")
 	}
-	return StackRetrying{
-		block: s.StackBlocking(stackProtoBackoff),
-	}
+	return s.StackBlocking(stackProtoBackoff).StackRetrying()
+}
+
+func (s StackBlocking) StackRetrying() StackRetrying {
+	return StackRetrying{block: s}
 }
 
 var (
@@ -93,12 +95,27 @@ func (s StackRetrying) DoResolveHardwareAddress6(addr netip.Addr, timeout time.D
 func (s StackRetrying) DoDialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrPort, timeout time.Duration, retries int) (err error) {
 	expectEnd := time.Now().Add(timeout * time.Duration(retries))
 	var firstErr error
-	for range retries {
-		err = s.block.DoDialTCP(conn, localPort, addrp, timeout)
+	for i := range retries {
+		if i == 0 || conn.State().IsClosed() {
+			err = s.block.async.DialTCP(conn, localPort, addrp)
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+		} else if conn.IsAwaitingControl() {
+			conn.RequeueControl()
+		}
+
+		err = s.block.waitDialTCP(conn, timeout)
 		if err == nil {
 			return nil
 		} else if firstErr == nil {
 			firstErr = err
+		}
+		if !conn.IsAwaitingControl() {
+			conn.Abort()
 		}
 	}
 	if time.Now().Before(expectEnd) {

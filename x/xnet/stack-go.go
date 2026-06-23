@@ -18,10 +18,15 @@ import (
 const (
 	sockSTREAM = 0x1
 	sockDGRAM  = 0x2
+
+	defaultTCPDialTimeout = 2 * time.Second
+	defaultTCPDialRetries = 1
 )
 
 type StackGoConfig struct {
 	ListenerPoolConfig TCPPoolConfig
+	TCPDialTimeout     time.Duration
+	TCPDialRetries     int
 }
 
 func (s *StackAsync) StackGo(stackProtoBackoff lneto.BackoffStrategy, cfg StackGoConfig) StackGo {
@@ -32,16 +37,30 @@ func (s *StackAsync) StackGo(stackProtoBackoff lneto.BackoffStrategy, cfg StackG
 }
 
 func (s StackBlocking) StackGo(cfg StackGoConfig) StackGo {
+	tcpDialTimeout := cfg.TCPDialTimeout
+	tcpDialRetries := cfg.TCPDialRetries
+	// Defaults
+	if tcpDialTimeout <= 0 {
+		tcpDialTimeout = defaultTCPDialTimeout
+	}
+	if tcpDialRetries <= 0 {
+		tcpDialRetries = defaultTCPDialRetries
+	}
+
 	sg := StackGo{
-		blk:   s,
-		plcfg: cfg.ListenerPoolConfig,
+		blk:            s,
+		plcfg:          cfg.ListenerPoolConfig,
+		tcpDialTimeout: tcpDialTimeout,
+		tcpDialRetries: tcpDialRetries,
 	}
 	return sg
 }
 
 type StackGo struct {
-	blk   StackBlocking
-	plcfg TCPPoolConfig
+	blk            StackBlocking
+	plcfg          TCPPoolConfig
+	tcpDialTimeout time.Duration
+	tcpDialRetries int
 }
 
 func (s StackGo) Socket(ctx context.Context, network string, family, sotype int, laddr, raddr net.Addr) (c any, err error) {
@@ -171,7 +190,7 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			if err != nil {
 				return nil, err
 			}
-			err = s.blk.async.DialTCP(&conn, laddr.Port(), raddr)
+			err = s.blk.StackRetrying().DoDialTCP(&conn, laddr.Port(), raddr, s.tcpDialTimeout, s.tcpDialRetries)
 			if err != nil {
 				return nil, err
 			}

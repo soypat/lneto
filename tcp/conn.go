@@ -108,6 +108,22 @@ func (conn *Conn) RemotePort() uint16 {
 	return conn.h.RemotePort()
 }
 
+// IsAwaitingControl reports whether the connection is waiting for a response to
+// a control segment that can be retransmitted to advance connection state.
+func (conn *Conn) IsAwaitingControl() bool {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.h.IsAwaitingControl()
+}
+
+// RequeueControl asks the next packet emission to retransmit the outstanding
+// control segment, if the connection is waiting for one.
+func (conn *Conn) RequeueControl() {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	conn.h.RequeueControl()
+}
+
 // RemoteAddr returns the address of the peer Conn is exchanging data with.
 func (conn *Conn) RemoteAddr() []byte {
 	conn.mu.Lock()

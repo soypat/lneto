@@ -32,7 +32,8 @@ type Handler struct {
 	closing    bool
 	shutdownRx bool
 	// nRetransmit stores the number of times the oldest packet was retransmit.
-	nRetransmit uint8
+	nRetransmit    uint8
+	requeueControl bool
 }
 
 // SetLoggers sets the [slog.Logger] for the Handler and internal [ControlBlock].
@@ -271,6 +272,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 		return 0, net.ErrClosed
 	}
 	awaitingSyn := h.AwaitingSynSend()
+	requeueControl := h.requeueControl
 	buffered := h.bufTx.BufferedUnsent()
 	if h.scb.State() == StateCloseWait && !h.closing && buffered == 0 && !h.scb.HasPending() {
 		// Remote closed with no application data left to send: initiate our own close.
@@ -278,7 +280,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 		// before Send is called, implementing the half-close per RFC 9293 §3.5.
 		h.closing = true
 	}
-	if !awaitingSyn && buffered == 0 && !h.closing && !h.scb.HasPending() {
+	if !awaitingSyn && !requeueControl && buffered == 0 && !h.closing && !h.scb.HasPending() {
 		// Early nop short circuit.
 		return 0, nil
 	}
@@ -301,11 +303,27 @@ func (h *Handler) Send(b []byte) (int, error) {
 	offset := uint8(5)
 	mss := uint16(len(b) - sizeHeaderTCP)
 	var segment Segment
-	if awaitingSyn {
+	if awaitingSyn || requeueControl && h.scb.State() == StateSynSent {
 		// Handling init syn segment.
 		segment = ClientSynSegment(h.bufTx.iss, Size(h.bufRx.Size()))
 		h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
 		offset++
+		if requeueControl {
+			h.info("tcp.Handler:requeue-syn", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("rport", uint64(h.remotePort)))
+		}
+	} else if requeueControl && h.scb.State() == StateSynRcvd {
+		segment = Segment{
+			SEQ:   h.scb.snd.UNA,
+			ACK:   h.scb.rcv.NXT,
+			WND:   Size(h.bufRx.Free()),
+			Flags: synack,
+		}
+		h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
+		offset++
+		h.info("tcp.Handler:requeue-synack", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("rport", uint64(h.remotePort)))
+	} else if requeueControl {
+		h.requeueControl = false
+		return 0, nil
 	} else {
 		var ok bool
 		maxPayload := len(b) - sizeHeaderTCP
@@ -335,6 +353,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 	} else if prevState != h.scb.State() && h.logenabled(slog.LevelInfo) {
 		h.info("tcp.Handler:tx-statechange", slog.Uint64("port", uint64(h.localPort)), slog.String("oldState", prevState.String()), slog.String("newState", h.scb.State().String()), slog.String("txflags", segment.Flags.String()))
 	}
+	h.requeueControl = false
 	tfrm.SetSourcePort(h.localPort)
 	tfrm.SetDestinationPort(h.remotePort)
 	tfrm.SetSegment(segment, offset)
@@ -441,6 +460,20 @@ func (h *Handler) FreeInput() int {
 // AwaitingSynResponse returns true if the Handler is an active client opened with [Handler.OpenActive] and has already sent out the first SYN packet to the remote client.
 func (h *Handler) AwaitingSynResponse() bool {
 	return h.remotePort != 0 && h.scb.State() == StateSynSent
+}
+
+// IsAwaitingControl reports whether the connection is waiting for a response to
+// a control segment that can be retransmitted to advance connection state.
+func (h *Handler) IsAwaitingControl() bool {
+	return h.AwaitingSynResponse() || h.scb.State() == StateSynRcvd
+}
+
+// RequeueControl asks the next Send call to retransmit the outstanding control
+// segment, if the connection is waiting for one.
+func (h *Handler) RequeueControl() {
+	if h.IsAwaitingControl() {
+		h.requeueControl = true
+	}
 }
 
 // AwaitingSynAck returns true if the Handler is a passive server opened with [Handler.OpenListen] and not yet received a valid SYN remote packet.

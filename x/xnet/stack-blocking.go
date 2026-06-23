@@ -181,6 +181,14 @@ func (s StackBlocking) DoDialTCP(conn *tcp.Conn, localPort uint16, addrp netip.A
 	if err != nil {
 		return err
 	}
+	err = s.waitDialTCP(conn, timeout)
+	if err != nil {
+		conn.Abort()
+	}
+	return err
+}
+
+func (s StackBlocking) waitDialTCP(conn *tcp.Conn, timeout time.Duration) (err error) {
 	deadline := time.Now().Add(timeout)
 	var backoffs uint
 	for range maxIter {
@@ -189,12 +197,10 @@ func (s StackBlocking) DoDialTCP(conn *tcp.Conn, localPort uint16, addrp netip.A
 			return nil
 		} else if state == tcp.StateSynSent || state == tcp.StateSynRcvd || conn.AwaitingSynSend() {
 			if err = s.checkDeadline(deadline); err != nil {
-				conn.Abort()
 				return err
 			}
 		} else {
 			// Unexpected state, abort and terminate connection.
-			conn.Abort()
 			return errTCPFailedToConnect
 		}
 		s.backoff(backoffs)

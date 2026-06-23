@@ -20,6 +20,103 @@ func TestHandler(t *testing.T) {
 	sendDataFull(t, client, server, []byte("hello"), rawbuf[:])
 }
 
+func TestHandler_RequeueControlRetransmitsSYN(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	const maxpackets = 3
+	rng := rand.New(rand.NewSource(1))
+	client, server := newHandler(t, mtu, maxpackets), newHandler(t, mtu, maxpackets)
+	setupClientServer(t, rng, client, server)
+
+	var rawbuf [mtu]byte
+	n, err := client.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("client sending initial SYN:", err)
+	} else if n < sizeHeaderTCP {
+		t.Fatalf("initial SYN size=%d, want at least %d", n, sizeHeaderTCP)
+	}
+	initial := mustSegment(t, rawbuf[:n], 0)
+	if initial.Flags != FlagSYN {
+		t.Fatalf("initial flags=%s, want SYN", initial.Flags)
+	}
+	if client.State() != StateSynSent {
+		t.Fatalf("client state=%s, want SYN-SENT", client.State())
+	}
+
+	clear(rawbuf[:])
+	n, err = client.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("client sending before RequeueControl:", err)
+	} else if n != 0 {
+		t.Fatalf("Send before RequeueControl wrote %d bytes, want 0", n)
+	}
+
+	client.RequeueControl()
+	clear(rawbuf[:])
+	n, err = client.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("client retransmitting SYN:", err)
+	} else if n < sizeHeaderTCP {
+		t.Fatalf("retransmitted SYN size=%d, want at least %d", n, sizeHeaderTCP)
+	}
+	retransmit := mustSegment(t, rawbuf[:n], 0)
+	if retransmit.Flags != FlagSYN {
+		t.Fatalf("retransmit flags=%s, want SYN", retransmit.Flags)
+	}
+	if retransmit.SEQ != initial.SEQ {
+		t.Fatalf("retransmit SEQ=%d, want initial SEQ=%d", retransmit.SEQ, initial.SEQ)
+	}
+
+	if err := server.Recv(rawbuf[:n]); err != nil {
+		t.Fatal("server receiving retransmitted SYN:", err)
+	}
+	clear(rawbuf[:])
+	n, err = server.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("server sending SYN-ACK:", err)
+	}
+	segSynAck := mustSegment(t, rawbuf[:n], 0)
+	if segSynAck.Flags != synack {
+		t.Fatalf("server flags=%s, want SYN-ACK", segSynAck.Flags)
+	}
+	if err := client.Recv(rawbuf[:n]); err != nil {
+		t.Fatal("client receiving SYN-ACK:", err)
+	}
+	if client.State() != StateEstablished {
+		t.Fatalf("client state=%s, want ESTABLISHED", client.State())
+	}
+
+	clear(rawbuf[:])
+	n, err = client.Send(rawbuf[:]) // final ACK.
+	if err != nil {
+		t.Fatal("client sending final ACK:", err)
+	}
+	if ack := mustSegment(t, rawbuf[:n], 0); ack.Flags != FlagACK {
+		t.Fatalf("client final flags=%s, want ACK", ack.Flags)
+	}
+	if err := server.Recv(rawbuf[:n]); err != nil {
+		t.Fatal("server receiving final ACK:", err)
+	}
+
+	client.RequeueControl()
+	clear(rawbuf[:])
+	n, err = client.Send(rawbuf[:])
+	if err != nil {
+		t.Fatal("client sending after establishment:", err)
+	} else if n != 0 {
+		seg := mustSegment(t, rawbuf[:n], 0)
+		t.Fatalf("Send after establishment wrote %d bytes (%s), want 0", n, seg.Flags)
+	}
+}
+
+func mustSegment(t *testing.T, b []byte, payloadLen int) Segment {
+	t.Helper()
+	frame, err := NewFrame(b)
+	if err != nil {
+		t.Fatal("parse TCP frame:", err)
+	}
+	return frame.Segment(payloadLen)
+}
+
 func sendDataFull(t *testing.T, client, server *Handler, data, packetBuf []byte) {
 	n, err := client.Write(data)
 	if err != nil {
