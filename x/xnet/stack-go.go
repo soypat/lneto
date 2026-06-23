@@ -39,9 +39,7 @@ func (s *StackAsync) StackGo(stackProtoBackoff lneto.BackoffStrategy, cfg StackG
 func (s StackBlocking) StackGo(cfg StackGoConfig) StackGo {
 	tcpDialTimeout := cfg.TCPDialTimeout
 	tcpDialRetries := cfg.TCPDialRetries
-
-
-	//defaults
+	// Defaults
 	if tcpDialTimeout <= 0 {
 		tcpDialTimeout = defaultTCPDialTimeout
 	}
