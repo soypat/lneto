@@ -188,10 +188,17 @@ func (s StackBlocking) DoDialTCP(conn *tcp.Conn, localPort uint16, addrp netip.A
 	return err
 }
 
+// waitDialTCP blocks until the active-open connection reaches ESTABLISHED, the
+// timeout elapses, or the connection enters an unexpected state. The loop is
+// bounded by the wall-clock deadline rather than an iteration count because the
+// configured backoff may yield via runtime.Gosched (see [lneto.BackoffFlagGosched]),
+// which consumes no wall-clock time; an iteration cap would make the call return
+// far sooner than the requested timeout and starve the asynchronous egress driver
+// of the window it needs to (re)transmit the pending SYN.
 func (s StackBlocking) waitDialTCP(conn *tcp.Conn, timeout time.Duration) (err error) {
 	deadline := time.Now().Add(timeout)
 	var backoffs uint
-	for range maxIter {
+	for {
 		state := conn.State()
 		if state == tcp.StateEstablished {
 			return nil
@@ -206,7 +213,6 @@ func (s StackBlocking) waitDialTCP(conn *tcp.Conn, timeout time.Duration) (err e
 		s.backoff(backoffs)
 		backoffs++
 	}
-	return errDeadlineExceed
 }
 
 func (s StackBlocking) checkDeadline(deadline time.Time) error {
