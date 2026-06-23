@@ -37,21 +37,18 @@ func (s *StackAsync) StackGo(stackProtoBackoff lneto.BackoffStrategy, cfg StackG
 }
 
 func (s StackBlocking) StackGo(cfg StackGoConfig) StackGo {
-	tcpDialTimeout := cfg.TCPDialTimeout
-	tcpDialRetries := cfg.TCPDialRetries
-	// Defaults
-	if tcpDialTimeout <= 0 {
-		tcpDialTimeout = defaultTCPDialTimeout
+	if cfg.TCPDialRetries <= 0 {
+		cfg.TCPDialRetries = defaultTCPDialRetries
 	}
-	if tcpDialRetries <= 0 {
-		tcpDialRetries = defaultTCPDialRetries
+	if cfg.TCPDialTimeout <= 0 {
+		cfg.TCPDialTimeout = defaultTCPDialTimeout
 	}
 
 	sg := StackGo{
 		blk:            s,
 		plcfg:          cfg.ListenerPoolConfig,
-		tcpDialTimeout: tcpDialTimeout,
-		tcpDialRetries: tcpDialRetries,
+		tcpDialTimeout: cfg.TCPDialTimeout,
+		tcpDialRetries: cfg.TCPDialRetries,
 	}
 	return sg
 }
