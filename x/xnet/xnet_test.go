@@ -107,13 +107,66 @@ func TestTCPConn_ReadBlocksUntilDataAvailable(t *testing.T) {
 	}
 }
 
+func newstackTestScheduler(t testing.TB) stackTestScheduler {
+	return stackTestScheduler{
+		t:                   t,
+		stackBackoffSignal:  make(chan struct{}),
+		stackContinueSignal: make(chan struct{}),
+		timeout:             time.Millisecond,
+	}
+}
+
+type stackTestScheduler struct {
+	t testing.TB
+	// when stack backs off it signals here and waits until channel read or timeout.
+	stackBackoffSignal chan struct{}
+	// when main goroutine is ready for more information this channel is written to to signal waiting on stack activity.
+	stackContinueSignal chan struct{}
+	timeout             time.Duration
+}
+
+func (ss *stackTestScheduler) backoffStack(consecutiveBackoffs uint) time.Duration {
+	timeout := time.After(ss.timeout)
+	select {
+	case ss.stackBackoffSignal <- struct{}{}:
+	case <-timeout:
+		ss.t.Fatal("timeout backing off, possible race condition? Multiple stacks using same backoff is unexpected pattern")
+	}
+	select {
+	case <-ss.stackContinueSignal:
+	case <-timeout:
+		ss.t.Fatal("timeout waiting for continue")
+	}
+	return lneto.BackoffFlagNop // backoff yield implemented on our side.
+}
+
+func (ss *stackTestScheduler) testGoroutineWaitForStackYield() {
+	timeout := time.After(ss.timeout)
+	select {
+	case <-ss.stackBackoffSignal:
+	case <-timeout:
+		ss.t.Fatal("timeout waiting for stack to backoff")
+	}
+}
+
+func (ss *stackTestScheduler) testGoroutineYieldToStack() {
+	timeout := time.After(ss.timeout)
+	select {
+	case ss.stackContinueSignal <- struct{}{}:
+	case <-timeout:
+		ss.t.Fatal("timeout while trying to yield to stack")
+	}
+}
+
 func TestStackGoTCPDialRetriesPendingControl(t *testing.T) {
 	const seed = 5678
 	const MTU = ethernet.MaxMTU
 	const tcptimeout = time.Second
-	const yield = 10 * time.Millisecond
+	const yield = 1 * time.Millisecond
 	client, sv, _, _ := newTCPStacks(t, seed, MTU)
-	sg := client.StackBlocking(backoffYield).StackGo(StackGoConfig{
+	tbackoffer := newstackTestScheduler(t)
+
+	sg := client.StackBlocking(tbackoffer.backoffStack).StackGo(StackGoConfig{
 		ListenerPoolConfig: TCPPoolConfig{
 			QueueSize: 4,
 			TxBufSize: MTU,
@@ -141,7 +194,7 @@ func TestStackGoTCPDialRetriesPendingControl(t *testing.T) {
 	ntcppacket := 0
 	var buf [ethernet.MaxMTU + ethernet.MaxOverheadSize]byte
 	for !t.Failed() { // Tinygo does not implement failnow.
-		time.Sleep(yield)
+		tbackoffer.testGoroutineWaitForStackYield()
 		n, err := client.EgressEthernet(buf[:])
 		now += tcptimeout / 100
 		if err != nil {
@@ -152,6 +205,7 @@ func TestStackGoTCPDialRetriesPendingControl(t *testing.T) {
 		npacket++
 		frm, ok := getTCPFrame(buf[:])
 		if !ok {
+			tbackoffer.testGoroutineYieldToStack()
 			continue
 		}
 		ntcppacket++
@@ -162,7 +216,7 @@ func TestStackGoTCPDialRetriesPendingControl(t *testing.T) {
 		switch ntcppacket {
 		case 1:
 			now += 2 * tcptimeout
-			time.Sleep(yield) // give time to write packet and whatnot.
+			tbackoffer.testGoroutineYieldToStack()
 		case 2:
 			now += 2 * tcptimeout
 			time.Sleep(yield) // second retry times out
