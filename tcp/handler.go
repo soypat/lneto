@@ -51,7 +51,8 @@ type Handler struct {
 	// invalidCongestWnd means no window has been reported yet (no gating).
 	congestWnd Size
 	// clock injects the time source shared by the RFC 6298 retransmission timer
-	// and (typically) the congestion controller. nil uses time.Now.
+	// and (typically) the congestion controller. When nil all time-based
+	// features are disabled (time integration is opt-in); see SetClock.
 	clock      func() time.Time
 	closing    bool
 	shutdownRx bool
@@ -105,8 +106,10 @@ func (h *Handler) SetReassemblyBuffer(buf []byte, maxSegments int) error {
 // EnableTimestamps enables the RFC 7323 TCP Timestamps option, which is then
 // offered on the SYN and, if the peer also supports it, used to measure the
 // round-trip time on every acknowledgment (RTTM). It is disabled by default and
-// must be set before the connection is opened. Returns [lneto.ErrBadState] if
-// the connection is open.
+// must be set before the connection is opened. Timestamps are time-based and
+// therefore additionally require a clock injected via [Handler.SetClock]:
+// without one the option is neither offered nor negotiated. Returns
+// [lneto.ErrBadState] if the connection is open.
 func (h *Handler) EnableTimestamps(enable bool) error {
 	if !h.scb.State().IsClosed() {
 		return lneto.ErrBadState
@@ -135,14 +138,23 @@ func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
 	h.scb.logger.log = scb
 }
 
-// SetClock injects the time source used by the RFC 6298 retransmission timer
-// (and shared with a congestion controller for deterministic testing). It must
-// be set before the connection is opened; a nil clock falls back to time.Now.
+// SetClock injects the time source that enables the Handler's time-based
+// features: the RFC 6298 retransmission timer and RFC 7323 Timestamps (it is
+// also shared with a congestion controller for deterministic testing). Time
+// integration is opt-in: until a clock is injected the Handler performs no
+// time-based work — it keeps no retransmission timer and does not negotiate
+// Timestamps, relying on duplicate-ACK fast retransmit just as it did before
+// RTO support existed. This keeps timing out of the default data path (a
+// requirement for bare-metal targets). It must be set before the connection is
+// opened.
 func (h *Handler) SetClock(clock func() time.Time) {
 	h.clock = clock
 	h.scb.SetClock(clock)
 }
 
+// now returns the injected clock's time. It is only called behind a
+// clock != nil guard (time integration is opt-in); the time.Now fallback is
+// defensive and is not reached on the default, clock-less data path.
 func (h *Handler) now() time.Time {
 	if h.clock != nil {
 		return h.clock()
@@ -176,6 +188,11 @@ func (h *Handler) SACKEnabled() bool { return h.scb.sackEnabled }
 func (h *Handler) SmoothedRTT() time.Duration { return h.scb.rto.srtt }
 
 func (h *Handler) CheckRetransmitTimeout() bool {
+	if h.clock == nil {
+		// Time integration is opt-in: without an injected clock there is no
+		// retransmission timer to service (see SetClock).
+		return false
+	}
 	if h.scb.SACKEnabled() {
 		// SACK recovery retransmits holes selectively (no go-back-N rewind).
 		if !h.scb.timeoutFired(h.now()) {
@@ -522,7 +539,10 @@ func (h *Handler) appendSegmentOptions(dst []byte, seg Segment, mss uint16) int 
 	// otherwise include only once negotiated (SYN-ACK and established segments).
 	includeTS := h.scb.tsEnabled
 	if seg.Flags == FlagSYN {
-		includeTS = h.tsPermit
+		// Offer Timestamps only when a clock was injected: the option measures
+		// round-trip time and carries no useful value without one, so time
+		// integration stays opt-in (see SetClock).
+		includeTS = h.tsPermit && h.clock != nil
 	}
 	if includeTS {
 		dst[n] = byte(OptNop)
@@ -576,7 +596,7 @@ func (h *Handler) timestampFromOptions(opts []byte) (tsval, tsecr uint32, presen
 func (h *Handler) processOptions(opts []byte, seg Segment, prevRcvNxt, prevUNA Value) {
 	tsval, tsecr, present := h.timestampFromOptions(opts)
 	if seg.Flags.HasAny(FlagSYN) {
-		if present && h.tsPermit {
+		if present && h.tsPermit && h.clock != nil {
 			h.scb.tsEnabled = true
 			h.scb.tsRecent = tsval
 		}

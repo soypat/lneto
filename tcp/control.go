@@ -86,7 +86,9 @@ type ControlBlock struct {
 	// consulted by CheckRetransmitTimeout.
 	rto rtoControl
 	// clock injects the current time for RTT measurement and the retransmission
-	// timer. When nil, time.Now is used. Set via SetClock for deterministic tests.
+	// timer. When nil the ControlBlock performs no time-based work: it samples no
+	// RTTs, arms no timer and emits no Timestamps. Time integration is opt-in,
+	// keeping timing off the default data path. Set via SetClock.
 	clock func() time.Time
 
 	// tsEnabled reports whether the TCP Timestamps option (RFC 7323) was
@@ -115,7 +117,9 @@ func (tcb *ControlBlock) TimestampsEnabled() bool { return tcb.tsEnabled }
 // negotiated for this connection.
 func (tcb *ControlBlock) SACKEnabled() bool { return tcb.sackEnabled }
 
-// now returns the current time from the injected clock, or time.Now if unset.
+// now returns the current time from the injected clock. It is only called
+// behind a clock != nil guard (time integration is opt-in); the time.Now
+// fallback is defensive and is not reached on the default, clock-less data path.
 func (tcb *ControlBlock) now() time.Time {
 	if tcb.clock != nil {
 		return tcb.clock()
@@ -124,8 +128,9 @@ func (tcb *ControlBlock) now() time.Time {
 }
 
 // SetClock injects the time source used for RTT estimation and the
-// retransmission timer (RFC 6298). It must be set before the connection is
-// opened; a nil clock falls back to time.Now.
+// retransmission timer (RFC 6298). Time integration is opt-in: until a clock is
+// injected the ControlBlock performs no time-based work. It must be set before
+// the connection is opened.
 func (tcb *ControlBlock) SetClock(clock func() time.Time) { tcb.clock = clock }
 
 // State returns the current state of the TCP connection. See [State].
@@ -504,8 +509,13 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 			tcb.snd.UNA = seg.ACK
 			tcb.dupack = 0
 			tcb.nRetransmit = 0
-			// Sample RTT and manage the retransmission timer (RFC 6298 §5.2/§5.3).
-			tcb.rto.onAckSample(seg.ACK, tcb.snd.UNA == tcb.snd.NXT, tcb.now())
+			// Sample RTT and manage the retransmission timer (RFC 6298 §5.2/§5.3),
+			// but only when a clock was injected. Without one the connection keeps
+			// no timers and relies on duplicate-ACK fast retransmit, so the tcp
+			// package performs no time-based work by default (time is opt-in).
+			if tcb.clock != nil {
+				tcb.rto.onAckSample(seg.ACK, tcb.snd.UNA == tcb.snd.NXT, tcb.now())
+			}
 		}
 	}
 
@@ -577,9 +587,11 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 		tcb.rto.onRetransmit() // Karn: don't sample RTT from a retransmitted segment.
 	} else {
 		tcb.snd.NXT.UpdateForward(seglen)
-		if seg.DATALEN > 0 {
+		if seg.DATALEN > 0 && tcb.clock != nil {
 			// Time the newly transmitted data and (re)arm the retransmission
-			// timer (RFC 6298 §3, §5.1). Control-only segments are not timed.
+			// timer (RFC 6298 §3, §5.1). Control-only segments are not timed, and
+			// the timer is armed only when a clock was injected: without one the
+			// timer stays off and time integration remains opt-in (see SetClock).
 			now := tcb.now()
 			tcb.rto.startSample(tcb.snd.NXT, now)
 			tcb.rto.armTimer(now)

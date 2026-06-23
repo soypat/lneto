@@ -243,3 +243,32 @@ func TestRTOTimeoutPreservesNonBackoffAfterValidSample(t *testing.T) {
 		t.Errorf("backoff=%d, want 0 after a valid sample", r.backoff)
 	}
 }
+
+// TestControlBlockNoClockNoTimer verifies time integration is opt-in: without an
+// injected clock the ControlBlock arms no retransmission timer on the data path
+// and CheckRetransmitTimeout is inert, so the tcp package performs no time-based
+// work by default (the assumption agreed in PR #130 and PR #126).
+func TestControlBlockNoClockNoTimer(t *testing.T) {
+	var tcb ControlBlock // no SetClock: clock-less, pre-RTO behavior.
+	tcb.rto.init()
+	const iss, irs = Value(1000), Value(500)
+	tcb.HelperInitState(StateEstablished, iss, iss, 4096)
+	tcb.HelperInitRcv(irs, irs, 4096)
+
+	if err := tcb.Send(Segment{SEQ: iss, ACK: irs, DATALEN: 100, Flags: pshack, WND: 4096}); err != nil {
+		t.Fatalf("send data: %v", err)
+	}
+	if tcb.rto.running {
+		t.Error("no retransmission timer must be armed without an injected clock")
+	}
+	if tcb.rto.timing {
+		t.Error("no RTT sample must be started without an injected clock")
+	}
+	// An ACK far past any plausible deadline must still not engage the timer.
+	if err := tcb.Recv(Segment{SEQ: irs, ACK: iss + 100, Flags: FlagACK, WND: 4096}); err != nil {
+		t.Fatalf("recv ack: %v", err)
+	}
+	if tcb.rto.running || tcb.rto.haveRTT {
+		t.Error("clock-less ControlBlock must take no RTT sample and run no timer")
+	}
+}
