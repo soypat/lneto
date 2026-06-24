@@ -22,6 +22,7 @@ type StackIPv4 struct {
 }
 
 func (stackip4 *StackIPv4) Reset(vld *lneto.Validator, maxNodes int) error {
+	stackip4.connID++
 	stackip4.reset4(vld, maxNodes)
 	return nil
 }
@@ -58,6 +59,7 @@ type stackip4 struct {
 	ipID            uint16
 	ip4             [4]byte
 	acceptMulticast bool
+	acceptBroadcast bool
 }
 
 func (si4 *stackip4) reset4(vld *lneto.Validator, maxNodes int) {
@@ -86,6 +88,10 @@ func (si4 *stackip4) IsRegistered4(proto lneto.IPProto) bool {
 func (si4 *stackip4) SetAcceptMulticast4(accept bool) {
 	si4.acceptMulticast = accept
 }
+func (si4 *stackip4) SetAcceptBroadcast4(accept bool) {
+	si4.acceptBroadcast = accept
+}
+
 func (si4 *stackip4) Addr4() [4]byte { return si4.ip4 }
 func (si4 *stackip4) SetAddr4(ip4 [4]byte) {
 	si4.ip4 = ip4
@@ -100,8 +106,13 @@ func (si4 *stackip4) demux4(carrierData []byte, offset int) error {
 		return err
 	}
 	dst := ifrm.DestinationAddr()
-	if si4.ip4 != ([4]byte{}) && *dst != si4.ip4 {
-		if !si4.acceptMulticast || !internal.IsMulticastIPAddr(dst[:]) {
+	if si4.ip4 != ([4]byte{}) && *dst != si4.ip4 { // Accept all packets when IP zeroed.
+		switch {
+		case si4.acceptMulticast && ipv4.IsMulticast(*dst):
+			// accept multicast.
+		case si4.acceptBroadcast && ipv4.IsBroadcast(*dst):
+			// accept broadcast.
+		default:
 			si4.handlers.debug("ip:not-for-us")
 			return lneto.ErrPacketDrop // Not meant for us.
 		}

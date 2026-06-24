@@ -18,6 +18,17 @@ func IsMulticast(addr [4]byte) bool {
 	return addr[0]&0xf0 == 0xe0
 }
 
+// IsBroadcast reports whether addr is the limited broadcast address
+// 255.255.255.255 used to address all hosts on the local network segment
+// as defined in [RFC919]. It does not detect directed (subnet) broadcast
+// addresses, which depend on the network mask and cannot be determined from
+// the address alone.
+//
+// [RFC919]: https://datatracker.ietf.org/doc/html/rfc919
+func IsBroadcast(addr [4]byte) bool {
+	return addr == [4]byte{255, 255, 255, 255}
+}
+
 // IsLinkLocal reports whether addr is within the IPv4 link-local prefix
 // 169.254.0.0/16 reserved for dynamic link-local configuration as defined in [RFC3927].
 //
