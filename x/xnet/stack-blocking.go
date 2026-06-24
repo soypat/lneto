@@ -31,8 +31,20 @@ func (s *StackAsync) StackBlocking(stackProtoBackoff lneto.BackoffStrategy) Stac
 }
 
 type StackBlocking struct {
-	async    *StackAsync
-	_backoff lneto.BackoffStrategy
+	async     *StackAsync
+	_backoff  lneto.BackoffStrategy
+	_nanotime func() int64
+}
+
+func (s StackBlocking) nanotime() int64 {
+	if s._nanotime != nil {
+		return s._nanotime()
+	}
+	return time.Now().UnixNano()
+}
+
+func (s StackBlocking) deadlineTO(timeout time.Duration) int64 {
+	return int64(timeout) + s.nanotime()
 }
 
 func (s StackBlocking) DoDHCPv4(reqAddr [4]byte, timeout time.Duration) (*DHCPResults, error) {
@@ -41,7 +53,7 @@ func (s StackBlocking) DoDHCPv4(reqAddr [4]byte, timeout time.Duration) (*DHCPRe
 		return nil, err
 	}
 	var backoffs uint
-	deadline := time.Now().Add(timeout)
+	deadline := s.deadlineTO(timeout)
 	requested := false
 	var lastState dhcpv4.ClientState
 	for range maxIter {
@@ -108,7 +120,7 @@ func (s StackBlocking) DoNTP(hostAddr netip.Addr, timeout time.Duration) (offset
 		return -1, err
 	}
 
-	deadline := time.Now().Add(timeout)
+	deadline := s.deadlineTO(timeout)
 	var done bool
 	var backoffs uint
 	for range maxIter {
@@ -130,7 +142,7 @@ func (s StackBlocking) DoResolveHardwareAddress6(addr netip.Addr, timeout time.D
 		return hw, err
 	}
 	var backoffs uint
-	deadline := time.Now().Add(timeout)
+	deadline := s.deadlineTO(timeout)
 	for range maxIter {
 		hw, err = s.async.ResultResolveHardwareAddress6(addr)
 		if err == nil {
@@ -159,7 +171,7 @@ func (s StackBlocking) DoLookupIPType(host string, timeout time.Duration, qtype 
 		return nil, err
 	}
 
-	deadline := time.Now().Add(timeout)
+	deadline := s.deadlineTO(timeout)
 	var backoffs uint
 	for range maxIter {
 		addrs, completed, err := s.async.ResultLookupIP(host)
@@ -189,7 +201,7 @@ func (s StackBlocking) DoDialTCP(conn *tcp.Conn, localPort uint16, addrp netip.A
 }
 
 func (s StackBlocking) waitDialTCP(conn *tcp.Conn, timeout time.Duration) (err error) {
-	deadline := time.Now().Add(timeout)
+	deadline := s.deadlineTO(timeout)
 	var backoffs uint
 	for range maxIter {
 		state := conn.State()
@@ -209,8 +221,8 @@ func (s StackBlocking) waitDialTCP(conn *tcp.Conn, timeout time.Duration) (err e
 	return errDeadlineExceed
 }
 
-func (s StackBlocking) checkDeadline(deadline time.Time) error {
-	if time.Since(deadline) > 0 {
+func (s StackBlocking) checkDeadline(deadline int64) error {
+	if s.nanotime() > deadline {
 		return errDeadlineExceed
 	}
 	return nil

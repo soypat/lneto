@@ -30,6 +30,57 @@ const (
 	finack = tcp.FlagFIN | tcp.FlagACK
 )
 
+func newstackTestScheduler(t testing.TB) stackTestScheduler {
+	return stackTestScheduler{
+		t:                   t,
+		stackBackoffSignal:  make(chan struct{}),
+		stackContinueSignal: make(chan struct{}),
+		timeout:             time.Second,
+	}
+}
+
+type stackTestScheduler struct {
+	t testing.TB
+	// when stack backs off it signals here and waits until channel read or timeout.
+	stackBackoffSignal chan struct{}
+	// when main goroutine is ready for more information this channel is written to to signal waiting on stack activity.
+	stackContinueSignal chan struct{}
+	timeout             time.Duration
+}
+
+func (ss *stackTestScheduler) backoffStack(consecutiveBackoffs uint) time.Duration {
+	timeout := time.After(ss.timeout)
+	select {
+	case ss.stackBackoffSignal <- struct{}{}:
+	case <-timeout:
+		ss.t.Fatal("timeout backing off, possible race condition? Multiple stacks using same backoff is unexpected pattern")
+	}
+	select {
+	case <-ss.stackContinueSignal:
+	case <-timeout:
+		ss.t.Fatal("timeout waiting for continue")
+	}
+	return lneto.BackoffFlagNop // backoff yield implemented on our side.
+}
+
+func (ss *stackTestScheduler) mainGoroutineWaitForStackYield() {
+	timeout := time.After(ss.timeout)
+	select {
+	case <-ss.stackBackoffSignal:
+	case <-timeout:
+		ss.t.Fatal("timeout waiting for stack to backoff")
+	}
+}
+
+func (ss *stackTestScheduler) mainGoroutineYieldToStack() {
+	timeout := time.After(ss.timeout)
+	select {
+	case ss.stackContinueSignal <- struct{}{}:
+	case <-timeout:
+		ss.t.Fatal("timeout while trying to yield to stack")
+	}
+}
+
 func TestTCPConn_ReadBlocksUntilDataAvailable(t *testing.T) {
 	const seed = 5678
 	const MTU = ethernet.MaxMTU
@@ -110,9 +161,12 @@ func TestTCPConn_ReadBlocksUntilDataAvailable(t *testing.T) {
 func TestStackGoTCPDialRetriesPendingControl(t *testing.T) {
 	const seed = 5678
 	const MTU = ethernet.MaxMTU
-
+	const tcptimeout = time.Second
+	const yield = 1 * time.Millisecond
 	client, sv, _, _ := newTCPStacks(t, seed, MTU)
-	sg := client.StackBlocking(backoffYield).StackGo(StackGoConfig{
+	tbackoffer := newstackTestScheduler(t)
+
+	sg := client.StackBlocking(tbackoffer.backoffStack).StackGo(StackGoConfig{
 		ListenerPoolConfig: TCPPoolConfig{
 			QueueSize: 4,
 			TxBufSize: MTU,
@@ -121,9 +175,13 @@ func TestStackGoTCPDialRetriesPendingControl(t *testing.T) {
 				return backoffYield
 			},
 		},
-		TCPDialTimeout: 10 * time.Millisecond,
+		TCPDialTimeout: tcptimeout,
 		TCPDialRetries: 2,
 	})
+	t.Log("start")
+	// closure to simulate time.
+	var now time.Duration
+	sg.blk._nanotime = func() int64 { return int64(now) }
 
 	laddr := netip.AddrPortFrom(netip.AddrFrom4(client.Addr4()), 1234)
 	raddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), 22)
@@ -132,29 +190,43 @@ func TestStackGoTCPDialRetriesPendingControl(t *testing.T) {
 		_, err := sg.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockSTREAM, laddr, raddr)
 		done <- err
 	}()
-
+	npacket := 0
+	ntcppacket := 0
 	var buf [ethernet.MaxMTU + ethernet.MaxOverheadSize]byte
-	waitForEgress := func() {
-		t.Helper()
-		deadline := time.Now().Add(100 * time.Millisecond)
-		for time.Now().Before(deadline) {
-			n, err := client.EgressEthernet(buf[:])
-			if err != nil {
-				t.Fatal(err)
-			}
-			if n > 0 {
-				return
-			}
-			time.Sleep(time.Millisecond)
+	for !t.Failed() { // Tinygo does not implement failnow.
+		tbackoffer.mainGoroutineWaitForStackYield()
+		n, err := client.EgressEthernet(buf[:])
+		now += tcptimeout / 100
+		if err != nil {
+			t.Fatal(err)
+		} else if n == 0 {
+			t.Fatal("expected packet from socketnetip", npacket, ntcppacket)
 		}
-		t.Fatal("timed out waiting for TCP dial egress packet")
-	}
-	waitForEgress()
-	waitForEgress()
-
-	err := <-done
-	if err == nil {
-		t.Fatal("expected TCP dial to fail after retries without peer response")
+		npacket++
+		frm, ok := getTCPFrame(buf[:])
+		if !ok {
+			tbackoffer.mainGoroutineYieldToStack()
+			continue
+		}
+		ntcppacket++
+		_, flags := frm.OffsetAndFlags()
+		if flags != tcp.FlagSYN {
+			t.Fatal("expected SYN packet")
+		}
+		switch ntcppacket {
+		case 1:
+			now += 2 * tcptimeout
+			tbackoffer.mainGoroutineYieldToStack()
+		case 2:
+			now += 2 * tcptimeout
+			tbackoffer.mainGoroutineYieldToStack()
+			select {
+			case <-time.After(time.Second):
+				t.Fatal("SocketNetip hanging")
+			case <-done:
+				return // Test success.
+			}
+		}
 	}
 }
 
