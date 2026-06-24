@@ -152,7 +152,20 @@ func (sv *Server) Demux(carrierData []byte, frameOffset int) error {
 	var client serverEntry
 	var clientExists bool
 	if len(clientID) == 0 {
-		client, clientIDRaw, clientExists = sv.getClientByIP(*dfrm.CIAddr())
+		// No explicit client identifier: use chaddr as the stable lookup key.
+		// This lets the server correlate Discover→Offer→Request even when
+		// ciaddr=0.0.0.0 (client has no IP yet), which is the normal case
+		// for first-time lease acquisition (RFC 2131 §4.3.1).
+		chaddr := *dfrm.CHAddrAs6()
+		copy(clientIDRaw[:], chaddr[:])
+		client, clientExists = sv.getClient(clientIDRaw)
+		if !clientExists {
+			// Fallback: look up by ciaddr for clients that did send ciaddr.
+			ciaddr := *dfrm.CIAddr()
+			if ciaddr != ([4]byte{}) {
+				client, clientIDRaw, clientExists = sv.getClientByIP(ciaddr)
+			}
+		}
 	} else {
 		copy(clientIDRaw[:], clientID)
 		client, clientExists = sv.getClient(clientIDRaw)
@@ -300,6 +313,14 @@ func (sv *Server) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 		err = internal.SetIPAddrs(carrierData[offsetToIP:], 0, sv.siaddr[:], client.addr[:])
 		if err != nil {
 			return 0, err
+		}
+		// Per RFC 2131 §4.1: unicast Offer/Ack to chaddr because the client
+		// does not yet have the offered IP, so no ARP entry exists.
+		// The Ethernet layer sets dst=gwmac before calling us; overwrite it
+		// here so the frame reaches the client via its hardware address.
+		// offsetToIP==14 means the Ethernet header is at carrierData[0:14].
+		if offsetToIP >= 14 {
+			copy(carrierData[offsetToIP-14:offsetToIP-8], client.hwaddr[:])
 		}
 	}
 
