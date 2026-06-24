@@ -106,8 +106,13 @@ func (si4 *stackip4) demux4(carrierData []byte, offset int) error {
 		return err
 	}
 	dst := ifrm.DestinationAddr()
-	if si4.ip4 != ([4]byte{}) && *dst != si4.ip4 {
-		if !ipv4.IsBroadcast(*dst) && (!si4.acceptMulticast || !internal.IsMulticastIPAddr(dst[:])) {
+	if si4.ip4 != ([4]byte{}) && *dst != si4.ip4 { // Accept all packets when IP zeroed.
+		switch {
+		case si4.acceptMulticast && ipv4.IsMulticast(*dst):
+			// accept multicast.
+		case si4.acceptBroadcast && ipv4.IsBroadcast(*dst):
+			// accept broadcast.
+		default:
 			si4.handlers.debug("ip:not-for-us")
 			return lneto.ErrPacketDrop // Not meant for us.
 		}
