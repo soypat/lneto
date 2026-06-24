@@ -103,6 +103,8 @@ type StackConfig struct {
 	MTU uint16
 	// Accept multicast ethernet and IP packets. Needed for MDNS.
 	AcceptMulticast bool
+	// Accept broadcast IPv4 packets. Needed for managing access points and DHCPv4 servers.
+	AcceptIPv4Broadcast bool
 }
 
 func (cfg *StackConfig) id() uint16 {
@@ -234,7 +236,7 @@ func (s *StackAsync) Reset(cfg StackConfig) (err error) {
 	}
 	s.ip4.SetAddr4(cfg.StaticAddress4)
 	s.setAcceptMulticast4(cfg.AcceptMulticast)
-
+	s.ip4.SetAcceptBroadcast4(cfg.AcceptIPv4Broadcast)
 	s.arpt.passivePeers = uint8(cfg.PassivePeers)
 	err = s.resetARP()
 	if err != nil {

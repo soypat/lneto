@@ -19,35 +19,36 @@ type StackIPv6 struct {
 	stackip6
 }
 
-func (stackip4 *StackIPv6) Reset(vld *lneto.Validator, maxNodes int) error {
-	stackip4.reset6(vld, maxNodes)
+func (stackip6 *StackIPv6) Reset(vld *lneto.Validator, maxNodes int) error {
+	stackip6.connID++
+	stackip6.reset6(vld, maxNodes)
 	return nil
 }
 
-func (stackip *StackIPv6) ConnectionID() *uint64 {
-	return &stackip.connID
+func (stackip6 *StackIPv6) ConnectionID() *uint64 {
+	return &stackip6.connID
 }
 
-func (stackip *StackIPv6) Protocol() uint64 {
+func (stackip6 *StackIPv6) Protocol() uint64 {
 	return uint64(ethernet.TypeIPv6)
 }
 
-func (stackip *StackIPv6) LocalPort() uint16 { return 0 }
+func (stackip6 *StackIPv6) LocalPort() uint16 { return 0 }
 
-func (stackip *StackIPv6) SetLogger(logger *slog.Logger) {
-	stackip.stackip6.handlers.log = logger
+func (stackip6 *StackIPv6) SetLogger(logger *slog.Logger) {
+	stackip6.stackip6.handlers.log = logger
 }
 
-func (stackip *StackIPv6) Demux(carrierData []byte, offset int) error {
+func (stackip6 *StackIPv6) Demux(carrierData []byte, offset int) error {
 	debugLog("ip:demux")
-	return stackip.stackip6.demux6(carrierData, offset)
+	return stackip6.stackip6.demux6(carrierData, offset)
 }
 
-func (stackip *StackIPv6) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (n int, err error) {
+func (stackip6 *StackIPv6) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (n int, err error) {
 	if offsetToFrame != offsetToIP {
 		return 0, lneto.ErrBug
 	}
-	return stackip.stackip6.encapsulate6(carrierData, offsetToIP)
+	return stackip6.stackip6.encapsulate6(carrierData, offsetToIP)
 }
 
 type stackip6 struct {
@@ -55,6 +56,7 @@ type stackip6 struct {
 	vld             *lneto.Validator
 	ip6             [16]byte
 	acceptMulticast bool
+	acceptBroadcast bool
 }
 
 func (si6 *stackip6) Register6(h lneto.StackNode) error {

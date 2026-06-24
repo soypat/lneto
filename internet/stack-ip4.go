@@ -22,34 +22,35 @@ type StackIPv4 struct {
 }
 
 func (stackip4 *StackIPv4) Reset(vld *lneto.Validator, maxNodes int) error {
+	stackip4.connID++
 	stackip4.reset4(vld, maxNodes)
 	return nil
 }
 
-func (stackip *StackIPv4) ConnectionID() *uint64 {
-	return &stackip.connID
+func (stackip4 *StackIPv4) ConnectionID() *uint64 {
+	return &stackip4.connID
 }
 
-func (stackip *StackIPv4) Protocol() uint64 {
+func (stackip4 *StackIPv4) Protocol() uint64 {
 	return uint64(ethernet.TypeIPv4)
 }
 
-func (stackip *StackIPv4) LocalPort() uint16 { return 0 }
+func (stackip4 *StackIPv4) LocalPort() uint16 { return 0 }
 
-func (stackip *StackIPv4) SetLogger(logger *slog.Logger) {
-	stackip.stackip4.handlers.log = logger
+func (stackip4 *StackIPv4) SetLogger(logger *slog.Logger) {
+	stackip4.stackip4.handlers.log = logger
 }
 
-func (stackip *StackIPv4) Demux(carrierData []byte, offset int) error {
+func (stackip4 *StackIPv4) Demux(carrierData []byte, offset int) error {
 	debugLog("ip:demux")
-	return stackip.stackip4.demux4(carrierData, offset)
+	return stackip4.stackip4.demux4(carrierData, offset)
 }
 
-func (stackip *StackIPv4) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (n int, err error) {
+func (stackip4 *StackIPv4) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (n int, err error) {
 	if offsetToFrame != offsetToIP {
 		return 0, lneto.ErrBug
 	}
-	return stackip.stackip4.encapsulate4(carrierData, offsetToIP)
+	return stackip4.stackip4.encapsulate4(carrierData, offsetToIP)
 }
 
 type stackip4 struct {
@@ -58,6 +59,7 @@ type stackip4 struct {
 	ipID            uint16
 	ip4             [4]byte
 	acceptMulticast bool
+	acceptBroadcast bool
 }
 
 func (si4 *stackip4) reset4(vld *lneto.Validator, maxNodes int) {
@@ -86,6 +88,10 @@ func (si4 *stackip4) IsRegistered4(proto lneto.IPProto) bool {
 func (si4 *stackip4) SetAcceptMulticast4(accept bool) {
 	si4.acceptMulticast = accept
 }
+func (si4 *stackip4) SetAcceptBroadcast4(accept bool) {
+	si4.acceptBroadcast = accept
+}
+
 func (si4 *stackip4) Addr4() [4]byte { return si4.ip4 }
 func (si4 *stackip4) SetAddr4(ip4 [4]byte) {
 	si4.ip4 = ip4
@@ -100,8 +106,13 @@ func (si4 *stackip4) demux4(carrierData []byte, offset int) error {
 		return err
 	}
 	dst := ifrm.DestinationAddr()
-	if si4.ip4 != ([4]byte{}) && *dst != si4.ip4 {
-		if !si4.acceptMulticast || !internal.IsMulticastIPAddr(dst[:]) {
+	if si4.ip4 != ([4]byte{}) && *dst != si4.ip4 { // Accept all packets when IP zeroed.
+		switch {
+		case si4.acceptMulticast && ipv4.IsMulticast(*dst):
+			// accept multicast.
+		case si4.acceptBroadcast && ipv4.IsBroadcast(*dst):
+			// accept broadcast.
+		default:
 			si4.handlers.debug("ip:not-for-us")
 			return lneto.ErrPacketDrop // Not meant for us.
 		}
