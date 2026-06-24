@@ -128,8 +128,8 @@ const (
 	OptParameterRequestList        OptNum = 55 // Parameter request list
 	OptMessage                     OptNum = 56 // DHCP error message
 	OptMaximumMessageSize          OptNum = 57 // DHCP maximum message size
-	OptRenewTimeValue              OptNum = 58 // DHCP renewal (T1) time
-	OptRebindingTimeValue          OptNum = 59 // DHCP rebinding (T2) time
+	OptT1Renewal                   OptNum = 58 // DHCP renewal (T1) time
+	OptT2Rebinding                 OptNum = 59 // DHCP rebinding (T2) time
 	OptClientIdentifier            OptNum = 60 // Client identifier
 	OptClientIdentifier1           OptNum = 61 // Client identifier(1)
 

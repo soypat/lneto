@@ -239,9 +239,9 @@ func TestServerOfferContainsOptions(t *testing.T) {
 				foundLease = true
 				gotLease = maybeU32(data)
 			}
-		case OptRenewTimeValue:
+		case OptT1Renewal:
 			gotRenew = maybeU32(data)
-		case OptRebindingTimeValue:
+		case OptT2Rebinding:
 			gotRebind = maybeU32(data)
 		}
 		return nil
