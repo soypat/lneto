@@ -27,30 +27,30 @@ func (stackip4 *StackIPv4) Reset(vld *lneto.Validator, maxNodes int) error {
 	return nil
 }
 
-func (stackip *StackIPv4) ConnectionID() *uint64 {
-	return &stackip.connID
+func (stackip4 *StackIPv4) ConnectionID() *uint64 {
+	return &stackip4.connID
 }
 
-func (stackip *StackIPv4) Protocol() uint64 {
+func (stackip4 *StackIPv4) Protocol() uint64 {
 	return uint64(ethernet.TypeIPv4)
 }
 
-func (stackip *StackIPv4) LocalPort() uint16 { return 0 }
+func (stackip4 *StackIPv4) LocalPort() uint16 { return 0 }
 
-func (stackip *StackIPv4) SetLogger(logger *slog.Logger) {
-	stackip.stackip4.handlers.log = logger
+func (stackip4 *StackIPv4) SetLogger(logger *slog.Logger) {
+	stackip4.stackip4.handlers.log = logger
 }
 
-func (stackip *StackIPv4) Demux(carrierData []byte, offset int) error {
+func (stackip4 *StackIPv4) Demux(carrierData []byte, offset int) error {
 	debugLog("ip:demux")
-	return stackip.stackip4.demux4(carrierData, offset)
+	return stackip4.stackip4.demux4(carrierData, offset)
 }
 
-func (stackip *StackIPv4) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (n int, err error) {
+func (stackip4 *StackIPv4) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (n int, err error) {
 	if offsetToFrame != offsetToIP {
 		return 0, lneto.ErrBug
 	}
-	return stackip.stackip4.encapsulate4(carrierData, offsetToIP)
+	return stackip4.stackip4.encapsulate4(carrierData, offsetToIP)
 }
 
 type stackip4 struct {
