@@ -31,15 +31,11 @@ func (s *StackAsync) StackBlocking(stackProtoBackoff lneto.BackoffStrategy) Stac
 }
 
 type StackBlocking struct {
-	async     *StackAsync
-	_backoff  lneto.BackoffStrategy
-	_nanotime func() int64
+	async    *StackAsync
+	_backoff lneto.BackoffStrategy
 }
 
 func (s StackBlocking) nanotime() int64 {
-	if s._nanotime != nil {
-		return s._nanotime()
-	}
 	return time.Now().UnixNano()
 }
 
