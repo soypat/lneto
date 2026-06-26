@@ -38,15 +38,6 @@ type Sched struct {
 	timeout            time.Duration
 }
 
-// Goro returns the handle whose methods must be called from inside the
-// scheduled (stack) goroutine.
-func (ss *Sched) Goro() SchedGoro {
-	if !ss.coroCalls.CompareAndSwap(0, 1) {
-		panic("only one goroutine supported for now")
-	}
-	return SchedGoro{ss: ss}
-}
-
 // AwaitGoroYield blocks until the coroutine suspends itself via [SchedGoro.Yield].
 func (ss *Sched) AwaitGoroYield() {
 	timeout := time.After(ss.timeout)
@@ -68,12 +59,21 @@ func (ss *Sched) YieldToGoro() {
 }
 
 // Done returns the channel that receives the coroutine's terminal error from
-// [SchedGoro.Finish]. It may only be called once.
+// [SchedGoro.FinishWithErr]. It may only be called once.
 func (ss *Sched) Done() <-chan error {
 	if ss.finishcalled.CompareAndSwap(false, true) {
 		return ss.finishChan
 	}
 	panic("Done called twice")
+}
+
+// Goro returns the handle whose methods must be called from inside the
+// scheduled (stack) goroutine.
+func (ss *Sched) Goro() SchedGoro {
+	if !ss.coroCalls.CompareAndSwap(0, 1) {
+		panic("only one goroutine supported for now")
+	}
+	return SchedGoro{ss: ss}
 }
 
 // SchedGoro is the coroutine-side handle of a [Sched]. Every method MUST be
@@ -99,12 +99,17 @@ func (c SchedGoro) Yield(consecutiveBackoffs uint) time.Duration {
 	return lneto.BackoffFlagNop // backoff yield implemented on our side.
 }
 
-// Finish terminates the coroutine, handing err to the driver's [SchedDriver.Done]
+// FinishWithErr terminates the coroutine, handing err to the driver's [SchedDriver.Done]
 // channel. It must be called at most once.
-func (c SchedGoro) Finish(err error) {
+func (c SchedGoro) FinishWithErr(err error) {
 	ss := c.ss
 	if len(ss.finishChan) != 0 {
-		ss.t.Fatal("Coro.Return can be called once only")
+		ss.t.Fatal("Coro.FinishWithErr can be called once only")
 	}
 	ss.finishChan <- err
+}
+
+// Finish is just shorthand for c.FinishWithErr(nil).
+func (c SchedGoro) Finish() {
+	c.FinishWithErr(nil)
 }

@@ -37,6 +37,21 @@ func TestTCPConn_ReadBlocksUntilDataAvailable(t *testing.T) {
 	client, sv, clconn, svconn := newTCPStacks(t, seed, MTU)
 	tst := testerFrom(t, MTU)
 
+	// Drive svconn.Read from a single background goroutine whose backoff is
+	// controlled by the scheduler. This lets the test thread know deterministically
+	// when Read has parked waiting for data, instead of sleeping and hoping it blocked.
+	tsched := ltesto.NewSched(t)
+	tgoro := tsched.Goro()
+	err := svconn.Configure(tcp.ConnConfig{
+		RxBuf:             make([]byte, MTU),
+		TxBuf:             make([]byte, MTU),
+		TxPacketQueueSize: 4,
+		RWBackoff:         tgoro.Yield,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1337)
 
 	// Verify no data buffered initially.
@@ -45,27 +60,25 @@ func TestTCPConn_ReadBlocksUntilDataAvailable(t *testing.T) {
 	}
 
 	sendData := []byte("blocking test data")
-	readDone := make(chan struct{})
 	var readN int
-	var readErr error
 	var readBuf [64]byte
 
 	// Start a goroutine to read from svconn - this should block since no data available.
 	go func() {
-		readN, readErr = svconn.Read(readBuf[:])
-		close(readDone)
+		n, err := svconn.Read(readBuf[:])
+		readN = n
+		tgoro.FinishWithErr(err)
 	}()
 
-	// Give Read time to enter blocking state.
-	select {
-	case <-readDone:
-		t.Fatal("Read returned immediately without data - expected blocking")
-	case <-time.After(50 * time.Millisecond):
-		// Good - Read is blocking as expected.
+	// AwaitGoroYield blocks until Read parks in backoff: deterministic proof that
+	// Read found no data available and is waiting.
+	tsched.AwaitGoroYield()
+	if readN != 0 {
+		t.Fatal("Read returned before data was available")
 	}
 
 	// Write data on client side.
-	_, err := clconn.Write(sendData)
+	_, err = clconn.Write(sendData)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,14 +101,9 @@ func TestTCPConn_ReadBlocksUntilDataAvailable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Now Read should unblock and return data.
-	select {
-	case <-readDone:
-		// Good - Read unblocked.
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("Read did not unblock after data became available")
-	}
-
+	// Release Read; the data is now available so it returns instead of backing off again.
+	tsched.YieldToGoro()
+	readErr := <-tsched.Done()
 	if readErr != nil {
 		t.Fatalf("Read returned error: %v", readErr)
 	}
@@ -136,7 +144,7 @@ func TestStackGoTCPDialRetriesPendingControl(t *testing.T) {
 	raddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), 22)
 	go func() {
 		_, err := sg.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockSTREAM, laddr, raddr)
-		tgoro.Finish(err)
+		tgoro.FinishWithErr(err)
 	}()
 	npacket := 0
 	ntcppacket := 0
