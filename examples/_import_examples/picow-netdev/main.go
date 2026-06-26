@@ -70,7 +70,14 @@ func main() {
 	failIfErr("init iface", err)
 
 	go func() {
-		if err := runner.Run(context.Background(), iface, &stack, backoff); err != nil {
+		err := runner.Configure(netdev.RunnerConfig[ConnectParams]{
+			Buffers: [][]byte{make([]byte, cyw43439.MaxFrameSize)},
+			Backoff: backoff,
+		})
+		if err != nil {
+			failIfErr("runnerconfig", err)
+		}
+		if err := runner.Run(context.Background(), iface, &stack); err != nil {
 			failIfErr("runner", err)
 		}
 	}()
