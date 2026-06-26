@@ -121,7 +121,7 @@ func TestTCPListener_ConcurrentEcho(t *testing.T) {
 		wg.Add(1)
 		go func(clientID int) {
 			defer wg.Done()
-			if runClient(t, clientID, &clientStacks[clientID], &clientConns[clientID],
+			if runClient(t, ctx, clientID, &clientStacks[clientID], &clientConns[clientID],
 				serverIP, serverPort) {
 				clientSuccess[clientID] = true
 			}
@@ -207,7 +207,7 @@ func echoServer(ctx context.Context, listener *tcp.Listener) {
 		}
 
 		if listener.NumberOfReadyToAccept() == 0 {
-			time.Sleep(time.Millisecond)
+			runtime.Gosched()
 			continue
 		}
 
@@ -241,7 +241,7 @@ func echoServer(ctx context.Context, listener *tcp.Listener) {
 	}
 }
 
-func runClient(t *testing.T, id int, stack *StackAsync, conn *tcp.Conn,
+func runClient(t *testing.T, ctx context.Context, id int, stack *StackAsync, conn *tcp.Conn,
 	serverAddr netip.Addr, serverPort uint16) bool {
 	// Dial server.
 	clientPort := uint16(10000 + id)
@@ -251,14 +251,8 @@ func runClient(t *testing.T, id int, stack *StackAsync, conn *tcp.Conn,
 		return false
 	}
 
-	// Wait for connection established (handshake via kernel loop).
-	deadline := time.Now().Add(5 * time.Second)
-	for conn.State() != tcp.StateEstablished {
-		if time.Now().After(deadline) {
-			t.Errorf("client %d: timeout waiting for established state, got %s", id, conn.State())
-			return false
-		}
-		time.Sleep(time.Millisecond)
+	for conn.State() != tcp.StateEstablished && ctx.Err() == nil {
+		runtime.Gosched()
 	}
 
 	// Send test data.
@@ -269,15 +263,11 @@ func runClient(t *testing.T, id int, stack *StackAsync, conn *tcp.Conn,
 		return false
 	}
 
-	// Read echo response.
+	// Read echo response. conn.Read yields (backoffYield) until data arrives, and the
+	// overall test timeout (ctx) backstops a hang.
 	var buf [64]byte
-	deadline = time.Now().Add(5 * time.Second)
 	var totalRead int
-	for totalRead < len(testData) {
-		if time.Now().After(deadline) {
-			t.Errorf("client %d: timeout waiting for echo response, got %d/%d bytes", id, totalRead, len(testData))
-			return false
-		}
+	for totalRead < len(testData) && ctx.Err() == nil {
 		n, err := conn.Read(buf[totalRead:])
 		if err != nil {
 			t.Errorf("client %d read failed: %v", id, err)
