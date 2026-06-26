@@ -3,7 +3,6 @@ package xnet
 import (
 	"net/netip"
 	"testing"
-	"time"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
@@ -172,7 +171,7 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 	chw := [6]byte{0xbe, 0xef, 0, 0, 0, 1}
 	sv.SetGatewayHardwareAddr(chw)
 	tst := testerFrom(t, MTU)
-	doRequest := func(caddrp netip.AddrPort, sleep time.Duration, data []byte) {
+	doRequest := func(caddrp netip.AddrPort, data []byte) {
 		var client StackAsync
 		err := client.Reset(StackConfig{
 			Hostname:          "Client",
@@ -222,15 +221,12 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 		if len(data) > 0 {
 			tst.TestTCPEstablishedSingleData(&client, sv, &clConn, svconn, data)
 		}
-		if sleep > 0 {
-			time.Sleep(sleep)
-		}
 		tst.TestTCPClose(&client, sv, &clConn, svconn)
 	}
 
 	for range 1000 {
 		caddr := caddr.Next()
-		doRequest(netip.AddrPortFrom(caddr, uint16(sv.Prand32())), 0, []byte("HTTP 1.0\r\n"))
+		doRequest(netip.AddrPortFrom(caddr, uint16(sv.Prand32())), []byte("HTTP 1.0\r\n"))
 	}
 }
 

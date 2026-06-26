@@ -40,20 +40,36 @@ type Sched struct {
 
 // AwaitGoroYield blocks until the coroutine suspends itself via [SchedGoro.Yield].
 func (ss *Sched) AwaitGoroYield() {
-	timeout := time.After(ss.timeout)
 	select {
 	case <-ss.goroYieldSignal:
-	case <-timeout:
+	case <-time.After(ss.timeout):
 		ss.t.Fatal("timeout waiting for stack to backoff")
+	}
+}
+
+// AwaitGoroYieldOrDone blocks until the coroutine either parks itself via
+// [SchedGoro.Yield] (returning done=false) or terminates via [SchedGoro.FinishWithErr]
+// /[SchedGoro.Finish] (returning done=true and the terminal error). It lets a driver
+// loop service an a-priori-unknown number of yields and still observe completion in
+// the same select, avoiding the deadlock of guessing whether the goroutine will yield
+// again. Do not mix with [Sched.Done] on the same scheduler.
+func (ss *Sched) AwaitGoroYieldOrDone() (done bool, err error) {
+	select {
+	case <-ss.goroYieldSignal:
+		return false, nil
+	case err = <-ss.finishChan:
+		return true, err
+	case <-time.After(ss.timeout):
+		ss.t.Fatal("timeout waiting for stack to yield or finish")
+		return true, nil
 	}
 }
 
 // YieldToGoro wakes a coroutine parked in [SchedGoro.Yield], letting the goroutine run on.
 func (ss *Sched) YieldToGoro() {
-	timeout := time.After(ss.timeout)
 	select {
 	case ss.goroContinueSignal <- struct{}{}:
-	case <-timeout:
+	case <-time.After(ss.timeout):
 		ss.t.Fatal("timeout while trying to yield to stack")
 	}
 }
