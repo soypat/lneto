@@ -71,8 +71,9 @@ func main() {
 
 	go func() {
 		err := runner.Configure(netdev.RunnerConfig[ConnectParams]{
-			Buffers: [][]byte{make([]byte, cyw43439.MaxFrameSize)},
+			Buffers: iface.RunnerBuffers(1),
 			Backoff: backoff,
+			Flags:   netdev.RunnerInterfaceAsync | netdev.RunnerInterfacePoll,
 		})
 		if err != nil {
 			failIfErr("runnerconfig", err)
@@ -84,7 +85,10 @@ func main() {
 	assigned, gatewayRt, subnetBits, err := stack.EnableDHCP(context.Background(), true, netip.Addr{})
 	failIfErr("enable dhcp", err)
 	println("assigned=", assigned.String(), "gateway=", gatewayRt.String(), "subnet", subnetBits)
-	select {}
+	for {
+		runner.PrintDebug()
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // compile-time guarantee of interface implementation.
@@ -150,9 +154,12 @@ func (d *Netdev) SendOffsetEthFrame(offsetTxEthFrame []byte) error {
 
 // SetRecvHandler implements [netdev.DevEthernet].
 //
-// This device is poll-driven: frames are returned through EthPoll, so the async
-// receive handler is unused. EthPoll and SetEthRecvHandler are mutually exclusive.
-func (d *Netdev) SetEthRecvHandler(handler func(rxEthframe []byte)) {}
+// The cyw43439 delivers received Ethernet frames through this callback whenever
+// the bus is serviced (including ioctl/control transactions outside EthPoll), so
+// the runner must drive it in async mode. EthPoll is still used to pump the device.
+func (d *Netdev) SetEthRecvHandler(handler func(rxEthframe []byte)) {
+	d.dev.RecvEthHandle(handler)
+}
 
 // EthPoll implements [netdev.DevEthernet].
 func (d *Netdev) EthPoll(buf []byte) (ethFrameOff, ethernetBytes int, err error) {
@@ -161,8 +168,9 @@ func (d *Netdev) EthPoll(buf []byte) (ethFrameOff, ethernetBytes int, err error)
 
 // MaxFrameSizeAndOffset implements [netdev.DevEthernet].
 func (d *Netdev) MaxFrameSizeAndOffset() (maxFrameSize int, frameOff int) {
-	return cyw43439.MaxFrameSize, 0
+	return 2048, 0
 }
+
 func failIfErr(msg string, err error) {
 	if err != nil {
 		fail(msg, err)

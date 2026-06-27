@@ -3,7 +3,9 @@ package netdev
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync/atomic"
+	"time"
 
 	"github.com/soypat/lneto"
 )
@@ -53,6 +55,8 @@ type Runner[C any] struct {
 	bufsaux  [1][]byte
 	sizesaux [1]int
 	flags    RunnerFlags
+	wake     chan struct{}
+	timer    *time.Timer
 }
 
 type RunnerConfig[C any] struct {
@@ -100,6 +104,14 @@ func (r *Runner[C]) Run(ctx context.Context, iface Interface[C], stack Stack) er
 	bufsize := iface.bufsize()
 	async := r.flags.HasAny(RunnerInterfaceAsync)
 	poll := r.flags.HasAny(RunnerInterfacePoll)
+	wake := r.flags.HasAny(RunnerAsyncWakeOnRx)
+	if wake && r.wake == nil {
+		r.wake = make(chan struct{}, 1)
+		r.timer = time.NewTimer(time.Hour)
+	}
+	if wake {
+		r.timer.Stop()
+	}
 	backoff := r.backoff
 	if async {
 		// TODO: RunnerAsyncWakeOnRx if set switches handler and replaces backoff with a channel driven backoff.
@@ -150,6 +162,26 @@ func (r *Runner[C]) Run(ctx context.Context, iface Interface[C], stack Stack) er
 		r.bufs.release(txbuf) // Release buffer.
 		if nrx > 0 || ntx > 0 {
 			backoffs = 0
+		} else if wake {
+			d := backoff(backoffs)
+			switch d {
+			case lneto.BackoffFlagGosched:
+				runtime.Gosched()
+				fallthrough
+			case lneto.BackoffFlagNop:
+				continue
+			default:
+				d = max(d, 100*time.Microsecond)
+			}
+			backoffs++
+			r.timer.Reset(d)
+			select {
+			case <-r.wake:
+				backoffs = 0 // woke early on data.
+			case <-ctx.Done():
+			case <-r.timer.C:
+			}
+			r.timer.Stop()
 		} else {
 			backoff.Do(backoffs)
 			backoffs++
@@ -163,11 +195,10 @@ func (r *Runner[C]) Run(ctx context.Context, iface Interface[C], stack Stack) er
 // Deprecated: Might be given other shape in future, but this is not how we do debugging. use freely meanwhile.
 func (r *Runner[C]) PrintDebug() {
 	print("RUNNER: rx:", r.rx.Load(),
+		" pktlost:", r.pktlost.Load(),
 		" devPoll:", r.flags.HasAny(RunnerInterfacePoll),
 		" devAsync:", r.flags.HasAny(RunnerInterfaceAsync),
 		" devWakeRx:", r.flags.HasAny(RunnerAsyncWakeOnRx),
-		" pktlost:", r.pktlost.Load(),
-		" handles:",
 		"\n")
 }
 
@@ -192,12 +223,18 @@ func (r *Runner[C]) recvEthHandler(incomingEthernet []byte) {
 		return
 	}
 	copy(buf, incomingEthernet)
+	if r.wake != nil {
+		select {
+		case r.wake <- struct{}{}: // signal waiting runner
+		default: // already pending — coalesce, never block
+		}
+	}
 }
 
 func (r *Runner[C]) doRx(iface Interface[C], stack Stack, poll, async bool) (n int, gerr error) {
 	if !async { // poll guaranteed to be set as per RunnerFlags.Validate.
 		// Poll-only doRx.
-		buf := r.bufs.acquireNext(iface.bufsize(), true)
+		buf := r.bufs.acquireNext(iface.frameSize, true)
 		if buf == nil {
 			return 0, nil
 		}

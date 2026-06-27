@@ -4,7 +4,7 @@ go 1.25.7
 
 require (
 	github.com/soypat/cyw43439 v0.1.1
-	github.com/soypat/lneto v0.1.0
+	github.com/soypat/lneto v0.1.1-0.20260425023453-aa77403a2b32
 )
 
 require (
