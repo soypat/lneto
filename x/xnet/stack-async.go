@@ -545,8 +545,12 @@ func (s *StackAsync) RegisterUDP4(node lneto.StackNode, remoteAddr [4]byte, remo
 	if idx >= cap(s.userUDPs) {
 		return lneto.ErrExhausted
 	}
+	raddr := remoteAddr[:]
+	if remoteAddr == [4]byte{} {
+		raddr = nil
+	}
 	s.userUDPs = s.userUDPs[:idx+1]
-	s.userUDPs[idx].SetStackNode(node, remoteAddr[:], remotePort)
+	s.userUDPs[idx].SetStackNode(node, raddr, remotePort)
 	return s.udps.RegisterMACFiltered(&s.userUDPs[idx], nil)
 }
 

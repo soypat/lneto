@@ -145,27 +145,45 @@ func (r *Runner[C]) release() {
 func (r *Runner[C]) recvEthHandler(incomingEthernet []byte) {
 	r.handlerTriggered = true
 	buf := r.bufs.acquireNext(len(incomingEthernet), true)
-	r.rx.Add(uint64(len(buf)))
 	if buf == nil {
 		// Failed to acquire buffer, packet dropped.
 		r.pktlost.Add(1)
 		return
 	}
+	r.rx.Add(uint64(len(buf)))
 	copy(buf, incomingEthernet)
 }
 
 func (r *Runner[C]) doRx(iface Interface[C], stack Stack) (int, error) {
-	if !r.handlerTriggered {
-		buf := r.bufs.acquireNext(iface.bufsize(), true)
-		eoff, efrm, err := iface.dev.EthPoll(buf)
-		if r.handlerTriggered && efrm > 0 {
-			panic("invalid use of EthPoll with async handler- EthPoll should write into argument buffer only")
-		} else if err != nil || efrm == 0 {
-			return 0, err
-		}
-		return r.processAsyncRx(stack, eoff)
+	if r.handlerTriggered {
+		// Device delivers frames asynchronously via recvEthHandler.
+		return r.processAsyncRx(stack, 0)
 	}
-	return r.processAsyncRx(stack, 0)
+	// Poll-driven device: EthPoll writes a frame into the buffer we provide.
+	buf := r.bufs.acquireNext(iface.bufsize(), true)
+	if buf == nil {
+		// No free buffer for the device to poll into; drain pending Rx instead.
+		return r.processAsyncRx(stack, 0)
+	}
+	eoff, efrm, err := iface.dev.EthPoll(buf)
+	if r.handlerTriggered && efrm > 0 {
+		r.bufs.release(buf)
+		panic("invalid use of EthPoll with async handler- EthPoll should write into argument buffer only")
+	}
+	if err != nil || efrm == 0 {
+		r.bufs.release(buf)
+		if r.handlerTriggered {
+			// Device turned out to be async and filled a different buffer.
+			return r.processAsyncRx(stack, 0)
+		}
+		return 0, err
+	}
+	// Device polled a frame into buf at [eoff:eoff+efrm].
+	r.bufsaux = [1][]byte{buf[:eoff+efrm]}
+	err = stack.IngressPackets(r.bufsaux[:], eoff)
+	r.bufs.release(buf)
+	r.rx.Add(uint64(efrm))
+	return efrm, err
 }
 
 // processRx is called after a packet is received asynchronously and compied to buffer via recvEthHandler

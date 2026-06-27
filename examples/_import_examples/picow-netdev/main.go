@@ -149,17 +149,14 @@ func (d *Netdev) SendOffsetEthFrame(offsetTxEthFrame []byte) error {
 }
 
 // SetRecvHandler implements [netdev.DevEthernet].
-func (d *Netdev) SetEthRecvHandler(handler func(rxEthframe []byte)) {
-	d.dev.RecvEthHandle(func(pkt []byte) error {
-		handler(pkt)
-		return nil
-	})
-}
+//
+// This device is poll-driven: frames are returned through EthPoll, so the async
+// receive handler is unused. EthPoll and SetEthRecvHandler are mutually exclusive.
+func (d *Netdev) SetEthRecvHandler(handler func(rxEthframe []byte)) {}
 
 // EthPoll implements [netdev.DevEthernet].
 func (d *Netdev) EthPoll(buf []byte) (ethFrameOff, ethernetBytes int, err error) {
-	_, err = d.dev.PollOne()
-	return 0, 0, err
+	return d.dev.EthPoll(buf)
 }
 
 // MaxFrameSizeAndOffset implements [netdev.DevEthernet].

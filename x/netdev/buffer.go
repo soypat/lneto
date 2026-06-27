@@ -52,8 +52,8 @@ func (bs *bufferSelect) numRx() (numRx int) {
 
 func (bs *bufferSelect) getRx() []byte {
 	for i := range bs.bufs {
-		if bs.bufs[i].isRx.Load() && bs.bufs[i].lenAcquire.Load() > 0 {
-			return bs.bufs[i].buf
+		if n := bs.bufs[i].lenAcquire.Load(); bs.bufs[i].isRx.Load() && n > 0 {
+			return bs.bufs[i].buf[:n]
 		}
 	}
 	return nil
@@ -65,7 +65,7 @@ func (bs *bufferSelect) acquireNext(len int, isRx bool) []byte {
 	}
 	for i := range bs.bufs {
 		if bs.bufs[i].lenAcquire.CompareAndSwap(0, int32(len)) {
-			bs.bufs[i].isRx.Store(true)
+			bs.bufs[i].isRx.Store(isRx)
 			return bs.bufs[i].buf[:len]
 		}
 	}
