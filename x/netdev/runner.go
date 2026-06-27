@@ -114,7 +114,6 @@ func (r *Runner[C]) Run(ctx context.Context, iface Interface[C], stack Stack) er
 	}
 	backoff := r.backoff
 	if async {
-		// TODO: RunnerAsyncWakeOnRx if set switches handler and replaces backoff with a channel driven backoff.
 		iface.dev.SetEthRecvHandler(r.recvEthHandler)
 	}
 
