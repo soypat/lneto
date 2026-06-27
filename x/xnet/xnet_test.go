@@ -30,63 +30,27 @@ const (
 	finack = tcp.FlagFIN | tcp.FlagACK
 )
 
-func newstackTestScheduler(t testing.TB) stackTestScheduler {
-	return stackTestScheduler{
-		t:                   t,
-		stackBackoffSignal:  make(chan struct{}),
-		stackContinueSignal: make(chan struct{}),
-		timeout:             time.Second,
-	}
-}
-
-type stackTestScheduler struct {
-	t testing.TB
-	// when stack backs off it signals here and waits until channel read or timeout.
-	stackBackoffSignal chan struct{}
-	// when main goroutine is ready for more information this channel is written to to signal waiting on stack activity.
-	stackContinueSignal chan struct{}
-	timeout             time.Duration
-}
-
-func (ss *stackTestScheduler) backoffStack(consecutiveBackoffs uint) time.Duration {
-	timeout := time.After(ss.timeout)
-	select {
-	case ss.stackBackoffSignal <- struct{}{}:
-	case <-timeout:
-		ss.t.Fatal("timeout backing off, possible race condition? Multiple stacks using same backoff is unexpected pattern")
-	}
-	select {
-	case <-ss.stackContinueSignal:
-	case <-timeout:
-		ss.t.Fatal("timeout waiting for continue")
-	}
-	return lneto.BackoffFlagNop // backoff yield implemented on our side.
-}
-
-func (ss *stackTestScheduler) mainGoroutineWaitForStackYield() {
-	timeout := time.After(ss.timeout)
-	select {
-	case <-ss.stackBackoffSignal:
-	case <-timeout:
-		ss.t.Fatal("timeout waiting for stack to backoff")
-	}
-}
-
-func (ss *stackTestScheduler) mainGoroutineYieldToStack() {
-	timeout := time.After(ss.timeout)
-	select {
-	case ss.stackContinueSignal <- struct{}{}:
-	case <-timeout:
-		ss.t.Fatal("timeout while trying to yield to stack")
-	}
-}
-
 func TestTCPConn_ReadBlocksUntilDataAvailable(t *testing.T) {
 	const seed = 5678
 	const MTU = ethernet.MaxMTU
 	const svPort = 8080
 	client, sv, clconn, svconn := newTCPStacks(t, seed, MTU)
 	tst := testerFrom(t, MTU)
+
+	// Drive svconn.Read from a single background goroutine whose backoff is
+	// controlled by the scheduler. This lets the test thread know deterministically
+	// when Read has parked waiting for data, instead of sleeping and hoping it blocked.
+	tsched := ltesto.NewSched(t)
+	tgoro := tsched.Goro()
+	err := svconn.Configure(tcp.ConnConfig{
+		RxBuf:             make([]byte, MTU),
+		TxBuf:             make([]byte, MTU),
+		TxPacketQueueSize: 4,
+		RWBackoff:         tgoro.Yield,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1337)
 
@@ -96,27 +60,25 @@ func TestTCPConn_ReadBlocksUntilDataAvailable(t *testing.T) {
 	}
 
 	sendData := []byte("blocking test data")
-	readDone := make(chan struct{})
 	var readN int
-	var readErr error
 	var readBuf [64]byte
 
 	// Start a goroutine to read from svconn - this should block since no data available.
 	go func() {
-		readN, readErr = svconn.Read(readBuf[:])
-		close(readDone)
+		n, err := svconn.Read(readBuf[:])
+		readN = n
+		tgoro.FinishWithErr(err)
 	}()
 
-	// Give Read time to enter blocking state.
-	select {
-	case <-readDone:
-		t.Fatal("Read returned immediately without data - expected blocking")
-	case <-time.After(50 * time.Millisecond):
-		// Good - Read is blocking as expected.
+	// AwaitGoroYield blocks until Read parks in backoff: deterministic proof that
+	// Read found no data available and is waiting.
+	tsched.AwaitGoroYield()
+	if readN != 0 {
+		t.Fatal("Read returned before data was available")
 	}
 
 	// Write data on client side.
-	_, err := clconn.Write(sendData)
+	_, err = clconn.Write(sendData)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,14 +101,9 @@ func TestTCPConn_ReadBlocksUntilDataAvailable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Now Read should unblock and return data.
-	select {
-	case <-readDone:
-		// Good - Read unblocked.
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("Read did not unblock after data became available")
-	}
-
+	// Release Read; the data is now available so it returns instead of backing off again.
+	tsched.YieldToGoro()
+	readErr := <-tsched.Done()
 	if readErr != nil {
 		t.Fatalf("Read returned error: %v", readErr)
 	}
@@ -164,9 +121,9 @@ func TestStackGoTCPDialRetriesPendingControl(t *testing.T) {
 	const tcptimeout = time.Second
 	const yield = 1 * time.Millisecond
 	client, sv, _, _ := newTCPStacks(t, seed, MTU)
-	tbackoffer := newstackTestScheduler(t)
-
-	sg := client.StackBlocking(tbackoffer.backoffStack).StackGo(StackGoConfig{
+	tsched := ltesto.NewSched(t)
+	tgoro := tsched.Goro()
+	sg := client.StackBlocking(tgoro.Yield).StackGo(StackGoConfig{
 		ListenerPoolConfig: TCPPoolConfig{
 			QueueSize: 4,
 			TxBufSize: MTU,
@@ -185,16 +142,15 @@ func TestStackGoTCPDialRetriesPendingControl(t *testing.T) {
 
 	laddr := netip.AddrPortFrom(netip.AddrFrom4(client.Addr4()), 1234)
 	raddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), 22)
-	done := make(chan error, 1)
 	go func() {
 		_, err := sg.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockSTREAM, laddr, raddr)
-		done <- err
+		tgoro.FinishWithErr(err)
 	}()
 	npacket := 0
 	ntcppacket := 0
 	var buf [ethernet.MaxMTU + ethernet.MaxOverheadSize]byte
 	for !t.Failed() { // Tinygo does not implement failnow.
-		tbackoffer.mainGoroutineWaitForStackYield()
+		tsched.AwaitGoroYield()
 		n, err := client.EgressEthernet(buf[:])
 		now += tcptimeout / 100
 		if err != nil {
@@ -205,7 +161,7 @@ func TestStackGoTCPDialRetriesPendingControl(t *testing.T) {
 		npacket++
 		frm, ok := getTCPFrame(buf[:])
 		if !ok {
-			tbackoffer.mainGoroutineYieldToStack()
+			tsched.YieldToGoro()
 			continue
 		}
 		ntcppacket++
@@ -216,14 +172,17 @@ func TestStackGoTCPDialRetriesPendingControl(t *testing.T) {
 		switch ntcppacket {
 		case 1:
 			now += 2 * tcptimeout
-			tbackoffer.mainGoroutineYieldToStack()
+			tsched.YieldToGoro()
 		case 2:
 			now += 2 * tcptimeout
-			tbackoffer.mainGoroutineYieldToStack()
+			tsched.YieldToGoro()
 			select {
 			case <-time.After(time.Second):
 				t.Fatal("SocketNetip hanging")
-			case <-done:
+			case err := <-tsched.Done():
+				if err != errDeadlineExceed {
+					t.Fatal("expected deadline exceeded", err)
+				}
 				return // Test success.
 			}
 		}

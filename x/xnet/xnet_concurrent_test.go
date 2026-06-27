@@ -16,6 +16,7 @@ import (
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
+	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
 )
@@ -120,7 +121,7 @@ func TestTCPListener_ConcurrentEcho(t *testing.T) {
 		wg.Add(1)
 		go func(clientID int) {
 			defer wg.Done()
-			if runClient(t, clientID, &clientStacks[clientID], &clientConns[clientID],
+			if runClient(t, ctx, clientID, &clientStacks[clientID], &clientConns[clientID],
 				serverIP, serverPort) {
 				clientSuccess[clientID] = true
 			}
@@ -206,7 +207,7 @@ func echoServer(ctx context.Context, listener *tcp.Listener) {
 		}
 
 		if listener.NumberOfReadyToAccept() == 0 {
-			time.Sleep(time.Millisecond)
+			runtime.Gosched()
 			continue
 		}
 
@@ -240,7 +241,7 @@ func echoServer(ctx context.Context, listener *tcp.Listener) {
 	}
 }
 
-func runClient(t *testing.T, id int, stack *StackAsync, conn *tcp.Conn,
+func runClient(t *testing.T, ctx context.Context, id int, stack *StackAsync, conn *tcp.Conn,
 	serverAddr netip.Addr, serverPort uint16) bool {
 	// Dial server.
 	clientPort := uint16(10000 + id)
@@ -250,14 +251,8 @@ func runClient(t *testing.T, id int, stack *StackAsync, conn *tcp.Conn,
 		return false
 	}
 
-	// Wait for connection established (handshake via kernel loop).
-	deadline := time.Now().Add(5 * time.Second)
-	for conn.State() != tcp.StateEstablished {
-		if time.Now().After(deadline) {
-			t.Errorf("client %d: timeout waiting for established state, got %s", id, conn.State())
-			return false
-		}
-		time.Sleep(time.Millisecond)
+	for conn.State() != tcp.StateEstablished && ctx.Err() == nil {
+		runtime.Gosched()
 	}
 
 	// Send test data.
@@ -268,15 +263,11 @@ func runClient(t *testing.T, id int, stack *StackAsync, conn *tcp.Conn,
 		return false
 	}
 
-	// Read echo response.
+	// Read echo response. conn.Read yields (backoffYield) until data arrives, and the
+	// overall test timeout (ctx) backstops a hang.
 	var buf [64]byte
-	deadline = time.Now().Add(5 * time.Second)
 	var totalRead int
-	for totalRead < len(testData) {
-		if time.Now().After(deadline) {
-			t.Errorf("client %d: timeout waiting for echo response, got %d/%d bytes", id, totalRead, len(testData))
-			return false
-		}
+	for totalRead < len(testData) && ctx.Err() == nil {
 		n, err := conn.Read(buf[totalRead:])
 		if err != nil {
 			t.Errorf("client %d read failed: %v", id, err)
@@ -325,11 +316,24 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelDebug - 99,
 	}))
+	// When the payload exceeds the Tx buffer, c1.Write must run in a background
+	// goroutine that blocks until the driver drains the buffer. The scheduler turns
+	// that blocking into a deterministic, sleep-free handoff: c1's backoff parks the
+	// writer and the driver releases it after freeing buffer space.
+	async := datalen > tx1Buf
+	var tsched *ltesto.Sched
+	var tgoro ltesto.SchedGoro
+	c1Backoff := backoffYield
+	if async {
+		tsched = ltesto.NewSched(t)
+		tgoro = tsched.Goro()
+		c1Backoff = tgoro.Yield
+	}
 	err := c1.Configure(tcp.ConnConfig{
 		RxBuf:             nil,
 		TxBuf:             make([]byte, tx1Buf),
 		TxPacketQueueSize: queueSize,
-		RWBackoff:         backoffYield,
+		RWBackoff:         c1Backoff,
 		Logger:            logger,
 	})
 	if err != nil {
@@ -350,29 +354,19 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 	for i := range datalen {
 		data[i] = byte(i)
 	}
-	deadline := time.Now().Add(3600 * time.Second)
-	err = c1.SetDeadline(deadline)
-	err2 := c2.SetDeadline(deadline)
-	if err != nil || err2 != nil {
-		t.Fatal(err)
-	}
-
-	async := datalen > tx1Buf
 	if async {
 		// Since data does not fit in TCP Tx buffer the test must be run asynchronously.
 		c1.InternalHandler().SetLoggers(logger, logger)
 		// c1.InternalHandler().SetLoggers(nil, nil)
 		go func() {
-			n, err := c1.Write(data)
-			if err != nil {
-				t.Error("async write", err)
-			} else if n != len(data) {
-				t.Error("io.Writer faulty implementation")
+			n, werr := c1.Write(data)
+			if werr == nil && n != len(data) {
+				werr = fmt.Errorf("async write %d of %d bytes", n, len(data))
 			}
-			err = c1.Close()
-			if err != nil {
-				t.Fatal("async close", err)
+			if werr == nil {
+				werr = c1.Close()
 			}
+			tgoro.FinishWithErr(werr)
 		}()
 	} else {
 		n, err := c1.Write(data)
@@ -389,7 +383,20 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 	exchanging := 1
 	tcpData := 0
 	totalRead := 0
+	writerDone := false
 	for exchanging > 0 || c1.State().TxDataOpen() {
+		if async && !writerDone {
+			// Block until the writer parks on a full Tx buffer (or finishes). Servicing
+			// each park with exactly one pump round below keeps progress deterministic
+			// without sleeping or guessing whether the writer will park again.
+			done, werr := tsched.AwaitGoroYieldOrDone()
+			if werr != nil {
+				t.Error("async write/close:", werr)
+			}
+			if done {
+				writerDone = true
+			}
+		}
 		exchanges++
 		exchanging = exchangeEthernetOnce(t, s1, s2, buf)
 		frm, ok := getTCPFrame(buf[:exchanging])
@@ -401,17 +408,20 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 				if err != nil {
 					t.Error(err)
 				} else if ngot != n {
-					t.Errorf("want %d data read c1->c1, got %d", n, ngot)
+					t.Errorf("want %d data read c1->c2, got %d", n, ngot)
 				} else if !internal.BytesEqual(buf[:n], data[totalRead:totalRead+n]) {
 					t.Errorf("exch%d data rx mismatch, want:\n%q\ngot:\n%q\n", exchanges, data[totalRead:totalRead+n], buf[:n])
 				}
 				totalRead += ngot
-				runtime.Gosched()                            // Yield to let c1 write via goroutine.
-				acks := exchangeEthernetOnce(t, s2, s1, buf) // Send ACK s1's way.
+				acks := exchangeEthernetOnce(t, s2, s1, buf) // Send ACK s1's way, freeing its Tx buffer.
 				if acks == 0 {
 					t.Error("no data sent back to s1")
 				}
 			}
+		}
+		if async && !writerDone {
+			// The ACK above freed Tx buffer space; release the writer to fill it and re-park.
+			tsched.YieldToGoro()
 		}
 	}
 	if c1.BufferedUnsent() != 0 {
