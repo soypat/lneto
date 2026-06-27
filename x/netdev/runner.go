@@ -12,6 +12,33 @@ var (
 	errRunnerAcquired = errors.New("runner currently running")
 )
 
+type RunnerFlags uint32
+
+const (
+	// Signals Interface needs to be driven via [DevEthernet.EthPoll].
+	// [RunnerAsync] can be set too to signal packets received via callback instead of written to EthPoll buffer.
+	RunnerInterfacePoll RunnerFlags = 1 << iota
+	// Interface data channel driven exclusively by callback passed to [DevEthernet.SetEthRecvHandler].
+	// If set [DevEthernet.EthPoll] must not write data to argument buffer.
+	RunnerInterfaceAsync
+	// Runner backs off but also wakes up on receiving data asynchronously.
+	// Needs [RunnerInterfaceAsync] to be set to be effective.
+	RunnerAsyncWakeOnRx
+)
+
+func (rf RunnerFlags) HasAll(query RunnerFlags) bool { return rf&query == query }
+func (rf RunnerFlags) HasAny(query RunnerFlags) bool { return rf&query != 0 }
+
+func (rf RunnerFlags) Validate() error {
+	driven := rf.HasAny(RunnerInterfaceAsync | RunnerInterfacePoll)
+	if !driven {
+		return errors.New("runner needs to be poll/async driven")
+	} else if rf.HasAny(RunnerAsyncWakeOnRx) && !rf.HasAll(RunnerInterfaceAsync) {
+		return errors.New("runner wake needs to be async driven")
+	}
+	return nil
+}
+
 // Runner orchestrates an Interface and a Stack asynchronously.
 type Runner[C any] struct {
 	running   atomic.Uint32
@@ -20,21 +47,26 @@ type Runner[C any] struct {
 	reconnect *C
 	// pktlost is incremented each time an incoming packet is lost due to insufficient buffer size.
 	pktlost atomic.Uint64
-	rx      atomic.Uint64
+	// rx includes ALL data received, even dropped data. xnet.StackAsync keeps track of actual processed data.
+	rx atomic.Uint64
 	// bufsaux is used as ana argument to stack processing so that no allocations are performed
-	bufsaux          [1][]byte
-	sizesaux         [1]int
-	handlerTriggered bool
+	bufsaux  [1][]byte
+	sizesaux [1]int
+	flags    RunnerFlags
 }
 
 type RunnerConfig[C any] struct {
 	Buffers         [][]byte
 	ReconnectParams *C
 	Backoff         lneto.BackoffStrategy
-	WakeOnRx        bool
+	// Flags must be set to be Async, Poll driven, or both.
+	Flags RunnerFlags
 }
 
 func (r *Runner[C]) Configure(cfg RunnerConfig[C]) error {
+	if err := cfg.Flags.Validate(); err != nil {
+		return err
+	}
 	if len(cfg.Buffers) < 1 {
 		return lneto.ErrInvalidConfig
 	} else if cfg.Backoff == nil {
@@ -46,6 +78,7 @@ func (r *Runner[C]) Configure(cfg RunnerConfig[C]) error {
 	defer r.release()
 	r.bufs.reset(cfg.Buffers)
 	r.backoff = cfg.Backoff
+	r.flags = cfg.Flags
 	r.reconnect = cfg.ReconnectParams
 	return nil
 }
@@ -64,14 +97,19 @@ func (r *Runner[C]) Run(ctx context.Context, iface Interface[C], stack Stack) er
 	r.bufs.releaseAll()
 	r.rx.Store(0)
 	r.pktlost.Store(0)
-	r.handlerTriggered = false
 	bufsize := iface.bufsize()
-	iface.dev.SetEthRecvHandler(r.recvEthHandler)
+	async := r.flags.HasAny(RunnerInterfaceAsync)
+	poll := r.flags.HasAny(RunnerInterfacePoll)
+	backoff := r.backoff
+	if async {
+		// TODO: RunnerAsyncWakeOnRx if set switches handler and replaces backoff with a channel driven backoff.
+		iface.dev.SetEthRecvHandler(r.recvEthHandler)
+	}
 
 	// backoffs stores number of consecutive times no data was sent/received.
 	var backoffs uint
 	for ctx.Err() == nil {
-		nrx, err := r.doRx(iface, stack)
+		nrx, err := r.doRx(iface, stack, poll, async)
 		if err != nil {
 			println("err EthPoll:", err.Error())
 		}
@@ -81,7 +119,7 @@ func (r *Runner[C]) Run(ctx context.Context, iface Interface[C], stack Stack) er
 		if txbuf == nil {
 			// We got blocked by Rx. Try draining rx.
 			for range len(r.bufs.bufs) {
-				n, err := r.doRx(iface, stack)
+				n, err := r.doRx(iface, stack, poll, async)
 				if err != nil {
 					println("err EthPoll:", err.Error())
 					break
@@ -113,7 +151,7 @@ func (r *Runner[C]) Run(ctx context.Context, iface Interface[C], stack Stack) er
 		if nrx > 0 || ntx > 0 {
 			backoffs = 0
 		} else {
-			r.backoff.Do(backoffs)
+			backoff.Do(backoffs)
 			backoffs++
 		}
 	}
@@ -125,8 +163,11 @@ func (r *Runner[C]) Run(ctx context.Context, iface Interface[C], stack Stack) er
 // Deprecated: Might be given other shape in future, but this is not how we do debugging. use freely meanwhile.
 func (r *Runner[C]) PrintDebug() {
 	print("RUNNER: rx:", r.rx.Load(),
-		" devpollonly:", !r.handlerTriggered, " pktlost:", r.pktlost.Load(),
-		" handles:", r.handlerTriggered,
+		" devPoll:", r.flags.HasAny(RunnerInterfacePoll),
+		" devAsync:", r.flags.HasAny(RunnerInterfaceAsync),
+		" devWakeRx:", r.flags.HasAny(RunnerAsyncWakeOnRx),
+		" pktlost:", r.pktlost.Load(),
+		" handles:",
 		"\n")
 }
 
@@ -143,57 +184,59 @@ func (r *Runner[C]) release() {
 
 // recvEthHandler is called asynchronously. Should be as fast as possible. Do not block inside.
 func (r *Runner[C]) recvEthHandler(incomingEthernet []byte) {
-	r.handlerTriggered = true
 	buf := r.bufs.acquireNext(len(incomingEthernet), true)
+	r.rx.Add(uint64(len(incomingEthernet))) // rx includes dropped data. xnet.StackAsync keeps track of actual received statistics.
 	if buf == nil {
 		// Failed to acquire buffer, packet dropped.
 		r.pktlost.Add(1)
 		return
 	}
-	r.rx.Add(uint64(len(buf)))
 	copy(buf, incomingEthernet)
 }
 
-func (r *Runner[C]) doRx(iface Interface[C], stack Stack) (int, error) {
-	if r.handlerTriggered {
-		// Device delivers frames asynchronously via recvEthHandler.
-		return r.processAsyncRx(stack, 0)
-	}
-	// Poll-driven device: EthPoll writes a frame into the buffer we provide.
-	buf := r.bufs.acquireNext(iface.bufsize(), true)
-	if buf == nil {
-		// No free buffer for the device to poll into; drain pending Rx instead.
-		return r.processAsyncRx(stack, 0)
-	}
-	eoff, efrm, err := iface.dev.EthPoll(buf)
-	if r.handlerTriggered && efrm > 0 {
-		r.bufs.release(buf)
-		panic("invalid use of EthPoll with async handler- EthPoll should write into argument buffer only")
-	}
-	if err != nil || efrm == 0 {
-		r.bufs.release(buf)
-		if r.handlerTriggered {
-			// Device turned out to be async and filled a different buffer.
-			return r.processAsyncRx(stack, 0)
+func (r *Runner[C]) doRx(iface Interface[C], stack Stack, poll, async bool) (n int, gerr error) {
+	if !async { // poll guaranteed to be set as per RunnerFlags.Validate.
+		// Poll-only doRx.
+		buf := r.bufs.acquireNext(iface.bufsize(), true)
+		if buf == nil {
+			return 0, nil
 		}
-		return 0, err
+		eoff, efrm, err := iface.dev.EthPoll(buf)
+		if efrm > 0 {
+			r.bufsaux = [1][]byte{buf[:eoff+efrm]}
+			gerr = stack.IngressPackets(r.bufsaux[:], eoff)
+		} else {
+			gerr = err
+		}
+		r.bufs.release(buf)
+		r.rx.Add(uint64(efrm))
+		return efrm, gerr
 	}
-	// Device polled a frame into buf at [eoff:eoff+efrm].
-	r.bufsaux = [1][]byte{buf[:eoff+efrm]}
-	err = stack.IngressPackets(r.bufsaux[:], eoff)
-	r.bufs.release(buf)
-	r.rx.Add(uint64(efrm))
-	return efrm, err
+
+	// Async branch.
+	n, gerr = r.processAsyncRx(stack)
+	if poll && r.bufs.numFree() > 0 {
+		// Manual polling required by device.
+		// Data not transmitted via this channel as per RunnerFlags documentation.
+		iface.dev.EthPoll(nil)
+	} else {
+		return n, gerr
+	}
+	n2, err := r.processAsyncRx(stack)
+	if gerr == nil {
+		gerr = err
+	}
+	return n + n2, gerr
 }
 
 // processRx is called after a packet is received asynchronously and compied to buffer via recvEthHandler
-func (r *Runner[C]) processAsyncRx(stack Stack, ethFrameOff int) (int, error) {
+func (r *Runner[C]) processAsyncRx(stack Stack) (int, error) {
 	buf := r.bufs.getRx()
 	if buf == nil {
 		return 0, nil
 	}
 	r.bufsaux = [1][]byte{buf}
-	err := stack.IngressPackets(r.bufsaux[:], ethFrameOff)
+	err := stack.IngressPackets(r.bufsaux[:], 0)
 	r.bufs.release(buf)
-	return len(buf) - ethFrameOff, err
+	return len(buf), err
 }

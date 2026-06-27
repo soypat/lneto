@@ -50,6 +50,15 @@ func (bs *bufferSelect) numRx() (numRx int) {
 	return numRx
 }
 
+func (bs *bufferSelect) numFree() (numFree int) {
+	for i := range bs.bufs {
+		if !bs.bufs[i].isRx.Load() && bs.bufs[i].lenAcquire.Load() == 0 {
+			numFree++
+		}
+	}
+	return numFree
+}
+
 func (bs *bufferSelect) getRx() []byte {
 	for i := range bs.bufs {
 		if n := bs.bufs[i].lenAcquire.Load(); bs.bufs[i].isRx.Load() && n > 0 {

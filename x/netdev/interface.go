@@ -39,13 +39,22 @@ type DevEthernet interface {
 	SendOffsetEthFrame(offsetTxEthFrame []byte) error
 	// SetRecvHandler registers the function called when an Ethernet
 	// frame is received. Buffers needed by the device to operate efficiently
-	// should be allocated on its side. This function is mutually exclusive with EthPoll:
-	// use on or the other to receive data.
+	// should be allocated on its side.
+	//
+	// Frames may be delivered via this handler, via EthPoll's buffer, or both:
+	//   - Handler unset: EthPoll writes received frames into its argument buffer.
+	//   - Handler set: received frames are delivered to the handler. EthPoll must
+	//     not write to its argument buffer; it is called with a nil buffer purely
+	//     to pump devices that need explicit servicing to drive the handler.
 	SetEthRecvHandler(handler func(rxEthframe []byte))
 	// EthPoll services the device. For poll-based devices (e.g. CYW43439
 	// over SPI), reads from the bus and invokes the handler for each
-	// received frame. This method is mutually exclusive with SetEthRecvHandler:
-	// use one or the other to receive data but not return data via both channels.
+	// received frame.
+	//
+	// Behavior depends on whether a handler is set via SetEthRecvHandler:
+	//   - No handler: writes a received frame into buf, returning its offset/length.
+	//   - Handler set: buf is nil and must not be written to; EthPoll only pumps
+	//     the device so frames are delivered through the handler. Return values are ignored.
 	EthPoll(buf []byte) (ethFrameOff, ethernetBytes int, err error)
 	// MaxFrameSizeAndOffset returns the max complete device frame size
 	// (including headers and any overhead) for buffer allocation.
