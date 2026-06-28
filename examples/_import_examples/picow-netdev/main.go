@@ -78,7 +78,7 @@ func main() {
 		if err != nil {
 			failIfErr("runnerconfig", err)
 		}
-		if err := runner.Run(context.Background(), iface, &stack); err != nil {
+		if err := runner.Run(context.Background(), &iface, &stack); err != nil {
 			failIfErr("runner", err)
 		}
 	}()
