@@ -2,7 +2,10 @@ package dhcpv6
 
 import (
 	"encoding/binary"
+	"net/netip"
 	"testing"
+
+	"github.com/soypat/lneto/dns"
 )
 
 // writeOpt6 encodes a single DHCPv6 option into dst using the 4-byte TLV header
@@ -124,6 +127,9 @@ func TestClientSolicitRequest(t *testing.T) {
 	if n == 0 {
 		t.Fatal("Encapsulate (Solicit): wrote 0 bytes")
 	}
+	if !frameHasOption(t, buf[:n], OptReconfAccept) {
+		t.Fatal("Solicit missing Reconfigure Accept option")
+	}
 	if cl.State() != StateSoliciting {
 		t.Fatalf("after Solicit: want StateSoliciting, got %v", cl.State())
 	}
@@ -162,6 +168,291 @@ func TestClientSolicitRequest(t *testing.T) {
 	if addr != assignedAddr {
 		t.Errorf("AssignedAddr: got %v, want %v", addr, assignedAddr)
 	}
+}
+
+func TestClientReconfigureRenew(t *testing.T) {
+	const xid = 0x112233
+	clientMAC := [6]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
+	serverDUID := []byte{0, 3, 0, 1, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66}
+	assignedAddr := [16]byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+	iaid := [4]byte{clientMAC[0], clientMAC[1], clientMAC[2], clientMAC[3]}
+	var cl Client
+	if err := cl.BeginRequest(xid, RequestConfig{ClientHardwareAddr: clientMAC}); err != nil {
+		t.Fatal(err)
+	}
+	var buf [1024]byte
+	if _, err := cl.Encapsulate(buf[:], -1, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Demux(buildServerFrame(MsgAdvertise, xid, serverDUID, iaid, assignedAddr), 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cl.Encapsulate(buf[:], -1, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Demux(buildServerFrame(MsgReply, xid, serverDUID, iaid, assignedAddr), 0); err != nil {
+		t.Fatal(err)
+	}
+	if cl.State() != StateBound {
+		t.Fatalf("state before reconfigure = %v, want %v", cl.State(), StateBound)
+	}
+	reconf := buildReconfigureFrame(0x445566, serverDUID, cl.duid, MsgRenew)
+	if err := cl.Demux(reconf, 0); err != nil {
+		t.Fatal(err)
+	}
+	if cl.State() != StateRenewing {
+		t.Fatalf("state after reconfigure = %v, want %v", cl.State(), StateRenewing)
+	}
+	msg, ok := cl.LastReconfigure()
+	if !ok || msg != MsgRenew {
+		t.Fatalf("LastReconfigure = %v, %v, want %v, true", msg, ok, MsgRenew)
+	}
+	n, err := cl.Encapsulate(buf[:], -1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frm, err := NewFrame(buf[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frm.MsgType() != MsgRenew {
+		t.Fatalf("Encapsulate after Reconfigure type = %v, want %v", frm.MsgType(), MsgRenew)
+	}
+}
+
+func buildReconfigureFrame(xid uint32, serverDUID, clientDUID []byte, msg MsgType) []byte {
+	buf := make([]byte, 128)
+	buf[0] = byte(MsgReconfigure)
+	buf[1] = byte(xid >> 16)
+	buf[2] = byte(xid >> 8)
+	buf[3] = byte(xid)
+	n := OptionsOffset
+	n += writeOpt6(buf[n:], OptServerID, serverDUID...)
+	n += writeOpt6(buf[n:], OptClientID, clientDUID...)
+	n += writeOpt6(buf[n:], OptReconfMsg, byte(msg))
+	return buf[:n]
+}
+
+func frameHasOption(t testing.TB, b []byte, want OptCode) bool {
+	t.Helper()
+	frm, err := NewFrame(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	if err := frm.ForEachOption(func(_ int, code OptCode, _ []byte) error {
+		if code == want {
+			found = true
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return found
+}
+
+func TestClientParsesNTPServerOption(t *testing.T) {
+	const xid = 0x102030
+	clientMAC := [6]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
+	serverDUID := []byte{0, 3, 0, 1, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66}
+	assignedAddr := [16]byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+	ntpAddr := [16]byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x7b}
+	ntpMulticast := [16]byte{0xff, 0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x01}
+	iaid := [4]byte{clientMAC[0], clientMAC[1], clientMAC[2], clientMAC[3]}
+
+	var cl Client
+	if err := cl.BeginRequest(xid, RequestConfig{ClientHardwareAddr: clientMAC}); err != nil {
+		t.Fatal("BeginRequest:", err)
+	}
+	var buf [1024]byte
+	if _, err := cl.Encapsulate(buf[:], -1, 0); err != nil {
+		t.Fatal("Encapsulate (Solicit):", err)
+	}
+	advFrame := buildServerFrame(MsgAdvertise, xid, serverDUID, iaid, assignedAddr)
+	if err := cl.Demux(advFrame, 0); err != nil {
+		t.Fatal("Demux (Advertise):", err)
+	}
+	if _, err := cl.Encapsulate(buf[:], -1, 0); err != nil {
+		t.Fatal("Encapsulate (Request):", err)
+	}
+
+	replyFrame := appendNTPServerOption(t, buildServerFrame(MsgReply, xid, serverDUID, iaid, assignedAddr), ntpAddr, ntpMulticast, "time.example.com")
+	if err := cl.Demux(replyFrame, 0); err != nil {
+		t.Fatal("Demux (Reply):", err)
+	}
+	var ntps []netip.Addr
+	ntps = cl.AppendNTPServers(ntps)
+	if len(ntps) != 1 || ntps[0] != netip.AddrFrom16(ntpAddr) {
+		t.Fatalf("AppendNTPServers = %v, want %v", ntps, netip.AddrFrom16(ntpAddr))
+	}
+	if n := cl.NumNTPServers(); n != 1 {
+		t.Fatalf("NumNTPServers = %d, want 1", n)
+	}
+	var multicasts []netip.Addr
+	multicasts = cl.AppendNTPMulticastServers(multicasts)
+	if len(multicasts) != 1 || multicasts[0] != netip.AddrFrom16(ntpMulticast) {
+		t.Fatalf("AppendNTPMulticastServers = %v, want %v", multicasts, netip.AddrFrom16(ntpMulticast))
+	}
+	if n := cl.NumNTPMulticastServers(); n != 1 {
+		t.Fatalf("NumNTPMulticastServers = %d, want 1", n)
+	}
+	var names []dns.Name
+	names = cl.AppendNTPServerNames(names)
+	if len(names) != 1 || !names[0].EqualString("time.example.com") {
+		t.Fatalf("AppendNTPServerNames = %v, want time.example.com", names)
+	}
+	if n := cl.NumNTPServerNames(); n != 1 {
+		t.Fatalf("NumNTPServerNames = %d, want 1", n)
+	}
+}
+
+func TestClientParsesDomainSearchOption(t *testing.T) {
+	const xid = 0x203040
+	clientMAC := [6]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
+	serverDUID := []byte{0, 3, 0, 1, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66}
+	assignedAddr := [16]byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+	iaid := [4]byte{clientMAC[0], clientMAC[1], clientMAC[2], clientMAC[3]}
+
+	var cl Client
+	if err := cl.BeginRequest(xid, RequestConfig{ClientHardwareAddr: clientMAC}); err != nil {
+		t.Fatal("BeginRequest:", err)
+	}
+	var buf [1024]byte
+	if _, err := cl.Encapsulate(buf[:], -1, 0); err != nil {
+		t.Fatal("Encapsulate (Solicit):", err)
+	}
+	advFrame := buildServerFrame(MsgAdvertise, xid, serverDUID, iaid, assignedAddr)
+	if err := cl.Demux(advFrame, 0); err != nil {
+		t.Fatal("Demux (Advertise):", err)
+	}
+	if _, err := cl.Encapsulate(buf[:], -1, 0); err != nil {
+		t.Fatal("Encapsulate (Request):", err)
+	}
+
+	replyFrame := appendDomainSearchOption(t, buildServerFrame(MsgReply, xid, serverDUID, iaid, assignedAddr), "example.com", "corp.example.com")
+	if err := cl.Demux(replyFrame, 0); err != nil {
+		t.Fatal("Demux (Reply):", err)
+	}
+	var domains []dns.Name
+	domains = cl.AppendDomainSearch(domains)
+	if len(domains) != 2 {
+		t.Fatalf("AppendDomainSearch len = %d, want 2", len(domains))
+	}
+	if !domains[0].EqualString("example.com") || !domains[1].EqualString("corp.example.com") {
+		t.Fatalf("AppendDomainSearch = %q, %q", domains[0].String(), domains[1].String())
+	}
+	if n := cl.NumDomainSearch(); n != 2 {
+		t.Fatalf("NumDomainSearch = %d, want 2", n)
+	}
+}
+
+func TestClientParsesDelegatedPrefix(t *testing.T) {
+	const xid = 0x304050
+	clientMAC := [6]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
+	serverDUID := []byte{0, 3, 0, 1, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66}
+	assignedAddr := [16]byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+	delegated := netip.MustParsePrefix("2001:db8:abcd::/48")
+	iaid := [4]byte{clientMAC[0], clientMAC[1], clientMAC[2], clientMAC[3]}
+
+	var cl Client
+	if err := cl.BeginRequest(xid, RequestConfig{ClientHardwareAddr: clientMAC}); err != nil {
+		t.Fatal("BeginRequest:", err)
+	}
+	var buf [1024]byte
+	if _, err := cl.Encapsulate(buf[:], -1, 0); err != nil {
+		t.Fatal("Encapsulate (Solicit):", err)
+	}
+	advFrame := buildServerFrame(MsgAdvertise, xid, serverDUID, iaid, assignedAddr)
+	if err := cl.Demux(advFrame, 0); err != nil {
+		t.Fatal("Demux (Advertise):", err)
+	}
+	if _, err := cl.Encapsulate(buf[:], -1, 0); err != nil {
+		t.Fatal("Encapsulate (Request):", err)
+	}
+
+	replyFrame := appendIAPDOption(buildServerFrame(MsgReply, xid, serverDUID, iaid, assignedAddr), iaid, delegated)
+	if err := cl.Demux(replyFrame, 0); err != nil {
+		t.Fatal("Demux (Reply):", err)
+	}
+	var prefixes []DelegatedPrefix
+	prefixes = cl.AppendDelegatedPrefixes(prefixes)
+	if len(prefixes) != 1 {
+		t.Fatalf("AppendDelegatedPrefixes len = %d, want 1", len(prefixes))
+	}
+	if prefixes[0].Prefix != delegated || prefixes[0].PreferredLifetime != 1800 || prefixes[0].ValidLifetime != 3600 {
+		t.Fatalf("delegated prefix = %+v, want %s preferred=1800 valid=3600", prefixes[0], delegated)
+	}
+	if n := cl.NumDelegatedPrefixes(); n != 1 {
+		t.Fatalf("NumDelegatedPrefixes = %d, want 1", n)
+	}
+	if cl.PrefixDelegationRenewalSeconds() != 900 || cl.PrefixDelegationRebindingSeconds() != 1800 {
+		t.Fatalf("IA_PD timers = renewal:%d rebind:%d, want 900/1800", cl.PrefixDelegationRenewalSeconds(), cl.PrefixDelegationRebindingSeconds())
+	}
+}
+
+func appendNTPServerOption(t testing.TB, frame []byte, addr, multicast [16]byte, fqdn string) []byte {
+	t.Helper()
+	var ntpPayload []byte
+	ntpPayload = appendNTPServerAddrSuboption(ntpPayload, 1, addr)
+	ntpPayload = appendNTPServerAddrSuboption(ntpPayload, 2, multicast)
+	name, err := dns.NewName(fqdn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nameStart := len(ntpPayload) + 4
+	ntpPayload = append(ntpPayload, 0, 3, 0, 0)
+	ntpPayload, err = name.AppendTo(ntpPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary.BigEndian.PutUint16(ntpPayload[nameStart-2:nameStart], uint16(len(ntpPayload)-nameStart))
+	buf := append(frame[:len(frame):len(frame)], make([]byte, 4+len(ntpPayload))...)
+	writeOpt6(buf[len(frame):], OptNTPServer, ntpPayload...)
+	return buf
+}
+
+func appendNTPServerAddrSuboption(dst []byte, code uint16, addr [16]byte) []byte {
+	start := len(dst)
+	dst = append(dst, 0, 0, 0, 16)
+	binary.BigEndian.PutUint16(dst[start:start+2], code)
+	return append(dst, addr[:]...)
+}
+
+func appendDomainSearchOption(t testing.TB, frame []byte, domains ...string) []byte {
+	t.Helper()
+	var payload []byte
+	for _, domain := range domains {
+		name, err := dns.NewName(domain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload, err = name.AppendTo(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	buf := append(frame[:len(frame):len(frame)], make([]byte, 4+len(payload))...)
+	writeOpt6(buf[len(frame):], OptDomainList, payload...)
+	return buf
+}
+
+func appendIAPDOption(frame []byte, iaid [4]byte, prefix netip.Prefix) []byte {
+	var iaPrefix [29]byte
+	binary.BigEndian.PutUint16(iaPrefix[0:2], uint16(OptIAPrefix))
+	binary.BigEndian.PutUint16(iaPrefix[2:4], 25)
+	binary.BigEndian.PutUint32(iaPrefix[4:8], 1800)
+	binary.BigEndian.PutUint32(iaPrefix[8:12], 3600)
+	iaPrefix[12] = byte(prefix.Bits())
+	prefixAddr := prefix.Addr().As16()
+	copy(iaPrefix[13:], prefixAddr[:])
+	var iapd [41]byte
+	copy(iapd[:4], iaid[:])
+	binary.BigEndian.PutUint32(iapd[4:8], 900)
+	binary.BigEndian.PutUint32(iapd[8:12], 1800)
+	copy(iapd[12:], iaPrefix[:])
+	buf := append(frame[:len(frame):len(frame)], make([]byte, 4+len(iapd))...)
+	writeOpt6(buf[len(frame):], OptIAPD, iapd[:]...)
+	return buf
 }
 
 // TestClientEncapsulateSolicit verifies that the first Encapsulate call
