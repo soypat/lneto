@@ -109,7 +109,9 @@ ok      github.com/soypat/lneto/x/xnet  2.926s
 | Ethernet PHY/MDIO | IEEE 802.3 cl.22/45 | ✅ | `phy` | — | Bare-metal PHY management via MDIO |
 | IPv6 | RFC 8200 | ✅ | `ipv6` | — | Frame parsing and stack handling |
 | ICMPv6 | RFC 4443 | ✅ | `ipv6/icmpv6` | — | Echo+NDP frame parsing and stack handling |
-| DHCPv6 | RFC 8415 | 🟡 | `dhcp/dhcpv6` | — | Frame parsing and standalone handling |
+| DHCPv6 DNS Configuration | RFC 3646 | 🟡 | `dhcp/dhcpv6` | — | Recursive DNS server and domain search options parsed and exposed |
+| DHCPv6 NTP Configuration | RFC 5908 | ✅ | `dhcp/dhcpv6` | — | NTP server address, multicast address, and FQDN suboptions parsed and exposed |
+| DHCPv6 | RFC 8415 | 🟡 | `dhcp/dhcpv6` | — | Client IA_NA/IA_PD request handling and reconfigure-renew; no relay agent or dynamic server pools |
 | TLS 1.3 | RFC 8446 | ❌ | — | — | Not implemented |
 
 ¹ `BenchmarkARPExchange` — full ARP request/response exchange over Ethernet: **0 B/op, 0 allocs/op**
