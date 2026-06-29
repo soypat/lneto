@@ -3,6 +3,7 @@ package congestion_test
 import (
 	"errors"
 	"net"
+	"slices"
 	"testing"
 	"time"
 
@@ -61,8 +62,8 @@ type emuPacket struct {
 type emuLink struct {
 	rate  float64       // bytes/sec; 0 means infinite bandwidth (no serialization).
 	delay time.Duration // one-way propagation delay.
-	// lossAt drops the single packet at this 1-based offered index (0 = lossless).
-	lossAt int
+	// lossAt drops the packets at these 1-based offered indices (nil = lossless).
+	lossAt []int
 
 	inflight  []emuPacket // accepted packets ordered by deliverAt (monotonic).
 	busyUntil time.Time   // time the serializer becomes free.
@@ -75,7 +76,7 @@ type emuLink struct {
 // inflight stays ordered.
 func (l *emuLink) offer(data []byte, now time.Time) {
 	l.offered++
-	if l.lossAt > 0 && l.offered == l.lossAt {
+	if slices.Contains(l.lossAt, l.offered) {
 		l.dropped++
 		return
 	}
@@ -119,11 +120,13 @@ func (l *emuLink) nextDeliver() (time.Time, bool) {
 
 // emuParams configures an [emuNet].
 type emuParams struct {
-	rate    float64       // forward-path bottleneck bandwidth, bytes/sec.
-	delay   time.Duration // one-way propagation delay applied to both paths.
-	lossAt  int           // forward-path: drop the single packet at this index (0 = lossless).
-	bufSize int           // per-handler tx/rx buffer size in bytes.
-	packets int           // tx ring packet slots (must exceed segments in flight).
+	rate       float64       // forward-path bottleneck bandwidth, bytes/sec.
+	delay      time.Duration // one-way propagation delay applied to both paths.
+	lossAt     []int         // forward-path: drop packets at these offered indices (nil = lossless).
+	bufSize    int           // per-handler tx/rx buffer size in bytes.
+	packets    int           // tx ring packet slots (must exceed segments in flight).
+	reasmSegs  int           // receiver out-of-order reassembly slots (0 = disabled).
+	timestamps bool          // enable RFC 7323 TCP Timestamps on both ends.
 }
 
 // emuNet runs a client→server bulk transfer across an emulated network: a
@@ -167,6 +170,16 @@ func newEmuNet(t *testing.T, p emuParams) *emuNet {
 	// deterministic and aligned with the congestion controllers' clock.
 	en.client.SetClock(en.nowNanos)
 	en.server.SetClock(en.nowNanos)
+	// Out-of-order reassembly is always enabled once buffers are set (up to
+	// maxReasmSegments), so p.reasmSegs needs no separate slab configuration.
+	if p.timestamps {
+		if err := en.client.EnableTimestamps(true); err != nil {
+			t.Fatalf("client EnableTimestamps: %v", err)
+		}
+		if err := en.server.EnableTimestamps(true); err != nil {
+			t.Fatalf("server EnableTimestamps: %v", err)
+		}
+	}
 	return en
 }
 
@@ -436,6 +449,96 @@ func TestEmuBBRBandwidthEstimate(t *testing.T) {
 		bw, 100*bw/rate, bbr.MinRTT(), propRTT, bbr.CongestionWindow())
 }
 
+// TestEmuTimestampsNegotiateAndMeasureRTT enables RFC 7323 Timestamps on both
+// ends and runs a lossless transfer, verifying the option is negotiated and the
+// smoothed RTT converges to the link's propagation round trip via per-ACK RTTM.
+func TestEmuTimestampsNegotiateAndMeasureRTT(t *testing.T) {
+	const (
+		rate    = 1_000_000.0
+		delay   = 10 * time.Millisecond
+		propRTT = 2 * delay
+		bufSize = 60_000
+	)
+	en := newEmuNet(t, emuParams{
+		rate:       rate,
+		delay:      delay,
+		bufSize:    bufSize,
+		packets:    64,
+		timestamps: true,
+	})
+
+	var cubic congestion.CUBIC
+	if err := cubic.Configure(congestion.CUBICConfig{Now: en.now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := en.client.SetCongestionControl(&cubic); err != nil {
+		t.Fatal(err)
+	}
+
+	openPair(t, en.client, en.server)
+	received := en.transfer(patternPayload(64 * 1024))
+	verifyStream(t, patternPayload(64*1024), received)
+
+	if !en.client.TimestampsEnabled() || !en.server.TimestampsEnabled() {
+		t.Fatalf("timestamps not negotiated: client=%v server=%v",
+			en.client.TimestampsEnabled(), en.server.TimestampsEnabled())
+	}
+	srtt := en.client.SmoothedRTT()
+	if srtt <= 0 {
+		t.Fatal("no RTT measured from timestamps")
+	}
+	if srtt < propRTT/2 || srtt > 3*propRTT {
+		t.Errorf("SRTT %v not near propagation RTT %v", srtt, propRTT)
+	}
+	t.Logf("timestamps: negotiated; SRTT=%v (propagation RTT %v)", srtt, propRTT)
+}
+
+// TestEmuSACKRecoversMultipleLosses drops two segments in one window with SACK
+// and reassembly enabled. The receiver advertises the byte ranges it buffered,
+// and the sender retransmits only the two holes (skipping the SACKed data in
+// between) rather than going back N. The test asserts SACK is negotiated and the
+// full stream is delivered intact after exactly two drops.
+func TestEmuSACKRecoversMultipleLosses(t *testing.T) {
+	const (
+		rate    = 1_000_000.0
+		delay   = 10 * time.Millisecond
+		bufSize = 32 * 1024
+	)
+	en := newEmuNet(t, emuParams{
+		rate:       rate,
+		delay:      delay,
+		lossAt:     []int{4, 9}, // two holes in the same window.
+		bufSize:    bufSize,
+		packets:    64,
+		reasmSegs:  32,
+		timestamps: true,
+	})
+	en.client.EnableSACK(true)
+	en.server.EnableSACK(true)
+
+	var cubic congestion.CUBIC
+	if err := cubic.Configure(congestion.CUBICConfig{InitialCwnd: 16, Now: en.now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := en.client.SetCongestionControl(&cubic); err != nil {
+		t.Fatal(err)
+	}
+
+	payload := patternPayload(18 * 1024) // ~13 segments: one window with two gaps.
+	openPair(t, en.client, en.server)
+	received := en.transfer(payload)
+
+	verifyStream(t, payload, received)
+	if !en.client.SACKEnabled() || !en.server.SACKEnabled() {
+		t.Fatalf("SACK not negotiated: client=%v server=%v",
+			en.client.SACKEnabled(), en.server.SACKEnabled())
+	}
+	if en.fwd.dropped != 2 {
+		t.Errorf("expected exactly 2 injected drops, got %d", en.fwd.dropped)
+	}
+	t.Logf("SACK recovery: delivered %d B intact after 2 losses in one window", len(received))
+}
+
 // sawWindowGrowth reports whether the sampled congestion window ever increased
 // between consecutive samples.
 func sawWindowGrowth(samples []tcp.Size) bool {
@@ -473,7 +576,7 @@ func TestEmuRTORecoversLoss(t *testing.T) {
 	en := newEmuNet(t, emuParams{
 		rate:    rate,
 		delay:   delay,
-		lossAt:  5, // an early forward segment, in a small window.
+		lossAt:  []int{5}, // an early forward segment, in a small window.
 		bufSize: bufSize,
 		packets: 64,
 	})
@@ -505,4 +608,50 @@ func TestEmuRTORecoversLoss(t *testing.T) {
 	}
 	t.Logf("RTO recovery: delivered %d B intact after 1 loss; final cwnd=%d B",
 		len(received), cubic.CongestionWindow())
+}
+
+// TestEmuReassemblyRecoversManyFollowers drops a segment near the head of a
+// window with more than eight segments queued behind it. Without out-of-order
+// buffering the receiver would issue throttled challenge ACKs and abort after 8
+// consecutive out-of-order segments; with reassembly enabled it buffers them,
+// fast retransmit fills the single gap, and the buffered tail is delivered
+// without go-back-N. The test asserts the full stream arrives intact after
+// exactly one drop. The slab is sized larger than the receive buffer so any
+// in-window out-of-order segment fits.
+func TestEmuReassemblyRecoversManyFollowers(t *testing.T) {
+	const (
+		rate    = 1_000_000.0
+		delay   = 10 * time.Millisecond
+		bufSize = 32 * 1024
+	)
+	en := newEmuNet(t, emuParams{
+		rate:      rate,
+		delay:     delay,
+		lossAt:    []int{3}, // 2nd data segment: ~11 segments follow the gap (> 8).
+		bufSize:   bufSize,
+		packets:   64,
+		reasmSegs: 32, // slab (32*MTU) exceeds the receive buffer.
+	})
+
+	var cubic congestion.CUBIC
+	if err := cubic.Configure(congestion.CUBICConfig{
+		InitialCwnd: 16, // whole transfer fits one window: a single burst with one gap.
+		Now:         en.now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := en.client.SetCongestionControl(&cubic); err != nil {
+		t.Fatal(err)
+	}
+
+	payload := patternPayload(18 * 1024) // ~13 segments, < window and < slab.
+	openPair(t, en.client, en.server)
+	received := en.transfer(payload)
+
+	verifyStream(t, payload, received)
+	if en.fwd.dropped != 1 {
+		t.Errorf("expected exactly 1 injected drop, got %d", en.fwd.dropped)
+	}
+	t.Logf("reassembly recovery: delivered %d B intact; one gap with >8 buffered followers",
+		len(received))
 }
