@@ -533,3 +533,188 @@ func TestClientDoubleTapEncapsulate(t *testing.T) {
 		t.Errorf("second Encapsulate: want 0 bytes (idempotent), got %d", n2)
 	}
 }
+
+// driveToRequesting advances a fresh client through Solicit→Advertise→Request so
+// the next Demux of a Reply runs the option-parsing path.
+func driveToRequesting(t testing.TB, cl *Client, xid uint32, serverDUID []byte, iaid [4]byte, addr [16]byte) {
+	t.Helper()
+	var buf [1024]byte
+	if _, err := cl.Encapsulate(buf[:], -1, 0); err != nil {
+		t.Fatal("Encapsulate (Solicit):", err)
+	}
+	if err := cl.Demux(buildServerFrame(MsgAdvertise, xid, serverDUID, iaid, addr), 0); err != nil {
+		t.Fatal("Demux (Advertise):", err)
+	}
+	if _, err := cl.Encapsulate(buf[:], -1, 0); err != nil {
+		t.Fatal("Encapsulate (Request):", err)
+	}
+}
+
+// floodDNSServersOption appends an OptDNSServers carrying n distinct addresses.
+func floodDNSServersOption(frame []byte, n int) []byte {
+	payload := make([]byte, 0, n*16)
+	for i := range n {
+		var a [16]byte
+		a[0], a[1], a[15] = 0x20, 0x01, byte(i+1)
+		payload = append(payload, a[:]...)
+	}
+	buf := append(frame[:len(frame):len(frame)], make([]byte, 4+len(payload))...)
+	writeOpt6(buf[len(frame):], OptDNSServers, payload...)
+	return buf
+}
+
+// floodIAPDOption appends an OptIAPD carrying n OptIAPrefix sub-options.
+func floodIAPDOption(frame []byte, iaid [4]byte, n int) []byte {
+	payload := make([]byte, 12)
+	copy(payload[:4], iaid[:])
+	binary.BigEndian.PutUint32(payload[4:8], 900)
+	binary.BigEndian.PutUint32(payload[8:12], 1800)
+	for i := range n {
+		var iaPrefix [29]byte
+		binary.BigEndian.PutUint16(iaPrefix[0:2], uint16(OptIAPrefix))
+		binary.BigEndian.PutUint16(iaPrefix[2:4], 25)
+		binary.BigEndian.PutUint32(iaPrefix[4:8], 1800)
+		binary.BigEndian.PutUint32(iaPrefix[8:12], 3600)
+		iaPrefix[12] = 48
+		iaPrefix[13], iaPrefix[14], iaPrefix[15] = 0x20, 0x01, byte(i+1)
+		payload = append(payload, iaPrefix[:]...)
+	}
+	buf := append(frame[:len(frame):len(frame)], make([]byte, 4+len(payload))...)
+	writeOpt6(buf[len(frame):], OptIAPD, payload...)
+	return buf
+}
+
+// floodNTPOption appends an OptNTPServer carrying nAddr unicast (suboption 1),
+// nMulticast (suboption 2) and nNames FQDN (suboption 3) entries.
+func floodNTPOption(t testing.TB, frame []byte, nAddr, nMulticast, nNames int) []byte {
+	t.Helper()
+	var payload []byte
+	for i := range nAddr {
+		var a [16]byte
+		a[0], a[15] = 0x20, byte(i+1)
+		payload = appendNTPServerAddrSuboption(payload, 1, a)
+	}
+	for i := range nMulticast {
+		var a [16]byte
+		a[0], a[1], a[15] = 0xff, 0x05, byte(i+1)
+		payload = appendNTPServerAddrSuboption(payload, 2, a)
+	}
+	name, err := dns.NewName("ntp.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range nNames {
+		start := len(payload) + 4
+		payload = append(payload, 0, 3, 0, 0)
+		payload, err = name.AppendTo(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		binary.BigEndian.PutUint16(payload[start-2:start], uint16(len(payload)-start))
+	}
+	buf := append(frame[:len(frame):len(frame)], make([]byte, 4+len(payload))...)
+	writeOpt6(buf[len(frame):], OptNTPServer, payload...)
+	return buf
+}
+
+func repeatStrings(s string, n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = s
+	}
+	return out
+}
+
+// TestClientLimitsCapServerData verifies that the client stores no more than
+// the configured number of each repeated option, so a server flooding a Reply
+// cannot drive unbounded allocation (the OOM concern raised in the PR review).
+func TestClientLimitsCapServerData(t *testing.T) {
+	const xid = 0x515151
+	mac := [6]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
+	serverDUID := []byte{0, 3, 0, 1, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66}
+	iaid := [4]byte{mac[0], mac[1], mac[2], mac[3]}
+	addr := [16]byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+	limits := Limits{
+		MaxDNSServers: 2, MaxDomainSearch: 2, MaxNTPServers: 2,
+		MaxNTPMulticastServers: 1, MaxNTPServerNames: 2, MaxDelegatedPrefixes: 2,
+	}
+
+	var cl Client
+	if err := cl.BeginRequest(xid, RequestConfig{ClientHardwareAddr: mac, Limits: limits}); err != nil {
+		t.Fatal("BeginRequest:", err)
+	}
+	driveToRequesting(t, &cl, xid, serverDUID, iaid, addr)
+
+	// A Reply far exceeding every configured cap.
+	reply := buildServerFrame(MsgReply, xid, serverDUID, iaid, addr)
+	reply = floodDNSServersOption(reply, 8)
+	reply = floodIAPDOption(reply, iaid, 8)
+	reply = appendDomainSearchOption(t, reply, repeatStrings("example.com", 8)...)
+	reply = floodNTPOption(t, reply, 8, 8, 8)
+	if err := cl.Demux(reply, 0); err != nil {
+		t.Fatal("Demux (Reply):", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		got  int
+		want int
+	}{
+		{"DNS servers", cl.NumDNSServers(), limits.MaxDNSServers},
+		{"domain search", cl.NumDomainSearch(), limits.MaxDomainSearch},
+		{"NTP servers", cl.NumNTPServers(), limits.MaxNTPServers},
+		{"NTP multicast", cl.NumNTPMulticastServers(), limits.MaxNTPMulticastServers},
+		{"NTP names", cl.NumNTPServerNames(), limits.MaxNTPServerNames},
+		{"delegated prefixes", cl.NumDelegatedPrefixes(), limits.MaxDelegatedPrefixes},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s stored = %d, want capped at %d", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
+// TestClientParseNoAllocs verifies that once BeginRequest has sized the option
+// backing arrays, parsing a server message performs no further allocation: the
+// bounded slices are reused, keeping the network-facing path off the heap.
+func TestClientParseNoAllocs(t *testing.T) {
+	const xid = 0x123456
+	mac := [6]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
+	serverDUID := []byte{0, 3, 0, 1, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66}
+	iaid := [4]byte{mac[0], mac[1], mac[2], mac[3]}
+	addr := [16]byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+
+	var cl Client
+	if err := cl.BeginRequest(xid, RequestConfig{ClientHardwareAddr: mac}); err != nil {
+		t.Fatal("BeginRequest:", err)
+	}
+	reply := buildServerFrame(MsgReply, xid, serverDUID, iaid, addr)
+	reply = floodDNSServersOption(reply, cl.limits.MaxDNSServers)
+	reply = floodIAPDOption(reply, iaid, cl.limits.MaxDelegatedPrefixes)
+	reply = appendDomainSearchOption(t, reply, repeatStrings("example.com", cl.limits.MaxDomainSearch)...)
+	reply = floodNTPOption(t, reply, cl.limits.MaxNTPServers, cl.limits.MaxNTPMulticastServers, cl.limits.MaxNTPServerNames)
+	frm, err := NewFrame(reply)
+	if err != nil {
+		t.Fatal("NewFrame:", err)
+	}
+
+	clearStores := func() {
+		cl.serverDUID = cl.serverDUID[:0]
+		cl.dns = cl.dns[:0]
+		cl.domainSearch = cl.domainSearch[:0]
+		cl.ntps = cl.ntps[:0]
+		cl.ntpMulticast = cl.ntpMulticast[:0]
+		cl.ntpNames = cl.ntpNames[:0]
+		cl.delegatedPrefixes = cl.delegatedPrefixes[:0]
+	}
+	clearStores()
+	if err := cl.setOptions(frm); err != nil { // warm up the dns.Name backing arrays.
+		t.Fatal("setOptions:", err)
+	}
+	allocs := testing.AllocsPerRun(50, func() {
+		clearStores()
+		_ = cl.setOptions(frm)
+	})
+	if allocs != 0 {
+		t.Errorf("setOptions must not allocate after BeginRequest sizing, got %v allocs/op", allocs)
+	}
+}

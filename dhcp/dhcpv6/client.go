@@ -10,11 +10,66 @@ import (
 	"github.com/soypat/lneto/internal"
 )
 
+// Default caps for the repeated, server-supplied options the client retains.
+// A DHCPv6 server may place arbitrarily many of each in a single message
+// (RFC 8415), so the client bounds them to prevent a malicious or
+// misconfigured server from driving unbounded allocation (an OOM vector).
+const (
+	defaultMaxDNSServers          = 4
+	defaultMaxDomainSearch        = 6
+	defaultMaxNTPServers          = 4
+	defaultMaxNTPMulticastServers = 2
+	defaultMaxNTPServerNames      = 4
+	defaultMaxDelegatedPrefixes   = 4
+)
+
+// Limits bounds how many entries of each repeated, server-supplied option the
+// client retains from a single exchange. The backing arrays are sized to these
+// caps once in [Client.BeginRequest] and reused across resets, so parsing a
+// server message performs no further allocation and a hostile server cannot
+// grow client memory without bound. A zero (or negative) field selects its
+// default; see the default* constants.
+type Limits struct {
+	MaxDNSServers          int // OptDNSServers addresses.
+	MaxDomainSearch        int // OptDomainList search names.
+	MaxNTPServers          int // OptNTPServer suboption 1 addresses.
+	MaxNTPMulticastServers int // OptNTPServer suboption 2 addresses.
+	MaxNTPServerNames      int // OptNTPServer suboption 3 FQDNs.
+	MaxDelegatedPrefixes   int // OptIAPD/OptIAPrefix delegated prefixes.
+}
+
+// withDefaults returns a copy of l with every non-positive field replaced by
+// its default cap, so the resolved limits are always usable.
+func (l Limits) withDefaults() Limits {
+	if l.MaxDNSServers <= 0 {
+		l.MaxDNSServers = defaultMaxDNSServers
+	}
+	if l.MaxDomainSearch <= 0 {
+		l.MaxDomainSearch = defaultMaxDomainSearch
+	}
+	if l.MaxNTPServers <= 0 {
+		l.MaxNTPServers = defaultMaxNTPServers
+	}
+	if l.MaxNTPMulticastServers <= 0 {
+		l.MaxNTPMulticastServers = defaultMaxNTPMulticastServers
+	}
+	if l.MaxNTPServerNames <= 0 {
+		l.MaxNTPServerNames = defaultMaxNTPServerNames
+	}
+	if l.MaxDelegatedPrefixes <= 0 {
+		l.MaxDelegatedPrefixes = defaultMaxDelegatedPrefixes
+	}
+	return l
+}
+
 // RequestConfig holds the parameters for starting a DHCPv6 exchange.
 type RequestConfig struct {
 	// ClientHardwareAddr is the client's Ethernet MAC address.
 	// It is used to construct the client DUID-LL and IAID.
 	ClientHardwareAddr [6]byte
+	// Limits bounds how many of each repeated server-supplied option the client
+	// stores. The zero value selects safe defaults for every field.
+	Limits Limits
 }
 
 // DelegatedPrefix is an IPv6 prefix delegated by a DHCPv6 server.
@@ -80,6 +135,11 @@ type Client struct {
 
 	clientMAC [6]byte
 
+	// limits is the resolved (defaults-applied) cap on each repeated option.
+	// It is set in BeginRequest and preserved across resets so the bounded
+	// backing arrays are reused without reallocation.
+	limits Limits
+
 	// auxbuf is a scratch buffer used during Encapsulate to avoid allocations.
 	auxbuf [128]byte
 }
@@ -97,10 +157,43 @@ func (c *Client) BeginRequest(xid uint32, cfg RequestConfig) error {
 	c.clientMAC = cfg.ClientHardwareAddr
 	c.iaid = [4]byte(cfg.ClientHardwareAddr[:4])
 	c.xid = xid & 0xFFFFFF
+	c.limits = cfg.Limits.withDefaults()
 	c.reset()
+	// Size the per-option backing arrays to their caps once, here, so the
+	// parse path on the network-facing Demux never allocates and stored
+	// entries stay bounded across the connection's lifetime.
+	c.dns = ensureAddrCap(c.dns, c.limits.MaxDNSServers)
+	c.ntps = ensureAddrCap(c.ntps, c.limits.MaxNTPServers)
+	c.ntpMulticast = ensureAddrCap(c.ntpMulticast, c.limits.MaxNTPMulticastServers)
+	c.domainSearch = ensureNameCap(c.domainSearch, c.limits.MaxDomainSearch)
+	c.ntpNames = ensureNameCap(c.ntpNames, c.limits.MaxNTPServerNames)
+	c.delegatedPrefixes = ensurePrefixCap(c.delegatedPrefixes, c.limits.MaxDelegatedPrefixes)
 	c.duid = AppendDUIDLL(c.duid[:0], cfg.ClientHardwareAddr)
 	c.state = StateInit
 	return nil
+}
+
+// ensureAddrCap returns s truncated to length 0 with capacity at least n,
+// allocating a new backing array only when the existing one is too small.
+func ensureAddrCap(s []netip.Addr, n int) []netip.Addr {
+	if cap(s) < n {
+		return make([]netip.Addr, 0, n)
+	}
+	return s[:0]
+}
+
+func ensureNameCap(s []dns.Name, n int) []dns.Name {
+	if cap(s) < n {
+		return make([]dns.Name, 0, n)
+	}
+	return s[:0]
+}
+
+func ensurePrefixCap(s []DelegatedPrefix, n int) []DelegatedPrefix {
+	if cap(s) < n {
+		return make([]DelegatedPrefix, 0, n)
+	}
+	return s[:0]
 }
 
 // Reset clears the DHCPv6 exchange state and invalidates stack registrations.
@@ -114,6 +207,7 @@ func (c *Client) reset() {
 		xid:               c.xid,
 		clientMAC:         c.clientMAC,
 		iaid:              c.iaid,
+		limits:            c.limits,
 		duid:              c.duid,
 		serverDUID:        c.serverDUID[:0],
 		dns:               c.dns[:0],
@@ -304,7 +398,7 @@ func (c *Client) setOptions(frm Frame) error {
 			if len(c.dns) > 0 || len(data)%16 != 0 {
 				break // skip if already populated or malformed
 			}
-			for i := 0; i+16 <= len(data); i += 16 {
+			for i := 0; i+16 <= len(data) && len(c.dns) < c.limits.MaxDNSServers; i += 16 {
 				c.dns = append(c.dns, netip.AddrFrom16([16]byte(data[i:i+16])))
 			}
 		case OptDomainList:
@@ -332,7 +426,7 @@ func (c *Client) parseIAPD(data []byte) {
 		if ptr+4+subLen > len(data) {
 			break
 		}
-		if subCode == OptIAPrefix && subLen >= 25 {
+		if subCode == OptIAPrefix && subLen >= 25 && len(c.delegatedPrefixes) < c.limits.MaxDelegatedPrefixes {
 			sub := data[ptr+4 : ptr+4+subLen]
 			bits := int(sub[8])
 			prefix := netip.PrefixFrom(netip.AddrFrom16([16]byte(sub[9:25])), bits)
@@ -365,17 +459,18 @@ func (c *Client) parseNTPServer(data []byte) {
 		subData := data[ptr+4 : ptr+4+subLen]
 		switch subCode {
 		case 1:
-			if subLen != 16 {
-				break
+			if subLen == 16 && len(c.ntps) < c.limits.MaxNTPServers {
+				c.ntps = append(c.ntps, netip.AddrFrom16([16]byte(data[ptr+4:ptr+20])))
 			}
-			c.ntps = append(c.ntps, netip.AddrFrom16([16]byte(data[ptr+4:ptr+20])))
 		case 2:
-			if subLen != 16 {
-				break
+			if subLen == 16 && len(c.ntpMulticast) < c.limits.MaxNTPMulticastServers {
+				c.ntpMulticast = append(c.ntpMulticast, netip.AddrFrom16([16]byte(data[ptr+4:ptr+20])))
 			}
-			c.ntpMulticast = append(c.ntpMulticast, netip.AddrFrom16([16]byte(data[ptr+4:ptr+20])))
 		case 3:
 			idx := len(c.ntpNames)
+			if idx >= c.limits.MaxNTPServerNames {
+				break // suboption switch: cap reached, drop further names.
+			}
 			if idx < cap(c.ntpNames) {
 				c.ntpNames = c.ntpNames[:idx+1]
 			} else {
@@ -395,7 +490,7 @@ func (c *Client) parseDomainSearch(data []byte) {
 	if len(c.domainSearch) > 0 {
 		return
 	}
-	for off := uint16(0); off < uint16(len(data)); {
+	for off := uint16(0); off < uint16(len(data)) && len(c.domainSearch) < c.limits.MaxDomainSearch; {
 		idx := len(c.domainSearch)
 		if idx < cap(c.domainSearch) {
 			c.domainSearch = c.domainSearch[:idx+1]
