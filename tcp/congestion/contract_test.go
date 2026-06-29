@@ -199,6 +199,32 @@ func TestCongestionControlContract(t *testing.T) {
 					t.Errorf("a drop yielded a larger window (%d) than a clean round (%d)", wDrop, wOK)
 				}
 			})
+
+			// no-allocs: Control is invoked for every segment crossing the
+			// connection, so it must not allocate. Controllers hold fixed-size
+			// state, keeping the data path off the heap on bare-metal targets.
+			t.Run("no-allocs", func(t *testing.T) {
+				d := newDriver(t, newCC)
+				seq := contractISS
+				end := seq + tcp.Value(contractBytesPerRound)
+				txEvent := tcp.CongestionEvent{
+					Segment: tcp.Segment{SEQ: seq, ACK: contractPeerSeq, DATALEN: contractBytesPerRound, Flags: tcp.FlagPSH | tcp.FlagACK},
+					SndUNA:  seq, SndNXT: seq, MSS: contractMSS, Tx: true,
+				}
+				ackEvent := tcp.CongestionEvent{
+					Segment: tcp.Segment{SEQ: contractPeerSeq, ACK: end, Flags: tcp.FlagACK},
+					SndUNA:  end, SndNXT: end, MSS: contractMSS,
+				}
+				rtoEvent := tcp.CongestionEvent{RTO: true, SndUNA: end, SndNXT: end, MSS: contractMSS}
+				allocs := testing.AllocsPerRun(100, func() {
+					d.cc.Control(txEvent)
+					d.cc.Control(ackEvent)
+					d.cc.Control(rtoEvent)
+				})
+				if allocs != 0 {
+					t.Errorf("%s.Control must not allocate, got %v allocs/op", ccName(d.cc), allocs)
+				}
+			})
 		})
 	}
 }
