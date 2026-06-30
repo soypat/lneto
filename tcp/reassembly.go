@@ -2,43 +2,37 @@ package tcp
 
 import "github.com/soypat/lneto/internal"
 
-// reassembly is a bounded out-of-order segment reassembly buffer. It stores the
-// payloads of in-window TCP segments that arrived ahead of the next expected
-// sequence number so that, once the gap is filled by a retransmission, the
-// buffered tail can be delivered without the peer re-sending it (avoiding
-// go-back-N). It is the receiver-side state a SACK sender relies on.
-//
-// Storage is a user-provided slab divided into a fixed number of equal slots,
-// one per held segment, so memory is bounded and nothing is allocated on the
-// data path — suited to the embedded targets lneto serves. A segment larger
-// than a slot, a duplicate, or one that does not fit is simply not stored; the
-// sender retransmits it (and, as a backstop, the RFC 6298 timer recovers it).
+// maxReasmSegments bounds how many distinct out-of-order segments may be held.
+// It caps only fixed metadata; payload bytes live in the receive ring, bounded
+// by its free space. Independent of the transmit queue depth.
+const maxReasmSegments = 8
+
+// reassembly holds in-window TCP segments that arrived ahead of the next
+// expected sequence number, so that once the gap is filled the buffered tail is
+// delivered without go-back-N. Payloads are staged in the free region of the
+// Handler receive ring (see [internal.Ring.PeekWrite]); only fixed, reused
+// metadata lives here, so the data path allocates nothing.
 type reassembly struct {
-	slab    []byte
-	segSize int        // bytes per slot; 0 when reassembly is disabled.
-	held    []reasmSeg // current out-of-order segments, cap == number of slots.
+	held []reasmSeg
 }
 
-// reasmSeg records one buffered out-of-order segment: its first sequence
-// number, the slab slot holding its payload and the payload length.
+// reasmSeg records a held segment by sequence number and payload length. No
+// buffer offset is kept: the ring write pointer advances in lockstep with
+// rcv.NXT, so the staged bytes are always where seq implies (see
+// [Handler.flushReassembly]).
 type reasmSeg struct {
-	seq  Value
-	slot int
-	n    int
+	seq Value
+	n   int
 }
 
-// reset (re)configures the buffer to use slab divided into maxSegs slots, or
-// disables reassembly when slab is nil or maxSegs is zero. Held state is
-// cleared; the slab and slot count persist across connection reopens.
-func (r *reassembly) reset(slab []byte, maxSegs int) {
-	if len(slab) == 0 || maxSegs <= 0 {
-		r.slab = nil
-		r.segSize = 0
-		r.held = r.held[:0]
+// reset (re)configures bounded metadata for up to maxSegs held segments, or
+// disables reassembly when maxSegs is not positive. Held state is cleared;
+// metadata capacity persists across connection reopens.
+func (r *reassembly) reset(maxSegs int) {
+	if maxSegs <= 0 {
+		r.held = nil
 		return
 	}
-	r.slab = slab
-	r.segSize = len(slab) / maxSegs
 	internal.SliceReuse(&r.held, maxSegs)
 }
 
@@ -46,7 +40,7 @@ func (r *reassembly) reset(slab []byte, maxSegs int) {
 func (r *reassembly) clear() { r.held = r.held[:0] }
 
 // enabled reports whether out-of-order buffering is configured.
-func (r *reassembly) enabled() bool { return r.segSize > 0 }
+func (r *reassembly) enabled() bool { return cap(r.held) > 0 }
 
 // buffered reports the number of out-of-order segments currently held.
 func (r *reassembly) buffered() int { return len(r.held) }
@@ -62,53 +56,57 @@ func (r *reassembly) bufferedBytes() int {
 	return n
 }
 
-// store buffers payload for sequence number seq, returning true if it is now
-// held (including when it was already held — the call is idempotent). It fails
-// when reassembly is disabled, the payload is empty or larger than a slot, the
-// buffer is full, or no slot is free.
-func (r *reassembly) store(seq Value, payload []byte) bool {
-	if !r.enabled() || len(payload) == 0 || len(payload) > r.segSize {
+// store stages payload at the offset it will occupy in rx once the gap from
+// rcvNxt fills. It returns true when held, including when already held (storing
+// is idempotent). It fails if reassembly is disabled, the payload is empty,
+// metadata is full, it does not fit rx's free region, or it overlaps a held
+// segment.
+func (r *reassembly) store(rx *internal.Ring, rcvNxt, seq Value, payload []byte) bool {
+	if !r.enabled() || len(payload) == 0 {
 		return false
 	}
+	end := Add(seq, Size(len(payload)))
 	for i := range r.held {
 		if r.held[i].seq == seq {
 			return true // already buffered; idempotent.
 		}
+		heldEnd := Add(r.held[i].seq, Size(r.held[i].n))
+		if seq.LessThan(heldEnd) && r.held[i].seq.LessThan(end) {
+			return false // overlaps a held segment.
+		}
 	}
 	if len(r.held) >= cap(r.held) {
-		return false // all slots occupied.
+		return false // metadata full.
 	}
-	slot := r.freeSlot()
-	if slot < 0 {
-		return false
+	gap := int(Sizeof(rcvNxt, seq))
+	if !rx.PeekWrite(payload, gap) {
+		return false // does not fit in the free region.
 	}
-	copy(r.slab[slot*r.segSize:slot*r.segSize+r.segSize], payload)
-	r.held = append(r.held, reasmSeg{seq: seq, slot: slot, n: len(payload)})
+	r.held = append(r.held, reasmSeg{seq: seq, n: len(payload)})
 	return true
 }
 
 // popContiguous removes the held segment that begins exactly at nxt and returns
-// its payload (a slice into the slab valid until the next store). It returns
-// false when no held segment starts at nxt.
-func (r *reassembly) popContiguous(nxt Value) ([]byte, bool) {
+// it. It returns false when no held segment starts at nxt.
+func (r *reassembly) popContiguous(nxt Value) (reasmSeg, bool) {
 	for i := range r.held {
 		if r.held[i].seq == nxt {
 			seg := r.held[i]
-			data := r.slab[seg.slot*r.segSize : seg.slot*r.segSize+seg.n]
 			r.held = append(r.held[:i], r.held[i+1:]...)
-			return data, true
+			return seg, true
 		}
 	}
-	return nil, false
+	return reasmSeg{}, false
 }
 
-// prune discards held segments that lie wholly at or below nxt (already
-// delivered), freeing their slots. Returns the number pruned.
+// prune drops held segments beginning before nxt and returns the count. These
+// are stale or partially overlap the delivered region, where the in-order write
+// at nxt may have overwritten their staged bytes; the sender retransmits the
+// tail. A segment beginning exactly at nxt is kept for [reassembly.popContiguous].
 func (r *reassembly) prune(nxt Value) int {
 	n := 0
 	for i := 0; i < len(r.held); {
-		seg := r.held[i]
-		if Add(seg.seq, Size(seg.n)).LessThanEq(nxt) {
+		if r.held[i].seq.LessThan(nxt) {
 			r.held = append(r.held[:i], r.held[i+1:]...)
 			n++
 			continue
@@ -116,21 +114,4 @@ func (r *reassembly) prune(nxt Value) int {
 		i++
 	}
 	return n
-}
-
-// freeSlot returns an unused slab slot index, or -1 when all are occupied.
-func (r *reassembly) freeSlot() int {
-	for s := 0; s < cap(r.held); s++ {
-		inUse := false
-		for i := range r.held {
-			if r.held[i].slot == s {
-				inUse = true
-				break
-			}
-		}
-		if !inUse {
-			return s
-		}
-	}
-	return -1
 }

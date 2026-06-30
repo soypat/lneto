@@ -29,37 +29,14 @@ type Handler struct {
 	// Read and Write calls belong to the current connection.
 
 	optcodec OptionCodec
-	// reasm is the optional out-of-order reassembly buffer. When disabled
-	// (no buffer set) the Handler only accepts in-order segments, as before.
-	// See [Handler.SetReassemblyBuffer].
+	// reasm tracks out-of-order segments staged in bufRx's free region. Always
+	// enabled once buffers are set (see [Handler.SetBuffers]).
 	reasm      reassembly
 	closing    bool
 	shutdownRx bool
 	// nRetransmit stores the number of times the oldest packet was retransmit.
 	nRetransmit    uint8
 	requeueControl bool
-}
-
-// SetReassemblyBuffer enables out-of-order segment reassembly using buf as
-// storage for up to maxSegments segments that arrive ahead of the next expected
-// sequence number (buf is divided into maxSegments equal slots). With
-// reassembly enabled a single lost segment is recovered by retransmitting only
-// the gap; the buffered tail is then delivered without go-back-N. Passing a nil
-// buffer or zero maxSegments disables reassembly (the default: in-order only).
-// Returns [lneto.ErrBadState] if the connection is open.
-//
-// buf should be sized at least as large as the receive buffer so that any
-// in-window segment arriving during a gap can be held: the receiver subtracts
-// out-of-order bytes from its advertised window, but the slab must be able to
-// absorb a full window's worth of out-of-order data. Each slot holds one
-// segment, so maxSegments bounds how many distinct out-of-order segments may be
-// outstanding; len(buf)/maxSegments must be at least one segment (MSS) of bytes.
-func (h *Handler) SetReassemblyBuffer(buf []byte, maxSegments int) error {
-	if !h.scb.State().IsClosed() {
-		return lneto.ErrBadState
-	}
-	h.reasm.reset(buf, maxSegments)
-	return nil
 }
 
 // SetLoggers sets the [slog.Logger] for the Handler and internal [ControlBlock].
@@ -90,6 +67,7 @@ func (h *Handler) SetBuffers(txbuf, rxbuf []byte, packets int) error {
 	}
 	h.scb.SetRecvWindow(Size(h.bufRx.Size()))
 	h.bufRx.Reset()
+	h.reasm.reset(maxReasmSegments)
 	return h.bufTx.ResetOrReuse(txbuf, packets, 0)
 }
 
@@ -161,7 +139,7 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 		closing:    false,
 		shutdownRx: false,
 	}
-	h.reasm.clear() // preserve the slab/config across reopen, drop held segments.
+	h.reasm.clear() // preserve metadata capacity across reopen, drop held segments.
 	h.bufTx.ResetOrReuse(nil, 0, iss)
 	h.bufRx.Reset()
 }
@@ -199,7 +177,7 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 
 	// Out-of-order reassembly: buffer in-window data that arrived ahead of the
 	// next expected sequence number before the ControlBlock (sequential-only)
-	// would reject it. Buffered segments go to the reassembly slab, not bufRx.
+	// would reject it. Buffered segments live in bufRx's free region.
 	if h.reasm.enabled() && h.handleOutOfOrder(segIncoming, payload) {
 		return nil
 	}
@@ -288,6 +266,11 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 // leaves the segment to the ControlBlock (in-order data, control segments, old
 // or out-of-window segments, or when the reassembly buffer cannot hold it).
 func (h *Handler) handleOutOfOrder(seg Segment, payload []byte) bool {
+	if h.shutdownRx {
+		// Discard mode drops payloads, which would break the ring/rcv.NXT
+		// lockstep flushReassembly relies on; do not buffer.
+		return false
+	}
 	if seg.DATALEN == 0 || seg.Flags.HasAny(flagctl) {
 		return false // only pure data segments are buffered out of order.
 	}
@@ -299,7 +282,7 @@ func (h *Handler) handleOutOfOrder(seg Segment, payload []byte) bool {
 	if !seg.SEQ.InWindow(rcvNxt, rcvWnd) || !seg.Last().InWindow(rcvNxt, rcvWnd) {
 		return false // old or out of window: let the ControlBlock decide.
 	}
-	if !h.reasm.store(seg.SEQ, payload) {
+	if !h.reasm.store(&h.bufRx, rcvNxt, seg.SEQ, payload) {
 		return false // no room: fall back to ControlBlock (challenge ACK).
 	}
 	h.scb.pending[0] |= FlagACK // duplicate ACK advertises the gap at rcv.NXT.
@@ -307,27 +290,28 @@ func (h *Handler) handleOutOfOrder(seg Segment, payload []byte) bool {
 	return true
 }
 
-// flushReassembly delivers buffered out-of-order segments that have become
-// contiguous with rcv.NXT, advancing the receive sequence number and queuing an
-// ACK for the newly delivered data. It stops when a gap remains or the receive
-// buffer lacks room (the remainder is delivered on a later Recv or Read).
+// flushReassembly delivers staged out-of-order segments that have become
+// contiguous with rcv.NXT, advancing it and queuing an ACK. Payloads are
+// already in the ring at rcv.NXT, so delivery only commits that space (no
+// copy). It stops at the first remaining gap.
 func (h *Handler) flushReassembly() {
+	if h.shutdownRx {
+		// Discard mode skips the gap-filling write, so staged bytes can no
+		// longer be committed coherently; drop them (the peer retransmits).
+		h.reasm.clear()
+		return
+	}
 	for h.reasm.buffered() > 0 {
 		nxt := h.scb.RecvNext()
-		h.reasm.prune(nxt)
-		if !h.shutdownRx && h.bufRx.Free() < h.reasm.segSize {
-			break // no room to deliver yet; keep the segments buffered.
-		}
-		data, ok := h.reasm.popContiguous(nxt)
+		h.reasm.prune(nxt) // Drop stale/overlapping segments before delivering.
+		seg, ok := h.reasm.popContiguous(nxt)
 		if !ok {
 			break // a gap remains before the next buffered segment.
 		}
-		if !h.shutdownRx {
-			if _, err := h.bufRx.Write(data); err != nil {
-				break
-			}
+		if err := h.bufRx.Commit(seg.n); err != nil {
+			break // ring lacks room; deliver the remainder on a later Recv/Read.
 		}
-		h.scb.rcv.NXT.UpdateForward(Size(len(data)))
+		h.scb.rcv.NXT.UpdateForward(Size(seg.n))
 		h.scb.pending[0] |= FlagACK
 	}
 }
@@ -549,15 +533,12 @@ func (h *Handler) FreeOutput() int {
 
 // FreeInput returns the number of free bytes in the receive buffer.
 func (h *Handler) FreeInput() int {
-	return h.bufRx.Free()
+	return int(h.recvWindow())
 }
 
 // recvWindow returns the receive window to advertise: free receive-buffer space
-// minus the bytes already held out of order, which will consume that space once
-// the gap fills. Subtracting them prevents the sender from overrunning the
-// receiver while a gap is open. For this to be sufficient the reassembly slab
-// should be sized at least as large as the receive buffer (see
-// [Handler.SetReassemblyBuffer]).
+// minus the bytes already held out of order. Subtracting them prevents the
+// sender from overrunning the receiver while a gap is open.
 func (h *Handler) recvWindow() Size {
 	free := Size(h.bufRx.Free())
 	if !h.reasm.enabled() {

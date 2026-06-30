@@ -3,6 +3,8 @@ package tcp
 import (
 	"bytes"
 	"testing"
+
+	"github.com/soypat/lneto/internal"
 )
 
 func TestReassemblyDisabledByDefault(t *testing.T) {
@@ -10,22 +12,24 @@ func TestReassemblyDisabledByDefault(t *testing.T) {
 	if r.enabled() {
 		t.Fatal("zero-value reassembly must be disabled")
 	}
-	if r.store(100, []byte("x")) {
+	var rx internal.Ring
+	if r.store(&rx, 100, 100, []byte("x")) {
 		t.Error("store must fail when disabled")
 	}
 }
 
 func TestReassemblyStoreAndPop(t *testing.T) {
 	var r reassembly
-	r.reset(make([]byte, 4*8), 4) // 4 slots of 8 bytes.
+	r.reset(4)
+	rx := internal.Ring{Buf: make([]byte, 32)}
 	if !r.enabled() {
 		t.Fatal("reassembly should be enabled after reset")
 	}
 	// Buffer three out-of-order segments (gap at seq 100).
-	if !r.store(108, []byte("CCC")) {
+	if !r.store(&rx, 100, 108, []byte("CCC")) {
 		t.Fatal("store 108 failed")
 	}
-	if !r.store(104, []byte("BBBB")) {
+	if !r.store(&rx, 100, 104, []byte("BBBB")) {
 		t.Fatal("store 104 failed")
 	}
 	if r.buffered() != 2 {
@@ -35,12 +39,14 @@ func TestReassemblyStoreAndPop(t *testing.T) {
 	if _, ok := r.popContiguous(100); ok {
 		t.Error("popContiguous(100) should miss with a gap at 100")
 	}
-	// After 100..104 is delivered, 104 becomes contiguous.
-	data, ok := r.popContiguous(104)
+	// On a fresh ring the staged offset equals seq-rcvNxt (here seq-100).
+	seg, ok := r.popContiguous(104)
+	data := rx.Buf[4 : 4+seg.n] // gap = 104-100.
 	if !ok || !bytes.Equal(data, []byte("BBBB")) {
 		t.Fatalf("popContiguous(104)=%q,%v want BBBB,true", data, ok)
 	}
-	data, ok = r.popContiguous(108)
+	seg, ok = r.popContiguous(108)
+	data = rx.Buf[8 : 8+seg.n] // gap = 108-100.
 	if !ok || !bytes.Equal(data, []byte("CCC")) {
 		t.Fatalf("popContiguous(108)=%q,%v want CCC,true", data, ok)
 	}
@@ -51,11 +57,12 @@ func TestReassemblyStoreAndPop(t *testing.T) {
 
 func TestReassemblyDedup(t *testing.T) {
 	var r reassembly
-	r.reset(make([]byte, 4*8), 4)
-	if !r.store(100, []byte("AAA")) {
+	r.reset(4)
+	rx := internal.Ring{Buf: make([]byte, 32)}
+	if !r.store(&rx, 100, 100, []byte("AAA")) {
 		t.Fatal("first store failed")
 	}
-	if !r.store(100, []byte("AAA")) {
+	if !r.store(&rx, 100, 100, []byte("AAA")) {
 		t.Error("duplicate store of same seq should be idempotent true")
 	}
 	if r.buffered() != 1 {
@@ -65,35 +72,57 @@ func TestReassemblyDedup(t *testing.T) {
 
 func TestReassemblyFull(t *testing.T) {
 	var r reassembly
-	r.reset(make([]byte, 2*8), 2) // only 2 slots.
-	if !r.store(100, []byte("a")) || !r.store(108, []byte("b")) {
+	r.reset(2) // only 2 slots.
+	rx := internal.Ring{Buf: make([]byte, 32)}
+	if !r.store(&rx, 100, 100, []byte("a")) || !r.store(&rx, 100, 108, []byte("b")) {
 		t.Fatal("filling slots failed")
 	}
-	if r.store(116, []byte("c")) {
+	if r.store(&rx, 100, 116, []byte("c")) {
 		t.Error("store must fail when all slots are occupied")
 	}
 	// Freeing a slot lets a new segment in.
 	if _, ok := r.popContiguous(100); !ok {
 		t.Fatal("pop 100 failed")
 	}
-	if !r.store(116, []byte("c")) {
+	if !r.store(&rx, 100, 116, []byte("c")) {
 		t.Error("store should succeed after a slot is freed")
 	}
 }
 
 func TestReassemblyOversizedRejected(t *testing.T) {
 	var r reassembly
-	r.reset(make([]byte, 2*4), 2) // 4-byte slots.
-	if r.store(100, []byte("toolong")) {
-		t.Error("payload larger than a slot must be rejected")
+	r.reset(2)
+	rx := internal.Ring{Buf: make([]byte, 4)}
+	if r.store(&rx, 100, 104, []byte("toolong")) {
+		t.Error("payload larger than free receive space must be rejected")
+	}
+}
+
+func TestReassemblyOverlapRejected(t *testing.T) {
+	var r reassembly
+	r.reset(4)
+	rx := internal.Ring{Buf: make([]byte, 32)}
+	if !r.store(&rx, 100, 104, []byte("BBBB")) { // covers 104..108
+		t.Fatal("store 104 failed")
+	}
+	// Segments overlapping the held 104..108 region must be rejected.
+	if r.store(&rx, 100, 106, []byte("XX")) { // 106..108 overlaps 104..108
+		t.Error("overlapping store must be rejected")
+	}
+	if r.store(&rx, 100, 102, []byte("YYYY")) { // 102..106 overlaps 104..108
+		t.Error("overlapping store must be rejected")
+	}
+	if r.buffered() != 1 {
+		t.Errorf("buffered=%d, want 1 (overlaps must not be stored)", r.buffered())
 	}
 }
 
 func TestReassemblyPrune(t *testing.T) {
 	var r reassembly
-	r.reset(make([]byte, 4*8), 4)
-	r.store(100, []byte("AAAA")) // covers 100..104
-	r.store(108, []byte("BBBB")) // covers 108..112
+	r.reset(4)
+	rx := internal.Ring{Buf: make([]byte, 32)}
+	r.store(&rx, 100, 100, []byte("AAAA")) // covers 100..104
+	r.store(&rx, 100, 108, []byte("BBBB")) // covers 108..112
 	// Delivery advanced rcv.NXT to 104: the 100-segment is now stale.
 	if pruned := r.prune(104); pruned != 1 {
 		t.Errorf("pruned=%d, want 1", pruned)
@@ -106,31 +135,48 @@ func TestReassemblyPrune(t *testing.T) {
 	}
 }
 
+// TestReassemblyPrunePartialOverlap checks a held segment starting before
+// rcv.NXT is dropped, not delivered (its staged bytes may have been overwritten).
+func TestReassemblyPrunePartialOverlap(t *testing.T) {
+	var r reassembly
+	r.reset(4)
+	rx := internal.Ring{Buf: make([]byte, 32)}
+	r.store(&rx, 100, 104, []byte("BBBB")) // covers 104..108
+	// rcv.NXT advanced to 106, partway into the held segment.
+	if pruned := r.prune(106); pruned != 1 {
+		t.Errorf("pruned=%d, want 1 (partial overlap must be dropped)", pruned)
+	}
+	if r.buffered() != 0 {
+		t.Errorf("buffered=%d, want 0", r.buffered())
+	}
+}
+
 func TestReassemblyResetDisables(t *testing.T) {
 	var r reassembly
-	r.reset(make([]byte, 16), 4)
-	r.store(100, []byte("a"))
-	r.reset(nil, 0)
+	rx := internal.Ring{Buf: make([]byte, 16)}
+	r.reset(4)
+	r.store(&rx, 100, 100, []byte("a"))
+	r.reset(0)
 	if r.enabled() {
-		t.Error("reset(nil,0) must disable reassembly")
+		t.Error("reset(0) must disable reassembly")
 	}
 	if r.buffered() != 0 {
 		t.Error("reset must clear held segments")
 	}
 }
 
-// TestReassembly_noAllocs verifies the out-of-order buffer's data-path
-// operations allocate nothing once configured. Storage and slot metadata are
-// supplied and bounded at reset (SetReassemblyBuffer) time and reused across
-// segments, so a peer cannot drive unbounded heap growth from the network.
+// TestReassembly_noAllocs verifies the data-path operations allocate nothing
+// once configured (metadata is bounded at reset, payloads reuse the ring).
 func TestReassembly_noAllocs(t *testing.T) {
 	var r reassembly
-	r.reset(make([]byte, 4*8), 4) // 4 slots of 8 bytes, allocated once here.
+	r.reset(4)
+	rx := internal.Ring{Buf: make([]byte, 32)}
 	seg := []byte("DATA")
 	allocs := testing.AllocsPerRun(100, func() {
 		r.clear()
-		r.store(108, seg) // buffer out of order.
-		r.store(104, seg) // buffer out of order.
+		rx.Reset()
+		r.store(&rx, 100, 108, seg) // buffer out of order.
+		r.store(&rx, 100, 104, seg) // buffer out of order.
 		_ = r.bufferedBytes()
 		_, _ = r.popContiguous(104)
 		r.prune(112)
