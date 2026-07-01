@@ -165,9 +165,14 @@ func (s *StackAsync) IngressIP(ipFrame []byte) error {
 func (s *StackAsync) EgressIP(dstIPFrame []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(dstIPFrame) < s.link.MTU() {
+	mtu := s.link.MTU()
+	if len(dstIPFrame) < mtu {
 		return 0, lneto.ErrShortBuffer
 	}
+	// Clip to MTU so downstream layers cannot emit an IP datagram larger than the
+	// link MTU (mirrors StackEthernet.Encapsulate). This also bounds the TCP frame
+	// budget, so the advertised MSS becomes MTU-ipHdr-20 instead of the buffer size.
+	dstIPFrame = dstIPFrame[:mtu]
 	n, err := s.ip4.Encapsulate(dstIPFrame, 0, 0)
 	if s.ipv6enabled && n == 0 {
 		n, err = s.stack6.EgressIPv6(dstIPFrame)

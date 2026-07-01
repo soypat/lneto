@@ -1135,3 +1135,64 @@ func getTCPFrame(etherFrame []byte) (tcp.Frame, bool) {
 func backoffYield(consecutiveBackoffs uint) time.Duration {
 	return lneto.BackoffFlagGosched
 }
+
+// TestEgressIP_TCPMSSAdvertisesMTU guards against advertising a Maximum Segment Size
+// derived from the (oversized) egress buffer instead of the link MTU. See the
+// EgressIP clip in StackAsync: without it the SYN advertises ~65479 rather than
+// MTU-ipHdr-20.
+func TestEgressIP_TCPMSSAdvertisesMTU(t *testing.T) {
+	const mtu = 1280
+	const wantMSS = uint16(mtu - 20 - 20) // -IPv4 header -TCP header = 1240.
+	s1, s2, c1, _ := newTCPStacks(t, 4, mtu)
+
+	raddr := s2.Addr4()
+	err := s1.DialTCP4(c1, 12345, raddr, 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Emit the client SYN through the IP (TUN) egress path using a buffer far
+	// larger than the MTU. The advertised MSS must reflect the MTU, not len(buf).
+	buf := make([]byte, 65535)
+	n, err := s1.EgressIP(buf)
+	if err != nil {
+		t.Fatal(err)
+	} else if n == 0 {
+		t.Fatal("no SYN emitted")
+	} else if n > mtu {
+		t.Fatalf("emitted IP datagram %d exceeds MTU %d", n, mtu)
+	}
+
+	ifrm, err := ipv4.NewFrame(buf[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	tfrm, err := tcp.NewFrame(ifrm.Payload())
+	if err != nil {
+		t.Fatal(err)
+	}
+	seg := tfrm.Segment(len(tfrm.Payload()))
+	if !seg.Flags.HasAny(tcp.FlagSYN) {
+		t.Fatalf("expected SYN, got flags %s", seg.Flags.String())
+	}
+
+	var op tcp.OptionCodec
+	gotMSS := uint16(0)
+	found := false
+	err = op.ForEachOption(tfrm.Options(), func(kind tcp.OptionKind, data []byte) error {
+		if kind == tcp.OptMaxSegmentSize && len(data) == 2 {
+			gotMSS = uint16(data[0])<<8 | uint16(data[1])
+			found = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("no MSS option in SYN")
+	}
+	if gotMSS != wantMSS {
+		t.Errorf("advertised MSS = %d, want %d (MTU %d - 40)", gotMSS, wantMSS, mtu)
+	}
+}
