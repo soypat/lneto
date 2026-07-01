@@ -4,8 +4,8 @@ package pcap
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"unsafe"
 
@@ -980,18 +980,22 @@ func (frm Frame) String() string {
 
 func (frm Frame) AppendString(b []byte) []byte {
 	bitlen := frm.LenBits()
-	b = fmt.Appendf(b, "%s", frm.Protocol)
+	b = append(b, frm.Protocol...)
 	if bitlen%8 == 0 {
-		b = fmt.Appendf(b, " len=%d", bitlen/8)
+		b = append(b, " len="...)
+		b = strconv.AppendInt(b, int64(bitlen/8), 10)
 	} else {
-		b = fmt.Appendf(b, " bits=%d", bitlen)
+		b = append(b, " bits="...)
+		b = strconv.AppendInt(b, int64(bitlen), 10)
 	}
 	iopt, err := frm.FieldByClass(FieldClassOptions)
 	if err == nil {
-		b = fmt.Appendf(b, " optlen=%d", (frm.Fields[iopt].BitLength+7)/8)
+		b = append(b, " optlen="...)
+		b = strconv.AppendInt(b, int64((frm.Fields[iopt].BitLength+7)/8), 10)
 	}
 	for _, err := range frm.Errors {
-		b = fmt.Appendf(b, " %s", err.Error())
+		b = append(b, ' ')
+		b = append(b, err.Error()...)
 	}
 	return b
 }
@@ -1005,10 +1009,10 @@ func (frm Frame) LenBits() (totalBitlen int) {
 
 func (ff FrameField) String() string {
 	if ff.Class == FieldClassPayload {
-		return fmt.Sprintf("Payload len=%d", ff.BitLength/8)
+		return "Payload len=" + strconv.Itoa(ff.BitLength/8)
 	}
 	if ff.Name != "" {
-		return fmt.Sprintf("%s (%s)", ff.Name, ff.Class.String())
+		return ff.Name + " (" + ff.Class.String() + ")"
 	}
 	return ff.Class.String()
 }

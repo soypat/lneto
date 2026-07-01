@@ -158,7 +158,12 @@ func (ls *StackEthernet) Demux(carrierData []byte, frameOffset int) (err error) 
 		return err
 	}
 DROP:
-	ls.handlers.info("LinkStack:drop-packet", internal.SlogAddr6("dsthw", dstaddr), slog.String("ethertype", efrm.EtherTypeOrSize().String()))
+	// Frames not addressed to us are routine noise on a shared LAN (multicast/
+	// broadcast spam). Log at debug so a production logger at info level gates it
+	// out instead of allocating slog attrs per dropped packet.
+	if internal.LogEnabled(ls.handlers.logger.log, slog.LevelDebug) {
+		ls.handlers.debug("LinkStack:drop-packet", internal.SlogAddr6("dsthw", dstaddr), slog.String("ethertype", efrm.EtherTypeOrSize().String()))
+	}
 	return lneto.ErrPacketDrop
 }
 

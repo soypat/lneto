@@ -38,6 +38,10 @@ type Client struct {
 		raddr  [4]byte
 	}
 	responseRing internal.Ring
+	// addrScratch holds the remote address for SetIPAddrs during Encapsulate.
+	// Kept on the (heap-resident) Client to avoid a per-call escape of a local
+	// [4]byte, which TinyGo would otherwise heap-allocate on every poll.
+	addrScratch [4]byte
 }
 
 type ClientConfig struct {
@@ -155,7 +159,6 @@ func (client *Client) Encapsulate(carrierData []byte, ipOffset, frameOffset int)
 
 	// Put n bytes of ICMP data.
 	var n int
-	var raddr [4]byte
 	if len(client.incomingEcho) > 0 {
 		// Priority: send echo reply.1
 		inc := client.incomingEcho[0]
@@ -170,7 +173,7 @@ func (client *Client) Encapsulate(carrierData []byte, ipOffset, frameOffset int)
 		}
 		client.incomingEcho = slices.Delete(client.incomingEcho, 0, 1)
 		n = sizeHeader + dataLen
-		raddr = inc.raddr
+		client.addrScratch = inc.raddr
 	} else if len(client.outgoingEcho) > 0 {
 		idx := 0
 		for idx < len(client.outgoingEcho) {
@@ -199,7 +202,7 @@ func (client *Client) Encapsulate(carrierData []byte, ipOffset, frameOffset int)
 		copy(data[written:written+size%len(pattern)], pattern)
 		n = sizeHeader + size
 		out.key |= keyHashSentBit
-		raddr = out.raddr
+		client.addrScratch = out.raddr
 	} else {
 		return 0, nil
 	}
@@ -210,7 +213,7 @@ func (client *Client) Encapsulate(carrierData []byte, ipOffset, frameOffset int)
 	sum := crc.PayloadSum16(carrierData[frameOffset : frameOffset+n])
 	ifrm.SetCRC(sum)
 	if ipOffset >= 0 {
-		err = internal.SetIPAddrs(carrierData[ipOffset:], 0, nil, raddr[:])
+		err = internal.SetIPAddrs(carrierData[ipOffset:], 0, nil, client.addrScratch[:])
 	}
 	return n, err
 }
