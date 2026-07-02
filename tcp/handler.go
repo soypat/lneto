@@ -28,7 +28,10 @@ type Handler struct {
 	// connection is established via Open calls. This disambiguates whether
 	// Read and Write calls belong to the current connection.
 
-	optcodec   OptionCodec
+	optcodec OptionCodec
+	// reasm tracks out-of-order segments staged in bufRx's free region. Always
+	// enabled once buffers are set (see [Handler.SetBuffers]).
+	reasm      reassembly
 	closing    bool
 	shutdownRx bool
 	// nRetransmit stores the number of times the oldest packet was retransmit.
@@ -64,6 +67,7 @@ func (h *Handler) SetBuffers(txbuf, rxbuf []byte, packets int) error {
 	}
 	h.scb.SetRecvWindow(Size(h.bufRx.Size()))
 	h.bufRx.Reset()
+	h.reasm.reset(maxReasmSegments)
 	return h.bufTx.ResetOrReuse(txbuf, packets, 0)
 }
 
@@ -131,9 +135,11 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 		remotePort: remotePort,
 		validator:  h.validator,
 		logger:     h.logger,
+		reasm:      h.reasm,
 		closing:    false,
 		shutdownRx: false,
 	}
+	h.reasm.clear() // preserve metadata capacity across reopen, drop held segments.
 	h.bufTx.ResetOrReuse(nil, 0, iss)
 	h.bufRx.Reset()
 }
@@ -163,13 +169,20 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		return lneto.ErrMismatch
 	}
 	payload := tfrm.Payload()
-	if !h.shutdownRx && len(payload) > h.bufRx.Free() {
-		return lneto.ErrBufferFull
-	}
 	segIncoming := tfrm.Segment(len(payload))
 	if h.scb.IncomingIsKeepalive(segIncoming) {
 		h.info("tcp.Handler:rx-keepalive", slog.Uint64("port", uint64(h.localPort)))
 		return nil
+	}
+
+	// Out-of-order reassembly: buffer in-window data that arrived ahead of the
+	// next expected sequence number before the ControlBlock (sequential-only)
+	// would reject it. Buffered segments live in bufRx's free region.
+	if h.reasm.enabled() && h.handleOutOfOrder(segIncoming, payload) {
+		return nil
+	}
+	if !h.shutdownRx && len(payload) > h.bufRx.Free() {
+		return lneto.ErrBufferFull
 	}
 
 	prevState := h.scb.State()
@@ -203,6 +216,11 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		if err != nil {
 			return err
 		}
+	}
+	if segIncoming.DATALEN != 0 && h.reasm.buffered() > 0 {
+		// The just-accepted in-order segment may have filled a gap; deliver any
+		// now-contiguous buffered segments.
+		h.flushReassembly()
 	}
 	if segIncoming.Flags.HasAny(FlagACK) {
 		if segIncoming.ACK == prevUNA {
@@ -240,6 +258,62 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		)
 	}
 	return nil
+}
+
+// handleOutOfOrder buffers an in-window data segment that arrived ahead of the
+// next expected sequence number and queues a duplicate ACK so the sender fast-
+// retransmits the gap. It returns true when it has consumed the segment; false
+// leaves the segment to the ControlBlock (in-order data, control segments, old
+// or out-of-window segments, or when the reassembly buffer cannot hold it).
+func (h *Handler) handleOutOfOrder(seg Segment, payload []byte) bool {
+	if h.shutdownRx {
+		// Discard mode drops payloads, which would break the ring/rcv.NXT
+		// lockstep flushReassembly relies on; do not buffer.
+		return false
+	}
+	if seg.DATALEN == 0 || seg.Flags.HasAny(flagctl) {
+		return false // only pure data segments are buffered out of order.
+	}
+	rcvNxt := h.scb.RecvNext()
+	if seg.SEQ == rcvNxt {
+		return false // in order: the ControlBlock handles it normally.
+	}
+	rcvWnd := h.scb.RecvWindow()
+	if !seg.SEQ.InWindow(rcvNxt, rcvWnd) || !seg.Last().InWindow(rcvNxt, rcvWnd) {
+		return false // old or out of window: let the ControlBlock decide.
+	}
+	if !h.reasm.store(&h.bufRx, rcvNxt, seg.SEQ, payload) {
+		return false // no room: fall back to ControlBlock (challenge ACK).
+	}
+	h.scb.pending[0] |= FlagACK // duplicate ACK advertises the gap at rcv.NXT.
+	h.trace("tcp.Handler:rx-ooo", slog.Uint64("seg.seq", uint64(seg.SEQ)), slog.Uint64("rcv.nxt", uint64(rcvNxt)))
+	return true
+}
+
+// flushReassembly delivers staged out-of-order segments that have become
+// contiguous with rcv.NXT, advancing it and queuing an ACK. Payloads are
+// already in the ring at rcv.NXT, so delivery only commits that space (no
+// copy). It stops at the first remaining gap.
+func (h *Handler) flushReassembly() {
+	if h.shutdownRx {
+		// Discard mode skips the gap-filling write, so staged bytes can no
+		// longer be committed coherently; drop them (the peer retransmits).
+		h.reasm.clear()
+		return
+	}
+	for h.reasm.buffered() > 0 {
+		nxt := h.scb.RecvNext()
+		h.reasm.prune(nxt) // Drop stale/overlapping segments before delivering.
+		seg, ok := h.reasm.popContiguous(nxt)
+		if !ok {
+			break // a gap remains before the next buffered segment.
+		}
+		if err := h.bufRx.Commit(seg.n); err != nil {
+			break // ring lacks room; deliver the remainder on a later Recv/Read.
+		}
+		h.scb.rcv.NXT.UpdateForward(Size(seg.n))
+		h.scb.pending[0] |= FlagACK
+	}
 }
 
 // ShutdownRead activates local discard mode: incoming payload bytes are dropped
@@ -328,7 +402,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 		var ok bool
 		maxPayload := len(b) - sizeHeaderTCP
 		segment, ok = h.scb.PendingSegment(maxPayload)
-		segment.WND = Size(h.bufRx.Free())
+		segment.WND = h.recvWindow()
 		if !ok {
 			// No pending control segment or data to send. Yield.
 			return 0, nil
@@ -391,6 +465,11 @@ func (h *Handler) Read(b []byte) (n int, err error) {
 		n, err = h.bufRx.Read(b)
 	}
 	if n > 0 {
+		if h.reasm.buffered() > 0 {
+			// Reading freed receive-buffer space; deliver any contiguous
+			// out-of-order data that was waiting for room.
+			h.flushReassembly()
+		}
 		h.maybeQueueWindowUpdate()
 	}
 	if n == 0 && err == nil {
@@ -413,7 +492,7 @@ func (h *Handler) Read(b []byte) (n int, err error) {
 // space >= min(bufferSize/2, MSS). This applies uniformly including zero-window
 // recovery — the remote uses zero-window probes until enough space opens.
 func (h *Handler) maybeQueueWindowUpdate() {
-	currentFree := Size(h.bufRx.Free())
+	currentFree := h.recvWindow()
 	lastAdvertised := h.scb.RecvWindow()
 	if currentFree <= lastAdvertised {
 		return // Window hasn't grown.
@@ -454,7 +533,21 @@ func (h *Handler) FreeOutput() int {
 
 // FreeInput returns the number of free bytes in the receive buffer.
 func (h *Handler) FreeInput() int {
-	return h.bufRx.Free()
+	return int(h.recvWindow())
+}
+
+// recvWindow returns the receive window to advertise: free receive-buffer space
+// minus the bytes already held out of order. Subtracting them prevents the
+// sender from overrunning the receiver while a gap is open.
+func (h *Handler) recvWindow() Size {
+	free := Size(h.bufRx.Free())
+	if !h.reasm.enabled() {
+		return free
+	}
+	if ooo := Size(h.reasm.bufferedBytes()); ooo < free {
+		return free - ooo
+	}
+	return 0
 }
 
 // AwaitingSynResponse returns true if the Handler is an active client opened with [Handler.OpenActive] and has already sent out the first SYN packet to the remote client.

@@ -580,3 +580,84 @@ func canonRing(r *Ring) {
 		r.onReadEnd(1)
 	}
 }
+
+// TestRingPeekWriteCommit verifies that bytes staged ahead of a gap with
+// PeekWrite become readable in order once the gap is filled and committed.
+func TestRingPeekWriteCommit(t *testing.T) {
+	r := &Ring{Buf: make([]byte, 16)}
+	// Stage "BBBB" 4 bytes ahead of the write position (the gap).
+	if !r.PeekWrite([]byte("BBBB"), 4) {
+		t.Fatal("PeekWrite should fit")
+	}
+	// Staged bytes are not yet readable.
+	if r.Buffered() != 0 {
+		t.Fatalf("staged bytes must not be readable, buffered=%d", r.Buffered())
+	}
+	// Fill the gap with a normal write, then commit the staged tail.
+	if _, err := r.Write([]byte("AAAA")); err != nil {
+		t.Fatal("gap write:", err)
+	}
+	if err := r.Commit(4); err != nil {
+		t.Fatal("commit:", err)
+	}
+	got := make([]byte, 8)
+	n, err := r.Read(got)
+	if err != nil {
+		t.Fatal("read:", err)
+	}
+	if string(got[:n]) != "AAAABBBB" {
+		t.Fatalf("read %q, want AAAABBBB", got[:n])
+	}
+	testRingSanity(t, r)
+}
+
+// TestRingPeekWriteWrap exercises PeekWrite/Commit when the staged region wraps
+// across the end of the backing buffer. Existing data at Off=2,End=6 puts the
+// write position at index 6, so a 2-byte gap fills indices 6,7 and the staged
+// tail wraps to indices 0,1.
+func TestRingPeekWriteWrap(t *testing.T) {
+	r := &Ring{Buf: make([]byte, 8)}
+	setRingData(t, r, 2, []byte("WXYZ")) // Off=2, End=6, 4 bytes buffered.
+	if r.writeStart() != 6 {
+		t.Fatalf("writeStart=%d, want 6", r.writeStart())
+	}
+	// Stage "CD" 2 bytes ahead of the write position (6) → wraps to indices 0,1.
+	if !r.PeekWrite([]byte("CD"), 2) {
+		t.Fatal("PeekWrite (wrap) should fit")
+	}
+	// Fill the 2-byte gap at indices 6,7, then commit the wrapped tail.
+	if _, err := r.Write([]byte("AB")); err != nil {
+		t.Fatal("gap write:", err)
+	}
+	if err := r.Commit(2); err != nil {
+		t.Fatal("commit:", err)
+	}
+	got := make([]byte, 8)
+	n, err := r.Read(got)
+	if err != nil {
+		t.Fatal("read:", err)
+	}
+	if string(got[:n]) != "WXYZABCD" {
+		t.Fatalf("read %q, want WXYZABCD", got[:n])
+	}
+	testRingSanity(t, r)
+}
+
+func TestRingPeekWriteRejects(t *testing.T) {
+	r := &Ring{Buf: make([]byte, 8)}
+	if r.PeekWrite([]byte("toolong!!"), 0) {
+		t.Error("PeekWrite must reject data larger than the buffer")
+	}
+	if r.PeekWrite([]byte("data"), 5) { // 5+4 > 8 free.
+		t.Error("PeekWrite must reject offset+len beyond free space")
+	}
+	if r.PeekWrite([]byte("x"), -1) {
+		t.Error("PeekWrite must reject negative offset")
+	}
+	if err := r.Commit(0); err == nil {
+		t.Error("Commit(0) must error")
+	}
+	if err := r.Commit(9); err == nil {
+		t.Error("Commit beyond free must error")
+	}
+}
