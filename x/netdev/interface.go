@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"unsafe"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
@@ -39,25 +40,29 @@ type DevEthernet interface {
 	SendOffsetEthFrame(offsetTxEthFrame []byte) error
 	// SetRecvHandler registers the function called when an Ethernet
 	// frame is received. Buffers needed by the device to operate efficiently
-	// should be allocated on its side. This function is mutually exclusive with EthPoll:
-	// use on or the other to receive data.
+	// should be allocated on its side.
+	//
+	// Frames may be delivered via this handler, via EthPoll's buffer, or both:
+	//   - Handler unset: EthPoll writes received frames into its argument buffer.
+	//   - Handler set: received frames are delivered to the handler. EthPoll must
+	//     not write to its argument buffer; it is called with a nil buffer purely
+	//     to pump devices that need explicit servicing to drive the handler.
 	SetEthRecvHandler(handler func(rxEthframe []byte))
 	// EthPoll services the device. For poll-based devices (e.g. CYW43439
 	// over SPI), reads from the bus and invokes the handler for each
-	// received frame. This method is mutually exclusive with SetEthRecvHandler:
-	// use one or the other to receive data but not return data via both channels.
+	// received frame.
+	//
+	// Behavior depends on whether a handler is set via SetEthRecvHandler:
+	//   - No handler: writes a received frame into buf, returning its offset/length.
+	//   - Handler set: buf is nil and must not be written to; EthPoll only pumps
+	//     the device so frames are delivered through the handler. Return values are ignored.
 	EthPoll(buf []byte) (ethFrameOff, ethernetBytes int, err error)
 	// MaxFrameSizeAndOffset returns the max complete device frame size
-	// (including headers and any overhead) for buffer allocation.
+	// (including headers and any overhead) for Ethernet Rx buffer allocation.
 	// The second value returned is the offset at which the ethernet frame
 	// should be stored when being passed to [DevEthernet.SendOffsetEthFrame].
-	// Buffers allocated should be maxEthernetFrameSize+frameOff where maxEthernetFrameSize
-	// is usually 1500 but less or equal to maxFrameSize-frameOff.
-	// MTU can be calculated doing:
-	//  // mfu-(14+4+4) for:
-	//  // ethernet header+ethernet CRC if present+ethernet VLAN overhead for VLAN support.
-	//  mtu := dev.MaxFrameSizeAndOffset() - ethernet.MaxOverheadSize
-	MaxFrameSizeAndOffset() (maxFrameSize int, frameOff int)
+	// Buffers allocated for Rx should be maxFrameSize.
+	MaxFrameSizeAndOffset() (maxFrameSize int, sendEthFrameOff int)
 }
 
 // Stack is an abstraction for a networking stack.
@@ -114,6 +119,18 @@ type InterfaceConfig struct {
 	// MTU is the maximum ethernet payload size. Does not include ethernet header(14b) and FCS(4b).
 	// If MTU is zero the default ipv4.MTU value of 1500 is used.
 	MTU uint16
+}
+
+// RunnerBuffers returns 32-bit aligned contiguous buffers for using with [RunnerConfig].
+func (iface *Interface[C]) RunnerBuffers(n int) [][]byte {
+	frmlen32 := (iface.frameSize + 3) / 4
+	rawBuf32 := make([]uint32, n*frmlen32) // ensure memory aligned
+	bufs := make([][]byte, n)
+	for i := range n {
+		buf32 := rawBuf32[i*frmlen32 : (i+1)*frmlen32]
+		bufs[i] = unsafe.Slice((*byte)(unsafe.Pointer(&buf32[0])), iface.frameSize)
+	}
+	return bufs
 }
 
 // Init initializes the interface from scratch with a netlink and device. If Init fails all methods on Interface are unsafe to call (panic).
