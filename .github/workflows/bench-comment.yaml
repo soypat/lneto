@@ -1,0 +1,78 @@
+name: Benchmark Comment
+
+# Rationale: This more privileged workflow runs in the base repo's
+# context (with a write token) only after the 'untrusted' CI workflow finishes.
+# It does NOT check out or execute PR code; it only consumes the benchmark
+# report artifact as inert, validated data.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  comment:
+    # Only for PR-triggered CI runs that succeeded to suppress noise
+    if: >
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # needed to comment
+    steps:
+      - name: Download generated benchmark report
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.1
+        with:
+          name: bench-report
+          path: bench-report
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate report and upsert PR comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          report="bench-report/bench-report.md"
+          marker='<!-- lneto-bench -->'
+
+          # Treat the artifact as untrusted input: it was produced by a job that
+          # ran PR code. Basic validation before posting. TODO: Make more robust.
+          test -f "$report"
+          size="$(wc -c < "$report")"
+          if [ "$size" -le 0 ] || [ "$size" -gt 1000000 ]; then
+            echo "::error::benchmark report has unexpected size: ${size} bytes"
+            exit 1
+          fi
+          if ! grep -qF "$marker" "$report"; then
+            echo "::error::benchmark report missing marker ${marker}"
+            exit 1
+          fi
+
+          # Resolve the PR from the run's head SHA rather than trusting any
+          # value carried in the artifact, so we can only comment on the PR that
+          # actually produced this run.
+          pr="$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" \
+            --jq 'map(select(.state == "open")) | .[0].number // empty')"
+          if [ -z "$pr" ]; then
+            echo "No open PR found for ${HEAD_SHA}; nothing to comment."
+            exit 0
+          fi
+
+          comment_id="$(
+            gh api "repos/${REPO}/issues/${pr}/comments" --paginate \
+              --jq ".[] | select(.body | contains(\"${marker}\")) | .id" | head -n1
+          )"
+          if [ -n "$comment_id" ]; then
+            gh api --method PATCH "repos/${REPO}/issues/comments/${comment_id}" \
+              -f body=@"$report"
+          else
+            gh api --method POST "repos/${REPO}/issues/${pr}/comments" \
+              -f body=@"$report"
+          fi
