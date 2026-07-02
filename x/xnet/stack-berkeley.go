@@ -9,22 +9,18 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/soypat/lneto"
 )
 
 const (
-	_AF_INET       = 0x2
-	_SOCK_STREAM   = 0x1
-	_SOCK_DGRAM    = 0x2
-	_SOL_SOCKET    = 0x1
-	_SO_KEEPALIVE  = 0x9
-	_SOL_TCP       = 0x6
-	_TCP_KEEPINTVL = 0x5
-	_IPPROTO_TCP   = 0x6
-	_IPPROTO_UDP   = 0x11
+	AF_INET     = 0x2
+	SOCK_STREAM = 0x1
+	SOCK_DGRAM  = 0x2
+
 	// Made up, not a real IP protocol number.  This is used to create a
 	// TLS socket on the device, assuming the device supports mbed TLS.
-	_IPPROTO_TLS = 0xFE
-	_F_SETFL     = 0x4
+	_IPPROTO_TLS = 0xFE // TODO: is this a good idea?
 )
 
 // gosocket is the stack abstraction for the baremetal proposal.
@@ -92,7 +88,7 @@ func (s *StackBerkeley) SetSockOpt(sockfd int, level int, opt int, value any) er
 // domain must be AF_INET. stype must be SOCK_STREAM or SOCK_DGRAM.
 // protocol must be IPPROTO_TCP, IPPROTO_UDP, or IPPROTO_TLS.
 func (s *StackBerkeley) Socket(domain int, stype int, protocol int) (sockfd int, _ error) {
-	if domain != _AF_INET {
+	if domain != AF_INET {
 		return -1, fmt.Errorf("unsupported domain %d", domain)
 	}
 	s.mu.Lock()
@@ -117,23 +113,23 @@ func (s *StackBerkeley) Connect(sockfd int, host string, ip netip.AddrPort) erro
 	var raddr net.Addr
 	var network string
 	var family, sotype int
-	switch pending.sock.protocol {
-	case _IPPROTO_TCP, _IPPROTO_TLS:
+	switch lneto.IPProto(pending.sock.protocol) {
+	case lneto.IPProtoTCP, _IPPROTO_TLS:
 		if pending.sock.boundAddr.IsValid() && pending.sock.boundAddr.Port() > 0 {
 			laddr = &net.TCPAddr{IP: pending.sock.boundAddr.Addr().AsSlice(), Port: int(pending.sock.boundAddr.Port())}
 		}
 		raddr = &net.TCPAddr{IP: ip.Addr().AsSlice(), Port: int(ip.Port())}
 		network = "tcp4"
-		family = _AF_INET
-		sotype = _SOCK_STREAM
-	case _IPPROTO_UDP:
+		family = AF_INET
+		sotype = SOCK_STREAM
+	case lneto.IPProtoUDP:
 		if pending.sock.boundAddr.IsValid() && pending.sock.boundAddr.Port() > 0 {
 			laddr = &net.UDPAddr{IP: pending.sock.boundAddr.Addr().AsSlice(), Port: int(pending.sock.boundAddr.Port())}
 		}
 		raddr = &net.UDPAddr{IP: ip.Addr().AsSlice(), Port: int(ip.Port())}
 		network = "udp4"
-		family = _AF_INET
-		sotype = _SOCK_DGRAM
+		family = AF_INET
+		sotype = SOCK_DGRAM
 	default:
 		return fmt.Errorf("Connect: unsupported protocol %d", pending.sock.protocol)
 	}
@@ -166,7 +162,7 @@ func (s *StackBerkeley) Listen(sockfd int, backlog int) error {
 	if pending.sock.boundAddr.IsValid() && pending.sock.boundAddr.Port() > 0 {
 		laddr = &net.TCPAddr{IP: pending.sock.boundAddr.Addr().AsSlice(), Port: int(pending.sock.boundAddr.Port())}
 	}
-	c, err := s.gosocket(context.Background(), "tcp4", _AF_INET, _SOCK_STREAM, laddr, nil)
+	c, err := s.gosocket(context.Background(), "tcp4", AF_INET, SOCK_STREAM, laddr, nil)
 	if err != nil {
 		return err
 	}
