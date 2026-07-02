@@ -10,6 +10,75 @@ import (
 	"github.com/soypat/lneto"
 )
 
+// CongestionControl decides how much unacknowledged data a TCP sender may keep
+// in flight. It observes every segment crossing the connection and maintains a
+// congestion window from those observations.
+//
+// Implementations are expected to maintain any needed internal state, such as
+// the congestion window, slow-start threshold, bandwidth/RTT estimates, or
+// pacing state. The lneto/tcp/congestion subpackage provides two
+// implementations: congestion.CUBIC and congestion.BBR.
+//
+// The interface is intentionally decoupled from the [Handler]'s internals: the
+// Handler hands the controller a fully-populated [CongestionEvent], so
+// implementations live in a separate package and never touch unexported state.
+//
+// Static, per-controller configuration (MSS defaults, initial window, clock
+// injection, …) is deliberately kept off this interface: it is supplied through
+// an implementation-specific method (e.g. congestion.CUBIC.Configure) before
+// the controller is installed on a [Handler]. This keeps the interface minimal
+// and lets a configured controller be reused across connections.
+type CongestionControl interface {
+	// Control feeds a segment crossing the [Handler] boundary into the
+	// controller so it can update its congestion state, and returns the
+	// resulting congestion window: the maximum number of unacknowledged bytes
+	// the sender should allow in flight. The Handler stops sending new data once
+	// the in-flight byte count reaches the returned window; retransmission
+	// scheduling remains the Handler's responsibility. Control is called for
+	// every admitted segment, not only on congestion events.
+	Control(event CongestionEvent) (congestionWindow Size)
+	// Reset clears the controller's per-connection state (windows, estimates,
+	// state machine) so it is ready for a fresh connection, while preserving any
+	// static configuration applied beforehand. The Handler calls Reset whenever
+	// it opens or tears down a connection (Open/Abort), so a single configured
+	// controller can be reused across the connection's lifecycle without being
+	// reconfigured.
+	Reset()
+}
+
+// CongestionEvent describes a single TCP segment crossing the connection,
+// together with the sender state needed by a [CongestionControl] to update its
+// estimates. It is built by [ControlBlock.CongestionEvent] for every segment
+// sent or received and passed to [CongestionControl.Control].
+type CongestionEvent struct {
+	// Segment is the TCP segment crossing the connection.
+	Segment Segment
+	// SndUNA is the sender's oldest unacknowledged sequence number after the
+	// segment has been processed by the control block. Successive events let the
+	// controller derive how many new bytes an incoming ACK acknowledged.
+	SndUNA Value
+	// SndNXT is the next sequence number the sender will use. For transmitted
+	// segments it reflects state before the segment advances it, which lets the
+	// controller tell new data (Segment.SEQ == SndNXT) from a retransmission.
+	SndNXT Value
+	// InFlight is the number of unacknowledged bytes in flight after the event.
+	InFlight Size
+	// MSS is the maximum segment size negotiated with the peer, or 0 if unknown.
+	MSS Size
+	// Tx reports whether the segment was transmitted by this endpoint (true) or
+	// received from the peer (false).
+	Tx bool
+	// RTO reports that the event is a retransmission-timeout notification
+	// (RFC 6298) rather than a segment crossing the connection. When set, Segment
+	// is zero and the controller should treat it as a severe loss signal
+	// (e.g. CUBIC collapses its window to the loss window per RFC 5681 §3.1).
+	RTO bool
+	// Dupacks is the control block's count of consecutive duplicate ACKs
+	// received, zero for transmitted segments. Controllers derive loss signals
+	// from it (commonly the fast-retransmit threshold of 3, RFC 5681 §3.2).
+	Dupacks uint8
+}
+
 //go:generate stringer -type=State,OptionKind -linecomment -output stringers.go .
 
 var (

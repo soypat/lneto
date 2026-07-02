@@ -3,6 +3,7 @@ package tcp
 import (
 	"io"
 	"net"
+	"time"
 
 	"log/slog"
 
@@ -28,7 +29,31 @@ type Handler struct {
 	// connection is established via Open calls. This disambiguates whether
 	// Read and Write calls belong to the current connection.
 
-	optcodec   OptionCodec
+	optcodec OptionCodec
+	// cc is the optional congestion controller. When nil the Handler is only
+	// limited by the receive window advertised by the peer (no congestion
+	// control). See [Handler.SetCongestionControl].
+	cc CongestionControl
+	// reasm is the optional out-of-order reassembly buffer. When disabled
+	// (no buffer set) the Handler only accepts in-order segments, as before.
+	// See [Handler.SetReassemblyBuffer].
+	reasm reassembly
+	// tsPermit enables offering/accepting the RFC 7323 Timestamps option during
+	// the handshake. Off by default. See [Handler.EnableTimestamps].
+	tsPermit bool
+	// sackPermit enables offering/accepting Selective Acknowledgment (RFC 2018)
+	// during the handshake. Off by default. See [Handler.EnableSACK].
+	sackPermit bool
+	// sackRTO marks that a retransmission timeout opened a fresh SACK recovery
+	// round; cleared once every outstanding hole has been retransmitted.
+	sackRTO bool
+	// congestWnd caches the window returned by the last cc.Control call.
+	// invalidCongestWnd means no window has been reported yet (no gating).
+	congestWnd Size
+	// clock injects the time source shared by the RFC 6298 retransmission timer
+	// and (typically) the congestion controller. When nil all time-based
+	// features are disabled (time integration is opt-in); see SetClock.
+	clock      func() time.Time
 	closing    bool
 	shutdownRx bool
 	// nRetransmit stores the number of times the oldest packet was retransmit.
@@ -36,10 +61,166 @@ type Handler struct {
 	requeueControl bool
 }
 
+// invalidCongestWnd marks Handler.congestWnd as not-yet-reported by the
+// congestion controller, in which case no congestion gating is applied.
+const invalidCongestWnd = 0xffff_ffff
+
+// SetCongestionControl installs cc as the connection's congestion controller,
+// or removes it when cc is nil. It limits how much new (unacknowledged) data
+// the Handler keeps in flight to the window returned by cc.Control, which is
+// fed every segment crossing the connection. The controller is retained across
+// connection re-opens. Returns [lneto.ErrBadState] if the connection is open:
+// the controller cannot be changed mid-connection (see
+// [ConnConfig.CongestionControl] to configure it on a [Conn]).
+func (h *Handler) SetCongestionControl(cc CongestionControl) error {
+	if !h.scb.State().IsClosed() {
+		return lneto.ErrBadState
+	}
+	h.cc = cc
+	h.congestWnd = invalidCongestWnd
+	return nil
+}
+
+// SetReassemblyBuffer enables out-of-order segment reassembly using buf as
+// storage for up to maxSegments segments that arrive ahead of the next expected
+// sequence number (buf is divided into maxSegments equal slots). With
+// reassembly enabled a single lost segment is recovered by retransmitting only
+// the gap; the buffered tail is then delivered without go-back-N. Passing a nil
+// buffer or zero maxSegments disables reassembly (the default: in-order only).
+// Returns [lneto.ErrBadState] if the connection is open.
+//
+// buf should be sized at least as large as the receive buffer so that any
+// in-window segment arriving during a gap can be held: the receiver subtracts
+// out-of-order bytes from its advertised window, but the slab must be able to
+// absorb a full window's worth of out-of-order data. Each slot holds one
+// segment, so maxSegments bounds how many distinct out-of-order segments may be
+// outstanding; len(buf)/maxSegments must be at least one segment (MSS) of bytes.
+func (h *Handler) SetReassemblyBuffer(buf []byte, maxSegments int) error {
+	if !h.scb.State().IsClosed() {
+		return lneto.ErrBadState
+	}
+	h.reasm.reset(buf, maxSegments)
+	return nil
+}
+
+// EnableTimestamps enables the RFC 7323 TCP Timestamps option, which is then
+// offered on the SYN and, if the peer also supports it, used to measure the
+// round-trip time on every acknowledgment (RTTM). It is disabled by default and
+// must be set before the connection is opened. Timestamps are time-based and
+// therefore additionally require a clock injected via [Handler.SetClock]:
+// without one the option is neither offered nor negotiated. Returns
+// [lneto.ErrBadState] if the connection is open.
+func (h *Handler) EnableTimestamps(enable bool) error {
+	if !h.scb.State().IsClosed() {
+		return lneto.ErrBadState
+	}
+	h.tsPermit = enable
+	return nil
+}
+
+// EnableSACK enables Selective Acknowledgment (RFC 2018). When enabled it is
+// offered on the SYN and, if the peer also supports it, the receiver advertises
+// the byte ranges it holds out of order (built from the reassembly buffer) so
+// the sender can retransmit only the gaps. It has effect only together with
+// [Handler.SetReassemblyBuffer]. Disabled by default; must be set before the
+// connection is opened. Returns [lneto.ErrBadState] if the connection is open.
+func (h *Handler) EnableSACK(enable bool) error {
+	if !h.scb.State().IsClosed() {
+		return lneto.ErrBadState
+	}
+	h.sackPermit = enable
+	return nil
+}
+
 // SetLoggers sets the [slog.Logger] for the Handler and internal [ControlBlock].
 func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
 	h.logger.log = handler
 	h.scb.logger.log = scb
+}
+
+// SetClock injects the time source that enables the Handler's time-based
+// features: the RFC 6298 retransmission timer and RFC 7323 Timestamps (it is
+// also shared with a congestion controller for deterministic testing). Time
+// integration is opt-in: until a clock is injected the Handler performs no
+// time-based work — it keeps no retransmission timer and does not negotiate
+// Timestamps, relying on duplicate-ACK fast retransmit just as it did before
+// RTO support existed. This keeps timing out of the default data path (a
+// requirement for bare-metal targets). It must be set before the connection is
+// opened.
+func (h *Handler) SetClock(clock func() time.Time) {
+	h.clock = clock
+	h.scb.SetClock(clock)
+}
+
+// now returns the injected clock's time. It is only called behind a
+// clock != nil guard (time integration is opt-in); the time.Now fallback is
+// defensive and is not reached on the default, clock-less data path.
+func (h *Handler) now() time.Time {
+	if h.clock != nil {
+		return h.clock()
+	}
+	return time.Now()
+}
+
+// CheckRetransmitTimeout drives the RFC 6298 retransmission timer and should be
+// called periodically (e.g. once per stack poll). When the timer has expired it
+// rewinds the send sequence and transmit buffer so the next Send retransmits
+// unacknowledged data from snd.UNA (go-back-N), and returns true. The next call
+// to Send emits the retransmission. Congestion-controller notification of the
+// timeout is wired separately.
+// RetransmitDeadline returns the time at which the retransmission timer will
+// next fire and whether it is currently running. A poller uses it to schedule
+// the next CheckRetransmitTimeout call.
+func (h *Handler) RetransmitDeadline() (time.Time, bool) {
+	return h.scb.rto.deadline, h.scb.rto.running
+}
+
+// TimestampsEnabled reports whether the RFC 7323 Timestamps option was
+// negotiated for the current connection.
+func (h *Handler) TimestampsEnabled() bool { return h.scb.tsEnabled }
+
+// SACKEnabled reports whether Selective Acknowledgment (RFC 2018) was
+// negotiated for the current connection.
+func (h *Handler) SACKEnabled() bool { return h.scb.sackEnabled }
+
+// SmoothedRTT returns the current smoothed round-trip-time estimate (SRTT,
+// RFC 6298), or zero before the first measurement.
+func (h *Handler) SmoothedRTT() time.Duration { return h.scb.rto.srtt }
+
+func (h *Handler) CheckRetransmitTimeout() bool {
+	if h.clock == nil {
+		// Time integration is opt-in: without an injected clock there is no
+		// retransmission timer to service (see SetClock).
+		return false
+	}
+	if h.scb.SACKEnabled() {
+		// SACK recovery retransmits holes selectively (no go-back-N rewind).
+		if !h.scb.timeoutFired(h.now()) {
+			return false
+		}
+		h.bufTx.ClearRetransmitMarks() // start a fresh recovery round.
+		h.sackRTO = true
+		if h.cc != nil {
+			h.congestWnd = h.cc.Control(h.scb.CongestionRTOEvent())
+		}
+		return true
+	}
+	if !h.scb.CheckRetransmitTimeout(h.now()) {
+		return false
+	}
+	h.bufTx.RetransmitFromUNA()
+	if h.cc != nil {
+		// Notify the controller of the timeout so it collapses its window
+		// (RFC 6298 §5 / RFC 5681 §3.1) before retransmission resumes.
+		h.congestWnd = h.cc.Control(h.scb.CongestionRTOEvent())
+	}
+	return true
+}
+
+// sackRetransmitPending reports whether SACK recovery has an outstanding hole to
+// retransmit this round.
+func (h *Handler) sackRetransmitPending() bool {
+	return h.scb.SACKEnabled() && (h.scb.InFastRecovery() || h.sackRTO) && h.bufTx.HasSACKRetransmit()
 }
 
 // ConnectionID returns the connection identifier which is incremented every time the connection is closed or open.
@@ -131,11 +312,23 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 		remotePort: remotePort,
 		validator:  h.validator,
 		logger:     h.logger,
+		cc:         h.cc,
+		reasm:      h.reasm,
+		tsPermit:   h.tsPermit,
+		sackPermit: h.sackPermit,
+		congestWnd: invalidCongestWnd,
+		clock:      h.clock,
 		closing:    false,
 		shutdownRx: false,
 	}
+	h.reasm.clear() // preserve the slab/config across reopen, drop held segments.
 	h.bufTx.ResetOrReuse(nil, 0, iss)
 	h.bufRx.Reset()
+	if h.cc != nil {
+		// Notify the controller a connection is (re)opening or tearing down so it
+		// starts from a clean per-connection state while keeping its configuration.
+		h.cc.Reset()
+	}
 }
 
 // Recv receives an incoming TCP packet frame with the first byte being the first octet of the TCP frame.
@@ -163,17 +356,25 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		return lneto.ErrMismatch
 	}
 	payload := tfrm.Payload()
-	if !h.shutdownRx && len(payload) > h.bufRx.Free() {
-		return lneto.ErrBufferFull
-	}
 	segIncoming := tfrm.Segment(len(payload))
 	if h.scb.IncomingIsKeepalive(segIncoming) {
 		h.info("tcp.Handler:rx-keepalive", slog.Uint64("port", uint64(h.localPort)))
 		return nil
 	}
 
+	// Out-of-order reassembly: buffer in-window data that arrived ahead of the
+	// next expected sequence number before the ControlBlock (sequential-only)
+	// would reject it. Buffered segments go to the reassembly slab, not bufRx.
+	if h.reasm.enabled() && h.handleOutOfOrder(segIncoming, payload) {
+		return nil
+	}
+	if !h.shutdownRx && len(payload) > h.bufRx.Free() {
+		return lneto.ErrBufferFull
+	}
+
 	prevState := h.scb.State()
-	prevUNA := h.scb.snd.UNA // Capture before Recv updates snd.UNA (RFC 6298 §5.3).
+	prevUNA := h.scb.snd.UNA       // Capture before Recv updates snd.UNA (RFC 6298 §5.3).
+	prevRcvNxt := h.scb.RecvNext() // Capture before Recv to detect in-order delivery.
 	err = h.scb.Recv(segIncoming)
 	if err != nil {
 		if h.scb.State() == StateClosed {
@@ -204,6 +405,11 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 			return err
 		}
 	}
+	if segIncoming.DATALEN != 0 && h.reasm.buffered() > 0 {
+		// The just-accepted in-order segment may have filled a gap; deliver any
+		// now-contiguous buffered segments.
+		h.flushReassembly()
+	}
 	if segIncoming.Flags.HasAny(FlagACK) {
 		if segIncoming.ACK == prevUNA {
 			// scb keeping track of duplicate acks.
@@ -213,6 +419,7 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 			h.bufTx.RecvACK(segIncoming.ACK)
 		}
 	}
+	h.processOptions(tfrm.Options(), segIncoming, prevRcvNxt, prevUNA)
 	if segIncoming.Flags.HasAny(FlagSYN) {
 		// Parse remote MSS from TCP options.
 		h.optcodec.ForEachOption(tfrm.Options(), func(kind OptionKind, data []byte) error {
@@ -230,6 +437,11 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 			h.remotePort = remotePort
 		}
 	}
+	if h.cc != nil {
+		// Feed the received segment (ACKs, duplicate ACKs/loss, RTT samples) into
+		// the congestion controller after the TCB has updated snd.UNA/dupack.
+		h.congestWnd = h.cc.Control(h.scb.CongestionEvent(segIncoming, false))
+	}
 	if h.logenabled(internal.LevelTrace) {
 		h.trace("tcp.Handler:rx-done",
 			slog.Uint64("lport", uint64(h.localPort)),
@@ -240,6 +452,206 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		)
 	}
 	return nil
+}
+
+// handleOutOfOrder buffers an in-window data segment that arrived ahead of the
+// next expected sequence number and queues a duplicate ACK so the sender fast-
+// retransmits the gap. It returns true when it has consumed the segment; false
+// leaves the segment to the ControlBlock (in-order data, control segments, old
+// or out-of-window segments, or when the reassembly buffer cannot hold it).
+func (h *Handler) handleOutOfOrder(seg Segment, payload []byte) bool {
+	if seg.DATALEN == 0 || seg.Flags.HasAny(flagctl) {
+		return false // only pure data segments are buffered out of order.
+	}
+	rcvNxt := h.scb.RecvNext()
+	if seg.SEQ == rcvNxt {
+		return false // in order: the ControlBlock handles it normally.
+	}
+	rcvWnd := h.scb.RecvWindow()
+	if !seg.SEQ.InWindow(rcvNxt, rcvWnd) || !seg.Last().InWindow(rcvNxt, rcvWnd) {
+		return false // old or out of window: let the ControlBlock decide.
+	}
+	if !h.reasm.store(seg.SEQ, payload) {
+		return false // no room: fall back to ControlBlock (challenge ACK).
+	}
+	h.scb.pending[0] |= FlagACK // duplicate ACK advertises the gap at rcv.NXT.
+	h.trace("tcp.Handler:rx-ooo", slog.Uint64("seg.seq", uint64(seg.SEQ)), slog.Uint64("rcv.nxt", uint64(rcvNxt)))
+	return true
+}
+
+// flushReassembly delivers buffered out-of-order segments that have become
+// contiguous with rcv.NXT, advancing the receive sequence number and queuing an
+// ACK for the newly delivered data. It stops when a gap remains or the receive
+// buffer lacks room (the remainder is delivered on a later Recv or Read).
+func (h *Handler) flushReassembly() {
+	for h.reasm.buffered() > 0 {
+		nxt := h.scb.RecvNext()
+		h.reasm.prune(nxt)
+		if !h.shutdownRx && h.bufRx.Free() < h.reasm.segSize {
+			break // no room to deliver yet; keep the segments buffered.
+		}
+		data, ok := h.reasm.popContiguous(nxt)
+		if !ok {
+			break // a gap remains before the next buffered segment.
+		}
+		if !h.shutdownRx {
+			if _, err := h.bufRx.Write(data); err != nil {
+				break
+			}
+		}
+		h.scb.rcv.NXT.UpdateForward(Size(len(data)))
+		h.scb.pending[0] |= FlagACK
+	}
+}
+
+// reservedOptionsLen returns the number of option bytes to reserve ahead of the
+// payload on an established-state segment (a multiple of 4). Data segments carry
+// only the Timestamps option when negotiated.
+func (h *Handler) reservedOptionsLen() int {
+	if h.scb.tsEnabled {
+		return 12 // NOP, NOP, Timestamps(10).
+	}
+	return 0
+}
+
+// appendSegmentOptions writes the TCP options for an outgoing segment into dst
+// (which begins right after the 20-byte fixed header) and returns the number of
+// bytes written, always a multiple of 4 (NOP-padded). mss is advertised on SYN
+// segments.
+func (h *Handler) appendSegmentOptions(dst []byte, seg Segment, mss uint16) int {
+	n := 0
+	isSyn := seg.Flags.HasAny(FlagSYN)
+	if isSyn {
+		m, _ := h.optcodec.PutOption16(dst[n:], OptMaxSegmentSize, mss)
+		n += m
+	}
+	// SACK-permitted (RFC 2018 §2): offer on a bare SYN when locally permitted;
+	// echo on the SYN-ACK only once negotiated.
+	sackPerm := h.scb.sackEnabled
+	if seg.Flags == FlagSYN {
+		sackPerm = h.sackPermit
+	}
+	if isSyn && sackPerm {
+		m, _ := h.optcodec.PutOption(dst[n:], OptSACKPermitted)
+		n += m
+	}
+	// Timestamps (RFC 7323): offer on a bare SYN when locally permitted;
+	// otherwise include only once negotiated (SYN-ACK and established segments).
+	includeTS := h.scb.tsEnabled
+	if seg.Flags == FlagSYN {
+		// Offer Timestamps only when a clock was injected: the option measures
+		// round-trip time and carries no useful value without one, so time
+		// integration stays opt-in (see SetClock).
+		includeTS = h.tsPermit && h.clock != nil
+	}
+	if includeTS {
+		dst[n] = byte(OptNop)
+		dst[n+1] = byte(OptNop)
+		n += 2
+		var ts [8]byte
+		putUint32BE(ts[0:], h.scb.tsValue())
+		putUint32BE(ts[4:], h.scb.tsRecent)
+		m, _ := h.optcodec.PutOption(dst[n:], OptTimestamps, ts[:]...)
+		n += m
+	}
+	// SACK blocks (RFC 2018 §3): advertised on a pure ACK when we hold
+	// out-of-order data, so the sender can retransmit only the gaps.
+	if !isSyn && h.scb.sackEnabled && seg.DATALEN == 0 && !seg.Flags.HasAny(FlagFIN|FlagRST) && h.reasm.buffered() > 0 {
+		var blocks [3]sackBlock
+		if nb := h.reasm.sackBlocks(blocks[:]); nb > 0 {
+			var data [3 * 8]byte
+			for i := range nb {
+				putUint32BE(data[i*8:], uint32(blocks[i].start))
+				putUint32BE(data[i*8+4:], uint32(blocks[i].end))
+			}
+			m, _ := h.optcodec.PutOption(dst[n:], OptSACK, data[:nb*8]...)
+			n += m
+		}
+	}
+	for n%4 != 0 { // pad to a 32-bit boundary.
+		dst[n] = byte(OptNop)
+		n++
+	}
+	return n
+}
+
+// timestampFromOptions extracts the TCP Timestamps option (RFC 7323) from opts.
+func (h *Handler) timestampFromOptions(opts []byte) (tsval, tsecr uint32, present bool) {
+	h.optcodec.ForEachOption(opts, func(kind OptionKind, data []byte) error {
+		if kind == OptTimestamps && len(data) == 8 {
+			tsval = uint32BE(data[0:])
+			tsecr = uint32BE(data[4:])
+			present = true
+		}
+		return nil
+	})
+	return tsval, tsecr, present
+}
+
+// processOptions negotiates and applies the negotiated TCP options for an
+// accepted incoming segment: SACK-permitted (RFC 2018) and Timestamps
+// (RFC 7323). For Timestamps it refreshes the echoed TS.Recent value for
+// in-order segments (§4.3) and measures the RTT from the echoed TSecr when the
+// segment acknowledges new data (RTTM, §4.2).
+func (h *Handler) processOptions(opts []byte, seg Segment, prevRcvNxt, prevUNA Value) {
+	tsval, tsecr, present := h.timestampFromOptions(opts)
+	if seg.Flags.HasAny(FlagSYN) {
+		if present && h.tsPermit && h.clock != nil {
+			h.scb.tsEnabled = true
+			h.scb.tsRecent = tsval
+		}
+		if h.sackPermit && h.optionPresent(opts, OptSACKPermitted) {
+			h.scb.sackEnabled = true
+		}
+		return
+	}
+	if !h.scb.tsEnabled || !present {
+		return
+	}
+	if seg.SEQ == prevRcvNxt {
+		h.scb.tsRecent = tsval // update echo only for in-order segments (§4.3).
+	}
+	if tsecr != 0 && h.scb.snd.UNA != prevUNA {
+		// This ACK advanced our send sequence; the echoed TSecr yields an RTT.
+		if rttMS := int32(h.scb.tsValue() - tsecr); rttMS >= 0 {
+			h.scb.rto.sampleTS(time.Duration(rttMS) * time.Millisecond)
+		}
+	}
+	if h.scb.sackEnabled && seg.Flags.HasAny(FlagACK) {
+		// Record selectively acknowledged ranges so recovery skips them.
+		h.optcodec.ForEachOption(opts, func(kind OptionKind, data []byte) error {
+			if kind == OptSACK {
+				for off := 0; off+8 <= len(data); off += 8 {
+					start := Value(uint32BE(data[off:]))
+					end := Value(uint32BE(data[off+4:]))
+					h.bufTx.MarkSACKed(start, end)
+				}
+			}
+			return nil
+		})
+	}
+}
+
+// optionPresent reports whether an option of the given kind appears in opts.
+func (h *Handler) optionPresent(opts []byte, want OptionKind) (found bool) {
+	h.optcodec.ForEachOption(opts, func(kind OptionKind, _ []byte) error {
+		if kind == want {
+			found = true
+		}
+		return nil
+	})
+	return found
+}
+
+func putUint32BE(b []byte, v uint32) {
+	b[0] = byte(v >> 24)
+	b[1] = byte(v >> 16)
+	b[2] = byte(v >> 8)
+	b[3] = byte(v)
+}
+
+func uint32BE(b []byte) uint32 {
+	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
 }
 
 // ShutdownRead activates local discard mode: incoming payload bytes are dropped
@@ -280,7 +692,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 		// before Send is called, implementing the half-close per RFC 9293 §3.5.
 		h.closing = true
 	}
-	if !awaitingSyn && !requeueControl && buffered == 0 && !h.closing && !h.scb.HasPending() {
+	if !awaitingSyn && !requeueControl && buffered == 0 && !h.closing && !h.scb.HasPending() && !h.sackRetransmitPending() {
 		// Early nop short circuit.
 		return 0, nil
 	}
@@ -306,8 +718,8 @@ func (h *Handler) Send(b []byte) (int, error) {
 	if awaitingSyn || requeueControl && h.scb.State() == StateSynSent {
 		// Handling init syn segment.
 		segment = ClientSynSegment(h.bufTx.iss, Size(h.bufRx.Size()))
-		h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
-		offset++
+		optLen := h.appendSegmentOptions(b[sizeHeaderTCP:], segment, mss)
+		offset += uint8(optLen / 4)
 		if requeueControl {
 			h.info("tcp.Handler:requeue-syn", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("rport", uint64(h.remotePort)))
 		}
@@ -318,25 +730,66 @@ func (h *Handler) Send(b []byte) (int, error) {
 			WND:   Size(h.bufRx.Free()),
 			Flags: synack,
 		}
-		h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
-		offset++
+		optLen := h.appendSegmentOptions(b[sizeHeaderTCP:], segment, mss)
+		offset += uint8(optLen / 4)
 		h.info("tcp.Handler:requeue-synack", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("rport", uint64(h.remotePort)))
 	} else if requeueControl {
 		h.requeueControl = false
 		return 0, nil
+	} else if h.sackRetransmitPending() {
+		// SACK recovery (RFC 2018): retransmit the next outstanding hole,
+		// skipping selectively-acknowledged and already-retransmitted segments,
+		// instead of go-back-N.
+		optLen := h.reservedOptionsLen()
+		maxPayload := len(b) - sizeHeaderTCP - optLen
+		holeSeq, _ := h.bufTx.NextSACKRetransmit()
+		segment = h.scb.RetransmitSegment(holeSeq)
+		segment.WND = h.recvWindow()
+		dataStart := sizeHeaderTCP + optLen
+		n, err := h.bufTx.MakePacket(b[dataStart:dataStart+maxPayload], holeSeq)
+		if err != nil {
+			return 0, err
+		}
+		segment.DATALEN = Size(n)
+		if n > 0 {
+			segment.Flags |= FlagPSH
+		}
+		optLen = h.appendSegmentOptions(b[sizeHeaderTCP:], segment, mss)
+		offset += uint8(optLen / 4)
+		if !h.bufTx.HasSACKRetransmit() {
+			h.sackRTO = false // all holes retransmitted this round.
+		}
 	} else {
 		var ok bool
-		maxPayload := len(b) - sizeHeaderTCP
+		// Reserve room for this segment's TCP options ahead of the payload.
+		optLen := h.reservedOptionsLen()
+		maxPayload := len(b) - sizeHeaderTCP - optLen
+		if h.cc != nil && h.congestWnd != invalidCongestWnd && !h.scb.HasPendingRetransmit() {
+			// Limit new data to the congestion window reported by the last
+			// cc.Control call. Retransmissions and pure control segments are
+			// exempt: PendingSegment still emits them when the available window is
+			// zero (it only suppresses new data).
+			// Compared as uint64 so a large window cannot wrap on 32-bit int.
+			inflight := h.scb.snd.inFlight()
+			var avail Size
+			if h.congestWnd > inflight {
+				avail = h.congestWnd - inflight
+			}
+			if maxPayload > 0 && uint64(avail) < uint64(maxPayload) {
+				maxPayload = int(avail)
+			}
+		}
 		segment, ok = h.scb.PendingSegment(maxPayload)
-		segment.WND = Size(h.bufRx.Free())
+		segment.WND = h.recvWindow()
 		if !ok {
 			// No pending control segment or data to send. Yield.
 			return 0, nil
-		} else if segment.Flags == synack {
-			h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
-			offset++
-		} else if segment.DATALEN > 0 {
-			n, err := h.bufTx.MakePacket(b[sizeHeaderTCP:sizeHeaderTCP+segment.DATALEN], segment.SEQ)
+		}
+		optLen = h.appendSegmentOptions(b[sizeHeaderTCP:], segment, mss)
+		offset += uint8(optLen / 4)
+		if segment.DATALEN > 0 {
+			dataStart := sizeHeaderTCP + optLen
+			n, err := h.bufTx.MakePacket(b[dataStart:dataStart+int(segment.DATALEN)], segment.SEQ)
 			if err != nil {
 				return 0, err
 			}
@@ -347,6 +800,11 @@ func (h *Handler) Send(b []byte) (int, error) {
 		}
 	}
 	prevState := h.scb.State()
+	if h.cc != nil {
+		// Observe the outgoing segment before scb.Send advances snd.NXT so the
+		// controller can tell new data from a retransmission and time RTTs.
+		h.congestWnd = h.cc.Control(h.scb.CongestionEvent(segment, true))
+	}
 	err = h.scb.Send(segment)
 	if err != nil {
 		return 0, err
@@ -391,6 +849,11 @@ func (h *Handler) Read(b []byte) (n int, err error) {
 		n, err = h.bufRx.Read(b)
 	}
 	if n > 0 {
+		if h.reasm.buffered() > 0 {
+			// Reading freed receive-buffer space; deliver any contiguous
+			// out-of-order data that was waiting for room.
+			h.flushReassembly()
+		}
 		h.maybeQueueWindowUpdate()
 	}
 	if n == 0 && err == nil {
@@ -413,7 +876,7 @@ func (h *Handler) Read(b []byte) (n int, err error) {
 // space >= min(bufferSize/2, MSS). This applies uniformly including zero-window
 // recovery — the remote uses zero-window probes until enough space opens.
 func (h *Handler) maybeQueueWindowUpdate() {
-	currentFree := Size(h.bufRx.Free())
+	currentFree := h.recvWindow()
 	lastAdvertised := h.scb.RecvWindow()
 	if currentFree <= lastAdvertised {
 		return // Window hasn't grown.
@@ -455,6 +918,23 @@ func (h *Handler) FreeOutput() int {
 // FreeInput returns the number of free bytes in the receive buffer.
 func (h *Handler) FreeInput() int {
 	return h.bufRx.Free()
+}
+
+// recvWindow returns the receive window to advertise: free receive-buffer space
+// minus the bytes already held out of order, which will consume that space once
+// the gap fills. Subtracting them prevents the sender from overrunning the
+// receiver while a gap is open. For this to be sufficient the reassembly slab
+// should be sized at least as large as the receive buffer (see
+// [Handler.SetReassemblyBuffer]).
+func (h *Handler) recvWindow() Size {
+	free := Size(h.bufRx.Free())
+	if !h.reasm.enabled() {
+		return free
+	}
+	if ooo := Size(h.reasm.bufferedBytes()); ooo < free {
+		return free - ooo
+	}
+	return 0
 }
 
 // AwaitingSynResponse returns true if the Handler is an active client opened with [Handler.OpenActive] and has already sent out the first SYN packet to the remote client.

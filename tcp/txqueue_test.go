@@ -487,7 +487,7 @@ func testQueueSanity(t *testing.T, rtx *ringTx) {
 	last := rtx.slist.Newest()
 	first := rtx.slist.Oldest()
 	if first == nil && last != nil || last == nil && first != nil {
-		t.Fatalf("found first/last(%d,%d) but did not find last/first", first, last)
+		t.Fatalf("found first/last(%v,%v) but did not find last/first", first, last)
 	}
 	// Check sent data or return if no sent data available.
 	if sent == 0 {

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"math"
 	"net"
+	"time"
 
 	"github.com/soypat/lneto/internal"
 )
@@ -79,7 +80,58 @@ type ControlBlock struct {
 	dupack uint8
 	// nRetransmit counts number of retransmits sent since last UNA update.
 	nRetransmit uint8
+
+	// rto is the RFC 6298 round-trip-time estimator and single retransmission
+	// timer. It is fed by Send (timing new data) and Recv (sampling ACKs) and
+	// consulted by CheckRetransmitTimeout.
+	rto rtoControl
+	// clock injects the current time for RTT measurement and the retransmission
+	// timer. When nil the ControlBlock performs no time-based work: it samples no
+	// RTTs, arms no timer and emits no Timestamps. Time integration is opt-in,
+	// keeping timing off the default data path. Set via SetClock.
+	clock func() time.Time
+
+	// tsEnabled reports whether the TCP Timestamps option (RFC 7323) was
+	// negotiated on both ends during the handshake.
+	tsEnabled bool
+	// sackEnabled reports whether Selective Acknowledgment (RFC 2018) was
+	// negotiated on both ends during the handshake.
+	sackEnabled bool
+	// tsRecent is the most recent timestamp received from the peer (TS.Recent,
+	// RFC 7323 §4.3), echoed back as TSecr so the peer can measure RTT.
+	tsRecent uint32
 }
+
+// tsValue returns the local timestamp-clock value for the TSval field, a
+// millisecond-resolution monotonic counter derived from the injected clock
+// (RFC 7323 §4.1).
+func (tcb *ControlBlock) tsValue() uint32 {
+	return uint32(tcb.now().UnixMilli())
+}
+
+// TimestampsEnabled reports whether the RFC 7323 Timestamps option was
+// negotiated for this connection.
+func (tcb *ControlBlock) TimestampsEnabled() bool { return tcb.tsEnabled }
+
+// SACKEnabled reports whether Selective Acknowledgment (RFC 2018) was
+// negotiated for this connection.
+func (tcb *ControlBlock) SACKEnabled() bool { return tcb.sackEnabled }
+
+// now returns the current time from the injected clock. It is only called
+// behind a clock != nil guard (time integration is opt-in); the time.Now
+// fallback is defensive and is not reached on the default, clock-less data path.
+func (tcb *ControlBlock) now() time.Time {
+	if tcb.clock != nil {
+		return tcb.clock()
+	}
+	return time.Now()
+}
+
+// SetClock injects the time source used for RTT estimation and the
+// retransmission timer (RFC 6298). Time integration is opt-in: until a clock is
+// injected the ControlBlock performs no time-based work. It must be set before
+// the connection is opened.
+func (tcb *ControlBlock) SetClock(clock func() time.Time) { tcb.clock = clock }
 
 // State returns the current state of the TCP connection. See [State].
 func (tcb *ControlBlock) State() State { return tcb._state }
@@ -170,6 +222,40 @@ func (tcb *ControlBlock) MakeDupACK() Segment {
 	}
 }
 
+// CongestionEvent builds the [CongestionEvent] describing seg crossing the
+// connection for consumption by a [CongestionControl]. tx reports whether the
+// segment is outgoing. For outgoing segments it must be called before
+// [ControlBlock.Send] advances snd.NXT so Segment.SEQ==SndNXT identifies new
+// data (as opposed to a retransmission).
+func (tcb *ControlBlock) CongestionEvent(seg Segment, tx bool) CongestionEvent {
+	var dupacks uint8
+	if !tx {
+		dupacks = tcb.dupack
+	}
+	return CongestionEvent{
+		Segment:  seg,
+		SndUNA:   tcb.snd.UNA,
+		SndNXT:   tcb.snd.NXT,
+		InFlight: tcb.snd.inFlight(),
+		MSS:      tcb.snd.MSS,
+		Tx:       tx,
+		Dupacks:  dupacks,
+	}
+}
+
+// CongestionRTOEvent builds the [CongestionEvent] describing a retransmission
+// timeout (RFC 6298) for consumption by a [CongestionControl]. It carries no
+// segment; the RTO flag signals a severe loss the controller should react to.
+func (tcb *ControlBlock) CongestionRTOEvent() CongestionEvent {
+	return CongestionEvent{
+		SndUNA:   tcb.snd.UNA,
+		SndNXT:   tcb.snd.NXT,
+		InFlight: tcb.snd.inFlight(),
+		MSS:      tcb.snd.MSS,
+		RTO:      true,
+	}
+}
+
 // MakeChallengeAck returns a challenge ACK segment for the current ControlBlock state
 // used to respond to unexpected or ambiguous segments that require the remote peer to confirm
 // its connection state. A challenge ACK does not acknowledge new data,
@@ -250,11 +336,28 @@ func (tcb *ControlBlock) HasPending() bool {
 	return tcb.pending[0] != 0 || tcb.pendingChallengeAck() || tcb.HasPendingRetransmit()
 }
 
-// HasPending returns true if the control block is pending a retransmit according to simple optmist
-// retransmit strategy.
+// HasPendingRetransmit returns true if the control block is pending a retransmit
+// according to the simple optimist retransmit strategy. When SACK (RFC 2018) is
+// negotiated this returns false: retransmission is driven selectively by the
+// SACK scoreboard instead of this dup-ACK heuristic.
 func (tcb *ControlBlock) HasPendingRetransmit() bool {
+	if tcb.sackEnabled {
+		return false
+	}
 	// Force retransmit after 3 consecutive acks of UNA.
 	return tcb._state.TxDataOpen() && tcb.dupack >= retransmitAfterDupacks && tcb.nRetransmit <= tcb.dupack-retransmitAfterDupacks
+}
+
+// RetransmitSegment builds an ACK segment that retransmits already-sent data
+// beginning at seq. The caller fills DATALEN from the transmit buffer. Used by
+// SACK recovery to resend a specific hole (RFC 2018).
+func (tcb *ControlBlock) RetransmitSegment(seq Value) Segment {
+	return Segment{
+		SEQ:   seq,
+		ACK:   tcb.rcv.NXT,
+		WND:   tcb.rcv.WND,
+		Flags: FlagACK,
+	}
 }
 
 // PendingSegment calculates a suitable next segment to send from a payload length.
@@ -406,6 +509,13 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 			tcb.snd.UNA = seg.ACK
 			tcb.dupack = 0
 			tcb.nRetransmit = 0
+			// Sample RTT and manage the retransmission timer (RFC 6298 §5.2/§5.3),
+			// but only when a clock was injected. Without one the connection keeps
+			// no timers and relies on duplicate-ACK fast retransmit, so the tcp
+			// package performs no time-based work by default (time is opt-in).
+			if tcb.clock != nil {
+				tcb.rto.onAckSample(seg.ACK, tcb.snd.UNA == tcb.snd.NXT, tcb.now())
+			}
 		}
 	}
 
@@ -474,8 +584,18 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 		if tcb.nRetransmit < 255-retransmitMaxQueued-retransmitAfterDupacks {
 			tcb.nRetransmit++
 		}
+		tcb.rto.onRetransmit() // Karn: don't sample RTT from a retransmitted segment.
 	} else {
 		tcb.snd.NXT.UpdateForward(seglen)
+		if seg.DATALEN > 0 && tcb.clock != nil {
+			// Time the newly transmitted data and (re)arm the retransmission
+			// timer (RFC 6298 §3, §5.1). Control-only segments are not timed, and
+			// the timer is armed only when a clock was injected: without one the
+			// timer stays off and time integration remains opt-in (see SetClock).
+			now := tcb.now()
+			tcb.rto.startSample(tcb.snd.NXT, now)
+			tcb.rto.armTimer(now)
+		}
 	}
 
 	tcb.rcv.WND = seg.WND
@@ -662,11 +782,52 @@ func (tcb *ControlBlock) rstJump() Value {
 	return 100
 }
 
-// Retransmit resets snd.NXT back to snd.UNA, allowing the next PendingSegment
-// and Send calls to retransmit unacknowledged data. Must be paired with
-// ringTx.RetransmitFromUNA to rewind the transmit buffer.
-// Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
-// func (tcb *ControlBlock) Retransmit() { tcb.snd.NXT = tcb.snd.UNA }
+// Retransmit rewinds snd.NXT back to snd.UNA so the next PendingSegment and
+// Send calls retransmit all unacknowledged data from the oldest sequence number
+// (go-back-N). It must be paired with ringTx.RetransmitFromUNA to rewind the
+// transmit buffer. Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
+func (tcb *ControlBlock) Retransmit() {
+	tcb.snd.NXT = tcb.snd.UNA
+	tcb.dupack = 0
+	tcb.nRetransmit = 0
+}
+
+// CheckRetransmitTimeout reports whether the RFC 6298 retransmission timer has
+// expired at time now. When it has, it applies the §5.4–§5.6 timeout response —
+// exponential RTO backoff and a rewind of the send sequence to snd.UNA for
+// go-back-N retransmission — and returns true. The caller must then rewind its
+// transmit buffer (ringTx.RetransmitFromUNA) and may signal the loss to a
+// congestion controller. Returns false when the timer has not expired or there
+// is no unacknowledged data outstanding.
+func (tcb *ControlBlock) CheckRetransmitTimeout(now time.Time) bool {
+	if !tcb.timeoutFired(now) {
+		return false
+	}
+	tcb.Retransmit()
+	return true
+}
+
+// timeoutFired reports whether the retransmission timer has expired with data
+// outstanding and, if so, applies the RFC 6298 §5.4–§5.5 backoff without
+// rewinding the send sequence. Used by the SACK recovery path, which
+// retransmits selected holes instead of doing go-back-N.
+func (tcb *ControlBlock) timeoutFired(now time.Time) bool {
+	if !tcb.rto.expired(now) {
+		return false
+	}
+	if tcb.snd.UNA == tcb.snd.NXT {
+		tcb.rto.running = false // Nothing outstanding; stop the timer defensively.
+		return false
+	}
+	tcb.rto.onTimeout(now)
+	return true
+}
+
+// InFastRecovery reports whether the connection has seen at least the
+// fast-retransmit threshold of duplicate ACKs (RFC 5681 §3.2).
+func (tcb *ControlBlock) InFastRecovery() bool {
+	return tcb._state.TxDataOpen() && tcb.dupack >= retransmitAfterDupacks
+}
 
 // Abort sets ControlBlock state to Closed and resets all sequence numbers and pending flag.
 // No more data can be sent nor received after the connection is aborted until opened again.
@@ -680,7 +841,9 @@ func (tcb *ControlBlock) Abort() {
 func (tcb *ControlBlock) reset() {
 	*tcb = ControlBlock{
 		logger: tcb.logger,
+		clock:  tcb.clock,
 	}
+	tcb.rto.init()
 }
 
 // Close implements a passive/active closing of a connection. It does not immediately

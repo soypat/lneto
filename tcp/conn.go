@@ -76,6 +76,17 @@ type ConnConfig struct {
 	// Logger sets the [Conn] logger.
 	// Lower level logging available at [Handler.SetLoggers] via [Conn.InternalHandler].
 	Logger *slog.Logger
+	// CongestionControl optionally installs a congestion controller (such as
+	// those in the lneto/tcp/congestion subpackage) limiting how much new data
+	// is kept in flight. If nil the connection is limited only by the peer's
+	// advertised receive window.
+	CongestionControl CongestionControl
+	// Clock optionally injects a time source that enables the Handler's
+	// time-based features (the RFC 6298 retransmission timer and RFC 7323
+	// Timestamps). Time integration is opt-in: if nil the connection keeps no
+	// retransmission timer and performs no time-based work, relying on
+	// duplicate-ACK fast retransmit. See [Handler.SetClock].
+	Clock func() time.Time
 }
 
 // Configure should be called on any newly created connection before usage. See [ConnConfig].
@@ -91,7 +102,10 @@ func (conn *Conn) Configure(config ConnConfig) (err error) {
 	}
 	conn._backoff = config.RWBackoff
 	conn.logger.log = config.Logger
-	return nil
+	if config.Clock != nil {
+		conn.h.SetClock(config.Clock)
+	}
+	return conn.h.SetCongestionControl(config.CongestionControl)
 }
 
 // LocalPort returns the local port on which the socket is listening or connected to.
