@@ -31,14 +31,14 @@ type DevEthernet interface {
 	// HardwareAddr6 returns the device's 6-byte MAC address.
 	// For PHY-only devices, returns the MAC provided at configuration.
 	HardwareAddr6() ([6]byte, error)
-	// SendEthFrameOffset transmits a complete Ethernet frame at offset given by [DevEthernet.MaxFrameSizeAndOffset].
+	// SendOffsetEthFrame transmits a complete Ethernet frame at offset given by [DevEthernet.MaxFrameSizeAndOffset].
 	// The frame includes the Ethernet header but NOT the FCS/CRC
 	// trailer (device or stack handles CRC as appropriate).
-	// SendEthFrameOffset blocks until the transmission is queued succesfully
+	// SendOffsetEthFrame blocks until the transmission is queued succesfully
 	// or finished sending. Should not be called concurrently
 	// unless user is sure the driver supports it.
 	SendOffsetEthFrame(offsetTxEthFrame []byte) error
-	// SetRecvHandler registers the function called when an Ethernet
+	// SetEthRecvHandler registers the function called when an Ethernet
 	// frame is received. Buffers needed by the device to operate efficiently
 	// should be allocated on its side.
 	//
@@ -47,6 +47,12 @@ type DevEthernet interface {
 	//   - Handler set: received frames are delivered to the handler. EthPoll must
 	//     not write to its argument buffer; it is called with a nil buffer purely
 	//     to pump devices that need explicit servicing to drive the handler.
+	//
+	// Quiescence guarantee: SetEthRecvHandler(nil) must not return while a
+	// previously installed handler is executing on another goroutine, and after
+	// it returns the old handler must not be invoked again (analogous to Linux
+	// synchronize_irq semantics). Callers rely on this to safely reuse the
+	// buffers a handler writes into.
 	SetEthRecvHandler(handler func(rxEthframe []byte))
 	// EthPoll services the device. For poll-based devices (e.g. CYW43439
 	// over SPI), reads from the bus and invokes the handler for each
@@ -67,10 +73,6 @@ type DevEthernet interface {
 
 // Stack is an abstraction for a networking stack.
 type Stack interface {
-	// Configure configures this Stack with the argument mac, ip and gateway addresses.
-	// The Stack must resolve the gateway hardware address if set.
-	// Configure(mac net.HardwareAddr, ip netip.Prefix, gw netip.Addr) error
-
 	// EnableICMP enables responding/sending ICMP echo frames.
 	EnableICMP(enabled bool) error
 	// EnableDHCP enables DHCP on the device if enabled=true and performs a DHCP request.

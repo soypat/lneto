@@ -83,7 +83,17 @@ func main() {
 
 	var runner netdev.Runner[espradio.STAConfig]
 	go func() {
-		if err := runner.Run(context.Background(), iface, &stack, backoff); err != nil {
+		// EthPoll drains the C ring buffer and delivers frames through the
+		// receive handler, so the device is async but still needs the pump.
+		err := runner.Configure(netdev.RunnerConfig[espradio.STAConfig]{
+			Buffers: iface.RunnerBuffers(2),
+			Backoff: backoff,
+			Flags:   netdev.RunnerInterfaceAsync | netdev.RunnerInterfacePoll,
+		})
+		if err != nil {
+			failIfErr("runnerconfig", err)
+		}
+		if err := runner.Run(context.Background(), &iface, &stack); err != nil {
 			failIfErr("runner", err)
 		}
 	}()
