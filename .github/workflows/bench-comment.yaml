@@ -35,7 +35,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -euo pipefail
 
@@ -55,11 +58,20 @@ jobs:
             exit 1
           fi
 
-          # Resolve the PR from the run's head SHA rather than trusting any
-          # value carried in the artifact, so we can only comment on the PR that
-          # actually produced this run.
-          pr="$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" \
-            --jq 'map(select(.state == "open")) | .[0].number // empty')"
+          # Prefer the PR number from the workflow_run payload, which ties this
+          # privileged workflow to the PR-triggered CI run. Fall back to the
+          # run's head SHA/branch only when GitHub does not populate it.
+          pr="$PR_NUMBER"
+          if [ -z "$pr" ]; then
+            pr="$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" \
+              --jq 'map(select(.state == "open")) | .[0].number // empty')"
+          fi
+          if [ -z "$pr" ]; then
+            pr="$(gh api --method GET "repos/${REPO}/pulls" \
+              -f state=open \
+              -f head="${HEAD_OWNER}:${HEAD_BRANCH}" \
+              --jq '.[0].number // empty')"
+          fi
           if [ -z "$pr" ]; then
             echo "No open PR found for ${HEAD_SHA}; nothing to comment."
             exit 0
@@ -71,8 +83,8 @@ jobs:
           )"
           if [ -n "$comment_id" ]; then
             gh api --method PATCH "repos/${REPO}/issues/comments/${comment_id}" \
-              -f body=@"$report"
+              --input - < <(jq -n --rawfile body "$report" '{body: $body}')
           else
             gh api --method POST "repos/${REPO}/issues/${pr}/comments" \
-              -f body=@"$report"
+              --input - < <(jq -n --rawfile body "$report" '{body: $body}')
           fi
