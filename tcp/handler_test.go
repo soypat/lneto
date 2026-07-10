@@ -3,6 +3,7 @@ package tcp
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"math/rand"
 	"testing"
 
@@ -1485,5 +1486,105 @@ func TestRetransmit_CumulativeACK_NoSpurious(t *testing.T) {
 		s, _ := NewFrame(pkt[:n])
 		seg := s.Segment(n - sizeHeaderTCP)
 		t.Fatalf("spurious retransmission after cumulative ACK: SEQ=%d len=%d (issue #57)", seg.SEQ, seg.DATALEN)
+	}
+}
+
+// emitClientData writes payload to the client and emits it as one data packet,
+// returning a copy of the wire bytes (the caller controls delivery order).
+func emitClientData(t *testing.T, client *Handler, buf []byte, payload string) []byte {
+	t.Helper()
+	if _, err := client.Write([]byte(payload)); err != nil {
+		t.Fatal("client write:", err)
+	}
+	clear(buf)
+	n, err := client.Send(buf)
+	if err != nil {
+		t.Fatal("client send:", err)
+	}
+	if n <= sizeHeaderTCP {
+		t.Fatal("expected a data segment, got header-only")
+	}
+	return append([]byte(nil), buf[:n]...)
+}
+
+// TestHandler_OutOfOrderReassembly drives the full out-of-order path: a later
+// segment delivered before the gap-filling one is staged, then delivered
+// contiguously once the gap arrives, without go-back-N.
+func TestHandler_OutOfOrderReassembly(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	const maxpackets = 4
+	rng := rand.New(rand.NewSource(99))
+	client, server := newHandler(t, mtu, maxpackets), newHandler(t, mtu, maxpackets)
+	setupClientServer(t, rng, client, server)
+	var buf [mtu]byte
+	establish(t, client, server, buf[:])
+
+	pkt1 := emitClientData(t, client, buf[:], "AAAA") // seq S, covers S..S+4.
+	pkt2 := emitClientData(t, client, buf[:], "BBBB") // seq S+4, covers S+4..S+8.
+
+	full := server.SizeInput()
+
+	// Deliver the second segment first: accepted, buffered, not yet readable.
+	if err := server.Recv(pkt2); err != nil {
+		t.Fatalf("out-of-order segment must be accepted, got: %v", err)
+	}
+	if server.BufferedInput() != 0 {
+		t.Fatalf("OOO data must not be readable yet, buffered=%d", server.BufferedInput())
+	}
+	// Advertised window shrinks by the held bytes so the peer cannot overrun.
+	if got := server.FreeInput(); got != full-4 {
+		t.Fatalf("FreeInput=%d, want %d (window reduced by held OOO bytes)", got, full-4)
+	}
+
+	// Deliver the gap-filling first segment: both become contiguous.
+	if err := server.Recv(pkt1); err != nil {
+		t.Fatalf("gap-filling segment: %v", err)
+	}
+	if server.BufferedInput() != 8 {
+		t.Fatalf("buffered=%d, want 8 after gap fill", server.BufferedInput())
+	}
+	if got := server.FreeInput(); got != full-8 {
+		t.Fatalf("FreeInput=%d, want %d after delivery", got, full-8)
+	}
+
+	var rd [16]byte
+	n, err := server.Read(rd[:])
+	if err != nil {
+		t.Fatal("server read:", err)
+	}
+	if string(rd[:n]) != "AAAABBBB" {
+		t.Fatalf("reassembled %q, want AAAABBBB", rd[:n])
+	}
+}
+
+// TestHandler_OutOfOrderDiscardedAfterShutdownRead verifies staged segments are
+// dropped, not delivered, when the read side is shut down before the gap fills.
+func TestHandler_OutOfOrderDiscardedAfterShutdownRead(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	const maxpackets = 4
+	rng := rand.New(rand.NewSource(100))
+	client, server := newHandler(t, mtu, maxpackets), newHandler(t, mtu, maxpackets)
+	setupClientServer(t, rng, client, server)
+	var buf [mtu]byte
+	establish(t, client, server, buf[:])
+
+	pkt1 := emitClientData(t, client, buf[:], "AAAA")
+	pkt2 := emitClientData(t, client, buf[:], "BBBB")
+
+	if err := server.Recv(pkt2); err != nil { // buffer out of order.
+		t.Fatalf("OOO segment: %v", err)
+	}
+	server.ShutdownRead() // application done reading; staged data must be dropped.
+
+	if err := server.Recv(pkt1); err != nil && !IsDroppedErr(err) {
+		t.Fatalf("gap-filling segment after shutdown: %v", err)
+	}
+	var rd [16]byte
+	n, err := server.Read(rd[:])
+	if n != 0 || err != io.EOF {
+		t.Fatalf("read after ShutdownRead = %d,%v want 0,EOF", n, err)
+	}
+	if server.BufferedInput() != 0 {
+		t.Fatalf("discard mode must hold no data, buffered=%d", server.BufferedInput())
 	}
 }

@@ -13,6 +13,7 @@ import (
 var (
 	ErrRingBufferFull = lneto.ErrBufferFull
 	errRingNoData     = errors.New("lneto/ring: empty write")
+	errInvalidCommit  = errors.New("lneto/ring: invalid commit amount")
 	errInvalidDiscard = errors.New("lneto/ring: invalid discard amount")
 	errDiscardExceeds = errors.New("lneto/ring: discard exceeds length")
 	errOffsetOverflow = errors.New("lneto/ring: offset too large (32 bit overflow)")
@@ -90,6 +91,58 @@ func (r *Ring) Write(b []byte) (int, error) {
 		panic("zero end after write") // invariant: End must be >0 after appending to the tail region
 	}
 	return n, nil
+}
+
+// writeStart returns the buffer index where the next [Ring.Write] or
+// [Ring.Commit] begins, matching [Ring.Write]'s placement (including wrap).
+func (r *Ring) writeStart() int {
+	if r.End == 0 {
+		return r.Off // Empty: writing begins at Off.
+	}
+	if r.End == len(r.Buf) {
+		return 0 // Tail full: next byte wraps to the start.
+	}
+	return r.End
+}
+
+// PeekWrite stages b offset bytes past the write position (see
+// [Ring.writeStart]) without advancing it, so the bytes are not yet readable; a
+// later [Ring.Commit] reveals them. It reports false, writing nothing, when
+// offset is negative or offset+len(b) exceeds [Ring.Free]. Used to place
+// out-of-order data ahead of a gap that a normal Write later fills.
+func (r *Ring) PeekWrite(b []byte, offset int) bool {
+	if offset < 0 || offset+len(b) > r.Free() {
+		return false
+	}
+	off := r.writeStart() + offset
+	if off >= len(r.Buf) {
+		off -= len(r.Buf)
+	}
+	n := copy(r.Buf[off:], b)
+	if n < len(b) {
+		copy(r.Buf, b[n:])
+	}
+	return true
+}
+
+// Commit advances the write pointer by n bytes, making readable any bytes
+// previously staged with [Ring.PeekWrite]. It copies nothing and errors if n is
+// not positive or exceeds [Ring.Free].
+func (r *Ring) Commit(n int) error {
+	if n <= 0 {
+		return errInvalidCommit
+	} else if n > r.Free() {
+		return ErrRingBufferFull
+	}
+	if r.End == 0 {
+		r.End = r.Off // Match Write: commit begins at Off when empty.
+	}
+	end := r.End + n
+	if end > len(r.Buf) {
+		end -= len(r.Buf)
+	}
+	r.End = end // Never 0 here: end==len(Buf) is kept.
+	return nil
 }
 
 // ReadDiscard is a performance auxiliary method that performs a dummy read or no-op read
