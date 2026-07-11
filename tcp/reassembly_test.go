@@ -166,3 +166,90 @@ func TestReassembly_noAllocs(t *testing.T) {
 		t.Errorf("reassembly data path must not allocate, got %v allocs/op", allocs)
 	}
 }
+
+// TestReassembleTwoHoleSelective models a SACK-style two-hole recovery on the
+// receiver: segments arrive out of order around two gaps, the reader drains
+// delivered data as it goes (fully draining the ring between the two hole
+// fills), and the gaps are later filled in order. The reassembled+read stream
+// must equal the original byte sequence. Guards against the ring resetting its
+// write position while the second hole's followers are still staged.
+func TestReassembleTwoHoleSelective(t *testing.T) {
+	const (
+		seg     = 1448
+		nseg    = 13
+		ringLen = 32 * 1024
+	)
+	full := make([]byte, nseg*seg)
+	for i := range full {
+		full[i] = byte(i*131 + 7)
+	}
+	segAt := func(idx int) []byte { return full[idx*seg : (idx+1)*seg] }
+
+	rx := internal.Ring{Buf: make([]byte, ringLen)}
+	var r reassembly
+	r.reset(maxReasmSegments)
+
+	nxt := Value(0) // rcv.NXT (ISS=0) in this simplified receiver model.
+	var got []byte
+	drain := func() {
+		buf := make([]byte, seg)
+		for {
+			n, err := rx.Read(buf)
+			if n > 0 {
+				got = append(got, buf[:n]...)
+			}
+			if n == 0 || err != nil {
+				break
+			}
+		}
+	}
+	inOrder := func(idx int) {
+		if _, err := rx.Write(segAt(idx)); err != nil {
+			t.Fatalf("in-order write seg %d: %v", idx, err)
+		}
+		nxt = Add(nxt, seg)
+		if d := r.reassemble(&rx, nxt); d > 0 {
+			nxt = Add(nxt, d)
+		}
+	}
+	ooo := func(idx int) {
+		if !r.store(&rx, nxt, Value(idx*seg), segAt(idx)) {
+			t.Fatalf("store out-of-order seg %d rejected (held=%d)", idx, r.buffered())
+		}
+	}
+
+	inOrder(0)
+	inOrder(1)
+	inOrder(2)
+	inOrder(3)
+	drain()
+	// seg 4 dropped; its followers arrive out of order.
+	ooo(5)
+	ooo(6)
+	ooo(7)
+	ooo(8)
+	// seg 9 dropped; its followers arrive out of order.
+	ooo(10)
+	ooo(11)
+	ooo(12)
+	inOrder(4) // retransmitted hole unblocks 5..8.
+	drain()    // fully drains the ring while 10..12 are still staged.
+	inOrder(9) // retransmitted hole unblocks 10..12.
+	drain()
+
+	if !bytes.Equal(got, full) {
+		for i := range full {
+			if i >= len(got) || got[i] != full[i] {
+				t.Fatalf("stream corrupted at offset %d (seg %d): got %#x want %#x (len got=%d want=%d)",
+					i, i/seg, byteOrEOF(got, i), full[i], len(got), len(full))
+			}
+		}
+	}
+}
+
+func byteOrEOF(b []byte, i int) any {
+	if i < len(b) {
+		return b[i]
+	}
+	return "EOF"
+}
