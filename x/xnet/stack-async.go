@@ -844,7 +844,7 @@ func addr4(addr [4]byte, ok bool) netip.Addr {
 
 // Debug prints debugging and heap information.
 func (s *StackAsync) Debug(msg string) {
-	internal.LogAttrsAndAllocs(slog.Default(), slog.LevelDebug, "stackasync",
+	internal.LogAttrsAndAllocs(msg, slog.Default(), slog.LevelDebug, "stackasync",
 		slog.String("umsg", msg),
 		slog.Uint64("sent", s.stats.TotalSent),
 		slog.Uint64("recv", s.stats.TotalReceived),
@@ -853,7 +853,7 @@ func (s *StackAsync) Debug(msg string) {
 
 // DebugErr prints debugging and heap information.
 func (s *StackAsync) DebugErr(msg, err string) {
-	internal.LogAttrsAndAllocs(slog.Default(), slog.LevelError, "stackasync",
+	internal.LogAttrsAndAllocs(msg, slog.Default(), slog.LevelError, "stackasync",
 		slog.String("umsg", msg),
 		slog.String("err", err),
 		slog.Uint64("sent", s.stats.TotalSent),

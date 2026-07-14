@@ -22,7 +22,8 @@ func LogAttrs(l *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) 
 	}
 }
 
-func logAttrsAndAllocs(l *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) {
-	LogAllocs(msg)
+func logAttrsAndAllocs(allocmsg string, l *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) {
+	LogAllocs(allocmsg)
 	LogAttrs(l, level, msg, attrs...)
+	LogAllocs(msg) // Should not log again unless LogAttrs allocated.
 }

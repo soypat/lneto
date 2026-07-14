@@ -2,16 +2,16 @@ package internal
 
 import (
 	"log/slog"
+	"os"
 	"runtime"
 	"strconv"
 	"sync"
-	"unsafe"
 )
 
 const (
 	LevelTrace slog.Level = slog.LevelDebug - 2
 
-	usePrintLogAllocs = true
+	usePrintLogAllocs = HeapAllocDebugging
 )
 
 var (
@@ -19,11 +19,11 @@ var (
 	lastAllocs  uint64
 	lastMallocs uint64
 	allocmu     sync.Mutex
-	allocbuf    [256]byte
+	allocbuf    [128]byte
 )
 
-func LogAttrsAndAllocs(l *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) {
-	logAttrsAndAllocs(l, level, msg, attrs...)
+func LogAttrsAndAllocs(allocmsg string, l *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) {
+	logAttrsAndAllocs(allocmsg, l, level, msg, attrs...)
 }
 
 func LogAllocs(msg string) {
@@ -33,23 +33,34 @@ func LogAllocs(msg string) {
 		allocmu.Unlock()
 		return
 	}
+	inc := int64(memstats.TotalAlloc) - int64(lastAllocs)
+	numAlloc := int64(memstats.TotalAlloc) - int64(lastAllocs)
+	free := memstats.HeapSys - memstats.HeapInuse
 	if usePrintLogAllocs {
+		// Branch used when debugheaplog enabled
 		print("[ALLOC] ", msg)
-		print(" inc=", int64(memstats.TotalAlloc)-int64(lastAllocs))
-		print(" n=", int64(memstats.Mallocs)-int64(lastMallocs))
+		print(" inc=", inc)
+		print(" n=", numAlloc)
 		print(" heap=", memstats.HeapAlloc)
-		print(" free=", memstats.HeapSys-memstats.HeapInuse)
+		print(" free=", free)
 		print(" tot=", memstats.TotalAlloc)
 		println()
 	} else {
 		n := copy(allocbuf[:], "[ALLOC] ")
 		n += copy(allocbuf[n:], msg)
-		n += copyValueInt(allocbuf[n:], "inc", int64(memstats.TotalAlloc)-int64(lastAllocs))
-		n += copyValueInt(allocbuf[n:], "n", int64(memstats.Mallocs)-int64(lastMallocs))
+		n += copyValueInt(allocbuf[n:], "inc", inc)
+		n += copyValueInt(allocbuf[n:], "n", numAlloc)
 		n += copyValueUint(allocbuf[n:], "heap", memstats.HeapAlloc)
-		n += copyValueUint(allocbuf[n:], "free", memstats.HeapSys-memstats.HeapInuse)
+		n += copyValueUint(allocbuf[n:], "free", free)
 		n += copyValueUint(allocbuf[n:], "tot", memstats.TotalAlloc)
-		println(unsafe.String(&allocbuf[0], n))
+		allocbuf[n] = '\n'
+		os.Stdout.Write(allocbuf[:n+1])
+		if n > len(allocbuf) {
+			n2 := copy(allocbuf[:], "[WARN] ALLOC BUF OVERRUN")
+			n2 += copyValueUint(allocbuf[n2:], "n", uint64(n))
+			allocbuf[n2] = '\n'
+			os.Stdout.Write(allocbuf[:n2+1])
+		}
 	}
 	lastAllocs = memstats.TotalAlloc
 	lastMallocs = memstats.Mallocs
