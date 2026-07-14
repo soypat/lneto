@@ -22,6 +22,10 @@ func LogEnabled(l *slog.Logger, lvl slog.Level) bool {
 	return true
 }
 
+func logAttrsAndAllocs(l *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) {
+	LogAttrs(nil, level, msg, attrs...) // already logs attributes
+}
+
 func LogAttrs(_ *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) {
 	now := time.Now()
 	n := len(now.AppendFormat(timebuf[:0], timefmt))

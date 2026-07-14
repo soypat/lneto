@@ -22,6 +22,10 @@ var (
 	allocbuf    [256]byte
 )
 
+func LogAttrsAndAllocs(l *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) {
+	logAttrsAndAllocs(l, level, msg, attrs...)
+}
+
 func LogAllocs(msg string) {
 	allocmu.Lock()
 	runtime.ReadMemStats(&memstats)

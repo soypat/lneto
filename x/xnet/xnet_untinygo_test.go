@@ -13,6 +13,9 @@ import (
 )
 
 func TestTinyGoTest(t *testing.T) {
+	if testing.Short() {
+		t.Skip("`tinygo test` skipped on short test")
+	}
 	if exec.Command("tinygo", "version").Run() != nil {
 		t.Skip("tinygo not installed")
 	}

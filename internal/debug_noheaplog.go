@@ -21,3 +21,8 @@ func LogAttrs(l *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) 
 		l.LogAttrs(context.Background(), level, msg, attrs...)
 	}
 }
+
+func logAttrsAndAllocs(l *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) {
+	LogAllocs(msg)
+	LogAttrs(l, level, msg, attrs...)
+}

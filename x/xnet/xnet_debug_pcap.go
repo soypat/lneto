@@ -14,4 +14,7 @@ func init() {
 
 func debugPacket(msg string, b []byte) {
 	_pcap.PrintEthernet(msg, b)
+	if internal.HeapAllocDebugging {
+		internal.LogAllocs(msg)
+	}
 }

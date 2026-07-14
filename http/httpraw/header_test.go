@@ -124,7 +124,7 @@ func BenchmarkParseBytes(b *testing.B) {
 	var hdr Header
 	b.StartTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		err := hdr.ParseBytes(asRequest, data)
 		if err != nil {
 			b.Fatal(err)

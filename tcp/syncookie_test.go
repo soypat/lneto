@@ -227,7 +227,7 @@ func BenchmarkSYNCookie_Generate(b *testing.B) {
 	clientISN := Value(0x12345678)
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		sc.MakeSYNCookie(srcAddr, dstAddr, srcPort, dstPort, clientISN)
 	}
 }
@@ -247,7 +247,7 @@ func BenchmarkSYNCookie_Validate(b *testing.B) {
 	ackNum := cookie + 1
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		sc.ValidateSYNCookie(srcAddr, dstAddr, srcPort, dstPort, clientISN, ackNum)
 	}
 }
