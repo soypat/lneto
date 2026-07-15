@@ -7,6 +7,7 @@ import (
 	"net"
 
 	"github.com/soypat/lneto/internal"
+	"github.com/soypat/lneto/tcp/rto"
 )
 
 const (
@@ -79,7 +80,21 @@ type ControlBlock struct {
 	dupack uint8
 	// nRetransmit counts number of retransmits sent since last UNA update.
 	nRetransmit uint8
+
+	// rto is the RFC 6298 round-trip-time estimator and single retransmission
+	// timer. All timing (including the clock) lives inside the tcp/rto leaf
+	// package, so the tcp package carries no time source of its own: the
+	// ControlBlock only feeds rto sequence events from Send/Recv and consults it
+	// from CheckRetransmitTimeout. rto is inert until a clock is injected via
+	// SetClock, so a clock-less connection performs no timing at all.
+	rto rto.Control
 }
+
+// SetClock injects the monotonic time source (nanoseconds, the func() int64
+// convention used across lneto) into the RFC 6298 estimator. Time integration
+// is opt-in: until a clock is set the retransmission timer stays dormant. It
+// should be set before the connection is opened.
+func (tcb *ControlBlock) SetClock(clock func() int64) { tcb.rto.SetClock(clock) }
 
 // State returns the current state of the TCP connection. See [State].
 func (tcb *ControlBlock) State() State { return tcb._state }
@@ -406,6 +421,10 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 			tcb.snd.UNA = seg.ACK
 			tcb.dupack = 0
 			tcb.nRetransmit = 0
+			// Sample RTT and manage the retransmission timer (RFC 6298
+			// §5.2/§5.3). rto is inert until a clock is injected, so this is a
+			// no-op on a clock-less connection (time integration is opt-in).
+			tcb.rto.OnAckSample(uint32(seg.ACK), tcb.snd.UNA == tcb.snd.NXT)
 		}
 	}
 
@@ -474,8 +493,16 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 		if tcb.nRetransmit < 255-retransmitMaxQueued-retransmitAfterDupacks {
 			tcb.nRetransmit++
 		}
+		tcb.rto.OnRetransmit() // Karn: don't sample RTT from a retransmitted segment.
 	} else {
 		tcb.snd.NXT.UpdateForward(seglen)
+		if seg.DATALEN > 0 {
+			// Time the newly transmitted data and (re)arm the retransmission
+			// timer (RFC 6298 §3, §5.1). Control-only segments are not timed;
+			// rto is inert until a clock is injected (time integration opt-in).
+			tcb.rto.StartSample(uint32(tcb.snd.NXT))
+			tcb.rto.ArmTimer()
+		}
 	}
 
 	tcb.rcv.WND = seg.WND
@@ -662,11 +689,36 @@ func (tcb *ControlBlock) rstJump() Value {
 	return 100
 }
 
-// Retransmit resets snd.NXT back to snd.UNA, allowing the next PendingSegment
-// and Send calls to retransmit unacknowledged data. Must be paired with
-// ringTx.RetransmitFromUNA to rewind the transmit buffer.
-// Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
-// func (tcb *ControlBlock) Retransmit() { tcb.snd.NXT = tcb.snd.UNA }
+// Retransmit rewinds snd.NXT back to snd.UNA so the next PendingSegment and
+// Send calls retransmit all unacknowledged data from the oldest sequence number
+// (go-back-N). It must be paired with ringTx.RetransmitFromUNA to rewind the
+// transmit buffer. Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
+func (tcb *ControlBlock) Retransmit() {
+	tcb.snd.NXT = tcb.snd.UNA
+	tcb.dupack = 0
+	tcb.nRetransmit = 0
+}
+
+// CheckRetransmitTimeout reports whether the RFC 6298 retransmission timer has
+// expired at the current time. When it has, it applies the §5.4–§5.6 timeout
+// response — exponential RTO backoff and a rewind of the send sequence to
+// snd.UNA for go-back-N retransmission — and returns true. The caller must then
+// rewind its transmit buffer (ringTx.RetransmitFromUNA). Returns false when the
+// timer has not expired or there is no unacknowledged data outstanding. It is
+// always false until a clock is injected (see SetClock): the estimator owns the
+// time source, so the tcp package reads no clock itself.
+func (tcb *ControlBlock) CheckRetransmitTimeout() bool {
+	if !tcb.rto.Expired() {
+		return false
+	}
+	if tcb.snd.UNA == tcb.snd.NXT {
+		tcb.rto.Stop() // Nothing outstanding; stop the timer defensively.
+		return false
+	}
+	tcb.rto.OnTimeout()
+	tcb.Retransmit()
+	return true
+}
 
 // Abort sets ControlBlock state to Closed and resets all sequence numbers and pending flag.
 // No more data can be sent nor received after the connection is aborted until opened again.
@@ -678,9 +730,12 @@ func (tcb *ControlBlock) Abort() {
 }
 
 func (tcb *ControlBlock) reset() {
+	clock := tcb.rto.Clock() // preserve the injected time source across reopen.
 	*tcb = ControlBlock{
 		logger: tcb.logger,
 	}
+	tcb.rto.Init()
+	tcb.rto.SetClock(clock)
 }
 
 // Close implements a passive/active closing of a connection. It does not immediately

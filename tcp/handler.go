@@ -3,6 +3,7 @@ package tcp
 import (
 	"io"
 	"net"
+	"time"
 
 	"log/slog"
 
@@ -38,6 +39,34 @@ type Handler struct {
 	nRetransmit    uint8
 	requeueControl bool
 }
+
+// SetClock injects the monotonic time source (nanoseconds, the func() int64
+// convention used across lneto) into the RFC 6298 estimator (see [rto.Control]).
+// The tcp package keeps no clock of its own; this only forwards the source to
+// the estimator, which owns all timing. Time integration is opt-in: until a
+// clock is injected the retransmission timer stays dormant. It should be set
+// before the connection is opened.
+func (h *Handler) SetClock(clock func() int64) {
+	h.scb.SetClock(clock)
+}
+
+// CheckRetransmitTimeout drives the RFC 6298 retransmission timer and should be
+// called periodically (e.g. once per stack poll). When the timer has expired it
+// rewinds the send sequence and transmit buffer so the next Send retransmits
+// unacknowledged data from snd.UNA (go-back-N), and returns true. It is a no-op
+// returning false until a clock is injected via SetClock (time integration is
+// opt-in).
+func (h *Handler) CheckRetransmitTimeout() bool {
+	if !h.scb.CheckRetransmitTimeout() {
+		return false
+	}
+	h.bufTx.RetransmitFromUNA()
+	return true
+}
+
+// SmoothedRTT returns the connection's current RFC 6298 smoothed round-trip
+// time (SRTT), or zero before the first RTT measurement or when no clock is set.
+func (h *Handler) SmoothedRTT() time.Duration { return h.scb.rto.SmoothedRTT() }
 
 // SetLoggers sets the [slog.Logger] for the Handler and internal [ControlBlock].
 func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
