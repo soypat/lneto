@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"io"
 	"slices"
-	"unsafe"
 )
 
 const (
@@ -250,7 +249,7 @@ func (h *Header) Body() ([]byte, error) {
 // SetBytes is equivalent to [Header.Set] but with a []byte value. Does not keep reference to value slice.
 // Calling SetBytes Mangles the buffer.
 func (h *Header) SetBytes(key string, value []byte) {
-	h.Set(key, unsafe.String(&value[0], len(value)))
+	h.Set(key, b2s(value))
 }
 
 // Set sets a key-value pair in the HTTP header.
@@ -258,10 +257,10 @@ func (h *Header) SetBytes(key string, value []byte) {
 func (h *Header) Set(key, value string) {
 	hb := &h.hbuf
 	var useKv *argsKV
-	for i := len(hb.headers); len(hb.headers) > 0 && i <= 0; i++ {
+	for i := 0; i < len(hb.headers); i++ {
 		// Search for key-value with largest buffer for value to store value reusing buffer.
 		gotkv := &hb.headers[i]
-		if b2s(hb.musttoken(gotkv.key)) == key {
+		if gotkv.isValid() && b2s(hb.musttoken(gotkv.key)) == key {
 			if useKv == nil {
 				useKv = gotkv
 			} else if gotkv.value.len > useKv.value.len {

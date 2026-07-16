@@ -208,3 +208,35 @@ func TestCopyNormalizedHeaderValue(t *testing.T) {
 		}
 	}
 }
+
+func TestHeaderSetOverwrite(t *testing.T) {
+	var h Header
+	h.Reset(nil)
+	h.SetMethod("GET")
+	h.SetRequestURI("/")
+	h.SetProtocol("HTTP/1.1")
+
+	h.Set("Host", "first.example.com")
+	h.Set("Host", "second.example.com")
+
+	got := string(h.Get("Host"))
+	if got != "second.example.com" {
+		t.Errorf("want Host %q, got %q", "second.example.com", got)
+	}
+	req, err := h.AppendRequest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(req), "Host:"); n != 1 {
+		t.Errorf("want 1 Host field in request, got %d:\n%s", n, req)
+	}
+}
+
+func TestHeaderSetBytesEmptyValue(t *testing.T) {
+	var h Header
+	h.Reset(nil)
+	h.SetBytes("X-Empty", nil)
+	if got := h.Get("X-Empty"); len(got) != 0 {
+		t.Errorf("want empty value, got %q", got)
+	}
+}
