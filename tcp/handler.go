@@ -3,7 +3,6 @@ package tcp
 import (
 	"io"
 	"net"
-	"time"
 
 	"log/slog"
 
@@ -38,35 +37,35 @@ type Handler struct {
 	// nRetransmit stores the number of times the oldest packet was retransmit.
 	nRetransmit    uint8
 	requeueControl bool
+
+	// loss is the optional packet-loss recovery algorithm (RTO, congestion
+	// control, ...) driven from the rx/tx hooks. nil disables loss recovery, in
+	// which case the connection behaves as if no timing existed. nanotime is the
+	// monotonic time source (nanoseconds) passed to those hooks; it is non-nil
+	// whenever loss is non-nil (enforced by [Conn.Configure]). See [LossRecovery].
+	loss     LossRecovery
+	nanotime func() int64
 }
 
-// SetClock injects the monotonic time source (nanoseconds, the func() int64
-// convention used across lneto) into the RFC 6298 estimator (see [rto.Control]).
-// The tcp package keeps no clock of its own; this only forwards the source to
-// the estimator, which owns all timing. Time integration is opt-in: until a
-// clock is injected the retransmission timer stays dormant. It should be set
-// before the connection is opened.
-func (h *Handler) SetClock(clock func() int64) {
-	h.scb.SetClock(clock)
+// SetLossRecovery installs the packet-loss recovery algorithm and the monotonic
+// time source (nanoseconds, the func() int64 convention used across lneto) that
+// drives it. The tcp package keeps no clock of its own; nanotime is read only to
+// stamp the rx/tx hooks (see [LossRecovery]). Passing loss == nil disables loss
+// recovery. It should be set before the connection is opened.
+func (h *Handler) SetLossRecovery(loss LossRecovery, nanotime func() int64) {
+	h.loss = loss
+	h.nanotime = nanotime
 }
 
-// CheckRetransmitTimeout drives the RFC 6298 retransmission timer and should be
-// called periodically (e.g. once per stack poll). When the timer has expired it
-// rewinds the send sequence and transmit buffer so the next Send retransmits
-// unacknowledged data from snd.UNA (go-back-N), and returns true. It is a no-op
-// returning false until a clock is injected via SetClock (time integration is
-// opt-in).
-func (h *Handler) CheckRetransmitTimeout() bool {
-	if !h.scb.CheckRetransmitTimeout() {
-		return false
+// NextDeadline returns the monotonic-nanosecond instant at which the connection
+// must next be serviced by a transmit attempt (e.g. an RTO expiry), or 0 when
+// there is no deadline or no loss recovery is configured. See [LossRecovery].
+func (h *Handler) NextDeadline() int64 {
+	if h.loss == nil {
+		return 0
 	}
-	h.bufTx.RetransmitFromUNA()
-	return true
+	return h.loss.NextDeadline()
 }
-
-// SmoothedRTT returns the connection's current RFC 6298 smoothed round-trip
-// time (SRTT), or zero before the first RTT measurement or when no clock is set.
-func (h *Handler) SmoothedRTT() time.Duration { return h.scb.rto.SmoothedRTT() }
 
 // SetLoggers sets the [slog.Logger] for the Handler and internal [ControlBlock].
 func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
@@ -167,6 +166,11 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 		reasm:      h.reasm,
 		closing:    false,
 		shutdownRx: false,
+		loss:       h.loss,     // configuration persists across reopen.
+		nanotime:   h.nanotime, // configuration persists across reopen.
+	}
+	if h.loss != nil {
+		h.loss.Reset() // start loss recovery afresh for the new connection.
 	}
 	h.reasm.clear() // preserve metadata capacity across reopen, drop held segments.
 	h.bufTx.ResetOrReuse(nil, 0, iss)
@@ -201,6 +205,12 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 	segIncoming := tfrm.Segment(len(payload))
 	if h.scb.IncomingIsKeepalive(segIncoming) {
 		h.info("tcp.Handler:rx-keepalive", slog.Uint64("port", uint64(h.localPort)))
+		return nil
+	}
+
+	// Notify loss recovery of the received segment (RTT sampling, timer
+	// management) and let it drop the segment before processing if it asks to.
+	if h.loss != nil && !h.loss.PreRx(segIncoming, h.nanotime()).Keep {
 		return nil
 	}
 
@@ -366,6 +376,18 @@ func (h *Handler) Send(b []byte) (int, error) {
 	if h.IsTxOver() {
 		return 0, net.ErrClosed
 	}
+	var now int64
+	if h.loss != nil {
+		now = h.nanotime()
+		if h.loss.PreTx(now).Retransmit {
+			// Go-back-N retransmission directed by loss recovery: rewind the
+			// send sequence and transmit buffer so unacknowledged data is resent
+			// from snd.UNA. Done before the early short-circuit below so an
+			// expired RTO retransmits even with no new data queued.
+			h.scb.Retransmit()
+			h.bufTx.RetransmitFromUNA()
+		}
+	}
 	awaitingSyn := h.AwaitingSynSend()
 	requeueControl := h.requeueControl
 	buffered := h.bufTx.BufferedUnsent()
@@ -447,6 +469,11 @@ func (h *Handler) Send(b []byte) (int, error) {
 		return 0, err
 	} else if prevState != h.scb.State() && h.logenabled(slog.LevelInfo) {
 		h.info("tcp.Handler:tx-statechange", slog.Uint64("port", uint64(h.localPort)), slog.String("oldState", prevState.String()), slog.String("newState", h.scb.State().String()), slog.String("txflags", segment.Flags.String()))
+	}
+	if h.loss != nil {
+		// Record the emitted segment for RTT sampling and (re)arming the
+		// retransmission timer (see [LossRecovery.PostTx]).
+		h.loss.PostTx(segment, now)
 	}
 	h.requeueControl = false
 	tfrm.SetSourcePort(h.localPort)
