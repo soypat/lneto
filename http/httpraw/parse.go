@@ -27,7 +27,13 @@ var (
 	errNeedMethodURI    = errors.New("need method/request URI to create request header")
 	errBadStatusCodeTxt = errors.New("invalid status code or text")
 	errCookiesParsed    = errors.New("cookies already parsed, reset before parsing again")
+	errBufferTooLarge   = errors.New("httpraw: buffer exceeds max size (offsets are uint16)")
 )
+
+// maxBufLen bounds the header buffer. Offsets/lengths are stored as uint16
+// (tokint); a buffer past this would truncate/overflow those, silently
+// returning the wrong bytes or panicking on a wrapped slice bound.
+const maxBufLen = 0xffff
 
 type headerBuf struct {
 	// buf[:len] holds entire HTTP header data, which may be normalized by [flags]. buf[off:len] holds data not yet processed during parsing.
@@ -92,6 +98,9 @@ func (h *Header) parse(asResponse bool) (err error) {
 }
 
 func (h *Header) parseFirstLine(asResponse bool) (err error) {
+	if len(h.hbuf.buf) > maxBufLen {
+		return errBufferTooLarge // Offsets would overflow uint16 tokint.
+	}
 	if asResponse {
 		h.statusCode, h.statusText, h.flags, err = h.hbuf.parseFirstLineResponse(h.flags)
 	} else {
@@ -302,6 +311,10 @@ func (h *Header) reuseOrAppend(tok headerSlice, value string) headerSlice {
 
 func (h *Header) appendSlice(value string) headerSlice {
 	debuglog("http:appendslice:start")
+	if len(h.hbuf.buf)+len(value)+1 > maxBufLen {
+		h.flags |= flagOOMReached // Offsets would overflow uint16 tokint.
+		return headerSlice{}
+	}
 	free := h.hbuf.free()
 	if len(value) > free {
 		if h.flags.hasAny(flagNoBufferGrow) {
@@ -317,15 +330,23 @@ func (h *Header) appendSlice(value string) headerSlice {
 
 func (h *Header) appendHeader(key, value string) {
 	hb := &h.hbuf
-	free := hb.free()
-	buf := h.hbuf.buf
-
-	if len(key)+len(value) > free {
+	// mustAppendSlice reserves byte 0 on an empty buffer so appended slices
+	// start >0 (see isValid); account for that byte here, else growth is one
+	// short and the second mustAppendSlice slices out of bounds.
+	need := len(key) + len(value)
+	if len(hb.buf) == 0 {
+		need++
+	}
+	if len(hb.buf)+need > maxBufLen {
+		h.flags |= flagOOMReached // Offsets would overflow uint16 tokint.
+		return
+	}
+	if need > hb.free() {
 		if h.flags.hasAny(flagNoBufferGrow) {
 			panic(errSmallBuffer)
 		}
 		debuglog("http:appendhdr:grow-buf")
-		hb.buf = slices.Grow(buf, len(key)+len(value))
+		hb.buf = slices.Grow(hb.buf, need)
 	}
 	h.flags |= flagMangledBuffer
 	k := hb.mustAppendSlice(key)
@@ -373,8 +394,11 @@ func (hb *headerBuf) next(ss *scannerState) argsKV {
 			ss.err = errInvalidName
 			return hb.noKV()
 		} else if n < 0 {
-			// No colon found, probably missing data.
-			ss.err = errNeedMore
+			// A newline is present (x>=0 reached here) but the line has no
+			// colon: malformed, not incomplete. A split arriving before the
+			// colon has no newline yet and is caught by the x<0 branch above,
+			// so it still returns errNeedMore.
+			ss.err = errInvalidName
 			return hb.noKV()
 		}
 	}

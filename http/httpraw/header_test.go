@@ -240,3 +240,96 @@ func TestHeaderSetBytesEmptyValue(t *testing.T) {
 		t.Errorf("want empty value, got %q", got)
 	}
 }
+
+// buffer/offset past uint16 range silently corrupts or panics.
+// A header block > 64KiB pushes a field's offset past 65535. tokint truncation
+// makes Get return the wrong window (silent corruption) or panic on slice bounds.
+func TestHeader_LargeBufferOverflow(t *testing.T) {
+	const wantVal = "the-canary-value"
+	// Pad with a big header so the canary field lands past offset 65535.
+	pad := strings.Repeat("x", 70000)
+	raw := "GET / HTTP/1.1\r\n" +
+		"X-Pad: " + pad + "\r\n" +
+		"X-Canary: " + wantVal + "\r\n" +
+		"\r\n"
+
+	var h Header
+	err := h.ParseBytes(false, []byte(raw))
+	if err != nil {
+		// Clean rejection of the oversized header is the intended behavior:
+		// no panic, no silent corruption.
+		return
+	}
+	// If it did parse, the value must be correct (never a truncated-offset window).
+	got := string(h.Get("X-Canary"))
+	if got != wantVal {
+		t.Fatalf("overflow corruption: want X-Canary %q, got %q", wantVal, got)
+	}
+}
+
+// a complete but malformed header line with no colon must be a hard error,
+// not errNeedMore (which makes a streaming parser wait forever).
+func TestHeader_ColonlessLineIsHardError(t *testing.T) {
+	raw := "GET / HTTP/1.1\r\nBadHeaderNoColon\r\n\r\n"
+	var h Header
+	err := h.ParseBytes(false, []byte(raw))
+	if err == nil {
+		t.Fatal("want error on colonless header line, got nil")
+	}
+	if err == errNeedMore {
+		t.Fatalf("colonless line reported as errNeedMore (parser would hang); want a hard error like errInvalidName")
+	}
+}
+
+// Regression for a TCP split landing BEFORE the colon (no newline yet) must
+// stay "need more data" and parse once the rest arrives. This is the case the
+// Colonless fix must NOT turn into a hard error.
+func TestHeader_SplitBeforeColonStillParses(t *testing.T) {
+	const part1 = "GET / HTTP/1.1\r\nHost" // split mid-key, before colon+newline
+	const part2 = ": example.com\r\n\r\n"
+
+	var h Header
+	h.Reset(nil)
+	if _, err := h.ReadFromBytes([]byte(part1)); err != nil {
+		t.Fatal(err)
+	}
+	needMore, err := h.TryParse(false)
+	if err != nil && err != errNeedMore {
+		t.Fatalf("split before colon: want errNeedMore/nil, got %v", err)
+	}
+	if !needMore {
+		t.Fatal("want needMoreData=true after partial input")
+	}
+
+	if _, err := h.ReadFromBytes([]byte(part2)); err != nil {
+		t.Fatal(err)
+	}
+	needMore, err = h.TryParse(false)
+	if err != nil {
+		t.Fatalf("after full input: %v", err)
+	}
+	if needMore {
+		t.Fatal("want needMoreData=false after full input")
+	}
+	if got := string(h.Get("Host")); got != "example.com" {
+		t.Fatalf("want Host %q, got %q", "example.com", got)
+	}
+}
+
+// appendHeader must reserve the +1 byte that mustAppendSlice consumes on an
+// empty buffer. Force cap == len(key)+len(value) to defeat allocator rounding.
+func TestHeader_AppendHeaderExactCapNoPanic(t *testing.T) {
+	const key, value = "K", "V"
+	buf := make([]byte, 0, len(key)+len(value)) // exact cap, no slack.
+	var h Header
+	h.Reset(buf)
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("appendHeader panicked on exact-cap buffer: %v", r)
+		}
+	}()
+	h.Add(key, value)
+	if got := string(h.Get(key)); got != value {
+		t.Fatalf("want %q, got %q", value, got)
+	}
+}
