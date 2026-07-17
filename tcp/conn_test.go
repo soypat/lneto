@@ -24,6 +24,44 @@ func newConfiguredConn(t *testing.T) *Conn {
 	return &conn
 }
 
+// nopLoss is a no-op LossRecovery used to exercise ConnConfig validation
+// without depending on the tcp/rto package (which would form a test cycle).
+type nopLoss struct{}
+
+func (nopLoss) Reset()                           {}
+func (nopLoss) NextDeadline() int64              { return 0 }
+func (nopLoss) PreRx(Segment, int64) RxDirective { return RxDirective{Keep: true} }
+func (nopLoss) PreTx(int64) TxDirective          { return TxDirective{} }
+func (nopLoss) PostTx(Segment, int64)            {}
+
+// TestConn_Configure_LossRecoveryRequiresNanotime verifies the single sanctioned
+// config-time error: a LossRecovery without a Nanotime source is rejected, while
+// a complete pair is accepted.
+func TestConn_Configure_LossRecoveryRequiresNanotime(t *testing.T) {
+	base := func() ConnConfig {
+		return ConnConfig{
+			RxBuf:             make([]byte, 512),
+			TxBuf:             make([]byte, 512),
+			TxPacketQueueSize: 4,
+			RWBackoff:         backoffYield,
+		}
+	}
+	var missing Conn
+	cfg := base()
+	cfg.LossRecovery = nopLoss{}
+	if err := missing.Configure(cfg); err == nil {
+		t.Fatal("LossRecovery without Nanotime must be rejected")
+	}
+
+	var ok Conn
+	cfg = base()
+	cfg.LossRecovery = nopLoss{}
+	cfg.Nanotime = func() int64 { return 0 }
+	if err := ok.Configure(cfg); err != nil {
+		t.Fatalf("LossRecovery with Nanotime must configure: %v", err)
+	}
+}
+
 func TestConn_SetDeadline_Closed(t *testing.T) {
 	conn := newConfiguredConn(t)
 	err := conn.SetDeadline(time.Now().Add(time.Second))
