@@ -842,24 +842,18 @@ func addr4(addr [4]byte, ok bool) netip.Addr {
 	return netip.AddrFrom4(addr)
 }
 
-// Debug prints debugging information. Very useful for users when coupled with
-// the debugheaplog build tag. See [internal.LogAttrs] debugheaplog version.
-//
-//	go build -tags=debugheaplog ./yourprogram
+// Debug prints debugging and heap information.
 func (s *StackAsync) Debug(msg string) {
-	internal.LogAttrs(slog.Default(), slog.LevelDebug, "stackasync",
+	internal.LogAttrsAndAllocs(msg, slog.Default(), slog.LevelDebug, "stackasync",
 		slog.String("umsg", msg),
 		slog.Uint64("sent", s.stats.TotalSent),
 		slog.Uint64("recv", s.stats.TotalReceived),
 	)
 }
 
-// DebugErr prints debugging and error info. Very useful for users when coupled with
-// the debugheaplog build tag. See [internal.LogAttrs] debugheaplog version.
-//
-//	go build -tags=debugheaplog ./yourprogram
+// DebugErr prints debugging and heap information.
 func (s *StackAsync) DebugErr(msg, err string) {
-	internal.LogAttrs(slog.Default(), slog.LevelError, "stackasync",
+	internal.LogAttrsAndAllocs(msg, slog.Default(), slog.LevelError, "stackasync",
 		slog.String("umsg", msg),
 		slog.String("err", err),
 		slog.Uint64("sent", s.stats.TotalSent),

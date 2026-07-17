@@ -41,7 +41,7 @@ func BenchmarkARPExchange(b *testing.B) {
 	var buf [frameSize]byte
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		err = c1.StartResolveHardwareAddress6(queryAddr)
 		if err != nil {
 			b.Fatal(err)
@@ -130,7 +130,7 @@ func BenchmarkTCPHandshake(b *testing.B) {
 	var pktbuf [frameSize]byte
 
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		// Setup connections.
 		err = sv.ListenTCP4(svconn, svPort)
 		if err != nil {

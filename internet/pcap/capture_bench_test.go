@@ -132,7 +132,7 @@ func BenchmarkPcap(b *testing.B) {
 				var frames []Frame
 				b.ReportAllocs()
 				b.ResetTimer()
-				for i := 0; i < b.N; i++ {
+				for b.Loop() {
 					frames, _ = pb.CaptureEthernet(frames[:0], tc.pkt, 0)
 				}
 			})
@@ -148,7 +148,7 @@ func BenchmarkPcap(b *testing.B) {
 				var buf []byte
 				b.ReportAllocs()
 				b.ResetTimer()
-				for i := 0; i < b.N; i++ {
+				for b.Loop() {
 					buf, _ = f.FormatFrames(buf[:0], frames, tc.pkt)
 				}
 			})
@@ -161,7 +161,7 @@ func BenchmarkPcap(b *testing.B) {
 				var buf []byte
 				b.ReportAllocs()
 				b.ResetTimer()
-				for i := 0; i < b.N; i++ {
+				for b.Loop() {
 					frames, _ = pb.CaptureEthernet(frames[:0], tc.pkt, 0)
 					buf, _ = f.FormatFrames(buf[:0], frames, tc.pkt)
 				}
@@ -193,7 +193,7 @@ func BenchmarkPcapPhases(b *testing.B) {
 			var buf []byte
 			var decNs, fmtNs int64
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				t0 := time.Now()
 				frames, _ = pb.CaptureEthernet(frames[:0], tc.pkt, 0)
 				t1 := time.Now()
