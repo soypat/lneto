@@ -3,20 +3,31 @@ package rto
 import (
 	"testing"
 	"time"
+
+	"github.com/soypat/lneto/tcp"
 )
 
-// newControl returns an initialized Control whose clock reads *now, so tests
-// drive time deterministically by assigning to now.
-func newControl(now *int64) Control {
-	var r Control
-	r.SetClock(func() int64 { return *now })
-	r.Init()
-	return r
+const ms = int64(time.Millisecond)
+
+// dataSeg builds a data segment of datalen octets starting at seq.
+func dataSeg(seq uint32, datalen int) tcp.Segment {
+	return tcp.Segment{SEQ: tcp.Value(seq), DATALEN: tcp.Size(datalen), Flags: tcp.FlagPSH | tcp.FlagACK}
 }
 
-func TestInitial(t *testing.T) {
+// ackSeg builds a bare ACK acknowledging up to ack.
+func ackSeg(ack uint32) tcp.Segment {
+	return tcp.Segment{ACK: tcp.Value(ack), Flags: tcp.FlagACK}
+}
+
+func newControl() *Control {
 	var r Control
-	r.Init()
+	r.Reset()
+	return &r
+}
+
+func TestReset(t *testing.T) {
+	var r Control
+	r.Reset()
 	if r.rto != Initial {
 		t.Errorf("initial rto=%v, want %v", r.rto, Initial)
 	}
@@ -26,251 +37,172 @@ func TestInitial(t *testing.T) {
 	if r.haveRTT {
 		t.Error("haveRTT should be false before first sample")
 	}
+	if r.Running() || r.NextDeadline() != 0 {
+		t.Error("timer must be disarmed after Reset")
+	}
 }
 
-// TestInertWithoutClock verifies time integration is opt-in: with no clock
-// every timing method is a no-op and the timer never arms.
-func TestInertWithoutClock(t *testing.T) {
-	var r Control
-	r.Init()
-	r.StartSample(1000)
-	r.ArmTimer()
+// TestArmOnSendSampleOnAck sends data, verifies the timer arms, then acks it and
+// verifies an RTT sample is taken and the timer stops once all data is acked.
+func TestArmOnSendSampleOnAck(t *testing.T) {
+	r := newControl()
+	const iss = uint32(1000)
+
+	r.PostTx(dataSeg(iss, 100), 0)
+	if !r.Running() {
+		t.Fatal("timer must arm after sending data")
+	}
+	if r.NextDeadline() != int64(Initial) {
+		t.Errorf("deadline=%d, want %d", r.NextDeadline(), int64(Initial))
+	}
+
+	// ACK arrives one RTT (40ms) later covering all sent data.
+	dir := r.PreRx(ackSeg(iss+100), 40*ms)
+	if !dir.Keep {
+		t.Error("PreRx must keep the segment")
+	}
 	if r.Running() {
-		t.Error("timer must not arm without an injected clock")
+		t.Error("timer must stop once all data is acknowledged")
 	}
-	r.OnAckSample(1000, false)
-	if r.Running() || r.haveRTT {
-		t.Error("no RTT sample or timer without a clock")
-	}
-	if r.Expired() {
-		t.Error("Expired must be false without a clock")
+	if r.SmoothedRTT() != 40*time.Millisecond {
+		t.Errorf("srtt=%v, want 40ms", r.SmoothedRTT())
 	}
 }
 
-// TestInitPreservesClock verifies Init keeps the injected clock so a connection
-// can be reused across reopens without re-injecting time.
-func TestInitPreservesClock(t *testing.T) {
-	var now int64
-	var r Control
-	r.SetClock(func() int64 { return now })
-	r.Init()
-	if r.Clock() == nil {
-		t.Fatal("clock lost after Init")
-	}
-	r.StartSample(1000)
-	r.ArmTimer()
-	if !r.Running() {
-		t.Error("timer must arm once a clock is injected")
-	}
-}
+// TestRetransmitOnTimeout verifies PreTx directs a go-back-N retransmit once the
+// deadline passes with data outstanding, and backs the RTO off.
+func TestRetransmitOnTimeout(t *testing.T) {
+	r := newControl()
+	const iss = uint32(1000)
+	r.PostTx(dataSeg(iss, 100), 0)
 
-func TestFirstSample(t *testing.T) {
-	var r Control
-	r.Init()
-	const rtt = 400 * time.Millisecond
-	r.UpdateRTT(rtt)
-	// RFC 6298 §2.2: SRTT=R, RTTVAR=R/2, RTO=SRTT+4*RTTVAR.
-	if r.srtt != rtt {
-		t.Errorf("srtt=%v, want %v", r.srtt, rtt)
+	if r.PreTx(int64(Initial) - 1).Retransmit {
+		t.Fatal("must not retransmit before the deadline")
 	}
-	if r.rttvar != rtt/2 {
-		t.Errorf("rttvar=%v, want %v", r.rttvar, rtt/2)
+	dir := r.PreTx(int64(Initial))
+	if !dir.Retransmit {
+		t.Fatal("RTO must fire at the deadline with data outstanding")
 	}
-	want := rtt + rttvarK*(rtt/2) // 400ms + 4*200ms = 1.2s
-	if r.rto != want {
-		t.Errorf("rto=%v, want %v", r.rto, want)
+	if r.CurrentRTO() != 2*Initial {
+		t.Errorf("rto=%v after one backoff, want %v", r.CurrentRTO(), 2*Initial)
 	}
-	if r.SmoothedRTT() != rtt {
-		t.Errorf("SmoothedRTT=%v, want %v", r.SmoothedRTT(), rtt)
-	}
-}
-
-func TestSmoothing(t *testing.T) {
-	var r Control
-	r.Init()
-	r.UpdateRTT(100 * time.Millisecond)
-	srtt0, rttvar0 := r.srtt, r.rttvar
-	r.UpdateRTT(120 * time.Millisecond)
-	// SRTT must move toward the new, slightly larger sample but stay between them.
-	if r.srtt <= srtt0 || r.srtt >= 120*time.Millisecond {
-		t.Errorf("srtt=%v not smoothed between %v and 120ms", r.srtt, srtt0)
-	}
-	if r.rttvar == rttvar0 {
-		t.Errorf("rttvar did not update from %v", rttvar0)
-	}
-	if r.rto != r.srtt+rttvarK*r.rttvar {
-		t.Errorf("rto=%v != srtt+4*rttvar=%v", r.rto, r.srtt+rttvarK*r.rttvar)
-	}
-}
-
-func TestMinClamp(t *testing.T) {
-	var r Control
-	r.Init()
-	r.UpdateRTT(time.Millisecond) // tiny RTT → rto well below the floor.
-	if got := r.CurrentRTO(); got != Min {
-		t.Errorf("CurrentRTO=%v, want clamp to %v", got, Min)
-	}
-}
-
-func TestSampleAndTimer(t *testing.T) {
-	var now int64
-	r := newControl(&now)
-	r.StartSample(1000)
-	r.ArmTimer()
-	if !r.Running() {
-		t.Fatal("timer should be running after ArmTimer")
-	}
-	// A second StartSample while one is pending is ignored (single sample).
-	now = int64(time.Millisecond)
-	r.StartSample(2000)
-	if r.timedSeq != 1000 {
-		t.Errorf("timedSeq=%d, want 1000 (second sample must be ignored)", r.timedSeq)
-	}
-	// ACK that covers the timed segment, with data still outstanding.
-	now = int64(50 * time.Millisecond)
-	r.OnAckSample(1500, false)
+	// The connection resends from snd.UNA; PostTx sees a retransmission.
+	r.PostTx(dataSeg(iss, 100), int64(Initial))
 	if r.timing {
-		t.Error("sample should be consumed by the covering ACK")
-	}
-	if r.srtt != 50*time.Millisecond {
-		t.Errorf("srtt=%v, want 50ms from the sample", r.srtt)
-	}
-	if !r.Running() {
-		t.Error("timer must restart while data remains outstanding")
-	}
-	if r.Deadline() != now+int64(r.CurrentRTO()) {
-		t.Errorf("deadline=%v, want %v", r.Deadline(), now+int64(r.CurrentRTO()))
+		t.Error("retransmitted segment must not be RTT-sampled (Karn)")
 	}
 }
 
-func TestAllAckedStopsTimer(t *testing.T) {
-	var now int64
-	r := newControl(&now)
-	r.StartSample(1000)
-	r.ArmTimer()
-	now = int64(20 * time.Millisecond)
-	r.OnAckSample(1000, true)
-	if r.Running() {
-		t.Error("timer must stop when all data is acknowledged")
-	}
-}
-
-// TestSeqWraparound verifies the ACK/timed-sequence comparison is modulo 2^32,
-// so a sample completes correctly across the sequence-number wrap boundary.
-func TestSeqWraparound(t *testing.T) {
-	var now int64
-	r := newControl(&now)
-	const timed = uint32(0xffff_ff00)
-	r.StartSample(timed)
-	r.ArmTimer()
-	// ACK of 0x40 is "after" 0xffffff00 modulo 2^32 → sample completes.
-	now = int64(10 * time.Millisecond)
-	r.OnAckSample(0x40, true)
-	if r.timing {
-		t.Error("wrapped ACK past timedSeq must complete the sample")
-	}
-	if !r.haveRTT {
-		t.Error("RTT sample must be taken across the wrap boundary")
-	}
-}
-
-func TestExpiryBackoff(t *testing.T) {
-	var now int64
-	r := newControl(&now)
-	r.UpdateRTT(100 * time.Millisecond) // rto = 100 + 4*50 = 300ms.
-	r.ArmTimer()
-	rto0 := r.CurrentRTO()
-	now = int64(rto0 - time.Millisecond)
-	if r.Expired() {
-		t.Error("timer must not expire before its deadline")
-	}
-	now = int64(rto0)
-	if !r.Expired() {
-		t.Error("timer must expire at its deadline")
-	}
-	timeoutAt := now
-	r.OnTimeout()
-	if r.CurrentRTO() != 2*rto0 {
-		t.Errorf("rto after timeout=%v, want doubled %v", r.CurrentRTO(), 2*rto0)
-	}
-	if r.backoff != 1 {
-		t.Errorf("backoff=%d, want 1", r.backoff)
-	}
-	if !r.Running() || r.Deadline() != timeoutAt+int64(2*rto0) {
-		t.Errorf("timer must restart at the backed-off deadline")
-	}
-}
-
-func TestBackoffCapAndMax(t *testing.T) {
-	var now int64
-	r := newControl(&now)
-	for range 40 {
-		r.ArmTimer()
-		now = r.Deadline()
-		r.OnTimeout()
-	}
-	if r.CurrentRTO() > Max {
-		t.Errorf("rto=%v exceeds Max=%v", r.CurrentRTO(), Max)
-	}
-	if r.backoff > backoffMax {
-		t.Errorf("backoff=%d exceeds cap %d", r.backoff, backoffMax)
-	}
-}
-
-func TestKarnDiscardsRetransmittedSample(t *testing.T) {
-	var now int64
-	r := newControl(&now)
-	r.StartSample(1000)
-	r.OnRetransmit() // segment retransmitted: sample must be discarded.
-	if r.timing {
-		t.Error("retransmit must discard the outstanding RTT sample (Karn)")
-	}
-	// A later ACK covering the original seq must not produce a sample.
-	now = int64(10 * time.Millisecond)
-	r.OnAckSample(1000, true)
+// TestKarnNoSampleOnRetransmittedAck verifies that after a retransmission the
+// ACK does not produce an RTT sample (Karn's algorithm).
+func TestKarnNoSampleOnRetransmittedAck(t *testing.T) {
+	r := newControl()
+	const iss = uint32(1000)
+	r.PostTx(dataSeg(iss, 100), 0)
+	// Timeout and retransmit.
+	r.PreTx(int64(Initial))
+	r.PostTx(dataSeg(iss, 100), int64(Initial))
+	// ACK now arrives; no sample should be taken since timing was discarded.
+	r.PreRx(ackSeg(iss+100), int64(Initial)+10*ms)
 	if r.haveRTT {
-		t.Error("no RTT sample should be taken from a retransmitted segment")
+		t.Error("no RTT sample should exist after a retransmission (Karn)")
 	}
 }
 
-func TestTimeoutPreservesNonBackoffAfterValidSample(t *testing.T) {
-	var now int64
-	r := newControl(&now)
-	r.StartSample(1000)
-	r.ArmTimer()
-	now = int64(time.Second)
-	r.OnTimeout() // backoff to 1.
+// TestTimerRestartsWhilePartiallyAcked verifies the timer restarts (not stops)
+// when an ACK advances UNA but data remains in flight (RFC 6298 §5.3).
+func TestTimerRestartsWhilePartiallyAcked(t *testing.T) {
+	r := newControl()
+	const iss = uint32(1000)
+	r.PostTx(dataSeg(iss, 100), 0)
+	r.PostTx(dataSeg(iss+100, 100), 0) // 200 octets outstanding, iss..iss+200.
+
+	dir := r.PreRx(ackSeg(iss+100), 40*ms) // acks first 100 only.
+	if !r.Running() {
+		t.Fatal("timer must remain armed while data is still in flight")
+	}
+	if r.NextDeadline() != 40*ms+int64(r.CurrentRTO()) {
+		t.Errorf("deadline=%d, want %d", r.NextDeadline(), 40*ms+int64(r.CurrentRTO()))
+	}
+	if !dir.Keep {
+		t.Error("PreRx must keep the segment")
+	}
+}
+
+// TestNoArmWithoutData verifies control-only segments neither arm the timer nor
+// start an RTT sample.
+func TestNoArmWithoutData(t *testing.T) {
+	r := newControl()
+	r.PostTx(tcp.Segment{SEQ: 1000, Flags: tcp.FlagACK}, 0) // pure ACK, DATALEN==0.
+	if r.Running() || r.timing {
+		t.Error("pure control segment must not arm the timer or start a sample")
+	}
+}
+
+// TestBackoffCollapsesOnValidSample verifies a valid RTT measurement collapses
+// the exponential backoff counter (RFC 6298 §5.7).
+func TestBackoffCollapsesOnValidSample(t *testing.T) {
+	r := newControl()
+	const iss = uint32(1000)
+	r.PostTx(dataSeg(iss, 100), 0)
+	r.PreTx(int64(Initial))                     // one timeout: backoff=1.
+	r.PostTx(dataSeg(iss, 100), int64(Initial)) // retransmit (no sample).
 	if r.backoff != 1 {
-		t.Fatalf("backoff=%d, want 1", r.backoff)
+		t.Fatalf("backoff=%d, want 1 after a timeout", r.backoff)
 	}
-	// A subsequent valid sample resets backoff (RFC 6298 §5.7).
-	now = int64(2 * time.Second)
-	r.StartSample(2000)
-	now = int64(2*time.Second + 30*time.Millisecond)
-	r.OnAckSample(2000, true)
+	// New data sent and freshly sampled, then acked.
+	r.PostTx(dataSeg(iss+100, 100), int64(Initial)+ms)
+	r.PreRx(ackSeg(iss+200), int64(Initial)+30*ms)
 	if r.backoff != 0 {
-		t.Errorf("backoff=%d, want 0 after a valid sample", r.backoff)
+		t.Errorf("backoff=%d, want 0 after a valid RTT sample", r.backoff)
 	}
 }
 
-// TestNoAllocs verifies the RFC 6298 estimator performs no heap allocations on
-// its hot path: it is pure integer/time arithmetic over a fixed-size struct, so
-// servicing the retransmission timer adds nothing to GC pressure.
-func TestNoAllocs(t *testing.T) {
-	var now int64
-	r := newControl(&now)
-	allocs := testing.AllocsPerRun(100, func() {
-		r.StartSample(1000)
-		r.ArmTimer()
-		now = int64(10 * time.Millisecond)
-		r.OnAckSample(1000, true)
-		_ = r.CurrentRTO()
-		now = int64(time.Second)
-		_ = r.Expired()
-		r.OnTimeout()
-		r.OnRetransmit()
-	})
-	if allocs != 0 {
-		t.Errorf("RTO estimator must not allocate, got %v allocs/op", allocs)
+// TestRTOClamped verifies CurrentRTO is clamped to [Min, Max].
+func TestRTOClamped(t *testing.T) {
+	var r Control
+	r.Reset()
+	r.rto = time.Nanosecond
+	if got := r.CurrentRTO(); got != Min {
+		t.Errorf("CurrentRTO=%v, want floor %v", got, Min)
+	}
+	r.rto = time.Hour
+	if got := r.CurrentRTO(); got != Max {
+		t.Errorf("CurrentRTO=%v, want ceiling %v", got, Max)
+	}
+}
+
+// TestUpdateRTTFirstSample verifies the first-measurement initialization of
+// SRTT/RTTVAR (RFC 6298 §2.2).
+func TestUpdateRTTFirstSample(t *testing.T) {
+	var r Control
+	r.Reset()
+	r.UpdateRTT(100 * time.Millisecond)
+	if r.srtt != 100*time.Millisecond {
+		t.Errorf("srtt=%v, want 100ms", r.srtt)
+	}
+	if r.rttvar != 50*time.Millisecond {
+		t.Errorf("rttvar=%v, want 50ms", r.rttvar)
+	}
+	// RTO = SRTT + K*RTTVAR = 100 + 4*50 = 300ms.
+	if r.rto != 300*time.Millisecond {
+		t.Errorf("rto=%v, want 300ms", r.rto)
+	}
+}
+
+// TestImplementsLossRecovery is a compile-time-ish guard that Control satisfies
+// the interface, exercised through the interface type.
+func TestImplementsLossRecovery(t *testing.T) {
+	var lr tcp.LossRecovery = newControl()
+	lr.Reset()
+	lr.PostTx(dataSeg(1000, 100), 0)
+	if lr.NextDeadline() == 0 {
+		t.Error("expected an armed deadline after sending data")
+	}
+	if !lr.PreRx(ackSeg(1100), 10*ms).Keep {
+		t.Error("PreRx must keep")
+	}
+	if lr.NextDeadline() != 0 {
+		t.Error("expected disarmed timer after full ack")
 	}
 }

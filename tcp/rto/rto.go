@@ -1,15 +1,20 @@
 // Package rto implements the RFC 6298 round-trip-time estimator and single
-// retransmission timer used by package tcp.
+// retransmission timer as a [tcp.LossRecovery] implementation.
 //
-// It is intentionally a leaf package with no dependency on package tcp: time is
-// injected as monotonic nanoseconds (the func() int64 convention used
-// throughout lneto) and sequence numbers are plain uint32 compared with
-// wraparound-safe arithmetic. This keeps timing out of the TCP state machine
-// and lets both tcp and tcp/congestion consume the estimator without an import
-// cycle, while remaining deterministic and allocation-free for unit testing.
+// Control is a pure, reactive state machine: it observes the segments a
+// connection sends and receives (via the LossRecovery hooks) and the monotonic
+// time handed in at each hook, and from those alone derives RTT estimates and
+// retransmission decisions. It holds no clock and allocates nothing, which
+// keeps it deterministic for unit testing (issue #140) and keeps all timing out
+// of the tcp state machine — package tcp depends only on the [tcp.LossRecovery]
+// interface, never on this package.
 package rto
 
-import "time"
+import (
+	"time"
+
+	"github.com/soypat/lneto/tcp"
+)
 
 // RFC 6298 retransmission-timeout (RTO) parameters. The algorithm keeps a
 // single retransmission timer per connection (RFC 6298 §5): the timer is
@@ -41,29 +46,31 @@ const (
 
 // seqLessThan reports whether sequence number a precedes b using
 // wraparound-safe (modulo 2^32) comparison, mirroring tcp.Value.LessThan
-// without depending on package tcp.
+// without depending on that method.
 func seqLessThan(a, b uint32) bool { return int32(a-b) < 0 }
 
 // Control implements the RFC 6298 round-trip-time estimator and the single
-// retransmission timer. The zero value is not ready for use; call [Control.Init]
-// first. It holds no references and allocates nothing.
+// retransmission timer as a [tcp.LossRecovery]. The zero value is ready to use
+// after [Control.Reset] (which [tcp.Conn] calls when the connection opens); it
+// holds no references and allocates nothing.
 //
-// Control owns the time source: it reads the current monotonic time from an
-// injected clock (see [Control.SetClock]) rather than being handed a timestamp
-// on every call. This keeps timing wholly inside this leaf package, so the tcp
-// package carries no clock and no time dependency of its own. Time integration
-// is opt-in: with no clock injected every timing method is inert (no RTT is
-// sampled, the timer never arms and [Control.Expired] is always false), so a
-// connection behaves exactly as it did before RTO support existed.
+// Control tracks its own shadow of the send sequence space purely from the
+// segments it observes: [Control.PostTx] advances the highest sequence sent and
+// [Control.PreRx] advances the highest sequence acknowledged. This is what lets
+// it manage the timer (RFC 6298 §5.2/§5.3) without reaching into the tcp state
+// machine, and it is also how retransmissions are distinguished for Karn's
+// algorithm — a segment whose sequence space is not beyond the shadow snd.NXT is
+// a retransmission and is never RTT-sampled.
 type Control struct {
 	srtt    time.Duration // smoothed round-trip time (SRTT).
 	rttvar  time.Duration // round-trip-time variation (RTTVAR).
 	rto     time.Duration // current retransmission timeout.
 	haveRTT bool          // false until the first RTT sample is taken.
 
-	// clock is the injected monotonic time source in nanoseconds (the
-	// func() int64 convention used across lneto). nil disables all timing.
-	clock func() int64
+	// Shadow of the send sequence space, derived from observed segments.
+	haveSeq bool   // false until the first data segment is observed.
+	sndUNA  uint32 // highest acknowledged sequence number seen on the wire.
+	sndNXT  uint32 // one past the highest sequence number sent.
 
 	// RTT sampling state (Karn's algorithm, RFC 6298 §3 / RFC 2988): at most one
 	// segment is timed at a time and retransmitted segments are never sampled.
@@ -77,34 +84,17 @@ type Control struct {
 	backoff  uint8 // consecutive timeouts, for exponential backoff.
 }
 
-// Init resets the estimator to its pre-connection state with the initial RTO,
-// preserving the injected clock so a connection can be reused across reopens.
-func (r *Control) Init() { *r = Control{rto: Initial, clock: r.clock} }
+var _ tcp.LossRecovery = (*Control)(nil)
 
-// SetClock injects the monotonic time source (nanoseconds) that drives RTT
-// estimation and the retransmission timer. Passing nil disables all timing
-// (time integration is opt-in). It should be set before the connection opens.
-func (r *Control) SetClock(clock func() int64) { r.clock = clock }
-
-// Clock returns the injected time source, or nil when timing is disabled.
-func (r *Control) Clock() func() int64 { return r.clock }
-
-// active reports whether a clock has been injected (timing enabled).
-func (r *Control) active() bool { return r.clock != nil }
-
-// Running reports whether the retransmission timer is currently armed.
-func (r *Control) Running() bool { return r.running }
-
-// Deadline returns the monotonic-nanosecond instant at which the timer expires.
-// It is only meaningful while [Control.Running] reports true.
-func (r *Control) Deadline() int64 { return r.deadline }
+// Reset returns the estimator to its pre-connection state with the initial RTO.
+// It implements [tcp.LossRecovery] and is called when the connection opens or
+// aborts so the estimator can be reused across connection reuse.
+func (r *Control) Reset() { *r = Control{rto: Initial} }
 
 // SmoothedRTT returns the current smoothed round-trip time (SRTT), or zero
-// before the first RTT measurement.
+// before the first RTT measurement. It is concrete-type introspection and is
+// intentionally not part of [tcp.LossRecovery].
 func (r *Control) SmoothedRTT() time.Duration { return r.srtt }
-
-// Stop turns the retransmission timer off without touching the RTT estimate.
-func (r *Control) Stop() { r.running = false }
 
 // CurrentRTO returns the timeout currently in effect, clamped to [Min, Max].
 func (r *Control) CurrentRTO() time.Duration {
@@ -117,56 +107,104 @@ func (r *Control) CurrentRTO() time.Duration {
 	return rto
 }
 
-// StartSample begins timing the segment ending at endSeq if no sample is
-// outstanding (single-sample estimator, RFC 6298 §3). Retransmitted segments
-// must not be timed; callers pass only newly transmitted sequence space. It is
-// inert until a clock is injected (see [Control.SetClock]).
-func (r *Control) StartSample(endSeq uint32) {
-	if !r.active() || r.timing {
-		return
+// Running reports whether the retransmission timer is currently armed.
+func (r *Control) Running() bool { return r.running }
+
+// NextDeadline returns the monotonic-nanosecond instant at which the timer
+// expires, or 0 when it is not armed. It implements [tcp.LossRecovery].
+func (r *Control) NextDeadline() int64 {
+	if !r.running {
+		return 0
 	}
-	r.timing = true
-	r.timedSeq = endSeq
-	r.timedAt = r.clock()
+	return r.deadline
 }
 
-// ArmTimer starts the retransmission timer if it is not already running
-// (RFC 6298 §5.1: when a segment is sent and the timer is not running, start it).
-// It is inert until a clock is injected (see [Control.SetClock]).
-func (r *Control) ArmTimer() {
-	if !r.active() || r.running {
-		return
+// PreRx samples the RTT and manages the retransmission timer from a received
+// segment (RFC 6298 §5.2/§5.3). It implements [tcp.LossRecovery] and always
+// keeps the segment (the estimator never drops traffic).
+func (r *Control) PreRx(incoming tcp.Segment, now int64) tcp.RxDirective {
+	if !r.haveSeq || !incoming.Flags.HasAny(tcp.FlagACK) {
+		return tcp.RxDirective{Keep: true}
 	}
-	r.running = true
-	r.deadline = r.clock() + int64(r.CurrentRTO())
-}
-
-// OnAckSample updates the estimator from an acknowledgment. ack is the highest
-// acknowledged sequence number and allAcked reports whether ack covers all
-// in-flight data. It takes an RTT sample when ack advances past the timed
-// segment, then manages the timer per RFC 6298 §5.2/§5.3 (restart while data
-// remains, stop when fully acknowledged). It is inert until a clock is injected.
-func (r *Control) OnAckSample(ack uint32, allAcked bool) {
-	if !r.active() {
-		return
-	}
-	now := r.clock()
+	ack := uint32(incoming.ACK)
 	if r.timing && !seqLessThan(ack, r.timedSeq) {
+		// ACK covers the timed segment: take the RTT sample (§4). A valid
+		// measurement collapses the backoff (§5.7).
 		r.UpdateRTT(time.Duration(now - r.timedAt))
 		r.timing = false
-		r.backoff = 0 // a valid measurement collapses backoff (RFC 6298 §5.7).
+		r.backoff = 0
 	}
-	if allAcked {
-		r.running = false // §5.3: all outstanding data acknowledged, turn timer off.
-		return
+	if seqLessThan(r.sndUNA, ack) && !seqLessThan(r.sndNXT, ack) {
+		// ACK advances snd.UNA and does not exceed what we have sent.
+		r.sndUNA = ack
 	}
-	// §5.3: new (but not all) data acknowledged — restart the timer.
+	if r.sndUNA == r.sndNXT {
+		r.running = false // §5.3: all outstanding data acknowledged.
+	} else {
+		// §5.3: new (but not all) data acknowledged — restart the timer.
+		r.running = true
+		r.deadline = now + int64(r.CurrentRTO())
+	}
+	return tcp.RxDirective{Keep: true}
+}
+
+// PreTx reports whether the retransmission timer has expired and, if so, applies
+// the RFC 6298 §5.4–§5.6 timeout response — discard the outstanding RTT sample
+// (Karn), back the RTO off exponentially and restart the timer — returning a
+// directive that asks the connection to retransmit from snd.UNA (go-back-N). It
+// implements [tcp.LossRecovery].
+func (r *Control) PreTx(now int64) tcp.TxDirective {
+	if !r.running || now < r.deadline || r.sndUNA == r.sndNXT {
+		return tcp.TxDirective{}
+	}
+	r.timing = false // §5.4: do not sample a retransmitted segment.
+	if r.backoff < backoffMax {
+		r.backoff++
+		r.rto = min(r.CurrentRTO()*2, Max) // §5.5: RTO = RTO * 2.
+	}
 	r.running = true
 	r.deadline = now + int64(r.CurrentRTO())
+	return tcp.TxDirective{Retransmit: true}
+}
+
+// PostTx records an emitted segment: it advances the shadow send sequence,
+// begins timing newly transmitted data (RFC 6298 §3) and arms the timer (§5.1).
+// Segments that do not extend the send sequence are retransmissions and are
+// never RTT-sampled (Karn's algorithm). Control-only segments (no data) are
+// ignored. It implements [tcp.LossRecovery].
+func (r *Control) PostTx(outgoing tcp.Segment, now int64) {
+	if outgoing.DATALEN == 0 {
+		return // only data segments are timed / arm the RTO.
+	}
+	segStart := uint32(outgoing.SEQ)
+	segEnd := segStart + uint32(outgoing.LEN())
+	if !r.haveSeq {
+		r.haveSeq = true
+		r.sndUNA = segStart
+		r.sndNXT = segStart
+	}
+	if !seqLessThan(r.sndNXT, segEnd) {
+		// Segment does not extend the send sequence: it is a retransmission.
+		// Discard any outstanding RTT sample per Karn's algorithm. The timer was
+		// already (re)armed by PreTx on the timeout that triggered this resend.
+		r.timing = false
+		return
+	}
+	r.sndNXT = segEnd
+	if !r.timing {
+		r.timing = true
+		r.timedSeq = segEnd
+		r.timedAt = now
+	}
+	if !r.running {
+		r.running = true
+		r.deadline = now + int64(r.CurrentRTO())
+	}
 }
 
 // UpdateRTT folds a round-trip measurement into SRTT/RTTVAR/RTO using the
-// integer-shift form of RFC 6298 §2.2/§2.3.
+// integer-shift form of RFC 6298 §2.2/§2.3. It is exposed for callers that
+// obtain RTT samples out of band (e.g. RFC 7323 timestamps).
 func (r *Control) UpdateRTT(sample time.Duration) {
 	if sample <= 0 {
 		return
@@ -189,32 +227,3 @@ func (r *Control) UpdateRTT(sample time.Duration) {
 	}
 	r.rto = r.srtt + rttvarK*r.rttvar
 }
-
-// Expired reports whether the retransmission timer has fired by the current
-// time. It is always false until a clock is injected (see [Control.SetClock]).
-func (r *Control) Expired() bool {
-	return r.active() && r.running && r.clock() >= r.deadline
-}
-
-// OnTimeout applies the RFC 6298 §5.4–§5.6 timeout response: discard the
-// outstanding RTT sample (Karn), back the RTO off exponentially and restart the
-// timer. The caller is responsible for rewinding the send state to snd.UNA. It
-// is inert until a clock is injected (see [Control.SetClock]).
-func (r *Control) OnTimeout() {
-	if !r.active() {
-		return
-	}
-	r.timing = false // §5.4: do not sample a retransmitted segment.
-	if r.backoff < backoffMax {
-		r.backoff++
-		// §5.5: RTO = RTO * 2.
-		r.rto = min(r.CurrentRTO()*2, Max)
-	}
-	r.running = true
-	r.deadline = r.clock() + int64(r.CurrentRTO())
-}
-
-// OnRetransmit notifies the estimator that the timed segment was retransmitted
-// for a reason other than a timer expiry (e.g. fast retransmit), so its RTT
-// sample must be discarded per Karn's algorithm.
-func (r *Control) OnRetransmit() { r.timing = false }
