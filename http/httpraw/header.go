@@ -164,16 +164,11 @@ func (h *Header) ReadFromBytes(b []byte) (int, error) {
 }
 
 // BufferReceived returns the amoung of bytes read during calls to Read* methods.
+// Returns 0 if buffer is invalid/mangled.
 func (h *Header) BufferReceived() int {
 	if h.flags.hasAny(flagMangledBuffer | flagOOMReached) {
 		return 0
 	}
-	return len(h.hbuf.buf)
-}
-
-// BufferUsed is equivalent to BufferReceived but will simply return the
-// portion of the HTTP header used by header values regardless of whether buffer is mangled or not.
-func (h *Header) BufferUsed() int {
 	return len(h.hbuf.buf)
 }
 
@@ -187,12 +182,23 @@ func (h *Header) BufferParsed() int {
 	return h.hbuf.off
 }
 
+// BufferUsed returns the raw memory used.
+//
+//	BufferUsed + BufferFree == BufferCapacity
+func (h *Header) BufferUsed() int {
+	return len(h.hbuf.buf)
+}
+
 // BufferFree returns amount of bytes free in underlying buffer.
+//
+//	BufferUsed + BufferFree == BufferCapacity
 func (h *Header) BufferFree() int {
 	return h.hbuf.free()
 }
 
 // BufferCapacity returns the total capacity of the underlying buffer.
+//
+//	BufferUsed + BufferFree == BufferCapacity
 func (h *Header) BufferCapacity() int {
 	return cap(h.hbuf.buf)
 }

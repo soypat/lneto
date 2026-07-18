@@ -34,11 +34,21 @@ func run() error {
 		}
 		visits.Add(1)
 		if err := handle(conn); err != nil {
-			println("handle:", conn.RemoteAddr().String(), err)
+			println("handle:", conn.RemoteAddr().String(), err.Error())
 		}
 		conn.Close()
 	}
 }
+
+const (
+	htmlHead = `<html><body bgcolor="#000080" text="#00FF00"><center>` +
+		`<marquee><font face="Comic Sans MS" size="5" color="#FFFF00">` +
+		`*** WELCOME TO MY HOMEPAGE ***</font></marquee>` +
+		`<h1><blink>YOU ARE VISITOR #`
+	htmlTail = `!</blink></h1>` +
+		`<font color="#FF00FF">Sign my guestbook!</font>` +
+		`<br><hr>Best viewed in Netscape Navigator</center></body></html>`
+)
 
 const maxHTTPHeader = 1024
 
@@ -50,7 +60,6 @@ var (
 )
 
 func handle(conn *Conn) error {
-	visits.Add(1)
 	hdr.Reset(httpbuf[:0])
 	hdr.EnableBufferGrowth(false)    // Limit memory to buffer capacity.
 	const incomingIsResponse = false // We get HTTP requests from clients.
@@ -73,16 +82,18 @@ func handle(conn *Conn) error {
 		print("DEADLINE EXCEED: ", hdr.BufferParsed(), "/", hdr.BufferReceived(), " bytes parsed/read\n")
 		return nil
 	}
-	// Prepare HTML response.
-	n := copy(htmlbuf[:], "<div>YOU ARE VISITOR ")
+	// Prepare tacky HTML response.
+	n := copy(htmlbuf[:], htmlHead)
 	n += len(strconv.AppendUint(htmlbuf[n:n], visits.Load(), 10))
-	n += copy(htmlbuf[n:], "</div>")
+	n += copy(htmlbuf[n:], htmlTail)
 	contentLen := n
 	hdr.Reset(httpbuf[:0])
-	println("USAGE", hdr.BufferUsed())
+	hdr.SetProtocol("HTTP/1.1")
 	hdr.SetStatus("200", "OK")
+	hdr.Set("Content-Type", "text/html")
 	hdr.SetInt("Content-Length", int64(contentLen), 10)
-	println("USAGE", hdr.BufferUsed())
+	// Here we do some buffer juggling. We use remaining space
+	// of HTTP Header buffer to write the response that will be written over the wire.
 	respbuf := httpbuf[hdr.BufferUsed():]
 	header, err := hdr.AppendResponse(respbuf[:0])
 	if err != nil {
