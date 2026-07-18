@@ -22,7 +22,7 @@ vendor/
 *.dylib
 *.hex
 *.wasm
-
+/http-linux
 # Profiling
 *.pprof
 

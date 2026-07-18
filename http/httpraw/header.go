@@ -164,6 +164,7 @@ func (h *Header) ReadFromBytes(b []byte) (int, error) {
 }
 
 // BufferReceived returns the amoung of bytes read during calls to Read* methods.
+// Returns 0 if buffer is invalid/mangled.
 func (h *Header) BufferReceived() int {
 	if h.flags.hasAny(flagMangledBuffer | flagOOMReached) {
 		return 0
@@ -181,12 +182,23 @@ func (h *Header) BufferParsed() int {
 	return h.hbuf.off
 }
 
+// BufferUsed returns the raw memory used.
+//
+//	BufferUsed + BufferFree == BufferCapacity
+func (h *Header) BufferUsed() int {
+	return len(h.hbuf.buf)
+}
+
 // BufferFree returns amount of bytes free in underlying buffer.
+//
+//	BufferUsed + BufferFree == BufferCapacity
 func (h *Header) BufferFree() int {
 	return h.hbuf.free()
 }
 
 // BufferCapacity returns the total capacity of the underlying buffer.
+//
+//	BufferUsed + BufferFree == BufferCapacity
 func (h *Header) BufferCapacity() int {
 	return cap(h.hbuf.buf)
 }
@@ -222,7 +234,7 @@ func (hb *headerBuf) forEach(cb func(key, value []byte) error) error {
 //	h.Reset(httpHeader); h.Parse() // Parse bytes in place with no copying.
 //	h.Reset(nil) // Reuse buffer previously set in a call to Reset.
 func (h *Header) Reset(buf []byte) {
-	if h.flags.hasAny(flagNoBufferGrow) && len(buf) < 32 {
+	if h.flags.hasAny(flagNoBufferGrow) && cap(buf) < 32 {
 		panic("small buffer and flagNoBufferGrow set")
 	}
 	const persistentFlags = flagNoBufferGrow
@@ -252,9 +264,36 @@ func (h *Header) SetBytes(key string, value []byte) {
 	h.Set(key, b2s(value))
 }
 
+// SetInt is equivalent to [Header.Set] but with an integer value i.e: Content-Length header key.
+// base must be in the range 2..36 (as accepted by [strconv.AppendInt]); other bases are dropped.
+// SetInt formats the value directly into the header buffer without heap allocation.
+func (h *Header) SetInt(key string, value int64, base int) {
+	if base < 2 || base > 36 {
+		return // strconv.AppendInt only supports base 2..36.
+	}
+	useKv := h.takeReusableSlot(key)
+	if useKv == nil {
+		h.appendHeaderInt(key, value, base)
+	} else {
+		useKv.value = h.reuseOrAppendInt(useKv.value, value, base)
+	}
+}
+
 // Set sets a key-value pair in the HTTP header.
 // Calling Set mangles the buffer.
 func (h *Header) Set(key, value string) {
+	useKv := h.takeReusableSlot(key)
+	if useKv == nil {
+		h.appendHeader(key, value)
+	} else {
+		useKv.value = h.reuseOrAppend(useKv.value, value)
+	}
+}
+
+// takeReusableSlot returns the valid key-value entry for key with the largest
+// value buffer (best candidate for in-place reuse) and invalidates any other
+// entries sharing the key. Returns nil if the key is not present.
+func (h *Header) takeReusableSlot(key string) *argsKV {
 	hb := &h.hbuf
 	var useKv *argsKV
 	for i := 0; i < len(hb.headers); i++ {
@@ -271,11 +310,7 @@ func (h *Header) Set(key, value string) {
 			}
 		}
 	}
-	if useKv == nil {
-		h.appendHeader(key, value)
-	} else {
-		useKv.value = h.reuseOrAppend(useKv.value, value)
-	}
+	return useKv
 }
 
 // Get gets the first value of a key found in the headers. Use [Header.ForEach] to find multiple values corresponding to same key.
