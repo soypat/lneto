@@ -333,3 +333,93 @@ func TestHeader_AppendHeaderExactCapNoPanic(t *testing.T) {
 		t.Fatalf("want %q, got %q", value, got)
 	}
 }
+
+// Add/Set on a full buffer with growth disabled must drop gracefully (flag OOM),
+// never panic. Panicking is unacceptable for this package.
+func TestHeader_AddFullBufferNoPanic(t *testing.T) {
+	buf := make([]byte, 0, 40) // Small cap; enough for Reset (len 0) but not the field below.
+	var h Header
+	h.Reset(buf)
+	h.EnableBufferGrowth(false)
+	h.SetMethod("GET")
+	h.SetRequestURI("/")
+	h.SetProtocol("HTTP/1.1")
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Add on full no-grow buffer panicked: %v", r)
+		}
+	}()
+	h.Add("X-Very-Long-Header-Key", "a-value-that-cannot-possibly-fit-in-the-buffer")
+
+	// Graceful drop: request marshalling reports OOM instead of emitting bad data.
+	if _, err := h.AppendRequest(nil); err == nil {
+		t.Fatal("want OOM error after dropped Add, got nil")
+	}
+}
+
+func TestHeader_SetInt(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value int64
+		base  int
+		want  string
+	}{
+		{"decimal", 1234, 10, "1234"},
+		{"zero", 0, 10, "0"},
+		{"negative", -42, 10, "-42"},
+		{"maxint64", 9223372036854775807, 10, "9223372036854775807"},
+		{"minint64", -9223372036854775808, 10, "-9223372036854775808"},
+		{"hex", 255, 16, "ff"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var h Header
+			h.Reset(nil)
+			h.SetInt("Content-Length", tc.value, tc.base)
+			if got := string(h.Get("Content-Length")); got != tc.want {
+				t.Fatalf("want %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
+// SetInt on an existing key must reuse the slot in place (single field, latest value).
+func TestHeader_SetIntOverwrite(t *testing.T) {
+	var h Header
+	h.Reset(nil)
+	h.SetMethod("GET")
+	h.SetRequestURI("/")
+	h.SetProtocol("HTTP/1.1")
+
+	h.SetInt("Content-Length", 100, 10)
+	h.SetInt("Content-Length", 5, 10) // shorter, must fit in old slot.
+
+	if got := string(h.Get("Content-Length")); got != "5" {
+		t.Fatalf("want Content-Length %q, got %q", "5", got)
+	}
+	req, err := h.AppendRequest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(req), "Content-Length:"); n != 1 {
+		t.Errorf("want 1 Content-Length field, got %d:\n%s", n, req)
+	}
+}
+
+// SetInt must not heap-allocate: it must format directly into the header buffer.
+func TestHeader_SetIntNoAlloc(t *testing.T) {
+	buf := make([]byte, 0, 256)
+	var h Header
+	h.Reset(buf)
+	h.EnableBufferGrowth(false)
+	h.Add("Content-Length", "0000000000000000000000") // pre-size a reusable slot.
+	allocs := testing.AllocsPerRun(100, func() {
+		h.SetInt("Content-Length", 1234567890, 10)
+	})
+	if allocs != 0 {
+		t.Fatalf("SetInt allocated %v times, want 0", allocs)
+	}
+	if got := string(h.Get("Content-Length")); got != "1234567890" {
+		t.Fatalf("want %q, got %q", "1234567890", got)
+	}
+}

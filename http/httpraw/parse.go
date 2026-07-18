@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"slices"
+	"strconv"
 	"unsafe"
 
 	"github.com/soypat/lneto/internal"
@@ -311,44 +312,22 @@ func (h *Header) reuseOrAppend(tok headerSlice, value string) headerSlice {
 
 func (h *Header) appendSlice(value string) headerSlice {
 	debuglog("http:appendslice:start")
-	if len(h.hbuf.buf)+len(value)+1 > maxBufLen {
-		h.flags |= flagOOMReached // Offsets would overflow uint16 tokint.
+	if !h.reserve(len(value)) {
 		return headerSlice{}
-	}
-	free := h.hbuf.free()
-	if len(value) > free {
-		if h.flags.hasAny(flagNoBufferGrow) {
-			h.flags |= flagOOMReached
-			return headerSlice{}
-		}
-		debuglog("http:appendslice:grow-buf")
-		h.hbuf.buf = slices.Grow(h.hbuf.buf, len(value)+1) // Grow 1 beyond due to slice validity.
 	}
 	h.flags |= flagMangledBuffer
 	return h.hbuf.mustAppendSlice(value)
 }
 
 func (h *Header) appendHeader(key, value string) {
-	hb := &h.hbuf
-	// mustAppendSlice reserves byte 0 on an empty buffer so appended slices
-	// start >0 (see isValid); account for that byte here, else growth is one
-	// short and the second mustAppendSlice slices out of bounds.
-	need := len(key) + len(value)
-	if len(hb.buf) == 0 {
-		need++
-	}
-	if len(hb.buf)+need > maxBufLen {
-		h.flags |= flagOOMReached // Offsets would overflow uint16 tokint.
+	// reserve accounts for the byte-0 reservation mustAppendSlice makes on an
+	// empty buffer, and drops (flagging OOM) rather than panicking when growth
+	// is disabled and space runs out.
+	if !h.reserve(len(key) + len(value)) {
 		return
 	}
-	if need > hb.free() {
-		if h.flags.hasAny(flagNoBufferGrow) {
-			panic(errSmallBuffer)
-		}
-		debuglog("http:appendhdr:grow-buf")
-		hb.buf = slices.Grow(hb.buf, need)
-	}
 	h.flags |= flagMangledBuffer
+	hb := &h.hbuf
 	k := hb.mustAppendSlice(key)
 	v := hb.mustAppendSlice(value)
 	debuglog("http:appendhdr:grow-hdrs")
@@ -356,6 +335,100 @@ func (h *Header) appendHeader(key, value string) {
 		key:   k,
 		value: v,
 	})
+}
+
+// appendHeaderInt is appendHeader's integer counterpart: it appends key and the
+// formatted integer value as a new header field.
+func (h *Header) appendHeaderInt(key string, value int64, base int) {
+	n := intLen(value, base)
+	if !h.reserve(len(key) + n) {
+		return // Drop and flag OOM; never panic.
+	}
+	h.flags |= flagMangledBuffer
+	hb := &h.hbuf
+	k := hb.mustAppendSlice(key)
+	v := hb.mustAppendInt(value, base)
+	hb.headers = append(hb.headers, argsKV{
+		key:   k,
+		value: v,
+	})
+}
+
+// reserve ensures need free bytes are available in the buffer, growing it when
+// permitted. It accounts for the byte-0 reservation on an empty buffer (see
+// mustAppendSlice). It returns false and sets flagOOMReached when the space
+// cannot be guaranteed: a tokint offset overflow, or a full buffer with
+// flagNoBufferGrow set.
+func (h *Header) reserve(need int) bool {
+	hb := &h.hbuf
+	if len(hb.buf) == 0 {
+		need++ // mustAppend* reserves byte 0 on an empty buffer.
+	}
+	if len(hb.buf)+need > maxBufLen {
+		h.flags |= flagOOMReached // Offsets would overflow uint16 tokint.
+		return false
+	}
+	if need > hb.free() {
+		if h.flags.hasAny(flagNoBufferGrow) {
+			h.flags |= flagOOMReached
+			return false
+		}
+		hb.buf = slices.Grow(hb.buf, need)
+	}
+	return true
+}
+
+// reuseOrAppendInt writes value into tok's slot in place when it fits, avoiding
+// any buffer growth; otherwise it appends a fresh slot.
+func (h *Header) reuseOrAppendInt(tok headerSlice, value int64, base int) headerSlice {
+	n := intLen(value, base)
+	if int(tok.len) >= n {
+		// Reuse: format directly over the existing slot. No free space needed
+		// since n <= tok.len and the slot already lives inside buf.
+		v := strconv.AppendInt(h.hbuf.buf[tok.start:tok.start], value, base)
+		tok.len = tokint(len(v))
+		h.flags |= flagMangledBuffer
+		return tok
+	}
+	return h.appendInt(value, base, n)
+}
+
+// appendInt reserves space (growing or flagging OOM) and appends value as a new slot.
+func (h *Header) appendInt(value int64, base, n int) headerSlice {
+	if !h.reserve(n) {
+		return headerSlice{} // Drop and flag OOM; never panic.
+	}
+	h.flags |= flagMangledBuffer
+	return h.hbuf.mustAppendInt(value, base)
+}
+
+// mustAppendInt formats value into the buffer's free region and commits it.
+// The caller must have reserved at least intLen(value, base) free bytes.
+func (hb *headerBuf) mustAppendInt(value int64, base int) headerSlice {
+	L := len(hb.buf)
+	if L == 0 {
+		L++ // Valid key-values start after byte 0.
+	}
+	v := strconv.AppendInt(hb.buf[L:L], value, base)
+	hb.buf = hb.buf[:L+len(v)]
+	return hb.slice(hb.buf[L : L+len(v)])
+}
+
+// intLen returns the number of bytes strconv.AppendInt would emit for value in
+// the given base (including a leading minus sign for negatives). Used to size
+// the buffer and to test whether a value fits an existing slot without writing.
+func intLen(value int64, base int) int {
+	n := 1
+	u := uint64(value)
+	if value < 0 {
+		n++    // Leading minus sign.
+		u = -u // Two's-complement magnitude; correct even for math.MinInt64.
+	}
+	for u >= uint64(base) {
+		u /= uint64(base)
+		n++
+	}
+	return n
 }
 
 func (hb *headerBuf) noKV() argsKV { return argsKV{} }
