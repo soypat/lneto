@@ -86,10 +86,31 @@ type ControlBlock struct {
 	// sackEnabled reports whether Selective Acknowledgment (RFC 2018) was
 	// negotiated on both ends during the handshake.
 	sackEnabled bool
+	// wsEnabled reports whether the Window Scale option (RFC 7323 §2) was
+	// negotiated on both ends during the handshake.
+	wsEnabled bool
+	// rcvWndShift is the scale we advertise for our receive window: peers left-
+	// shift our advertised window by this to recover the true value. Derived
+	// from the receive buffer size in SetRecvWindow (RFC 7323 §2.2, max 14).
+	rcvWndShift uint8
+	// sndWndShift is the scale the peer advertised for its receive window: we
+	// left-shift the window field of its non-SYN segments by this to recover the
+	// true send window.
+	sndWndShift uint8
 	// tsRecent is the most recent timestamp received from the peer (TS.Recent,
 	// RFC 7323 §4.3), echoed back as TSecr so the peer can measure RTT.
 	tsRecent uint32
 }
+
+// maxWindowShift is the largest window scale exponent permitted by RFC 7323 §2.3
+// (a window of at most 2^30 - 1 requires a shift of no more than 14).
+const maxWindowShift = 14
+
+// maxRecvWindow is the largest receive window representable once RFC 7323 window
+// scaling is applied: the 16-bit window field left-shifted by the maximum scale.
+// Internal windows may exceed 65535 (the true buffer capacity); the value placed
+// on the wire is always scaled down and clamped (see Handler.scaleAdvertisedWindow).
+const maxRecvWindow = Size(math.MaxUint16) << maxWindowShift
 
 // TimestampsEnabled reports whether the RFC 7323 Timestamps option was
 // negotiated for this connection.
@@ -98,6 +119,14 @@ func (tcb *ControlBlock) TimestampsEnabled() bool { return tcb.tsEnabled }
 // SACKEnabled reports whether Selective Acknowledgment (RFC 2018) was
 // negotiated for this connection.
 func (tcb *ControlBlock) SACKEnabled() bool { return tcb.sackEnabled }
+
+// WindowScalingEnabled reports whether the RFC 7323 Window Scale option was
+// negotiated for this connection.
+func (tcb *ControlBlock) WindowScalingEnabled() bool { return tcb.wsEnabled }
+
+// RecvWindowShift returns the window scale advertised for the local receive
+// window (RFC 7323 §2.2), derived from the receive buffer size.
+func (tcb *ControlBlock) RecvWindowShift() uint8 { return tcb.rcvWndShift }
 
 // State returns the current state of the TCP connection. See [State].
 func (tcb *ControlBlock) State() State { return tcb._state }
@@ -109,6 +138,11 @@ func (tcb *ControlBlock) RecvNext() Value { return tcb.rcv.NXT }
 
 // RecvWindow returns the receive window size. If connection is closed will return 0.
 func (tcb *ControlBlock) RecvWindow() Size { return tcb.rcv.WND }
+
+// SendWindow returns the peer's advertised send window, already scaled up by the
+// negotiated RFC 7323 window scale (so it may exceed 65535). It is the maximum
+// number of unacknowledged octets the peer will accept in flight.
+func (tcb *ControlBlock) SendWindow() Size { return tcb.snd.WND }
 
 // ISS returns the initial sequence number of the connection that was defined on a call to Open by user.
 func (tcb *ControlBlock) ISS() Value { return tcb.snd.ISS }
@@ -127,9 +161,12 @@ func (tcb *ControlBlock) MaxInFlightData() Size {
 }
 
 // SetWindow sets the local receive window size. This represents the maximum amount of data
-// that is permitted to be in flight.
+// that is permitted to be in flight. It also derives the window scale we would
+// advertise (RFC 7323 §2.2): the smallest shift for which wnd, scaled down,
+// still fits the 16-bit window field.
 func (tcb *ControlBlock) SetRecvWindow(wnd Size) {
 	tcb.rcv.WND = wnd
+	tcb.rcvWndShift = windowShiftFor(wnd)
 }
 
 // SetLogger sets the logger to be used by the ControlBlock.
@@ -276,7 +313,7 @@ func (tcb *ControlBlock) Open(iss Value, wnd Size) (err error) {
 	switch {
 	case tcb._state != StateClosed && tcb._state != StateTimeWait:
 		err = errNeedClosedTCBToOpen
-	case wnd > math.MaxUint16:
+	case wnd > maxRecvWindow:
 		err = errWindowTooLarge
 	}
 	if err != nil {
@@ -457,10 +494,17 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	// connections with a remote ISS in the upper half of the uint32 space still work
 	// (modular LessThan would otherwise return false for 0.LessThan(largeISS)).
 	// Within that, duplicate ACKs (non-advancing) may only open the window, never shrink it.
+	// Recover the peer's true send window. RFC 7323 §2.3: the window field of a
+	// SYN segment is never scaled; on every other segment left-shift it by the
+	// scale the peer advertised during the handshake.
+	segWnd := seg.WND
+	if tcb.wsEnabled && !seg.Flags.HasAny(FlagSYN) {
+		segWnd <<= tcb.sndWndShift
+	}
 	wlUnset := tcb.snd.WL1 == 0 && tcb.snd.WL2 == 0
 	if wlUnset || tcb.snd.WL1.LessThan(seg.SEQ) || (tcb.snd.WL1 == seg.SEQ && tcb.snd.WL2.LessThanEq(seg.ACK)) {
-		if tcb.snd.UNA.LessThan(seg.ACK) || seg.WND > tcb.snd.WND {
-			tcb.snd.WND = seg.WND
+		if tcb.snd.UNA.LessThan(seg.ACK) || segWnd > tcb.snd.WND {
+			tcb.snd.WND = segWnd
 		}
 		tcb.snd.WL1 = seg.SEQ
 		tcb.snd.WL2 = seg.ACK
@@ -569,7 +613,7 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	switch {
 	case tcb._state == StateClosed && !isFirst:
 		err = io.ErrClosedPipe
-	case seg.WND > math.MaxUint16:
+	case seg.WND > maxRecvWindow:
 		err = errWindowTooLarge
 	case hasAck && seg.ACK != tcb.rcv.NXT:
 		err = errAckNotNext
@@ -697,6 +741,17 @@ func (tcb *ControlBlock) resetRcv(localWND Size, remoteISS Value) {
 		NXT: remoteISS,
 		WND: localWND,
 	}
+	tcb.rcvWndShift = windowShiftFor(localWND)
+}
+
+// windowShiftFor returns the smallest RFC 7323 §2.2 window scale for which wnd,
+// scaled down, still fits the 16-bit window field (capped at the §2.3 maximum).
+func windowShiftFor(wnd Size) uint8 {
+	var shift uint8
+	for wnd>>shift > math.MaxUint16 && shift < maxWindowShift {
+		shift++
+	}
+	return shift
 }
 
 func (tcb *ControlBlock) handleRST(seq Value) error {

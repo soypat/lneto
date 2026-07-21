@@ -2,6 +2,7 @@ package tcp
 
 import (
 	"io"
+	"math"
 	"net"
 
 	"log/slog"
@@ -42,6 +43,9 @@ type Handler struct {
 	// sackPermit enables offering/accepting Selective Acknowledgment (RFC 2018)
 	// during the handshake. Off by default. See [Handler.EnableSACK].
 	sackPermit bool
+	// wsPermit enables offering/accepting the RFC 7323 Window Scale option during
+	// the handshake. Off by default. See [Handler.EnableWindowScaling].
+	wsPermit bool
 	// sackRTO marks that a retransmission timeout opened a fresh SACK recovery
 	// round; cleared once every outstanding hole has been retransmitted.
 	sackRTO bool
@@ -110,6 +114,29 @@ func (h *Handler) EnableSACK(enable bool) error {
 	h.sackPermit = enable
 	return nil
 }
+
+// EnableWindowScaling enables the RFC 7323 Window Scale option. When enabled it
+// is offered on the SYN with a scale derived from the receive buffer size; if
+// the peer also supports it, both the advertised receive window and the peer's
+// advertised send window may exceed 65535 bytes, which is required to keep a
+// high bandwidth-delay path full. Disabled by default; must be set before the
+// connection is opened. Returns [lneto.ErrBadState] if the connection is open.
+func (h *Handler) EnableWindowScaling(enable bool) error {
+	if !h.scb.State().IsClosed() {
+		return lneto.ErrBadState
+	}
+	h.wsPermit = enable
+	return nil
+}
+
+// WindowScalingEnabled reports whether the RFC 7323 Window Scale option was
+// negotiated for the current connection.
+func (h *Handler) WindowScalingEnabled() bool { return h.scb.wsEnabled }
+
+// SendWindow returns the peer's advertised send window in octets, scaled up by
+// the negotiated RFC 7323 window scale (so it may exceed 65535). See
+// [ControlBlock.SendWindow].
+func (h *Handler) SendWindow() Size { return h.scb.SendWindow() }
 
 // nanosPerMilli converts the monotonic nanosecond time source to the
 // millisecond-resolution TCP timestamp clock (RFC 7323 §4.1).
@@ -265,6 +292,7 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 		reasm:      h.reasm,
 		tsPermit:   h.tsPermit,
 		sackPermit: h.sackPermit,
+		wsPermit:   h.wsPermit,
 		congestWnd: invalidCongestWnd,
 		closing:    false,
 		shutdownRx: false,
@@ -482,12 +510,17 @@ func (h *Handler) appendSegmentOptions(dst []byte, seg Segment, mss uint16) int 
 		m, _ := h.optcodec.PutOption16(dst[n:], OptMaxSegmentSize, mss)
 		n += m
 	}
-	// TODO(RFC 7323 Window Scale): offer the Window Scale option (OptWindowScale)
-	// on the SYN and, once negotiated, scale the advertised receive window here
-	// and the peer's advertised window on receive. Without it both windows are
-	// capped at 65535 bytes, which throttles throughput on high bandwidth-delay
-	// paths and limits the congestion controllers. Implemented in a later part of
-	// the patch train.
+	// Window Scale (RFC 7323 §2): offer on a bare SYN when locally permitted,
+	// echo on the SYN-ACK only once negotiated. The option is only meaningful on
+	// SYN segments and carries the scale we want applied to our receive window.
+	wsOffer := h.scb.wsEnabled
+	if seg.Flags == FlagSYN {
+		wsOffer = h.wsPermit
+	}
+	if isSyn && wsOffer {
+		m, _ := h.optcodec.PutOption(dst[n:], OptWindowScale, h.scb.rcvWndShift)
+		n += m
+	}
 	// SACK-permitted (RFC 2018 §2): offer on a bare SYN when locally permitted;
 	// echo on the SYN-ACK only once negotiated.
 	sackPerm := h.scb.sackEnabled
@@ -550,6 +583,19 @@ func (h *Handler) timestampFromOptions(opts []byte) (tsval, tsecr uint32, presen
 	return tsval, tsecr, present
 }
 
+// windowScaleFromOptions extracts the RFC 7323 Window Scale option shift from
+// opts. The shift is clamped to the RFC 7323 §2.3 maximum of 14.
+func (h *Handler) windowScaleFromOptions(opts []byte) (shift uint8, present bool) {
+	h.optcodec.ForEachOption(opts, func(kind OptionKind, data []byte) error {
+		if kind == OptWindowScale && len(data) == 1 {
+			shift = min(data[0], maxWindowShift)
+			present = true
+		}
+		return nil
+	})
+	return shift, present
+}
+
 // processOptions negotiates and applies the negotiated TCP options for an
 // accepted incoming segment: SACK-permitted (RFC 2018) and Timestamps
 // (RFC 7323). For Timestamps it refreshes the echoed TS.Recent value for
@@ -566,6 +612,12 @@ func (h *Handler) processOptions(opts []byte, seg Segment, prevRcvNxt, prevUNA V
 		}
 		if h.sackPermit && h.optionPresent(opts, OptSACKPermitted) {
 			h.scb.sackEnabled = true
+		}
+		// Window Scale (RFC 7323 §2.2): enable only if we offered it and the peer
+		// did too; record the peer's shift for scaling its future windows.
+		if shift, ok := h.windowScaleFromOptions(opts); ok && h.wsPermit {
+			h.scb.wsEnabled = true
+			h.scb.sndWndShift = shift
 		}
 		return
 	}
@@ -815,6 +867,9 @@ func (h *Handler) Send(b []byte) (int, error) {
 	h.requeueControl = false
 	tfrm.SetSourcePort(h.localPort)
 	tfrm.SetDestinationPort(h.remotePort)
+	// Scale the advertised window onto the 16-bit wire field (RFC 7323 §2.3).
+	// The unscaled value was already recorded internally by scb.Send above.
+	segment.WND = h.scaleAdvertisedWindow(segment)
 	tfrm.SetSegment(segment, offset)
 	tfrm.SetUrgentPtr(0)
 	datalen := int(offset)*4 + int(segment.DATALEN)
@@ -931,6 +986,22 @@ func (h *Handler) recvWindow() Size {
 		return free - ooo
 	}
 	return 0
+}
+
+// scaleAdvertisedWindow converts a true receive window into the value written to
+// the 16-bit window field. When Window Scaling (RFC 7323) is negotiated the
+// window on non-SYN segments is right-shifted by the scale we advertised; SYN
+// segments always carry an unscaled window (§2.3). The result is clamped to
+// 65535 so it never overflows the header field.
+func (h *Handler) scaleAdvertisedWindow(seg Segment) Size {
+	w := seg.WND
+	if h.scb.wsEnabled && !seg.Flags.HasAny(FlagSYN) {
+		w >>= h.scb.rcvWndShift
+	}
+	if w > math.MaxUint16 {
+		w = math.MaxUint16
+	}
+	return w
 }
 
 // AwaitingSynResponse returns true if the Handler is an active client opened with [Handler.OpenActive] and has already sent out the first SYN packet to the remote client.
