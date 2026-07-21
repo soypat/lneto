@@ -411,6 +411,12 @@ func (h *Handler) appendSegmentOptions(dst []byte, seg Segment, mss uint16) int 
 		m, _ := h.optcodec.PutOption16(dst[n:], OptMaxSegmentSize, mss)
 		n += m
 	}
+	// TODO(RFC 7323 Window Scale): offer the Window Scale option (OptWindowScale)
+	// on the SYN and, once negotiated, scale the advertised receive window here
+	// and the peer's advertised window on receive. Without it both windows are
+	// capped at 65535 bytes, which throttles throughput on high bandwidth-delay
+	// paths and limits the congestion controllers. Implemented in a later part of
+	// the patch train.
 	// Timestamps (RFC 7323): offer on a bare SYN when locally permitted;
 	// otherwise include only once negotiated (SYN-ACK and established segments).
 	// The option carries a clock reading, so it is only ever emitted when a
