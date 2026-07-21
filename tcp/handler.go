@@ -530,24 +530,27 @@ func (h *Handler) processOptions(opts []byte, seg Segment, prevRcvNxt, prevUNA V
 		}
 		return
 	}
-	if !h.scb.tsEnabled || !present {
-		return
-	}
-	if seg.SEQ == prevRcvNxt {
-		h.scb.tsRecent = tsval // update echo only for in-order segments (§4.3).
-	}
-	if tsecr != 0 && h.scb.snd.UNA != prevUNA {
-		// This ACK advanced our send sequence; the echoed TSecr yields an RTT
-		// measurement. Feed it to loss recovery if it accepts out-of-band RTT
-		// samples (RFC 7323 §4.2). The tcp package holds no estimator itself.
-		if rttMS := int32(h.tsValue() - tsecr); rttMS >= 0 {
-			if o, ok := h.loss.(RTTObserver); ok {
-				o.ObserveRTT(int64(rttMS) * nanosPerMilli)
+	// RFC 7323 Timestamps: refresh the echoed TS.Recent and measure RTT. Gated
+	// on the option being negotiated and present on this segment.
+	if h.scb.tsEnabled && present {
+		if seg.SEQ == prevRcvNxt {
+			h.scb.tsRecent = tsval // update echo only for in-order segments (§4.3).
+		}
+		if tsecr != 0 && h.scb.snd.UNA != prevUNA {
+			// This ACK advanced our send sequence; the echoed TSecr yields an RTT
+			// measurement. Feed it to loss recovery if it accepts out-of-band RTT
+			// samples (RFC 7323 §4.2). The tcp package holds no estimator itself.
+			if rttMS := int32(h.tsValue() - tsecr); rttMS >= 0 {
+				if o, ok := h.loss.(RTTObserver); ok {
+					o.ObserveRTT(int64(rttMS) * nanosPerMilli)
+				}
 			}
 		}
 	}
+	// RFC 2018 SACK: record selectively acknowledged ranges so recovery skips
+	// them. Independent of Timestamps — gated only on SACK being negotiated, so
+	// a SACK-only connection (no Timestamps) still marks its scoreboard.
 	if h.scb.sackEnabled && seg.Flags.HasAny(FlagACK) {
-		// Record selectively acknowledged ranges so recovery skips them.
 		h.optcodec.ForEachOption(opts, func(kind OptionKind, data []byte) error {
 			if kind == OptSACK {
 				for off := 0; off+8 <= len(data); off += 8 {
