@@ -21,25 +21,23 @@ const commentMarker = "<!-- lneto-bench -->"
 
 func main() {
 	var (
+		basePath    = flag.String("base", "", "path to baseline `go test -bench` output")
 		currentPath = flag.String("current", "", "path to `go test -bench` output (default stdin)")
 		outPath     = flag.String("out", "", "path to write Markdown report (default stdout)")
 		title       = flag.String("title", "Benchmark results", "report heading")
 	)
 	flag.Parse()
 
-	in := io.Reader(os.Stdin)
-	if *currentPath != "" {
-		f, err := os.Open(*currentPath)
+	current, err := parseInput(*currentPath, os.Stdin)
+	if err != nil {
+		fatal(err)
+	}
+	var base []result
+	if *basePath != "" {
+		base, err = parseInput(*basePath, nil)
 		if err != nil {
 			fatal(err)
 		}
-		defer f.Close()
-		in = f
-	}
-
-	results, err := parse(in)
-	if err != nil {
-		fatal(err)
 	}
 
 	out := io.Writer(os.Stdout)
@@ -52,9 +50,26 @@ func main() {
 		out = f
 	}
 
-	if err := render(out, *title, results); err != nil {
+	if *basePath != "" {
+		err = renderComparison(out, *title, base, current)
+	} else {
+		err = render(out, *title, current)
+	}
+	if err != nil {
 		fatal(err)
 	}
+}
+
+func parseInput(path string, fallback io.Reader) ([]result, error) {
+	if path == "" {
+		return parse(fallback)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return parse(f)
 }
 
 func fatal(err error) {
@@ -183,6 +198,96 @@ func render(w io.Writer, title string, results []result) error {
 		)
 	}
 	return bw.Flush()
+}
+
+func renderComparison(w io.Writer, title string, base, current []result) error {
+	bw := bufio.NewWriter(w)
+	fmt.Fprintf(bw, "%s\n\n", commentMarker)
+	fmt.Fprintf(bw, "### %s\n\n", title)
+
+	type pair struct{ base, current *result }
+	byKey := make(map[string]pair, len(base)+len(current))
+	for i := range base {
+		key := base[i].pkg + "\x00" + base[i].name
+		p := byKey[key]
+		p.base = &base[i]
+		byKey[key] = p
+	}
+	for i := range current {
+		key := current[i].pkg + "\x00" + current[i].name
+		p := byKey[key]
+		p.current = &current[i]
+		byKey[key] = p
+	}
+	if len(byKey) == 0 {
+		fmt.Fprintln(bw, "_No benchmarks found._")
+		return bw.Flush()
+	}
+
+	keys := make([]string, 0, len(byKey))
+	for key := range byKey {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	fmt.Fprintln(bw, "_Diff is `(PR - Main) / Main`; lower values are better. Timing results depend on the host CPU and are only a rough guideline._")
+	fmt.Fprintln(bw)
+	fmt.Fprintln(bw, "| Package | Benchmark | Metric | Main | PR | Diff |")
+	fmt.Fprintln(bw, "|---|---|---|---:|---:|---:|")
+	for _, key := range keys {
+		p := byKey[key]
+		identity := p.base
+		if identity == nil {
+			identity = p.current
+		}
+		metrics := []struct {
+			name   string
+			values func(*result) []float64
+			format func(float64, bool) string
+		}{
+			{"ns/op", func(r *result) []float64 { return r.nsPerOp }, formatNs},
+			{"B/op", func(r *result) []float64 { return r.bytesPerOp }, formatCount},
+			{"allocs/op", func(r *result) []float64 { return r.allocsPerOp }, formatCount},
+		}
+		for _, metric := range metrics {
+			baseSamples := metricSamples(p.base, metric.values)
+			currentSamples := metricSamples(p.current, metric.values)
+			fmt.Fprintf(bw, "| %s | %s | %s | %s | %s | %s |\n",
+				shortPkg(identity.pkg), identity.name, metric.name,
+				metric.format(median(baseSamples)), metric.format(median(currentSamples)),
+				formatDiff(baseSamples, currentSamples),
+			)
+		}
+	}
+	return bw.Flush()
+}
+
+func metricSamples(r *result, values func(*result) []float64) []float64 {
+	if r == nil {
+		return nil
+	}
+	return values(r)
+}
+
+func formatDiff(base, current []float64) string {
+	baseValue, baseOK := median(base)
+	currentValue, currentOK := median(current)
+	if !baseOK && !currentOK {
+		return "-"
+	}
+	if !baseOK {
+		return "new"
+	}
+	if !currentOK {
+		return "removed"
+	}
+	if baseValue == 0 {
+		if currentValue == 0 {
+			return "0.00%"
+		}
+		return "n/a"
+	}
+	return fmt.Sprintf("%+.2f%%", (currentValue-baseValue)/baseValue*100)
 }
 
 // shortPkg trims the well-known module prefix for readability.
