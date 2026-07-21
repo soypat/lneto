@@ -1,3 +1,10 @@
+# Ignore files with no extensions trick:
+# First ignore all.
+*
+# Unignore all with extensions.
+!*.*
+!LICENSE
+
 # Go workspaces.
 go.work
 go.work.sum
