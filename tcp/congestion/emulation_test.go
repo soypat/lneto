@@ -10,6 +10,7 @@ import (
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/tcp"
 	"github.com/soypat/lneto/tcp/congestion"
+	"github.com/soypat/lneto/tcp/rto"
 )
 
 // Notes(MDr164):
@@ -26,9 +27,10 @@ import (
 //
 // Congestion is emulated both through rate/delay limiting and through packet
 // loss (emuLink.lossAt). Loss recovery is driven by the RFC 6298 retransmission
-// timer: the pump folds each Handler's RetransmitDeadline into its event
-// schedule and calls CheckRetransmitTimeout, so an RTO fires even when the links
-// are idle after a loss. With the timer in place a single loss is recovered
+// timer (rto.Control, a tcp.LossRecovery): the pump folds each Handler's
+// NextDeadline into its event schedule so the clock can jump to an RTO even when
+// the links are idle after a loss; the timeout then fires inside the transmit
+// hook on the next Send. With the timer in place a single loss is recovered
 // go-back-N and the transfer completes.
 //
 // Remaining limitation: lneto's ControlBlock still accepts only in-order
@@ -134,13 +136,15 @@ type emuParams struct {
 // ACKs, and both share the propagation delay. The fake clock advances from
 // event to event.
 type emuNet struct {
-	t      *testing.T
-	clock  time.Time
-	client *tcp.Handler
-	server *tcp.Handler
-	fwd    *emuLink // client → server (the bottleneck).
-	rev    *emuLink // server → client (ACKs, uncongested).
-	buf    []byte   // scratch frame buffer shared by Send/Recv/Read calls.
+	t         *testing.T
+	clock     time.Time
+	client    *tcp.Handler
+	server    *tcp.Handler
+	clientRTO *rto.Control // client's RFC 6298 estimator, for RTT introspection.
+	serverRTO *rto.Control // server's RFC 6298 estimator.
+	fwd       *emuLink     // client → server (the bottleneck).
+	rev       *emuLink     // server → client (ACKs, uncongested).
+	buf       []byte       // scratch frame buffer shared by Send/Recv/Read calls.
 
 	// probe, if set, is sampled once per event step to record controller state
 	// (e.g. the congestion window) over the life of the transfer.
@@ -166,10 +170,13 @@ func newEmuNet(t *testing.T, p emuParams) *emuNet {
 		rev:    &emuLink{rate: 0, delay: p.delay}, // reverse path: infinite bandwidth.
 		buf:    make([]byte, ethernet.MaxMTU),
 	}
-	// Share the simulated clock with both handlers' RFC 6298 timers so RTO is
-	// deterministic and aligned with the congestion controllers' clock.
-	en.client.SetClock(en.nowNanos)
-	en.server.SetClock(en.nowNanos)
+	// Install an RFC 6298 RTO estimator (rto.Control implements tcp.LossRecovery)
+	// on each handler, driven by the shared simulated clock so RTO is
+	// deterministic and aligned with the congestion controllers' clock. The
+	// handlers call Reset on the estimators when they open (see openPair).
+	en.clientRTO, en.serverRTO = new(rto.Control), new(rto.Control)
+	en.client.SetLossRecovery(en.clientRTO, en.nowNanos)
+	en.server.SetLossRecovery(en.serverRTO, en.nowNanos)
 	// Out-of-order reassembly is always enabled once buffers are set (up to
 	// maxReasmSegments), so p.reasmSegs needs no separate slab configuration.
 	if p.timestamps {
@@ -241,10 +248,10 @@ func (en *emuNet) transfer(payload []byte) (received []byte) {
 		// timer firing. Folding the RFC 6298 timers in lets the clock jump to an
 		// RTO when the links are idle (e.g. after a loss with no ACK feedback).
 		next, ok := earliestEvent(en.fwd, en.rev)
-		cd, crun := en.client.RetransmitDeadline()
-		next, ok = earlierDeadline(next, ok, time.Unix(0, cd), crun)
-		sd, srun := en.server.RetransmitDeadline()
-		next, ok = earlierDeadline(next, ok, time.Unix(0, sd), srun)
+		cd := en.client.NextDeadline()
+		next, ok = earlierDeadline(next, ok, time.Unix(0, cd), cd != 0)
+		sd := en.server.NextDeadline()
+		next, ok = earlierDeadline(next, ok, time.Unix(0, sd), sd != 0)
 		if !ok {
 			break // nothing in flight and no timer pending: transfer complete.
 		}
@@ -255,10 +262,10 @@ func (en *emuNet) transfer(payload []byte) (received []byte) {
 			en.t.Fatal("transfer exceeded simulated-time deadline")
 		}
 
-		// Fire any expired retransmission timers; the rewound data is sent on the
-		// next iteration's drain.
-		en.client.CheckRetransmitTimeout()
-		en.server.CheckRetransmitTimeout()
+		// An expired RTO fires inside the loss-recovery hook on the next Send
+		// (see tcp.Handler transmit path), so the rewound/selective retransmit is
+		// emitted by the next iteration's drain once the clock has advanced to
+		// (or past) the deadline computed above.
 
 		for _, pkt := range en.fwd.due(en.clock) {
 			_ = en.server.Recv(pkt) // rejects under loss/reorder are normal (yield dup ACKs).
@@ -483,7 +490,7 @@ func TestEmuTimestampsNegotiateAndMeasureRTT(t *testing.T) {
 		t.Fatalf("timestamps not negotiated: client=%v server=%v",
 			en.client.TimestampsEnabled(), en.server.TimestampsEnabled())
 	}
-	srtt := en.client.SmoothedRTT()
+	srtt := en.clientRTO.SmoothedRTT()
 	if srtt <= 0 {
 		t.Fatal("no RTT measured from timestamps")
 	}
