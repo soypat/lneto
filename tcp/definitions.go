@@ -28,6 +28,14 @@ import (
 // an implementation-specific method (e.g. congestion.CUBIC.Configure) before
 // the controller is installed on a [Handler]. This keeps the interface minimal
 // and lets a configured controller be reused across connections.
+//
+// TODO(loss-recovery unification): discussion #157 concluded that congestion
+// control and RTO are the same concern from the tcp package's point of view.
+// Fold CongestionControl into [LossRecovery] once the contract has settled: a
+// controller's congestion window would drive TxDirective.HoldNew/RewindNXT
+// instead of this parallel Control(CongestionEvent) Size call. Kept separate for
+// now (soypat: "we can modify LossRecovery in the future when working with
+// CongestionControl … go the learning way").
 type CongestionControl interface {
 	// Control feeds a segment crossing the [Handler] boundary into the
 	// controller so it can update its congestion state, and returns the
@@ -233,6 +241,13 @@ const (
 	FlagCWR                   // FlagCWR - Congestion Window Reduced.
 	FlagNS                    // FlagNS  - Nonce Sum flag (see RFC 3540).
 )
+
+// TODO(RFC 3168 ECN): Explicit Congestion Notification is not implemented. The
+// ECE/CWR flags above are defined but never negotiated (ECN-setup SYN/SYN-ACK)
+// nor acted upon: a CE-marked segment should make the receiver echo ECE and the
+// sender reduce its congestion window (via CongestionControl) and set CWR,
+// rather than treating congestion only as loss. Modern congestion control
+// increasingly assumes ECN support.
 
 const flagMask = 0x01ff
 

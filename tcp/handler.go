@@ -81,6 +81,12 @@ func (h *Handler) SetLossRecovery(loss LossRecovery, nanotime func() int64) {
 // NextDeadline returns the monotonic-nanosecond instant at which the connection
 // must next be serviced by a transmit attempt (e.g. an RTO expiry), or 0 when
 // there is no deadline or no loss recovery is configured. See [LossRecovery].
+//
+// TODO(connection timers): only the RTO feeds this deadline today. The 2MSL
+// TIME-WAIT timer and the keepalive interval are also time-driven but the tcp
+// package holds no clock, so they are currently the caller's responsibility.
+// They should be folded in here (earliest of RTO / 2MSL / keepalive / persist)
+// once the Conn.SetDeadline family is reconciled with ConnConfig.Nanotime.
 func (h *Handler) NextDeadline() int64 {
 	if h.loss == nil {
 		return 0
@@ -194,6 +200,12 @@ func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
 
 // sackRetransmitPending reports whether SACK recovery has an outstanding hole to
 // retransmit this round.
+//
+// TODO(RFC 6675 SACK loss recovery): recovery here is simplified — it resends
+// scoreboard holes but does not implement the full RFC 6675 pipe estimator
+// (SetPipe/NextSeg), the rescue retransmission, or SACK-based reneging
+// handling. A complete implementation would track pipe against the congestion
+// window to decide precisely when and what to (re)send during recovery.
 func (h *Handler) sackRetransmitPending() bool {
 	return h.scb.SACKEnabled() && (h.scb.InFastRecovery() || h.sackRTO) && h.bufTx.HasSACKRetransmit()
 }
@@ -621,6 +633,11 @@ func (h *Handler) processOptions(opts []byte, seg Segment, prevRcvNxt, prevUNA V
 		}
 		return
 	}
+	// TODO(RFC 7323 §5 PAWS): Protection Against Wrapped Sequences is not
+	// implemented. With Timestamps negotiated we should reject an otherwise
+	// in-window segment whose TSval is older than TS.Recent (guarding against a
+	// wrapped sequence number on long-lived, high-bandwidth connections) before
+	// accepting it. Today TSval is only used for RTT measurement.
 	// RFC 7323 Timestamps: refresh the echoed TS.Recent and measure RTT. Gated
 	// on the option being negotiated and present on this segment.
 	if h.scb.tsEnabled && present {
@@ -744,6 +761,12 @@ func (h *Handler) Send(b []byte) (int, error) {
 		// Early nop short circuit.
 		return 0, nil
 	}
+	// TODO(RFC 896 Nagle / RFC 1122 delayed ACK): the Handler sends whatever is
+	// available immediately and ACKs every segment. Nagle would coalesce small
+	// writes until the outstanding data is acked (improving small-packet
+	// efficiency), and a delayed-ACK timer would piggyback/coalesce ACKs (both
+	// reducing overhead and smoothing the ACK clock the congestion controllers
+	// rely on). Both are deliberately omitted for now.
 	tfrm, err := NewFrame(b)
 	if err != nil {
 		return 0, err
