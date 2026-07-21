@@ -3,6 +3,7 @@
 *
 # Unignore all with extensions.
 !*.*
+!LICENSE
 
 # Go workspaces.
 go.work
