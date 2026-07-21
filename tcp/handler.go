@@ -500,8 +500,8 @@ func (h *Handler) appendSegmentOptions(dst []byte, seg Segment, mss uint16) int 
 	}
 	// Timestamps (RFC 7323): offer on a bare SYN when locally permitted;
 	// otherwise include only once negotiated (SYN-ACK and established segments).
-	// The option carries a clock reading, so it is only ever emitted when a
-	// clock has been injected (time integration is opt-in; see SetClock).
+	// The option carries a clock reading, so it is only ever emitted when a time
+	// source has been configured (time integration is opt-in; see clockReady).
 	includeTS := h.scb.tsEnabled
 	if seg.Flags == FlagSYN {
 		includeTS = h.tsPermit && h.clockReady()
