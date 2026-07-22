@@ -83,6 +83,9 @@ type ControlBlock struct {
 	// tsEnabled reports whether the TCP Timestamps option (RFC 7323) was
 	// negotiated on both ends during the handshake.
 	tsEnabled bool
+	// sackEnabled reports whether Selective Acknowledgment (RFC 2018) was
+	// negotiated on both ends during the handshake.
+	sackEnabled bool
 	// tsRecent is the most recent timestamp received from the peer (TS.Recent,
 	// RFC 7323 §4.3), echoed back as TSecr so the peer can measure RTT.
 	tsRecent uint32
@@ -94,6 +97,10 @@ func (tcb *ControlBlock) State() State { return tcb._state }
 // TimestampsEnabled reports whether the RFC 7323 Timestamps option was
 // negotiated for this connection.
 func (tcb *ControlBlock) TimestampsEnabled() bool { return tcb.tsEnabled }
+
+// SACKEnabled reports whether Selective Acknowledgment (RFC 2018) was
+// negotiated for this connection.
+func (tcb *ControlBlock) SACKEnabled() bool { return tcb.sackEnabled }
 
 // RecvNext returns the next sequence number expected to be received from remote.
 // This implementation will reject segments that are not the next expected sequence.

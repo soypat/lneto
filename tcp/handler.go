@@ -43,6 +43,9 @@ type Handler struct {
 	// tsPermit enables offering/accepting the RFC 7323 Timestamps option during
 	// the handshake. Off by default. See [Handler.EnableTimestamps].
 	tsPermit bool
+	// sackPermit enables offering/accepting Selective Acknowledgment (RFC 2018)
+	// during the handshake. Off by default. See [Handler.EnableSACK].
+	sackPermit bool
 
 	closing    bool
 	shutdownRx bool
@@ -109,6 +112,20 @@ func (h *Handler) EnableTimestamps(enable bool) error {
 	return nil
 }
 
+// EnableSACK enables Selective Acknowledgment (RFC 2018). When enabled it is
+// offered on the SYN and, if the peer also supports it, the receiver advertises
+// the byte ranges it holds out of order (built from the reassembly buffer) so
+// the sender can retransmit only the gaps. Disabled by default; must be set
+// before the connection is opened. Returns [lneto.ErrBadState] if the connection
+// is open.
+func (h *Handler) EnableSACK(enable bool) error {
+	if !h.scb.State().IsClosed() {
+		return lneto.ErrBadState
+	}
+	h.sackPermit = enable
+	return nil
+}
+
 // nanosPerMilli converts the monotonic nanosecond time source to the
 // millisecond-resolution TCP timestamp clock (RFC 7323 §4.1).
 const nanosPerMilli = 1_000_000
@@ -132,6 +149,10 @@ func (h *Handler) tsValue() uint32 {
 // TimestampsEnabled reports whether the RFC 7323 Timestamps option was
 // negotiated for the current connection.
 func (h *Handler) TimestampsEnabled() bool { return h.scb.tsEnabled }
+
+// SACKEnabled reports whether Selective Acknowledgment (RFC 2018) was
+// negotiated for the current connection.
+func (h *Handler) SACKEnabled() bool { return h.scb.sackEnabled }
 
 // NextDeadline returns the monotonic-nanosecond instant at which the connection
 // must next be serviced by a transmit attempt (e.g. an RTO expiry), or 0 when
@@ -206,11 +227,12 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 		closing:    false,
 		shutdownRx: false,
 		// Persist configuration across reopen:
-		validator: h.validator,
-		loss:      h.loss,
-		nanotime:  h.nanotime,
-		tsPermit:  h.tsPermit,
-		logger:    h.logger,
+		validator:  h.validator,
+		loss:       h.loss,
+		nanotime:   h.nanotime,
+		tsPermit:   h.tsPermit,
+		sackPermit: h.sackPermit,
+		logger:     h.logger,
 		// persist memory across repoen:
 		bufTx: h.bufTx,
 		bufRx: h.bufRx,
@@ -325,7 +347,7 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 			h.bufTx.RecvACK(segIncoming.ACK)
 		}
 	}
-	h.processTimestamps(tfrm.Options(), segIncoming, prevRcvNxt)
+	h.processOptions(tfrm.Options(), segIncoming, prevRcvNxt)
 	if segIncoming.Flags.HasAny(FlagSYN) {
 		// Parse remote MSS from TCP options.
 		h.optcodec.ForEachOption(tfrm.Options(), func(kind OptionKind, data []byte) error {
@@ -404,13 +426,33 @@ func (h *Handler) deliverReassembled() {
 }
 
 // reservedOptionsLen returns the number of option bytes to reserve ahead of the
-// payload on an established-state segment (a multiple of 4). Data segments carry
-// only the Timestamps option when negotiated.
+// payload on an established-state (non-SYN) segment, rounded up to a multiple of
+// 4. It must match what [Handler.appendSegmentOptions] emits for such a segment
+// so the payload is placed after the options: Timestamps when negotiated plus
+// SACK blocks while out-of-order data is held.
 func (h *Handler) reservedOptionsLen() int {
+	n := 0
 	if h.scb.tsEnabled {
-		return 12 // NOP, NOP, Timestamps(10).
+		n += 12 // NOP, NOP, Timestamps(10).
 	}
-	return 0
+	n += h.sackOptionLen()
+	return (n + 3) &^ 3 // pad to a 32-bit boundary.
+}
+
+// sackOptionLen returns the length in bytes of the SACK option this Handler
+// would advertise right now (RFC 2018 §3), or 0 when SACK is not negotiated or
+// no out-of-order data is held. It is the raw option length (kind+length+blocks)
+// before any NOP padding.
+func (h *Handler) sackOptionLen() int {
+	if !h.scb.sackEnabled || h.reasm.buffered() == 0 {
+		return 0
+	}
+	var blocks [3]sackBlock
+	nb := h.reasm.sackBlocks(blocks[:])
+	if nb == 0 {
+		return 0
+	}
+	return 2 + nb*8 // kind + length + nb 8-byte blocks.
 }
 
 // appendSegmentOptions writes the TCP options for an outgoing segment into dst
@@ -419,8 +461,19 @@ func (h *Handler) reservedOptionsLen() int {
 // segments.
 func (h *Handler) appendSegmentOptions(dst []byte, seg Segment, mss uint16) int {
 	n := 0
-	if seg.Flags.HasAny(FlagSYN) {
+	isSyn := seg.Flags.HasAny(FlagSYN)
+	if isSyn {
 		m, _ := h.optcodec.PutOption16(dst[n:], OptMaxSegmentSize, mss)
+		n += m
+	}
+	// SACK-permitted (RFC 2018 §2): offer on a bare SYN when locally permitted;
+	// echo on the SYN-ACK only once negotiated.
+	sackPerm := h.scb.sackEnabled
+	if seg.Flags == FlagSYN {
+		sackPerm = h.sackPermit
+	}
+	if isSyn && sackPerm {
+		m, _ := h.optcodec.PutOption(dst[n:], OptSACKPermitted)
 		n += m
 	}
 	// Timestamps (RFC 7323): offer on a bare SYN when locally permitted;
@@ -439,6 +492,20 @@ func (h *Handler) appendSegmentOptions(dst []byte, seg Segment, mss uint16) int 
 		binary.BigEndian.PutUint32(ts[0:], h.tsValue())
 		binary.BigEndian.PutUint32(ts[4:], h.scb.tsRecent)
 		m, _ := h.optcodec.PutOption(dst[n:], OptTimestamps, ts[:]...)
+		n += m
+	}
+	// SACK blocks (RFC 2018 §3): advertised whenever we hold out-of-order data
+	// (piggybacked on a pure ACK or an outgoing data segment) so the sender can
+	// retransmit only the gaps. Never on SYN, FIN or RST segments.
+	if !isSyn && !seg.Flags.HasAny(FlagFIN|FlagRST) && h.sackOptionLen() > 0 {
+		var blocks [3]sackBlock
+		nb := h.reasm.sackBlocks(blocks[:])
+		var data [3 * 8]byte
+		for i := range nb {
+			binary.BigEndian.PutUint32(data[i*8:], uint32(blocks[i].start))
+			binary.BigEndian.PutUint32(data[i*8+4:], uint32(blocks[i].end))
+		}
+		m, _ := h.optcodec.PutOption(dst[n:], OptSACK, data[:nb*8]...)
 		n += m
 	}
 	for n%4 != 0 { // pad to a 32-bit boundary.
@@ -461,27 +528,40 @@ func (h *Handler) timestampFromOptions(opts []byte) (tsval, tsecr uint32, presen
 	return tsval, tsecr, present
 }
 
-// processTimestamps negotiates and applies the RFC 7323 Timestamps option for an
-// accepted incoming segment: it negotiates support on the SYN and refreshes the
-// echoed TS.Recent value for in-order segments (§4.3) so the peer can measure
-// RTT from the echo.
-func (h *Handler) processTimestamps(opts []byte, seg Segment, prevRcvNxt Value) {
+// processOptions negotiates and applies the negotiated TCP options for an
+// accepted incoming segment: SACK-permitted (RFC 2018) and Timestamps
+// (RFC 7323). For Timestamps it refreshes the echoed TS.Recent value for
+// in-order segments (§4.3) so the peer can measure RTT from the echo.
+func (h *Handler) processOptions(opts []byte, seg Segment, prevRcvNxt Value) {
 	tsval, _, present := h.timestampFromOptions(opts)
 	if seg.Flags.HasAny(FlagSYN) {
-		// Only negotiate when a time source is available: the option is
-		// meaningless without one and tsValue would have nothing to read.
+		// Only negotiate Timestamps when a time source is available: the option
+		// is meaningless without one and tsValue would have nothing to read.
 		if present && h.tsPermit && h.clockReady() {
 			h.scb.tsEnabled = true
 			h.scb.tsRecent = tsval
 		}
+		if h.sackPermit && h.optionPresent(opts, OptSACKPermitted) {
+			h.scb.sackEnabled = true
+		}
 		return
 	}
-	if !h.scb.tsEnabled || !present {
-		return
+	// RFC 7323 Timestamps: refresh the echoed TS.Recent, gated on the option
+	// being negotiated and present on this in-order segment.
+	if h.scb.tsEnabled && present && seg.SEQ == prevRcvNxt {
+		h.scb.tsRecent = tsval
 	}
-	if seg.SEQ == prevRcvNxt {
-		h.scb.tsRecent = tsval // update echo only for in-order segments (§4.3).
-	}
+}
+
+// optionPresent reports whether an option of the given kind appears in opts.
+func (h *Handler) optionPresent(opts []byte, want OptionKind) (found bool) {
+	h.optcodec.ForEachOption(opts, func(kind OptionKind, _ []byte) error {
+		if kind == want {
+			found = true
+		}
+		return nil
+	})
+	return found
 }
 
 // ShutdownRead activates local discard mode: incoming payload bytes are dropped

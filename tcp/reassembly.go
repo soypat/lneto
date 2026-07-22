@@ -133,3 +133,34 @@ func (r *reassembly) reassemble(rx *internal.Ring, nxt Value) Size {
 	r.held = r.held[:0]
 	return delivered
 }
+
+// sackBlock is a contiguous range [start, end) of received out-of-order data,
+// as advertised in a SACK option (RFC 2018 §3).
+type sackBlock struct {
+	start, end Value
+}
+
+// sackBlocks fills dst with the coalesced contiguous ranges of currently held
+// out-of-order data and returns the number written (capped at len(dst)).
+// Because held is kept ordered by ascending sequence number, adjacent ranges
+// are merged in a single pass with no allocation.
+func (r *reassembly) sackBlocks(dst []sackBlock) int {
+	n := len(r.held)
+	if n == 0 || len(dst) == 0 {
+		return 0
+	}
+	count := 0
+	for i := 0; i < n && count < len(dst); {
+		start := r.held[i].seq
+		end := Add(r.held[i].seq, Size(r.held[i].n))
+		j := i + 1
+		for j < n && r.held[j].seq == end { // merge adjacent ranges.
+			end = Add(r.held[j].seq, Size(r.held[j].n))
+			j++
+		}
+		dst[count] = sackBlock{start: start, end: end}
+		count++
+		i = j
+	}
+	return count
+}
