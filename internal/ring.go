@@ -32,6 +32,14 @@ type Ring struct {
 	// End of readable data which indexes into Buf, not including byte at End index.
 	// If End==0 then the buffer is empty. If End==Off and End!=0 the buffer is full.
 	End int
+	// peeked is the number of bytes staged ahead of the write position by
+	// [Ring.PeekWrite] that have not yet been revealed by [Ring.Commit] (or
+	// overwritten by an in-order [Ring.Write]). It measures the distance from
+	// the current write position to the furthest staged byte. While it is
+	// positive a full read-drain must preserve the write position instead of
+	// resetting it, otherwise the staged bytes' physical offsets are invalidated
+	// (see [Ring.onReadEnd]). Used only by out-of-order TCP reassembly.
+	peeked int
 }
 
 // WriteLimited performs a write that does not write over the ring buffer's
@@ -72,6 +80,7 @@ func (r *Ring) Write(b []byte) (int, error) {
 		if r.End <= 0 {
 			panic("zero end after write") // invariant: End must be >0 after writing into midFree region
 		}
+		r.consumeStaged(n)
 		return n, nil
 	} else if r.End == 0 {
 		// To ensure Write begins on r.Off.
@@ -90,6 +99,7 @@ func (r *Ring) Write(b []byte) (int, error) {
 	if r.End <= 0 {
 		panic("zero end after write") // invariant: End must be >0 after appending to the tail region
 	}
+	r.consumeStaged(n)
 	return n, nil
 }
 
@@ -122,7 +132,25 @@ func (r *Ring) PeekWrite(b []byte, offset int) bool {
 	if n < len(b) {
 		copy(r.Buf, b[n:])
 	}
+	// Remember the furthest staged byte (as a distance ahead of the write
+	// position) so a full read-drain preserves the write position while this
+	// data waits for its gap to be filled. See [Ring.onReadEnd].
+	if reserve := offset + len(b); reserve > r.peeked {
+		r.peeked = reserve
+	}
 	return true
+}
+
+// consumeStaged reduces the staged watermark as the write position advances by n
+// bytes (via [Ring.Write] or [Ring.Commit]), since the furthest staged byte is
+// now n bytes closer to (or has been revealed at) the write position.
+func (r *Ring) consumeStaged(n int) {
+	if r.peeked == 0 {
+		return
+	}
+	if r.peeked -= n; r.peeked < 0 {
+		r.peeked = 0
+	}
 }
 
 // Commit advances the write pointer by n bytes, making readable any bytes
@@ -142,6 +170,7 @@ func (r *Ring) Commit(n int) error {
 		end -= len(r.Buf)
 	}
 	r.End = end // Never 0 here: end==len(Buf) is kept.
+	r.consumeStaged(n)
 	return nil
 }
 
@@ -218,10 +247,12 @@ func (r *Ring) read(b []byte) (n int, err error) {
 	return n, nil
 }
 
-// Reset flushes all data from ring buffer so that no data can be further read.
+// Reset flushes all data from ring buffer so that no data can be further read,
+// including any bytes staged with [Ring.PeekWrite].
 func (r *Ring) Reset() {
 	r.Off = 0
 	r.End = 0
+	r.peeked = 0
 }
 
 // Size returns the capacity of the ring buffer.
@@ -306,7 +337,17 @@ func (r *Ring) onReadEnd(totalRead int) {
 	}
 	newOff := r.addOff(r.Off, totalRead)
 	if newOff == r.End {
-		r.Reset()
+		if r.peeked > 0 {
+			// Out-of-order data is staged ahead of the write position (see
+			// [Ring.PeekWrite]); a plain Reset would zero Off/End and invalidate
+			// its physical offsets. Preserve the write position (End==0 marks the
+			// readable region empty, Off holds the position) so a later Commit
+			// still reveals the staged bytes where they were written.
+			r.Off = newOff
+			r.End = 0
+		} else {
+			r.Reset()
+		}
 	} else if newOff == len(r.Buf) {
 		r.Off = 0 // Optimization case.
 	} else {

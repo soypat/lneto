@@ -661,3 +661,34 @@ func TestRingPeekWriteRejects(t *testing.T) {
 		t.Error("Commit beyond free must error")
 	}
 }
+
+// TestRingPeekWriteSurvivesFullDrain guards a regression where a full read
+// drain reset the ring (zeroing Off/End) while out-of-order data staged with
+// PeekWrite was still waiting for its gap to fill, invalidating the staged
+// bytes' physical offsets. Reading out the gap must preserve the staged data so
+// a later Commit still reveals it (see TCP out-of-order reassembly, exercised by
+// SACK multi-hole recovery).
+func TestRingPeekWriteSurvivesFullDrain(t *testing.T) {
+	var r Ring
+	r.Buf = make([]byte, 16)
+	// Stage 4 bytes 4 bytes ahead of the (empty) write position.
+	if !r.PeekWrite([]byte("WXYZ"), 4) {
+		t.Fatal("PeekWrite rejected")
+	}
+	// Fill the 4-byte gap in order, then read it out — fully draining the
+	// readable region while the staged bytes still wait ahead.
+	if _, err := r.Write([]byte("abcd")); err != nil {
+		t.Fatalf("write gap: %v", err)
+	}
+	got := make([]byte, 4)
+	if n, _ := r.Read(got); n != 4 || string(got[:n]) != "abcd" {
+		t.Fatalf("gap read = %q, want abcd", got[:n])
+	}
+	// The full drain must not have invalidated the staged bytes.
+	if err := r.Commit(4); err != nil {
+		t.Fatalf("commit staged: %v", err)
+	}
+	if n, _ := r.Read(got); n != 4 || string(got[:n]) != "WXYZ" {
+		t.Fatalf("staged read after full drain = %q, want WXYZ", got[:n])
+	}
+}
