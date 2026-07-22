@@ -268,11 +268,28 @@ func (tcb *ControlBlock) HasPending() bool {
 	return tcb.pending[0] != 0 || tcb.pendingChallengeAck() || tcb.HasPendingRetransmit()
 }
 
-// HasPending returns true if the control block is pending a retransmit according to simple optmist
-// retransmit strategy.
+// HasPendingRetransmit returns true if the control block is pending a retransmit
+// according to the simple optimist retransmit strategy. When SACK (RFC 2018) is
+// negotiated this returns false: retransmission is driven selectively by the
+// SACK scoreboard instead of this dup-ACK heuristic.
 func (tcb *ControlBlock) HasPendingRetransmit() bool {
+	if tcb.sackEnabled {
+		return false
+	}
 	// Force retransmit after 3 consecutive acks of UNA.
 	return tcb._state.TxDataOpen() && tcb.dupack >= retransmitAfterDupacks && tcb.nRetransmit <= tcb.dupack-retransmitAfterDupacks
+}
+
+// RetransmitSegment builds an ACK segment that retransmits already-sent data
+// beginning at seq. The caller fills DATALEN from the transmit buffer. Used by
+// SACK recovery to resend a specific hole (RFC 2018).
+func (tcb *ControlBlock) RetransmitSegment(seq Value) Segment {
+	return Segment{
+		SEQ:   seq,
+		ACK:   tcb.rcv.NXT,
+		WND:   tcb.rcv.WND,
+		Flags: FlagACK,
+	}
 }
 
 // RetransmitAll rewinds snd.NXT back to snd.UNA so the next PendingSegment and
@@ -283,6 +300,12 @@ func (tcb *ControlBlock) RetransmitAll() {
 	tcb.snd.NXT = tcb.snd.UNA
 	tcb.dupack = 0
 	tcb.nRetransmit = 0
+}
+
+// InFastRecovery reports whether the connection has seen at least the
+// fast-retransmit threshold of duplicate ACKs (RFC 5681 §3.2).
+func (tcb *ControlBlock) InFastRecovery() bool {
+	return tcb._state.TxDataOpen() && tcb.dupack >= retransmitAfterDupacks
 }
 
 // PendingSegment calculates a suitable next segment to send from a payload length.

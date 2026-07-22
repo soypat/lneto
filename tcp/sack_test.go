@@ -1,6 +1,7 @@
 package tcp
 
 import (
+	"bytes"
 	"encoding/binary"
 	"math/rand"
 	"testing"
@@ -133,4 +134,90 @@ func TestSACK_AdvertisesBlocks(t *testing.T) {
 		t.Errorf("SACK block = [%d,%d), want [%d,%d)", blocks[0].start, blocks[0].end, wantStart, wantEnd)
 	}
 	_ = seg1
+}
+
+// TestSACK_SelectiveRetransmit drives a full recovery: the client sends four
+// segments, the first is dropped, the server SACKs the three that arrive, and
+// on fast recovery the client retransmits only the dropped hole (not go-back-N).
+// The server then delivers the whole stream intact.
+func TestSACK_SelectiveRetransmit(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	rng := rand.New(rand.NewSource(4))
+	client, server := newHandler(t, mtu, 8), newHandler(t, mtu, 8)
+	if err := client.EnableSACK(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.EnableSACK(true); err != nil {
+		t.Fatal(err)
+	}
+	setupClientServer(t, rng, client, server)
+	var hs [mtu]byte
+	establish(t, client, server, hs[:])
+
+	// Send four distinct segments, one per Send so each is its own packet.
+	segs := [][]byte{[]byte("AAAA"), []byte("BBBB"), []byte("CCCC"), []byte("DDDD")}
+	pkts := make([][]byte, len(segs))
+	seq := make([]Value, len(segs))
+	for i, d := range segs {
+		if _, err := client.Write(d); err != nil {
+			t.Fatalf("write seg %d: %v", i, err)
+		}
+		buf := make([]byte, mtu)
+		n, err := client.Send(buf)
+		if err != nil {
+			t.Fatalf("send seg %d: %v", i, err)
+		}
+		pkts[i] = buf[:n]
+		seq[i] = mustSegment(t, buf[:n], n-sizeHeaderTCP).SEQ
+	}
+
+	// Deliver segments 1..3 (drop segment 0). Each lands out of order, so the
+	// server replies with a dup ACK carrying SACK blocks; feed those back to the
+	// client so it accumulates dup ACKs and marks its scoreboard.
+	var ack [mtu]byte
+	for i := 1; i < len(segs); i++ {
+		if err := server.Recv(pkts[i]); err != nil {
+			t.Fatalf("server recv seg %d: %v", i, err)
+		}
+		clear(ack[:])
+		na, err := server.Send(ack[:])
+		if err != nil {
+			t.Fatalf("server send dupack %d: %v", i, err)
+		}
+		if err := client.Recv(ack[:na]); err != nil {
+			t.Fatalf("client recv dupack %d: %v", i, err)
+		}
+	}
+
+	// Fast recovery: the client must retransmit exactly the dropped hole (seg 0).
+	rbuf := make([]byte, mtu)
+	nr, err := client.Send(rbuf)
+	if err != nil {
+		t.Fatal("client selective retransmit:", err)
+	}
+	rseg := mustSegment(t, rbuf[:nr], nr-sizeHeaderTCP)
+	if rseg.SEQ != seq[0] {
+		t.Fatalf("retransmit SEQ = %d, want dropped hole %d (go-back-N?)", rseg.SEQ, seq[0])
+	}
+	if int(rseg.DATALEN) != len(segs[0]) {
+		t.Fatalf("retransmit DATALEN = %d, want %d", rseg.DATALEN, len(segs[0]))
+	}
+
+	// Deliver the retransmitted hole; the server now has a contiguous stream.
+	if err := server.Recv(rbuf[:nr]); err != nil {
+		t.Fatal("server recv retransmit:", err)
+	}
+	got := make([]byte, 0, len(segs)*4)
+	rd := make([]byte, mtu)
+	for {
+		n, _ := server.Read(rd)
+		if n == 0 {
+			break
+		}
+		got = append(got, rd[:n]...)
+	}
+	want := []byte("AAAABBBBCCCCDDDD")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("delivered stream = %q, want %q", got, want)
+	}
 }
