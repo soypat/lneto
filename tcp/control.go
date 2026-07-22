@@ -79,10 +79,21 @@ type ControlBlock struct {
 	dupack uint8
 	// nRetransmit counts number of retransmits sent since last UNA update.
 	nRetransmit uint8
+
+	// tsEnabled reports whether the TCP Timestamps option (RFC 7323) was
+	// negotiated on both ends during the handshake.
+	tsEnabled bool
+	// tsRecent is the most recent timestamp received from the peer (TS.Recent,
+	// RFC 7323 §4.3), echoed back as TSecr so the peer can measure RTT.
+	tsRecent uint32
 }
 
 // State returns the current state of the TCP connection. See [State].
 func (tcb *ControlBlock) State() State { return tcb._state }
+
+// TimestampsEnabled reports whether the RFC 7323 Timestamps option was
+// negotiated for this connection.
+func (tcb *ControlBlock) TimestampsEnabled() bool { return tcb.tsEnabled }
 
 // RecvNext returns the next sequence number expected to be received from remote.
 // This implementation will reject segments that are not the next expected sequence.

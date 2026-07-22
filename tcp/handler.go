@@ -1,6 +1,7 @@
 package tcp
 
 import (
+	"encoding/binary"
 	"io"
 	"net"
 
@@ -39,6 +40,9 @@ type Handler struct {
 	// whenever loss is non-nil (enforced by [Conn.Configure]). See [LossRecovery].
 	loss     LossRecovery
 	nanotime func() int64
+	// tsPermit enables offering/accepting the RFC 7323 Timestamps option during
+	// the handshake. Off by default. See [Handler.EnableTimestamps].
+	tsPermit bool
 
 	closing    bool
 	shutdownRx bool
@@ -90,6 +94,44 @@ func (h *Handler) SetLossRecovery(loss LossRecovery, nanotime func() int64) {
 }
 
 func (h *Handler) lossEnabled() bool { return h.loss != nil }
+
+// EnableTimestamps enables the RFC 7323 TCP Timestamps option, which is then
+// offered on the SYN and, if the peer also supports it, echoed on every segment
+// so both ends can measure the round-trip time. It is disabled by default and
+// must be set before the connection is opened. A monotonic time source
+// ([ConnConfig.Nanotime]) is required to negotiate it. Returns
+// [lneto.ErrBadState] if the connection is open.
+func (h *Handler) EnableTimestamps(enable bool) error {
+	if !h.scb.State().IsClosed() {
+		return lneto.ErrBadState
+	}
+	h.tsPermit = enable
+	return nil
+}
+
+// nanosPerMilli converts the monotonic nanosecond time source to the
+// millisecond-resolution TCP timestamp clock (RFC 7323 §4.1).
+const nanosPerMilli = 1_000_000
+
+// clockReady reports whether a monotonic time source has been configured (via
+// [ConnConfig.Nanotime]), enabling the Handler's time-based features such as the
+// RFC 7323 Timestamps option. The tcp package keeps no clock of its own;
+// nanotime is only read to stamp segments.
+func (h *Handler) clockReady() bool { return h.nanotime != nil }
+
+// tsValue returns the local timestamp-clock value for the TSval field: a
+// millisecond-resolution monotonic counter (RFC 7323 §4.1) derived from the
+// configured nanotime source. Returns 0 when no time source is set.
+func (h *Handler) tsValue() uint32 {
+	if h.nanotime == nil {
+		return 0
+	}
+	return uint32(h.nanotime() / nanosPerMilli)
+}
+
+// TimestampsEnabled reports whether the RFC 7323 Timestamps option was
+// negotiated for the current connection.
+func (h *Handler) TimestampsEnabled() bool { return h.scb.tsEnabled }
 
 // NextDeadline returns the monotonic-nanosecond instant at which the connection
 // must next be serviced by a transmit attempt (e.g. an RTO expiry), or 0 when
@@ -167,6 +209,7 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 		validator: h.validator,
 		loss:      h.loss,
 		nanotime:  h.nanotime,
+		tsPermit:  h.tsPermit,
 		logger:    h.logger,
 		// persist memory across repoen:
 		bufTx: h.bufTx,
@@ -229,7 +272,8 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 	}
 
 	prevState := h.scb.State()
-	prevUNA := h.scb.snd.UNA // Capture before Recv updates snd.UNA (RFC 6298 §5.3).
+	prevUNA := h.scb.snd.UNA       // Capture before Recv updates snd.UNA (RFC 6298 §5.3).
+	prevRcvNxt := h.scb.RecvNext() // Capture before Recv to detect in-order delivery.
 	err = h.scb.Recv(segIncoming)
 	if err != nil {
 		if h.scb.State() == StateClosed {
@@ -274,6 +318,7 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 			h.bufTx.RecvACK(segIncoming.ACK)
 		}
 	}
+	h.processTimestamps(tfrm.Options(), segIncoming, prevRcvNxt)
 	if segIncoming.Flags.HasAny(FlagSYN) {
 		// Parse remote MSS from TCP options.
 		h.optcodec.ForEachOption(tfrm.Options(), func(kind OptionKind, data []byte) error {
@@ -348,6 +393,87 @@ func (h *Handler) deliverReassembled() {
 	if delivered := h.reasm.reassemble(&h.bufRx, h.scb.RecvNext()); delivered > 0 {
 		h.scb.rcv.NXT.UpdateForward(delivered)
 		h.scb.pending[0] |= FlagACK
+	}
+}
+
+// reservedOptionsLen returns the number of option bytes to reserve ahead of the
+// payload on an established-state segment (a multiple of 4). Data segments carry
+// only the Timestamps option when negotiated.
+func (h *Handler) reservedOptionsLen() int {
+	if h.scb.tsEnabled {
+		return 12 // NOP, NOP, Timestamps(10).
+	}
+	return 0
+}
+
+// appendSegmentOptions writes the TCP options for an outgoing segment into dst
+// (which begins right after the 20-byte fixed header) and returns the number of
+// bytes written, always a multiple of 4 (NOP-padded). mss is advertised on SYN
+// segments.
+func (h *Handler) appendSegmentOptions(dst []byte, seg Segment, mss uint16) int {
+	n := 0
+	if seg.Flags.HasAny(FlagSYN) {
+		m, _ := h.optcodec.PutOption16(dst[n:], OptMaxSegmentSize, mss)
+		n += m
+	}
+	// Timestamps (RFC 7323): offer on a bare SYN when locally permitted;
+	// otherwise include only once negotiated (SYN-ACK and established segments).
+	// The option carries a clock reading, so it is only ever emitted when a time
+	// source has been injected (see [Handler.EnableTimestamps]).
+	includeTS := h.scb.tsEnabled
+	if seg.Flags == FlagSYN {
+		includeTS = h.tsPermit && h.clockReady()
+	}
+	if includeTS {
+		dst[n] = byte(OptNop)
+		dst[n+1] = byte(OptNop)
+		n += 2
+		var ts [8]byte
+		binary.BigEndian.PutUint32(ts[0:], h.tsValue())
+		binary.BigEndian.PutUint32(ts[4:], h.scb.tsRecent)
+		m, _ := h.optcodec.PutOption(dst[n:], OptTimestamps, ts[:]...)
+		n += m
+	}
+	for n%4 != 0 { // pad to a 32-bit boundary.
+		dst[n] = byte(OptNop)
+		n++
+	}
+	return n
+}
+
+// timestampFromOptions extracts the TCP Timestamps option (RFC 7323) from opts.
+func (h *Handler) timestampFromOptions(opts []byte) (tsval, tsecr uint32, present bool) {
+	h.optcodec.ForEachOption(opts, func(kind OptionKind, data []byte) error {
+		if kind == OptTimestamps && len(data) == 8 {
+			tsval = binary.BigEndian.Uint32(data[0:])
+			tsecr = binary.BigEndian.Uint32(data[4:])
+			present = true
+		}
+		return nil
+	})
+	return tsval, tsecr, present
+}
+
+// processTimestamps negotiates and applies the RFC 7323 Timestamps option for an
+// accepted incoming segment: it negotiates support on the SYN and refreshes the
+// echoed TS.Recent value for in-order segments (§4.3) so the peer can measure
+// RTT from the echo.
+func (h *Handler) processTimestamps(opts []byte, seg Segment, prevRcvNxt Value) {
+	tsval, _, present := h.timestampFromOptions(opts)
+	if seg.Flags.HasAny(FlagSYN) {
+		// Only negotiate when a time source is available: the option is
+		// meaningless without one and tsValue would have nothing to read.
+		if present && h.tsPermit && h.clockReady() {
+			h.scb.tsEnabled = true
+			h.scb.tsRecent = tsval
+		}
+		return
+	}
+	if !h.scb.tsEnabled || !present {
+		return
+	}
+	if seg.SEQ == prevRcvNxt {
+		h.scb.tsRecent = tsval // update echo only for in-order segments (§4.3).
 	}
 }
 
@@ -427,8 +553,8 @@ func (h *Handler) Send(b []byte) (int, error) {
 	if awaitingSyn || requeueControl && h.scb.State() == StateSynSent {
 		// Handling init syn segment.
 		segment = ClientSynSegment(h.bufTx.iss, Size(h.bufRx.Size()))
-		h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
-		offset++
+		optLen := h.appendSegmentOptions(b[sizeHeaderTCP:], segment, mss)
+		offset += uint8(optLen / 4)
 		if requeueControl {
 			h.info("tcp.Handler:requeue-syn", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("rport", uint64(h.remotePort)))
 		}
@@ -439,25 +565,28 @@ func (h *Handler) Send(b []byte) (int, error) {
 			WND:   Size(h.bufRx.Free()),
 			Flags: synack,
 		}
-		h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
-		offset++
+		optLen := h.appendSegmentOptions(b[sizeHeaderTCP:], segment, mss)
+		offset += uint8(optLen / 4)
 		h.info("tcp.Handler:requeue-synack", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("rport", uint64(h.remotePort)))
 	} else if requeueControl {
 		h.requeueControl = false
 		return 0, nil
 	} else {
 		var ok bool
-		maxPayload := len(b) - sizeHeaderTCP
+		// Reserve room for this segment's TCP options ahead of the payload.
+		optLen := h.reservedOptionsLen()
+		maxPayload := len(b) - sizeHeaderTCP - optLen
 		segment, ok = h.scb.PendingSegment(maxPayload)
 		segment.WND = h.recvWindow()
 		if !ok {
 			// No pending control segment or data to send. Yield.
 			return 0, nil
-		} else if segment.Flags == synack {
-			h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
-			offset++
-		} else if segment.DATALEN > 0 {
-			n, err := h.bufTx.MakePacket(b[sizeHeaderTCP:sizeHeaderTCP+segment.DATALEN], segment.SEQ)
+		}
+		optLen = h.appendSegmentOptions(b[sizeHeaderTCP:], segment, mss)
+		offset += uint8(optLen / 4)
+		if segment.DATALEN > 0 {
+			dataStart := sizeHeaderTCP + optLen
+			n, err := h.bufTx.MakePacket(b[dataStart:dataStart+int(segment.DATALEN)], segment.SEQ)
 			if err != nil {
 				return 0, err
 			}
