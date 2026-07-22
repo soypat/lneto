@@ -24,6 +24,36 @@ func newConfiguredConn(t *testing.T) *Conn {
 	return &conn
 }
 
+// TestConn_Configure_Timestamps verifies RFC 7323 timestamps can be enabled
+// through the public ConnConfig surface, and that doing so without a clock is
+// rejected rather than silently ignored.
+func TestConn_Configure_Timestamps(t *testing.T) {
+	var withClock Conn
+	err := withClock.Configure(ConnConfig{
+		RxBuf:             make([]byte, 512),
+		TxBuf:             make([]byte, 512),
+		TxPacketQueueSize: 4,
+		RWBackoff:         backoffYield,
+		EnableTimestamps:  true,
+		Nanotime:          func() int64 { return 1 },
+	})
+	if err != nil {
+		t.Fatal("configure with clock:", err)
+	}
+
+	var noClock Conn
+	err = noClock.Configure(ConnConfig{
+		RxBuf:             make([]byte, 512),
+		TxBuf:             make([]byte, 512),
+		TxPacketQueueSize: 4,
+		RWBackoff:         backoffYield,
+		EnableTimestamps:  true, // no Nanotime.
+	})
+	if err != lneto.ErrInvalidConfig {
+		t.Fatalf("configure timestamps without clock = %v, want ErrInvalidConfig", err)
+	}
+}
+
 func TestConn_SetDeadline_Closed(t *testing.T) {
 	conn := newConfiguredConn(t)
 	err := conn.SetDeadline(time.Now().Add(time.Second))

@@ -52,10 +52,14 @@ type Segment struct {
 	Flags   Flags // TCP flags.
 
 	// TSEcr is the RFC 7323 Timestamps echo reply (TSecr) carried by an incoming
-	// segment when the option is negotiated: the peer's echo of a TSval we sent,
-	// used to measure the round-trip time. It is not part of the fixed header and
-	// is zero when timestamps are not in use. See [LossRecovery.PreRx].
+	// segment: the peer's echo of a TSval we sent, used to measure the round-trip
+	// time. It is not part of the fixed header. Zero is a valid echo value, so
+	// TSPresent (not TSEcr == 0) reports whether the option was actually present.
+	// See [LossRecovery.PreRx].
 	TSEcr uint32
+	// TSPresent reports whether the incoming segment carried the RFC 7323
+	// Timestamps option, so a valid zero TSEcr is not mistaken for "absent".
+	TSPresent bool
 }
 
 // LEN returns the length of the segment in octets including SYN and FIN flags.

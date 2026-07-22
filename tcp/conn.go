@@ -82,10 +82,16 @@ type ConnConfig struct {
 	// recovery. See [LossRecovery].
 	LossRecovery LossRecovery
 	// Nanotime is the monotonic time source in nanoseconds (the func() int64
-	// convention used across lneto) that drives LossRecovery. It is required when
-	// LossRecovery is set and unused otherwise. The tcp package reads it only to
-	// stamp the loss-recovery hooks; it holds no clock itself.
+	// convention used across lneto). It is the connection's TCP clock: it drives
+	// LossRecovery and generates the RFC 7323 timestamp clock when
+	// EnableTimestamps is set. Required when either LossRecovery or
+	// EnableTimestamps is set, and unused otherwise. The tcp package reads it only
+	// to stamp segments; it holds no clock itself.
 	Nanotime func() int64
+	// EnableTimestamps opts into the RFC 7323 Timestamps option, negotiated on
+	// the handshake and used to measure the round-trip time. It requires Nanotime
+	// (else Configure returns an error). See [Handler.EnableTimestamps].
+	EnableTimestamps bool
 }
 
 // Configure should be called on any newly created connection before usage. See [ConnConfig].
@@ -93,8 +99,9 @@ func (conn *Conn) Configure(config ConnConfig) (err error) {
 	if config.RWBackoff == nil {
 		return lneto.ErrMissingHALConfig
 	}
-	if config.LossRecovery != nil && config.Nanotime == nil {
-		// The tcp package holds no clock: a loss-recovery algorithm cannot run without it.
+	if (config.LossRecovery != nil || config.EnableTimestamps) && config.Nanotime == nil {
+		// The tcp package holds no clock: neither loss recovery nor the RFC 7323
+		// timestamp clock can run without an injected time source.
 		return lneto.ErrInvalidConfig
 	}
 	conn.mu.Lock()
@@ -106,6 +113,9 @@ func (conn *Conn) Configure(config ConnConfig) (err error) {
 	conn._backoff = config.RWBackoff
 	conn.logger.log = config.Logger
 	conn.h.SetLossRecovery(config.LossRecovery, config.Nanotime)
+	if err = conn.h.EnableTimestamps(config.EnableTimestamps); err != nil {
+		return err
+	}
 	return nil
 }
 

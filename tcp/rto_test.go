@@ -196,8 +196,8 @@ func TestRTO_TimestampRTT(t *testing.T) {
 	r.PostTx(rtoDataSeg(iss, 100), 100*rtoMs) // sent at ms clock 100.
 
 	seg := rtoAckSeg(iss + 100)
-	seg.TSEcr = 100         // peer echoes the ms clock the data was sent at.
-	r.PreRx(seg, 140*rtoMs) // received at ms clock 140: RTT = 40ms.
+	seg.TSEcr, seg.TSPresent = 100, true // peer echoes the ms clock the data was sent at.
+	r.PreRx(seg, 140*rtoMs)              // received at ms clock 140: RTT = 40ms.
 	if r.SmoothedRTT() != 40*time.Millisecond {
 		t.Errorf("srtt=%v, want 40ms from timestamp RTT", r.SmoothedRTT())
 	}
@@ -216,8 +216,8 @@ func TestRTO_TimestampRTTSurvivesRetransmit(t *testing.T) {
 	r.PostTx(rtoDataSeg(iss, 100), 200*rtoMs) // retransmit: no Karn sample.
 
 	seg := rtoAckSeg(iss + 100)
-	seg.TSEcr = 200         // peer echoes the retransmit's TSval.
-	r.PreRx(seg, 250*rtoMs) // 50ms after the retransmit.
+	seg.TSEcr, seg.TSPresent = 200, true // peer echoes the retransmit's TSval.
+	r.PreRx(seg, 250*rtoMs)              // 50ms after the retransmit.
 	if !r.haveRTT {
 		t.Fatal("timestamp RTT must produce a sample even after a retransmit")
 	}
@@ -226,6 +226,47 @@ func TestRTO_TimestampRTTSurvivesRetransmit(t *testing.T) {
 	}
 	if r.backoff != 0 {
 		t.Errorf("backoff=%d, want 0 after a valid timestamp sample", r.backoff)
+	}
+}
+
+// TestRTO_TimestampRTTZeroEcrValid verifies a zero TSEcr is a valid echo (not
+// treated as "absent") when the option was present: data sent at ms clock 0,
+// acked at ms clock 5, yields a 5ms sample.
+func TestRTO_TimestampRTTZeroEcrValid(t *testing.T) {
+	r := newRTO()
+	const iss = uint32(1000)
+	r.PostTx(rtoDataSeg(iss, 100), 0) // sent at ms clock 0 -> TSval 0.
+
+	seg := rtoAckSeg(iss + 100)
+	seg.TSEcr, seg.TSPresent = 0, true // valid zero echo.
+	r.PreRx(seg, 5*rtoMs)
+	if r.SmoothedRTT() != 5*time.Millisecond {
+		t.Errorf("srtt=%v, want 5ms from a zero-TSEcr sample", r.SmoothedRTT())
+	}
+}
+
+// TestRTO_TimestampRTTRejectsImplausible verifies future (negative modular delta)
+// and implausibly large echoes are discarded rather than poisoning SRTT/RTO.
+func TestRTO_TimestampRTTRejectsImplausible(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		tsecr     uint32
+		nowMillis int64
+	}{
+		{"future echo", 1000, 500},                               // echo ahead of the clock.
+		{"absurdly stale", 1, int64(maxTimestampRTTMillis) + 10}, // delta beyond the plausibility cap.
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRTO()
+			const iss = uint32(1000)
+			r.PostTx(rtoDataSeg(iss, 100), 0)
+			seg := rtoAckSeg(iss + 100)
+			seg.TSEcr, seg.TSPresent = tc.tsecr, true
+			r.PreRx(seg, tc.nowMillis*rtoMs)
+			if r.haveRTT {
+				t.Errorf("implausible timestamp echo produced an RTT sample (srtt=%v)", r.SmoothedRTT())
+			}
+		})
 	}
 }
 

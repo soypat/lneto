@@ -1,10 +1,12 @@
 package tcp
 
 import (
+	"encoding/binary"
 	"math/rand"
 	"testing"
 	"time"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 )
 
@@ -168,5 +170,95 @@ func TestTimestamps_MeasuresRTTThroughHandler(t *testing.T) {
 	}
 	if rto.SmoothedRTT() != 40*time.Millisecond {
 		t.Errorf("measured RTT = %v, want 40ms", rto.SmoothedRTT())
+	}
+}
+
+// tsOption builds a bare RFC 7323 Timestamps option (no NOP padding) carrying
+// tsval/tsecr, as it would appear in a segment's option area.
+func tsOption(tsval, tsecr uint32) []byte {
+	opt := []byte{byte(OptTimestamps), 10, 0, 0, 0, 0, 0, 0, 0, 0}
+	binary.BigEndian.PutUint32(opt[2:], tsval)
+	binary.BigEndian.PutUint32(opt[6:], tsecr)
+	return opt
+}
+
+// TestTimestamps_TSRecentNoRegression verifies TS.Recent follows RFC 7323 §4.3:
+// a reordered/duplicate segment carrying an older TSval must not move it back,
+// while a newer TSval at or below Last.ACK.sent advances it.
+func TestTimestamps_TSRecentNoRegression(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	h := newHandler(t, mtu, 3)
+	h.scb.tsEnabled = true
+	h.scb.tsRecent = 100
+	seg := Segment{SEQ: 5, Flags: FlagACK}
+	const prevRcvNxt = Value(10) // seg.SEQ (5) <= Last.ACK.sent (10).
+
+	h.processTimestamps(tsOption(50, 0), seg, prevRcvNxt) // older TSval.
+	if h.scb.tsRecent != 100 {
+		t.Errorf("TS.Recent moved backwards to %d on an older TSval, want 100", h.scb.tsRecent)
+	}
+	h.processTimestamps(tsOption(150, 0), seg, prevRcvNxt) // newer TSval.
+	if h.scb.tsRecent != 150 {
+		t.Errorf("TS.Recent = %d after a newer TSval, want 150", h.scb.tsRecent)
+	}
+}
+
+// TestTimestamps_DropSegmentMissingOption verifies that once timestamps are
+// negotiated a non-RST segment lacking the option is silently dropped (RFC 7323
+// §3.2): it is neither buffered nor advances connection state.
+func TestTimestamps_DropSegmentMissingOption(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	rng := rand.New(rand.NewSource(5))
+	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
+	clientNS, serverNS := int64(5*nanosPerMilli), int64(9*nanosPerMilli)
+	enableTimestamps(t, client, &clientNS)
+	enableTimestamps(t, server, &serverNS)
+	setupClientServer(t, rng, client, server)
+	var buf [mtu]byte
+	establish(t, client, server, buf[:])
+
+	// Craft an in-order data segment carrying no options (data offset = 5).
+	data := []byte("nooption")
+	seg := Segment{
+		SEQ:     server.scb.RecvNext(),
+		ACK:     client.scb.RecvNext(),
+		WND:     4096,
+		Flags:   FlagACK,
+		DATALEN: Size(len(data)),
+	}
+	var raw [mtu]byte
+	frame, err := NewFrame(raw[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame.SetSourcePort(client.LocalPort())
+	frame.SetDestinationPort(server.LocalPort())
+	frame.SetSegment(seg, 5) // offset 5 => 20-byte header, no options.
+	frame.SetUrgentPtr(0)
+	copy(raw[sizeHeaderTCP:], data)
+
+	if err := server.Recv(raw[:sizeHeaderTCP+len(data)]); err != nil {
+		t.Fatalf("dropped segment must return nil, got %v", err)
+	}
+	if server.BufferedInput() != 0 {
+		t.Fatalf("segment missing TSopt must not be buffered, got %d bytes", server.BufferedInput())
+	}
+	if server.State() != StateEstablished {
+		t.Fatalf("segment missing TSopt must not change state, got %s", server.State())
+	}
+}
+
+// TestTimestamps_SendShortBufferErrors verifies Send returns ErrShortBuffer
+// (rather than panicking) when the buffer cannot hold the header plus the
+// maximum TCP option area.
+func TestTimestamps_SendShortBufferErrors(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	h := newHandler(t, mtu, 3)
+	if err := h.OpenActive(1234, 5678, 0); err != nil {
+		t.Fatal(err)
+	}
+	small := make([]byte, sizeHeaderTCP+maxTCPOptionBytes-1)
+	if _, err := h.Send(small); err != lneto.ErrShortBuffer {
+		t.Fatalf("Send with a short buffer = %v, want ErrShortBuffer", err)
 	}
 }

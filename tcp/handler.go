@@ -84,10 +84,12 @@ func (h *Handler) SetBuffers(txbuf, rxbuf []byte, packets int) error {
 }
 
 // SetLossRecovery installs the packet-loss recovery algorithm and the monotonic
-// time source (nanoseconds, the func() int64 convention used across lneto) that
-// drives it. The tcp package keeps no clock of its own; nanotime is read only to
-// stamp the rx/tx hooks (see [LossRecovery]). Passing loss == nil disables loss
-// recovery. It should be set before the connection is opened.
+// time source (nanoseconds, the func() int64 convention used across lneto). The
+// tcp package keeps no clock of its own: nanotime is the connection's TCP clock,
+// read to stamp the loss-recovery rx/tx hooks (see [LossRecovery]) and, when
+// enabled, to generate the RFC 7323 timestamp clock (see
+// [Handler.EnableTimestamps]). Passing loss == nil disables loss recovery but
+// still installs the clock. It should be set before the connection is opened.
 func (h *Handler) SetLossRecovery(loss LossRecovery, nanotime func() int64) {
 	h.loss = loss
 	h.nanotime = nanotime
@@ -251,10 +253,18 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 	payload := tfrm.Payload()
 	segIncoming := tfrm.Segment(len(payload))
 	if h.scb.tsEnabled {
-		// Expose the echoed timestamp so loss recovery can measure RTT from it
-		// (RFC 7323 §4.2). Only meaningful once the option has been negotiated.
-		if _, tsecr, present := h.timestampFromOptions(tfrm.Options()); present {
+		_, tsecr, present := h.timestampFromOptions(tfrm.Options())
+		if present {
+			// Expose the echoed timestamp so loss recovery can measure RTT from
+			// it (RFC 7323 §4.2). Only meaningful once negotiated.
 			segIncoming.TSEcr = tsecr
+			segIncoming.TSPresent = true
+		} else if !segIncoming.Flags.HasAny(FlagRST) {
+			// RFC 7323 §3.2: once the option is negotiated every non-RST segment
+			// must carry it. Silently drop one that omits it — accepting it could
+			// permit undetectable data corruption. PAWS itself is not implemented.
+			h.debug("tcp.Handler:rx-drop-missing-ts", slog.Uint64("port", uint64(h.localPort)))
+			return nil
 		}
 	}
 	if h.scb.IncomingIsKeepalive(segIncoming) {
@@ -463,8 +473,8 @@ func (h *Handler) timestampFromOptions(opts []byte) (tsval, tsecr uint32, presen
 
 // processTimestamps negotiates and applies the RFC 7323 Timestamps option for an
 // accepted incoming segment: it negotiates support on the SYN and refreshes the
-// echoed TS.Recent value for in-order segments (§4.3) so the peer can measure
-// RTT from the echo.
+// echoed TS.Recent value (§4.3) so the peer can measure RTT from the echo. PAWS
+// (§5) is not implemented.
 func (h *Handler) processTimestamps(opts []byte, seg Segment, prevRcvNxt Value) {
 	tsval, _, present := h.timestampFromOptions(opts)
 	if seg.Flags.HasAny(FlagSYN) {
@@ -479,8 +489,15 @@ func (h *Handler) processTimestamps(opts []byte, seg Segment, prevRcvNxt Value) 
 	if !h.scb.tsEnabled || !present {
 		return
 	}
-	if seg.SEQ == prevRcvNxt {
-		h.scb.tsRecent = tsval // update echo only for in-order segments (§4.3).
+	// RFC 7323 §4.3: advance TS.Recent only when this segment's TSval is not
+	// older (modular comparison) than the stored value AND the segment lies at or
+	// below Last.ACK.sent (approximated by rcv.NXT captured before this segment).
+	// This prevents a reordered or duplicate ACK carrying a stale TSval from
+	// moving TS.Recent backwards, which would corrupt the echoed timestamp.
+	notOlder := int32(tsval-h.scb.tsRecent) >= 0
+	atOrBelowAckSent := !prevRcvNxt.LessThan(seg.SEQ) // seg.SEQ <= Last.ACK.sent.
+	if notOlder && atOrBelowAckSent {
+		h.scb.tsRecent = tsval
 	}
 }
 
@@ -512,6 +529,12 @@ func (h *Handler) Close() error {
 func (h *Handler) Send(b []byte) (int, error) {
 	if h.IsTxOver() {
 		return 0, net.ErrClosed
+	}
+	if len(b) < sizeHeaderTCP+maxTCPOptionBytes {
+		// Guarantee room for the fixed header plus the largest possible TCP
+		// option area, so appendSegmentOptions can never index past the buffer
+		// once options (Timestamps, MSS, ...) are negotiated.
+		return 0, lneto.ErrShortBuffer
 	}
 	var now int64
 	if h.lossEnabled() {

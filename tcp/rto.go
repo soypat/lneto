@@ -28,6 +28,12 @@ const (
 	// backoffMax caps the exponential-backoff doublings so RTO arithmetic cannot
 	// overflow and a wedged connection keeps probing at rtoMax.
 	backoffMax = 12
+
+	// maxTimestampRTTMillis bounds a plausible RFC 7323 timestamp RTT sample. A
+	// future, stale or malformed echo yields a difference outside [0, this] and
+	// is discarded rather than folded into the estimator. Chosen well above rtoMax
+	// so no realistic path is rejected.
+	maxTimestampRTTMillis = 120_000 // 2 minutes.
 )
 
 // RTO implements the RFC 6298 round-trip-time estimator and the single
@@ -115,13 +121,17 @@ func (r *RTO) PreRx(incoming Segment, now int64) RxDirective {
 	}
 	ack := incoming.ACK
 	advanced := r.sndUNA.LessThan(ack) && !r.sndNXT.LessThan(ack)
-	if incoming.TSEcr != 0 && advanced {
+	if incoming.TSPresent && advanced {
 		// RFC 7323 timestamp RTT (§4.2): a sample on every acknowledgment,
 		// unaffected by Karn's retransmission ambiguity. Prefer it over the Karn
 		// sample and supersede any measurement in flight. TSEcr and the timestamp
-		// clock are millisecond-resolution (RFC 7323 §4.1).
-		if rttMS := int64(uint32(now/nanosPerMilli) - incoming.TSEcr); rttMS >= 0 {
-			r.updateRTT(time.Duration(rttMS) * time.Millisecond)
+		// clock are millisecond-resolution (RFC 7323 §4.1). The difference is a
+		// signed modular subtraction so timestamp-clock wraparound is handled;
+		// a negative (future/stale echo) or implausibly large sample is rejected
+		// so a malformed TSecr cannot poison SRTT/RTO.
+		deltaMS := int32(uint32(now/nanosPerMilli) - incoming.TSEcr)
+		if deltaMS >= 0 && int64(deltaMS) <= maxTimestampRTTMillis {
+			r.updateRTT(time.Duration(deltaMS) * time.Millisecond)
 			r.backoff = 0
 			r.timing = false
 		}
