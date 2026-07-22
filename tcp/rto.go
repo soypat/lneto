@@ -114,14 +114,25 @@ func (r *RTO) PreRx(incoming Segment, now int64) RxDirective {
 		return RxDirective{Keep: true}
 	}
 	ack := incoming.ACK
-	if r.timing && !ack.LessThan(r.timedSeq) {
-		// ACK covers the timed segment: take the RTT sample (§4). A valid
-		// measurement collapses the backoff (§5.7).
+	advanced := r.sndUNA.LessThan(ack) && !r.sndNXT.LessThan(ack)
+	if incoming.TSEcr != 0 && advanced {
+		// RFC 7323 timestamp RTT (§4.2): a sample on every acknowledgment,
+		// unaffected by Karn's retransmission ambiguity. Prefer it over the Karn
+		// sample and supersede any measurement in flight. TSEcr and the timestamp
+		// clock are millisecond-resolution (RFC 7323 §4.1).
+		if rttMS := int64(uint32(now/nanosPerMilli) - incoming.TSEcr); rttMS >= 0 {
+			r.updateRTT(time.Duration(rttMS) * time.Millisecond)
+			r.backoff = 0
+			r.timing = false
+		}
+	} else if r.timing && !ack.LessThan(r.timedSeq) {
+		// No timestamp sample: fall back to Karn's algorithm — the ACK covers the
+		// single timed segment (§4). A valid measurement collapses backoff (§5.7).
 		r.updateRTT(time.Duration(now - r.timedAt))
 		r.timing = false
 		r.backoff = 0
 	}
-	if r.sndUNA.LessThan(ack) && !r.sndNXT.LessThan(ack) {
+	if advanced {
 		// ACK advances snd.UNA and does not exceed what we have sent.
 		r.sndUNA = ack
 	}

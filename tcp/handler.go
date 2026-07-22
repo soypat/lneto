@@ -250,6 +250,13 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 	}
 	payload := tfrm.Payload()
 	segIncoming := tfrm.Segment(len(payload))
+	if h.scb.tsEnabled {
+		// Expose the echoed timestamp so loss recovery can measure RTT from it
+		// (RFC 7323 §4.2). Only meaningful once the option has been negotiated.
+		if _, tsecr, present := h.timestampFromOptions(tfrm.Options()); present {
+			segIncoming.TSEcr = tsecr
+		}
+	}
 	if h.scb.IncomingIsKeepalive(segIncoming) {
 		h.info("tcp.Handler:rx-keepalive", slog.Uint64("port", uint64(h.localPort)))
 		return nil

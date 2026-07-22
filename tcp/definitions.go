@@ -50,6 +50,12 @@ type Segment struct {
 	DATALEN Size  // The number of octets occupied by the data (payload) not counting SYN and FIN.
 	WND     Size  // segment window
 	Flags   Flags // TCP flags.
+
+	// TSEcr is the RFC 7323 Timestamps echo reply (TSecr) carried by an incoming
+	// segment when the option is negotiated: the peer's echo of a TSval we sent,
+	// used to measure the round-trip time. It is not part of the fixed header and
+	// is zero when timestamps are not in use. See [LossRecovery.PreRx].
+	TSEcr uint32
 }
 
 // LEN returns the length of the segment in octets including SYN and FIN flags.

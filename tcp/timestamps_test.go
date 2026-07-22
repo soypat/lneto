@@ -3,6 +3,7 @@ package tcp
 import (
 	"math/rand"
 	"testing"
+	"time"
 
 	"github.com/soypat/lneto/ethernet"
 )
@@ -113,5 +114,59 @@ func TestTimestamps_EchoOnDataSegment(t *testing.T) {
 	}
 	if server.scb.tsRecent != 12 {
 		t.Errorf("server TS.Recent = %d, want client TSval 12", server.scb.tsRecent)
+	}
+}
+
+// TestTimestamps_MeasuresRTTThroughHandler drives a full data/ack exchange with
+// timestamps and an RTO installed on the client, and verifies the round-trip
+// time is measured from the echoed timestamp end to end (RFC 7323 §4.2).
+func TestTimestamps_MeasuresRTTThroughHandler(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	rng := rand.New(rand.NewSource(4))
+	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
+
+	clientNS := int64(1000 * nanosPerMilli)
+	rto := new(RTO)
+	client.SetLossRecovery(rto, func() int64 { return clientNS })
+	if err := client.EnableTimestamps(true); err != nil {
+		t.Fatal("client EnableTimestamps:", err)
+	}
+	serverNS := int64(9 * nanosPerMilli)
+	enableTimestamps(t, server, &serverNS)
+
+	setupClientServer(t, rng, client, server)
+	var buf [mtu]byte
+	establish(t, client, server, buf[:])
+
+	// Client sends data at ms clock 1000.
+	data := []byte("payload")
+	if _, err := client.Write(data); err != nil {
+		t.Fatal("client write:", err)
+	}
+	clear(buf[:])
+	n, err := client.Send(buf[:])
+	if err != nil {
+		t.Fatal("client send data:", err)
+	}
+	if err := server.Recv(buf[:n]); err != nil {
+		t.Fatal("server recv data:", err)
+	}
+	// Server acknowledges, echoing the client's TSval (1000).
+	clear(buf[:])
+	n, err = server.Send(buf[:])
+	if err != nil {
+		t.Fatal("server send ack:", err)
+	}
+	if n < sizeHeaderTCP {
+		t.Fatal("expected server to send an ACK")
+	}
+
+	// The ACK arrives 40ms later; the RTO measures RTT from the echo.
+	clientNS = 1040 * nanosPerMilli
+	if err := client.Recv(buf[:n]); err != nil {
+		t.Fatal("client recv ack:", err)
+	}
+	if rto.SmoothedRTT() != 40*time.Millisecond {
+		t.Errorf("measured RTT = %v, want 40ms", rto.SmoothedRTT())
 	}
 }

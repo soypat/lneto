@@ -188,6 +188,47 @@ func TestRTO_UpdateRTTFirstSample(t *testing.T) {
 	}
 }
 
+// TestRTO_TimestampRTT verifies an ACK carrying an RFC 7323 echo (TSEcr) yields
+// an RTT sample from the timestamp clock and supersedes the Karn sample.
+func TestRTO_TimestampRTT(t *testing.T) {
+	r := newRTO()
+	const iss = uint32(1000)
+	r.PostTx(rtoDataSeg(iss, 100), 100*rtoMs) // sent at ms clock 100.
+
+	seg := rtoAckSeg(iss + 100)
+	seg.TSEcr = 100         // peer echoes the ms clock the data was sent at.
+	r.PreRx(seg, 140*rtoMs) // received at ms clock 140: RTT = 40ms.
+	if r.SmoothedRTT() != 40*time.Millisecond {
+		t.Errorf("srtt=%v, want 40ms from timestamp RTT", r.SmoothedRTT())
+	}
+	if r.timing {
+		t.Error("timestamp sample must supersede the Karn sample in flight")
+	}
+}
+
+// TestRTO_TimestampRTTSurvivesRetransmit verifies the timestamp echo produces an
+// RTT sample even after a retransmission, when Karn's algorithm refuses one.
+func TestRTO_TimestampRTTSurvivesRetransmit(t *testing.T) {
+	r := newRTO()
+	const iss = uint32(1000)
+	r.PostTx(rtoDataSeg(iss, 100), 100*rtoMs) // original send.
+	r.PreTx(int64(rtoInitial) + 100*rtoMs)    // timeout: retransmit, Karn sample discarded.
+	r.PostTx(rtoDataSeg(iss, 100), 200*rtoMs) // retransmit: no Karn sample.
+
+	seg := rtoAckSeg(iss + 100)
+	seg.TSEcr = 200         // peer echoes the retransmit's TSval.
+	r.PreRx(seg, 250*rtoMs) // 50ms after the retransmit.
+	if !r.haveRTT {
+		t.Fatal("timestamp RTT must produce a sample even after a retransmit")
+	}
+	if r.SmoothedRTT() != 50*time.Millisecond {
+		t.Errorf("srtt=%v, want 50ms", r.SmoothedRTT())
+	}
+	if r.backoff != 0 {
+		t.Errorf("backoff=%d, want 0 after a valid timestamp sample", r.backoff)
+	}
+}
+
 // TestRTO_ImplementsLossRecovery exercises RTO through the [LossRecovery]
 // interface: sending data arms a deadline and a full ACK disarms it.
 func TestRTO_ImplementsLossRecovery(t *testing.T) {
