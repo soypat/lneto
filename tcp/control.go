@@ -257,6 +257,16 @@ func (tcb *ControlBlock) HasPendingRetransmit() bool {
 	return tcb._state.TxDataOpen() && tcb.dupack >= retransmitAfterDupacks && tcb.nRetransmit <= tcb.dupack-retransmitAfterDupacks
 }
 
+// RetransmitAll rewinds snd.NXT back to snd.UNA so the next PendingSegment and
+// Send calls retransmit all unacknowledged data from the oldest sequence number
+// (go-back-N). It must be paired with ringTx.RetransmitFromUNA to rewind the
+// transmit buffer. Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
+func (tcb *ControlBlock) RetransmitAll() {
+	tcb.snd.NXT = tcb.snd.UNA
+	tcb.dupack = 0
+	tcb.nRetransmit = 0
+}
+
 // PendingSegment calculates a suitable next segment to send from a payload length.
 // It does not modify the ControlBlock state or pending segment queue.
 func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {

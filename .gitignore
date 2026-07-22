@@ -1,6 +1,8 @@
 # Ignore files with no extensions trick:
 # First ignore all.
 *
+# Unignore directories since they usually have no extensions
+!*/
 # Unignore all with extensions.
 !*.*
 !LICENSE
