@@ -1,0 +1,281 @@
+package httphi
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/soypat/lneto"
+)
+
+func nopBackoff(consecutiveBackoffs uint) time.Duration { return lneto.BackoffFlagNop }
+
+// newExchange returns an Exchange acquired on conn, ready to serve a request.
+func newExchange(t *testing.T, conn conn, bufferSize int, normalizeKeys bool) *Exchange {
+	t.Helper()
+	exch := new(Exchange)
+	exch.Configure(make([]byte, 2*bufferSize), bufferSize, normalizeKeys)
+	if !exch.Acquire(conn) {
+		t.Fatal("fresh exchange failed to acquire connection")
+	}
+	return exch
+}
+
+// serve runs a single exchange to completion on the calling goroutine.
+func serve(t *testing.T, request string, mux Mux) *rwconn {
+	t.Helper()
+	const bufferSize = 1024
+	conn := newConn(request)
+	conn.Hangup() // Whole request already pending, nothing more will arrive.
+	exch := newExchange(t, conn, bufferSize, false)
+	err := Handle(exch, mux, nopBackoff)
+	if err != nil {
+		t.Fatalf("Handle(%q): %s", request, err)
+	}
+	return conn
+}
+
+// WriteHeader must emit a complete status line terminated in CRLF followed by
+// the end-of-headers CRLF, for every status code including the longest text.
+func TestExchangeWriteHeader(t *testing.T) {
+	for _, test := range []struct {
+		code int
+		want string
+	}{
+		{code: 200, want: "HTTP/1.1 200 OK\r\n\r\n"},
+		{code: 404, want: "HTTP/1.1 404 Not Found\r\n\r\n"},
+		{code: 500, want: "HTTP/1.1 500 Internal Server Error\r\n\r\n"},
+		// Longest status text in status.go: worst case for the status line buffer.
+		{code: 511, want: "HTTP/1.1 511 Network Authentication Required\r\n\r\n"},
+	} {
+		exch := newExchange(t, newConn(""), 128, false)
+		exch.WriteHeader(test.code)
+		if got := exch.rw.(*rwconn).ViewWritten(); got != test.want {
+			t.Errorf("code %d: want %q, got %q", test.code, test.want, got)
+		}
+	}
+}
+
+// Status line is written once: a second WriteHeader must not reach the wire.
+func TestExchangeWriteHeaderOnce(t *testing.T) {
+	conn := newConn("")
+	exch := newExchange(t, conn, 128, false)
+	exch.WriteHeader(404)
+	exch.WriteHeader(500)
+	const want = "HTTP/1.1 404 Not Found\r\n\r\n"
+	if got := conn.ViewWritten(); got != want {
+		t.Errorf("want %q, got %q", want, got)
+	}
+}
+
+// Write with no prior WriteHeader must flush a 200 header ahead of the body.
+func TestExchangeWriteFlushesHeader(t *testing.T) {
+	const body = "hello"
+	conn := newConn("")
+	exch := newExchange(t, conn, 128, false)
+	n, err := exch.Write([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != len(body) {
+		t.Errorf("want %d bytes written, got %d", len(body), n)
+	}
+	const want = "HTTP/1.1 200 OK\r\n\r\n" + body
+	if got := conn.ViewWritten(); got != want {
+		t.Errorf("want %q, got %q", want, got)
+	}
+}
+
+func TestExchangeSetHeader(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		normalize bool
+		set       [][2]string
+		want      string // Header block emitted after the status line.
+	}{
+		{name: "none", want: "\r\n"},
+		{name: "single", set: [][2]string{{"Content-Type", "text/plain"}}, want: "Content-Type:text/plain\r\n\r\n"},
+		{
+			name: "multiple",
+			set:  [][2]string{{"Content-Type", "text/plain"}, {"Content-Length", "5"}},
+			want: "Content-Type:text/plain\r\nContent-Length:5\r\n\r\n",
+		},
+		{
+			name:      "normalized key",
+			normalize: true,
+			set:       [][2]string{{"content-TYPE", "text/plain"}},
+			want:      "Content-Type:text/plain\r\n\r\n",
+		},
+		{
+			name: "key kept verbatim when not normalizing",
+			set:  [][2]string{{"content-TYPE", "text/plain"}},
+			want: "content-TYPE:text/plain\r\n\r\n",
+		},
+		{name: "empty value", set: [][2]string{{"X-Empty", ""}}, want: "X-Empty:\r\n\r\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conn := newConn("")
+			exch := newExchange(t, conn, 128, test.normalize)
+			for _, kv := range test.set {
+				if !exch.SetHeader(kv[0], kv[1]) {
+					t.Fatalf("SetHeader(%q,%q) reported insufficient memory", kv[0], kv[1])
+				}
+			}
+			exch.WriteHeader(200)
+			got, found := strings.CutPrefix(conn.ViewWritten(), "HTTP/1.1 200 OK\r\n")
+			if !found {
+				t.Fatalf("want 200 status line, got %q", conn.ViewWritten())
+			}
+			if got != test.want {
+				t.Errorf("want header block %q, got %q", test.want, got)
+			}
+		})
+	}
+}
+
+// SetHeader must refuse to write past the buffer and say so, never panic nor
+// emit a truncated field.
+func TestExchangeSetHeaderOOM(t *testing.T) {
+	const bufferSize = 32
+	conn := newConn("")
+	exch := newExchange(t, conn, bufferSize, false)
+	if exch.SetHeader("X-Big", strings.Repeat("v", 4*bufferSize)) {
+		t.Fatal("want insufficient memory reported for oversized header value")
+	}
+	exch.WriteHeader(200)
+	if got := conn.ViewWritten(); strings.Contains(got, "X-Big") {
+		t.Errorf("dropped header must not appear in response, got %q", got)
+	}
+}
+
+// Request line and fields the handler observes, over a spread of well formed
+// and awkward but legal request headers.
+func TestHandleRequestFields(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		request    string
+		wantMethod string
+		wantURI    string
+		wantHost   string
+	}{
+		{
+			name:       "minimal",
+			request:    "GET / HTTP/1.1\r\nHost: h\r\n\r\n",
+			wantMethod: "GET", wantURI: "/", wantHost: "h",
+		},
+		{
+			name:       "query string",
+			request:    "GET /search?q=go&n=1 HTTP/1.1\r\nHost: h\r\n\r\n",
+			wantMethod: "GET", wantURI: "/search?q=go&n=1", wantHost: "h",
+		},
+		{
+			name:       "no fields",
+			request:    "GET /x HTTP/1.1\r\n\r\n",
+			wantMethod: "GET", wantURI: "/x", wantHost: "",
+		},
+		{
+			name:       "post",
+			request:    "POST /submit HTTP/1.1\r\nHost: h\r\nContent-Length: 0\r\n\r\n",
+			wantMethod: "POST", wantURI: "/submit", wantHost: "h",
+		},
+		{
+			name:       "extension method",
+			request:    "FROBNICATE / HTTP/1.1\r\nHost: h\r\n\r\n",
+			wantMethod: "FROBNICATE", wantURI: "/", wantHost: "h",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var gotMethod, gotURI, gotHost string
+			var sm sliceMux
+			sm.Handle(test.wantURI, func(ex *Exchange) {
+				gotMethod = string(ex.RequestMethod())
+				gotURI = string(ex.RequestURI())
+				gotHost = string(ex.RequestHeader("Host"))
+				ex.WriteHeader(200)
+			})
+			serve(t, test.request, &sm)
+
+			if gotMethod != test.wantMethod {
+				t.Errorf("want method %q, got %q", test.wantMethod, gotMethod)
+			}
+			if gotURI != test.wantURI {
+				t.Errorf("want URI %q, got %q", test.wantURI, gotURI)
+			}
+			if gotHost != test.wantHost {
+				t.Errorf("want Host %q, got %q", test.wantHost, gotHost)
+			}
+		})
+	}
+}
+
+// Malformed request headers must fail the exchange, never reach a handler.
+func TestHandleMalformedRequest(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		request string
+	}{
+		{name: "no colon in field", request: "GET / HTTP/1.1\r\nBadFieldNoColon\r\n\r\n"},
+		{name: "no protocol", request: "GET /\r\nHost: h\r\n\r\n"},
+		{name: "empty request line", request: "\r\n\r\n"},
+		{name: "truncated header", request: "GET / HTTP/1.1\r\nHost: h\r\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var handled bool
+			var sm sliceMux
+			sm.Handle("/", func(ex *Exchange) { handled = true })
+			conn := newConn(test.request)
+			conn.Hangup()
+			exch := newExchange(t, conn, 1024, false)
+			if err := Handle(exch, &sm, nopBackoff); err == nil {
+				t.Error("want error on malformed request, got nil")
+			}
+			if handled {
+				t.Error("handler must not run on malformed request")
+			}
+		})
+	}
+}
+
+// No registered handler must yield 404, not an empty response.
+func TestHandleNoHandler(t *testing.T) {
+	var sm sliceMux
+	sm.Handle("GET /", func(ex *Exchange) { t.Error("handler must not run") })
+	conn := serve(t, "GET /nowhere HTTP/1.1\r\nHost: h\r\n\r\n", &sm)
+	const want = "HTTP/1.1 404 Not Found\r\n\r\n"
+	if got := conn.ViewWritten(); got != want {
+		t.Errorf("want %q, got %q", want, got)
+	}
+}
+
+// A handler that writes nothing must still produce a valid response.
+func TestHandleSilentHandler(t *testing.T) {
+	var sm sliceMux
+	sm.Handle("/", func(ex *Exchange) {})
+	conn := serve(t, "GET / HTTP/1.1\r\nHost: h\r\n\r\n", &sm)
+	const want = "HTTP/1.1 200 OK\r\n\r\n"
+	if got := conn.ViewWritten(); got != want {
+		t.Errorf("want %q, got %q", want, got)
+	}
+}
+
+// Body bytes arriving in the same segment as the header must be readable.
+func TestExchangeReadBody(t *testing.T) {
+	const body = "message body"
+	var got string
+	var readErr error
+	var sm sliceMux
+	sm.Handle("POST /", func(ex *Exchange) {
+		dst := make([]byte, len(body))
+		n, err := ex.ReadBody(dst)
+		got, readErr = string(dst[:n]), err
+		ex.WriteHeader(200)
+	})
+	serve(t, "POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 12\r\n\r\n"+body, &sm)
+
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if got != body {
+		t.Errorf("want body %q, got %q", body, got)
+	}
+}

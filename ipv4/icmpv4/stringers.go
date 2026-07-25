@@ -66,10 +66,11 @@ const _CodeDestinationUnreachable_name = "net unreachablehost unreachableprotoco
 var _CodeDestinationUnreachable_index = [...]uint8{0, 15, 31, 51, 67, 98, 117}
 
 func (i CodeDestinationUnreachable) String() string {
-	if i >= CodeDestinationUnreachable(len(_CodeDestinationUnreachable_index)-1) {
+	idx := int(i) - 0
+	if i < 0 || idx >= len(_CodeDestinationUnreachable_index)-1 {
 		return "CodeDestinationUnreachable(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _CodeDestinationUnreachable_name[_CodeDestinationUnreachable_index[i]:_CodeDestinationUnreachable_index[i+1]]
+	return _CodeDestinationUnreachable_name[_CodeDestinationUnreachable_index[idx]:_CodeDestinationUnreachable_index[idx+1]]
 }
 func _() {
 	// An "invalid array index" compiler error signifies that the constant values have changed.
@@ -86,8 +87,9 @@ const _CodeRedirect_name = "redirect for networkredirect for hostredirect for To
 var _CodeRedirect_index = [...]uint8{0, 20, 37, 61, 82}
 
 func (i CodeRedirect) String() string {
-	if i >= CodeRedirect(len(_CodeRedirect_index)-1) {
+	idx := int(i) - 0
+	if i < 0 || idx >= len(_CodeRedirect_index)-1 {
 		return "CodeRedirect(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _CodeRedirect_name[_CodeRedirect_index[i]:_CodeRedirect_index[i+1]]
+	return _CodeRedirect_name[_CodeRedirect_index[idx]:_CodeRedirect_index[idx+1]]
 }

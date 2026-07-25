@@ -1,6 +1,7 @@
 package httphi
 
 import (
+	"errors"
 	"io"
 	"log/slog"
 	"strconv"
@@ -15,6 +16,8 @@ import (
 )
 
 //go:generate stringer -type Method,status -linecomment -output stringers.go
+
+var errNoRequestProto = errors.New("httphi: request line with no HTTP version")
 
 type conn = io.ReadWriteCloser
 
@@ -160,6 +163,13 @@ func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
 	exch.respRemains = reqhdr.BufferReceived() - parsed
 	exch.respHeaderOff = uint16(parsed)
 	exch.respHeaderLen = 0
+	if len(reqhdr.Protocol()) == 0 {
+		// Request line with no HTTP version is a HTTP/0.9 simple-request, which
+		// httpraw tolerates. It is not a valid HTTP/1.1 request-line, RFC 9112 3.
+		exch.WriteHeader(int(StatusBadRequest))
+		exch.rw.Close()
+		return errNoRequestProto
+	}
 	// Mux URI.
 	uri := reqhdr.RequestURI()
 	meth := reqhdr.Method()
@@ -272,9 +282,13 @@ func (r *Router) info(msg string, attrs ...slog.Attr) {
 	internal.LogAttrs(r.log, slog.LevelInfo, msg, attrs...)
 }
 
+// maxStatusLine bounds the response status line: "HTTP/1.1 " + 3 digit code +
+// " " + longest [StatusText] + CRLF.
+const maxStatusLine = len("HTTP/1.1 ") + 3 + 1 + len("Network Authentication Required") + 2
+
 type Exchange struct {
 	used           atomic.Bool
-	respTopBuf     [32]byte
+	respTopBuf     [maxStatusLine]byte
 	respTopWritten uint8
 
 	rawbuf        []byte
@@ -357,7 +371,7 @@ func (exch *Exchange) StageWriteStatus(code int) {
 	n += copy(exch.respTopBuf[n:], text)
 	exch.respTopBuf[n] = '\r'
 	exch.respTopBuf[n+1] = '\n'
-	exch.respTopWritten = uint8(n)
+	exch.respTopWritten = uint8(n + 2)
 }
 
 func (exch *Exchange) WriteHeader(code int) {

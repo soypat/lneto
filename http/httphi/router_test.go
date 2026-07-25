@@ -16,11 +16,16 @@ import (
 
 // rwconn is a in-memory conn. The router handles connections on another
 // goroutine so every field is guarded; onClose lets tests await the handler.
+//
+// A drained rwconn reads (0,nil) as a live socket with no data pending would,
+// so a partial request can be completed with AddReadable mid-handling. Tests
+// that need the peer to hang up call Hangup.
 type rwconn struct {
 	mu       sync.Mutex
 	readable bytes.Buffer
 	written  bytes.Buffer
 	closed   bool
+	hangup   bool
 	onClose  chan struct{}
 	deadline time.Time
 }
@@ -31,6 +36,14 @@ func newConn(request string) *rwconn {
 	r := &rwconn{onClose: make(chan struct{})}
 	r.AddReadable([]byte(request))
 	return r
+}
+
+// Hangup makes reads past the pending data return [io.EOF], as a peer that
+// closed its side of the connection would.
+func (r *rwconn) Hangup() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.hangup = true
 }
 
 func (r *rwconn) Close() error {
@@ -63,7 +76,10 @@ func (r *rwconn) Read(b []byte) (int, error) {
 	} else if r.deadlineExceeded() {
 		return 0, context.DeadlineExceeded
 	} else if r.readable.Len() == 0 {
-		return 0, io.EOF
+		if r.hangup {
+			return 0, io.EOF
+		}
+		return 0, nil // No data pending, handler backs off and retries.
 	}
 	return r.readable.Read(b)
 }

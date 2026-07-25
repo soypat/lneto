@@ -17,9 +17,9 @@ const _Operation_name = "requestreply"
 var _Operation_index = [...]uint8{0, 7, 12}
 
 func (i Operation) String() string {
-	i -= 1
-	if i >= Operation(len(_Operation_index)-1) {
-		return "Operation(" + strconv.FormatInt(int64(i+1), 10) + ")"
+	idx := int(i) - 1
+	if i < 1 || idx >= len(_Operation_index)-1 {
+		return "Operation(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _Operation_name[_Operation_index[i]:_Operation_index[i+1]]
+	return _Operation_name[_Operation_index[idx]:_Operation_index[idx+1]]
 }

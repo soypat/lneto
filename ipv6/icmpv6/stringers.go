@@ -66,10 +66,11 @@ const _CodeDestinationUnreachable_name = "no route to destinationcommunication a
 var _CodeDestinationUnreachable_index = [...]uint8{0, 23, 64, 94, 113, 129, 172, 199}
 
 func (i CodeDestinationUnreachable) String() string {
-	if i >= CodeDestinationUnreachable(len(_CodeDestinationUnreachable_index)-1) {
+	idx := int(i) - 0
+	if i < 0 || idx >= len(_CodeDestinationUnreachable_index)-1 {
 		return "CodeDestinationUnreachable(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _CodeDestinationUnreachable_name[_CodeDestinationUnreachable_index[i]:_CodeDestinationUnreachable_index[i+1]]
+	return _CodeDestinationUnreachable_name[_CodeDestinationUnreachable_index[idx]:_CodeDestinationUnreachable_index[idx+1]]
 }
 func _() {
 	// An "invalid array index" compiler error signifies that the constant values have changed.
@@ -85,8 +86,9 @@ const _CodeParameterProblem_name = "erroneous header field encounteredunrecogniz
 var _CodeParameterProblem_index = [...]uint8{0, 34, 75, 111}
 
 func (i CodeParameterProblem) String() string {
-	if i >= CodeParameterProblem(len(_CodeParameterProblem_index)-1) {
+	idx := int(i) - 0
+	if i < 0 || idx >= len(_CodeParameterProblem_index)-1 {
 		return "CodeParameterProblem(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _CodeParameterProblem_name[_CodeParameterProblem_index[i]:_CodeParameterProblem_index[i+1]]
+	return _CodeParameterProblem_name[_CodeParameterProblem_index[idx]:_CodeParameterProblem_index[idx+1]]
 }
