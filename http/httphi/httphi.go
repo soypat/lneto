@@ -128,8 +128,6 @@ func (r *Router) Configure(cfg RouterConfig) error {
 }
 
 func (r *Router) Handle(conn conn) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	exch := r.getExch(conn)
 	if exch == nil {
 		return lneto.ErrExhausted
@@ -141,7 +139,9 @@ func (r *Router) Handle(conn conn) error {
 	}
 	select {
 	case r.pendingConns <- job{exch: exch}:
+		return nil
 	default:
+		// pendingConns cannot store another Conn, we drop and return error.
 		exch.used.Store(false) // release.
 	}
 	return lneto.ErrPacketDrop
@@ -286,6 +286,7 @@ func (exch *Exchange) Configure(rawbuf []byte, requestLim int, normalizeKeys boo
 	if respSize < 0 {
 		panic("request lim larger than buffer")
 	}
+	exch.rawbuf = rawbuf
 	exch.reqHdr.Reset(rawbuf[:0:requestLim])
 	exch.normalizeKeys = normalizeKeys
 }
@@ -320,7 +321,7 @@ func (exch *Exchange) SetHeader(key, value string) (enoughMemory bool) {
 	if exch.normalizeKeys {
 		httpraw.NormalizeHeaderKey(exch.rawbuf[off : off+n])
 	}
-	exch.rawbuf[n] = ':'
+	exch.rawbuf[off+n] = ':'
 	n++
 	n += copy(exch.rawbuf[off+n:], value)
 	exch.rawbuf[off+n] = '\r'

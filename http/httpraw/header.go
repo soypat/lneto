@@ -605,7 +605,7 @@ func CopyDecodedPercentURL(dst, value []byte, plusAsSpace bool) (n int, err erro
 func copyPlusDecoded(dst, src []byte, plusAsSpace bool) int {
 	n := copy(dst, src)
 	if plusAsSpace {
-		for i := 0; i < n; i++ {
+		for i := range n {
 			if dst[i] == '+' {
 				dst[i] = ' '
 			}
