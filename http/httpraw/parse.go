@@ -29,6 +29,7 @@ var (
 	errBadStatusCodeTxt = errors.New("invalid status code or text")
 	errCookiesParsed    = errors.New("cookies already parsed, reset before parsing again")
 	errBufferTooLarge   = errors.New("httpraw: buffer exceeds max size (offsets are uint16)")
+	errBadPercentEncode = errors.New("httpraw: invalid percent-encoding in URL")
 )
 
 // maxBufLen bounds the header buffer. Offsets/lengths are stored as uint16
@@ -172,7 +173,7 @@ func (hb *headerBuf) scanUntilByte(c byte) []byte {
 	return buf
 }
 
-func (hb *headerBuf) parseFirstLineRequest(initFlags flags) (method, uri, proto headerSlice, flags flags, err error) {
+func (hb *headerBuf) parseFirstLineRequest(initFlags Flags) (method, uri, proto headerSlice, flags Flags, err error) {
 	debuglog("http:req:scan")
 	hb.off = 0 // Parsing first line resets offset.
 	hb.skipLeadingCRLF()
@@ -206,7 +207,7 @@ func (hb *headerBuf) parseFirstLineRequest(initFlags flags) (method, uri, proto 
 	return method, uri, proto, flags, nil
 }
 
-func (hb *headerBuf) parseFirstLineResponse(initFlags flags) (statusCode, statusText headerSlice, flags flags, err error) {
+func (hb *headerBuf) parseFirstLineResponse(initFlags Flags) (statusCode, statusText headerSlice, flags Flags, err error) {
 	debuglog("http:resp:scan")
 	hb.off = 0 // Parsing first line resets offset.
 	hb.skipLeadingCRLF()
@@ -369,7 +370,7 @@ func (h *Header) reserve(need int) bool {
 		return false
 	}
 	if need > hb.free() {
-		if h.flags.hasAny(flagNoBufferGrow) {
+		if h.flags.HasAny(flagNoBufferGrow) {
 			h.flags |= flagOOMReached
 			return false
 		}
@@ -519,9 +520,9 @@ func (hb *headerBuf) next(ss *scannerState) argsKV {
 
 // ConnectionClose returns true if 'Connection: close' header is set or if a invalid header was found.
 func (h *Header) ConnectionClose() bool {
-	closed := h.flags.hasAny(flagConnClose) ||
+	closed := h.flags.HasAny(flagConnClose) ||
 		h.hasHeaderValue(headerConnection, strClose) ||
-		(h.flags.hasAny(flagNoHTTP11) && !h.hasHeaderValue(headerConnection, "keep-alive"))
+		(h.flags.HasAny(flagNoHTTP11) && !h.hasHeaderValue(headerConnection, "keep-alive"))
 	if closed {
 		h.flags |= flagConnClose
 	}

@@ -209,6 +209,67 @@ func TestCopyNormalizedHeaderValue(t *testing.T) {
 	}
 }
 
+func TestCopyDecodedPercentURL(t *testing.T) {
+	var tests = []struct {
+		value       string
+		plusAsSpace bool
+		want        string
+		wantErr     bool
+	}{
+		{value: "", want: ""},
+		{value: "/plain/path", want: "/plain/path"},
+		{value: "/a%20b", want: "/a b"},
+		{value: "%41%42%43", want: "ABC"},
+		{value: "%2f%2F", want: "//"}, // lower and upper case hex digits.
+		{value: "%25", want: "%"},     // escaped percent must not re-trigger decoding.
+		{value: "%2525", want: "%25"}, // decoded output is not re-scanned.
+		{value: "a+b", want: "a+b"},   // plus is literal in path segments.
+		{value: "a+b", plusAsSpace: true, want: "a b"},
+		{value: "%20+%20", plusAsSpace: true, want: "   "},
+		{value: "/x?q=%E2%82%AC", want: "/x?q=\xe2\x82\xac"}, // multi-byte UTF-8 sequence.
+		// Malformed escapes must error, never pass through silently.
+		{value: "%zz", want: "", wantErr: true},
+		{value: "ok%4", want: "ok", wantErr: true}, // truncated escape at end.
+		{value: "ok%", want: "ok", wantErr: true},  // bare percent at end.
+		{value: "a%2gb", want: "a", wantErr: true}, // second digit not hex.
+		{value: "a%g2b", want: "a", wantErr: true}, // first digit not hex.
+	}
+	dst := make([]byte, 256)
+	for _, test := range tests {
+		value := []byte(test.value)
+		n, err := CopyDecodedPercentURL(dst[:len(value)], value, test.plusAsSpace)
+		if test.wantErr && err == nil {
+			t.Errorf("%q: want error, got nil", test.value)
+		} else if !test.wantErr && err != nil {
+			t.Errorf("%q: unexpected error %s", test.value, err)
+		}
+		if got := string(dst[:n]); got != test.want {
+			t.Errorf("%q: want %q got %q", test.value, test.want, got)
+		}
+		// n<len(value) implies percent-escapes were decoded. The converse does not
+		// hold: '+'->' ' substitution preserves length.
+		if !test.wantErr && n < len(test.value) && test.want == test.value {
+			t.Errorf("%q: n=%d signals decoding but value unchanged", test.value, n)
+		}
+		if !test.wantErr && !test.plusAsSpace && test.want != test.value && n >= len(test.value) {
+			t.Errorf("%q: n=%d does not signal decoding of %q", test.value, n, test.want)
+		}
+	}
+}
+
+// In-place decoding (dst aliasing value at offset 0) must yield the same result.
+func TestCopyDecodedPercentURLInPlace(t *testing.T) {
+	const value, want = "/a%20b%2Fc%25", "/a b/c%"
+	buf := []byte(value)
+	n, err := CopyDecodedPercentURL(buf, buf, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(buf[:n]); got != want {
+		t.Fatalf("want %q got %q", want, got)
+	}
+}
+
 func TestHeaderSetOverwrite(t *testing.T) {
 	var h Header
 	h.Reset(nil)

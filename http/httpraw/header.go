@@ -15,19 +15,21 @@ const (
 	strClose         = "close"
 )
 
-type flags uint16
+type Flags uint16
 
 const (
-	flagNoBufferGrow flags = 1 << iota
+	flagNoBufferGrow Flags = 1 << iota
 	flagDoneParsingHeader
 	flagOOMReached
 	flagConnClose
 	flagNoHTTP11
 	flagMangledBuffer // set when header fields appended to buffer via Add,Set calls
 	flagReaderEOF
+	// set if [Header.SetStatus] or [Header.SetStatusInt] has been called.
+	FlagStatusSet
 )
 
-func (f flags) hasAny(checkThese flags) bool {
+func (f Flags) HasAny(checkThese Flags) bool {
 	return f&checkThese != 0
 }
 
@@ -50,9 +52,12 @@ type Header struct {
 	statusCode headerSlice
 	statusText headerSlice
 
-	flags flags
+	flags Flags
 	_     noCopy
 }
+
+// Flags returns [Flags] to signal status code has been set, Connection:Close or other useful signals provided by flags.
+func (h *Header) Flags() Flags { return h.flags }
 
 // EnableBufferGrowth disables buffer growth during parsing if b is false. Is enabled by default.
 // Disabling buffer growth prevents allocations but methods may throw errors on insufficient memory.
@@ -97,9 +102,9 @@ func (h *Header) Parse(asResponse bool) error {
 //		return err
 //	}
 func (h *Header) TryParse(asResponse bool) (needMoreData bool, err error) {
-	if h.flags.hasAny(flagDoneParsingHeader) {
+	if h.flags.HasAny(flagDoneParsingHeader) {
 		return false, errAlreadyParsed
-	} else if h.flags.hasAny(flagMangledBuffer) {
+	} else if h.flags.HasAny(flagMangledBuffer) {
 		return false, errMangledBuffer
 	}
 	if asResponse && h.statusCode.len == 0 || !asResponse && h.requestURI.start == 0 {
@@ -114,7 +119,7 @@ func (h *Header) TryParse(asResponse bool) (needMoreData bool, err error) {
 
 // ParsingSuccess returns true if TryParse was successful, that is to say it returned needMoreData==false and err==nil.
 func (h *Header) ParsingSuccess() bool {
-	return h.flags.hasAny(flagDoneParsingHeader)
+	return h.flags.HasAny(flagDoneParsingHeader)
 }
 
 // ReadFromLimited reads at most maxBytesToRead from reader and appends them to underlying buffer.
@@ -123,18 +128,23 @@ func (h *Header) ParsingSuccess() bool {
 func (h *Header) ReadFromLimited(r io.Reader, maxBytesToRead int) (int, error) {
 	if maxBytesToRead <= 0 {
 		return 0, errSmallBuffer
-	} else if h.flags.hasAny(flagMangledBuffer) {
+	} else if h.flags.HasAny(flagMangledBuffer) {
 		return 0, errMangledBuffer
+	} else if h.flags.HasAny(flagReaderEOF) {
+		return 0, io.EOF // Now we do return EOF.
 	}
 	free := h.BufferFree()
 	if free < maxBytesToRead {
-		if h.flags.hasAny(flagNoBufferGrow) {
+		if h.flags.HasAny(flagNoBufferGrow) {
 			return 0, errSmallBuffer
 		}
 		h.hbuf.buf = slices.Grow(h.hbuf.buf, maxBytesToRead)
 	}
 	blen := len(h.hbuf.buf)
 	b := h.hbuf.buf[blen:min(blen+maxBytesToRead, cap(h.hbuf.buf))]
+	if len(b) == 0 {
+		return 0, errSmallBuffer
+	}
 	n, err := r.Read(b)
 	if err != nil && err == io.EOF {
 		h.flags |= flagReaderEOF
@@ -154,7 +164,7 @@ func (h *Header) ReadFromBytes(b []byte) (int, error) {
 	}
 	free := h.BufferFree()
 	if free < len(b) {
-		if h.flags.hasAny(flagNoBufferGrow) {
+		if h.flags.HasAny(flagNoBufferGrow) {
 			return 0, errSmallBuffer
 		}
 		h.hbuf.buf = slices.Grow(h.hbuf.buf, len(b))
@@ -166,7 +176,7 @@ func (h *Header) ReadFromBytes(b []byte) (int, error) {
 // BufferReceived returns the amoung of bytes read during calls to Read* methods.
 // Returns 0 if buffer is invalid/mangled.
 func (h *Header) BufferReceived() int {
-	if h.flags.hasAny(flagMangledBuffer | flagOOMReached) {
+	if h.flags.HasAny(flagMangledBuffer | flagOOMReached) {
 		return 0
 	}
 	return len(h.hbuf.buf)
@@ -176,7 +186,7 @@ func (h *Header) BufferReceived() int {
 // If the Parse* method completed without error then BufferParsed returns the header's length including the final "\r\n\r\n" text.
 // BufferParsed returns 0 if the buffer is invalid/mangled or if no header data has been parsed succesfully.
 func (h *Header) BufferParsed() int {
-	if h.flags.hasAny(flagMangledBuffer | flagOOMReached) {
+	if h.flags.HasAny(flagMangledBuffer | flagOOMReached) {
 		return 0
 	}
 	return h.hbuf.off
@@ -234,7 +244,7 @@ func (hb *headerBuf) forEach(cb func(key, value []byte) error) error {
 //	h.Reset(httpHeader); h.Parse() // Parse bytes in place with no copying.
 //	h.Reset(nil) // Reuse buffer previously set in a call to Reset.
 func (h *Header) Reset(buf []byte) {
-	if h.flags.hasAny(flagNoBufferGrow) && cap(buf) < 32 {
+	if h.flags.HasAny(flagNoBufferGrow) && cap(buf) < 32 {
 		panic("small buffer and flagNoBufferGrow set")
 	}
 	const persistentFlags = flagNoBufferGrow
@@ -250,9 +260,9 @@ func (h *Header) Reset(buf []byte) {
 // Body returns the surplus data following headers. It is only valid as long as Parse* or Reset methods are not called.
 func (h *Header) Body() ([]byte, error) {
 	debuglog("http:body")
-	if h.flags.hasAny(flagMangledBuffer) {
+	if h.flags.HasAny(flagMangledBuffer) {
 		return nil, errMangledBuffer
-	} else if h.flags.hasAny(flagDoneParsingHeader) {
+	} else if h.flags.HasAny(flagDoneParsingHeader) {
 		return h.hbuf.buf[h.hbuf.off:], nil
 	}
 	return nil, errUnparsed
@@ -368,9 +378,17 @@ func (h *Header) Status() (code, statusText []byte) {
 	return h.hbuf.musttoken(h.statusCode), h.hbuf.musttoken(h.statusText)
 }
 
-// Status sets the response header's status code and status text. i.e: "200" "OK".
+// SetStatus sets the response header's status code and status text. i.e: "200" "OK".
 func (h *Header) SetStatus(code, statusText string) {
+	h.flags |= FlagStatusSet
 	h.statusCode = h.reuseOrAppend(h.statusCode, code)
+	h.statusText = h.reuseOrAppend(h.statusText, statusText)
+}
+
+// SetStatusInt is identical to [Header.SetStatus] but performs integer to text conversion for status code.
+func (h *Header) SetStatusInt(code int64, statusText string) {
+	h.flags |= FlagStatusSet
+	h.statusCode = h.reuseOrAppendInt(h.statusCode, code, 10)
 	h.statusText = h.reuseOrAppend(h.statusText, statusText)
 }
 
@@ -384,7 +402,7 @@ func (h *Header) getNonEmptyValue(s headerSlice) []byte {
 // AppendRequest appends the request header representation to the buffer and returns the result.
 func (h *Header) AppendRequest(dst []byte) ([]byte, error) {
 	proto := h.Protocol()
-	if h.flags.hasAny(flagOOMReached) {
+	if h.flags.HasAny(flagOOMReached) {
 		return dst, errOOM
 	} else if h.requestURI.len == 0 || h.method.len == 0 {
 		return dst, errNeedMethodURI
@@ -413,8 +431,18 @@ func (h *Header) AppendRequest(dst []byte) ([]byte, error) {
 
 // AppendResponse appends the response header representation to the buffer and returns the result.
 func (h *Header) AppendResponse(dst []byte) ([]byte, error) {
+	dst, err := h.AppendResponseNoHeaders(dst)
+	if err != nil {
+		return dst, err
+	}
+	dst = h.AppendHeaders(dst)
+	return append(dst, strCRLF...), nil
+}
+
+// AppendResponseNoHeaders appends the first line of the response containing protocol and status code/text: i.e: "HTTP/1.1 200 OK\r\n"
+func (h *Header) AppendResponseNoHeaders(dst []byte) ([]byte, error) {
 	proto := h.Protocol()
-	if h.flags.hasAny(flagOOMReached) {
+	if h.flags.HasAny(flagOOMReached) {
 		return dst, errOOM
 	} else if h.statusCode.len == 0 || h.statusText.len == 0 {
 		return dst, errBadStatusCodeTxt
@@ -429,10 +457,7 @@ func (h *Header) AppendResponse(dst []byte) ([]byte, error) {
 	dst = append(dst, ' ')
 	dst = append(dst, text...)
 	dst = append(dst, strCRLF...)
-
-	dst = h.AppendHeaders(dst)
-
-	return append(dst, strCRLF...), nil
+	return dst, nil
 }
 
 // AppendHeaders appends headers to buffer. Use AppendRequest and AppendResponse over this.
@@ -539,4 +564,64 @@ func CopyNormalizedHeaderValue(dst []byte, value []byte) (n int, modified bool) 
 		write += n + 1
 	}
 	return write, modified
+}
+
+// CopyDecodedPercentURL decodes percent-escapes in value into dst and returns bytes written.
+// n < len(value) implies percent-escapes were decoded; the converse does not hold since
+// '+' substitution preserves length. If plusAsSpace is set '+' decodes to ' ',
+// which is correct for query and form-encoded data but NOT for path segments.
+// On malformed escape returns n bytes written before the fault and a non-nil error.
+// dst and value may only alias if &dst[0] == &value[0].
+func CopyDecodedPercentURL(dst, value []byte, plusAsSpace bool) (n int, err error) {
+	if len(dst) < len(value) {
+		panic("httpraw.CopyDecodedPercentURL: dst buffer shorter than value")
+	}
+	read := 0
+	for {
+		escape := bytes.IndexByte(value[read:], '%')
+		if escape < 0 {
+			n += copyPlusDecoded(dst[n:], value[read:], plusAsSpace)
+			return n, nil
+		}
+		escape += read
+		n += copyPlusDecoded(dst[n:], value[read:escape], plusAsSpace)
+		if escape+2 >= len(value) {
+			return n, errBadPercentEncode // Truncated escape at end of value.
+		}
+		hi, okhi := unhexdigit(value[escape+1])
+		lo, oklo := unhexdigit(value[escape+2])
+		if !okhi || !oklo {
+			return n, errBadPercentEncode
+		}
+		// Write index n is always <= escape since decoding shrinks 3 bytes to 1,
+		// so writing here never clobbers an unread byte when dst aliases value.
+		dst[n] = hi<<4 | lo
+		n++
+		read = escape + 3
+	}
+}
+
+// copyPlusDecoded copies src to dst replacing '+' with ' ' if plusAsSpace set.
+func copyPlusDecoded(dst, src []byte, plusAsSpace bool) int {
+	n := copy(dst, src)
+	if plusAsSpace {
+		for i := 0; i < n; i++ {
+			if dst[i] == '+' {
+				dst[i] = ' '
+			}
+		}
+	}
+	return n
+}
+
+func unhexdigit(c byte) (byte, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', true
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, true
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10, true
+	}
+	return 0, false
 }
