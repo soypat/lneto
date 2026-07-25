@@ -20,13 +20,14 @@ type conn = io.ReadWriteCloser
 
 // Router hosts concurrent safe data.
 type Router struct {
-	mu           sync.Mutex
-	gen          atomic.Uint32
-	numGoro      int
-	reqBuf       int
-	respBuf      int
-	pendingConns chan job
-	mux          Mux
+	mu            sync.Mutex
+	gen           atomic.Uint32
+	numGoro       int
+	reqBuf        int
+	respBuf       int
+	normalizeKeys bool
+	pendingConns  chan job
+	mux           Mux
 
 	globbuf  []byte
 	exchs    []Exchange
@@ -99,6 +100,7 @@ func (r *Router) Configure(cfg RouterConfig) error {
 	r.reqBuf = cfg.RequestBufferSize
 	r.respBuf = cfg.ResponseMinBufferSize
 	r.mux = cfg.Mux
+	r.normalizeKeys = cfg.NormalizeOutgoingKeys
 	if !workerMode {
 		r.backoff = cfg.Backoff
 		r.numGoro = 0
@@ -124,6 +126,52 @@ func (r *Router) Configure(cfg RouterConfig) error {
 		r.pendingConns = jobqueue
 		r.numGoro = numgoro
 	}
+	return nil
+}
+
+// Handle is a extremely low-level HTTP handling method used internally in [Router].
+// Requires exchange to be acquired and configured. Will panic if any argument is nil.
+func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
+	reqhdr := &exch.reqHdr
+	reqhdr.Reset(nil)
+	var consecutiveBackoffs uint
+	for {
+		n, err := reqhdr.ReadFromLimited(exch.rw, reqhdr.BufferFree())
+		if err != nil {
+			exch.readErr = err
+			return err
+		} else if n == 0 {
+			backoff.Do(consecutiveBackoffs)
+			consecutiveBackoffs++
+			continue
+		}
+		consecutiveBackoffs = 0
+		const asRequest = false
+		needMore, err := reqhdr.TryParse(asRequest)
+		if !needMore && err == nil {
+			// Done!
+			break
+		} else if err != nil {
+			return err
+		}
+	}
+	// Setup Exchange fields necessary for correct functioning.
+	parsed := reqhdr.BufferParsed()
+	exch.respRemains = reqhdr.BufferReceived() - parsed
+	exch.respHeaderOff = uint16(parsed)
+	exch.respHeaderLen = 0
+	// Mux URI.
+	uri := reqhdr.RequestURI()
+	meth := reqhdr.Method()
+	handler := mux.LookupHandler(MethodFromBytes(meth), uri)
+	if handler != nil {
+		handler(exch)
+		exch.FlushHeader()
+	} else {
+		exch.WriteHeader(404)
+	}
+	// TODO write response from exchange here.
+	exch.rw.Close()
 	return nil
 }
 
@@ -161,50 +209,14 @@ func (r *Router) goroWorker(gen uint32, queue chan job, backoff lneto.BackoffStr
 
 func (r *Router) goroHandle(exch *Exchange, backoff lneto.BackoffStrategy, mux Mux) {
 	defer r.freeExch(exch)
-	reqhdr := &exch.reqHdr
-	reqhdr.Reset(nil)
-	var consecutiveBackoffs uint
-	for {
-		n, err := reqhdr.ReadFromLimited(exch.rw, reqhdr.BufferFree())
-		if err != nil {
+	err := Handle(exch, mux, backoff)
+	if err != nil {
+		if exch.readErr != nil {
 			r.error("goroHandle:ReadFromLimited", slog.String("err", err.Error()))
-			exch.rw.Close()
-			return
-		} else if n == 0 {
-			backoff(consecutiveBackoffs)
-			consecutiveBackoffs++
-			continue
-		}
-		consecutiveBackoffs = 0
-		const asRequest = false
-		needMore, err := reqhdr.TryParse(asRequest)
-		if !needMore && err == nil {
-			// Done!
-			break
-		} else if err != nil {
-			r.error("goroHandle:TryParse", slog.String("err", err.Error()))
-			exch.rw.Close()
-			return
+		} else {
+			r.error("goroHandle:TryParse?", slog.String("err", err.Error()))
 		}
 	}
-	r.info("goroHandle:headerParsedSuccess")
-	// Setup Exchange fields necessary for correct functioning.
-	parsed := reqhdr.BufferParsed()
-	exch.respRemains = reqhdr.BufferReceived() - parsed
-	exch.respHeaderOff = uint16(parsed)
-	exch.respHeaderLen = 0
-	// Mux URI.
-	uri := reqhdr.RequestURI()
-	meth := reqhdr.Method()
-	handler := mux.LookupHandler(MethodFromBytes(meth), uri)
-	if handler != nil {
-		handler(exch)
-	}
-	// Reuse request space as response header start.
-
-	// TODO write response from exchange here.
-	exch.rw.Close()
-
 }
 
 func (r *Router) freeExch(exch *Exchange) {
@@ -245,15 +257,11 @@ func (r *Router) getExch(conn conn) (exch *Exchange) {
 
 	if r.numGoro == 0 {
 		exch := new(Exchange)
-		exch.Configure(make([]byte, r.respBuf+r.reqBuf), r.reqBuf, false)
-
+		exch.Configure(make([]byte, r.respBuf+r.reqBuf), r.reqBuf, r.normalizeKeys)
+		exch.Acquire(conn) // Fresh exchange, CAS cannot fail.
 		return exch
 	}
 	return nil
-}
-
-func (r *Router) allocBuffers(exch *Exchange) {
-
 }
 
 func (r *Router) error(msg string, attrs ...slog.Attr) {
@@ -279,6 +287,7 @@ type Exchange struct {
 	headerWritten bool
 	normalizeKeys bool
 	nextFree      *Exchange
+	readErr       error
 }
 
 func (exch *Exchange) Configure(rawbuf []byte, requestLim int, normalizeKeys bool) {
@@ -295,6 +304,7 @@ func (exch *Exchange) Acquire(conn conn) bool {
 	if !exch.used.CompareAndSwap(false, true) {
 		return false
 	}
+	exch.readErr = nil
 	exch.respTopWritten = 0
 	exch.respHeaderOff = 0
 	exch.respHeaderLen = 0

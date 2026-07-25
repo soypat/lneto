@@ -27,6 +27,7 @@ const (
 	flagReaderEOF
 	// set if [Header.SetStatus] or [Header.SetStatusInt] has been called.
 	FlagStatusSet
+	FlagReaderError
 )
 
 func (f Flags) HasAny(checkThese Flags) bool {
