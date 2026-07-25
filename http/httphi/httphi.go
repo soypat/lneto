@@ -41,7 +41,7 @@ type job struct {
 }
 
 type Mux interface {
-	Handler(get Method, uri []byte) HandlerFunc
+	LookupHandler(get Method, uri []byte) HandlerFunc
 }
 
 type RouterConfig struct {
@@ -196,7 +196,7 @@ func (r *Router) goroHandle(exch *Exchange, backoff lneto.BackoffStrategy, mux M
 	// Mux URI.
 	uri := reqhdr.RequestURI()
 	meth := reqhdr.Method()
-	handler := mux.Handler(MethodFromBytes(meth), uri)
+	handler := mux.LookupHandler(MethodFromBytes(meth), uri)
 	if handler != nil {
 		handler(exch)
 	}
