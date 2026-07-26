@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/soypat/lneto/http/httpraw"
+	"github.com/soypat/lneto/internal"
 
 	"github.com/soypat/lneto"
 )
@@ -783,7 +784,8 @@ func TestExchangeRequestParseMultipart(t *testing.T) {
 	sm.Reset(1)
 	sm.Handle("/f", func(exch *Exchange) {
 		var mp httpraw.Multipart
-		if mp, gotErr = exch.RequestMultipart(); gotErr != nil {
+		mp, gotErr = exch.RequestMultipart()
+		if gotErr != nil {
 			return
 		}
 		var hdr httpraw.MultipartHeader
@@ -828,6 +830,56 @@ func TestExchangeRequestParseMultipart(t *testing.T) {
 	const want = "caption:8|photo:7"
 	if strings.Join(got, "|") != want {
 		t.Errorf("want %q, got %q", want, strings.Join(got, "|"))
+	}
+}
+
+type multiPart struct {
+	filename string
+	name     string
+	content  []byte
+}
+
+func readMultiPart(exch *Exchange, buf []byte) (parts []multiPart, gotErr error) {
+	var mp httpraw.Multipart
+	mp, gotErr = exch.RequestMultipart()
+	if gotErr != nil {
+		return
+	}
+	var hdr httpraw.MultipartHeader
+	buflen := 0
+	for {
+		file := internal.SliceReclaim(&parts)
+		n, err := exch.ReadBody(buf[buflen:])
+		if err != nil {
+			return nil, err
+		}
+		buflen += n
+		next, err := mp.NextHeader(&hdr, buf[:buflen])
+		if err == io.EOF {
+			return // Closing delimiter, body done.
+		} else if err == httpraw.ErrNeedMoreData {
+			continue
+		} else if err != nil {
+			gotErr = err
+			return
+		}
+		// Copy name and filename before compaction.
+		file.name = string(hdr.Name)
+		file.filename = string(hdr.Filename)
+		// Assimilate current body in buffer.
+		body, rest, done := mp.NextBody(next)
+		file.content = append(file.content, body...)
+		for !done {
+			// Refill buffer.
+			n, err := exch.ReadBody(buf)
+			if err != nil {
+				return nil, err
+			}
+			body, rest, done = mp.NextBody(buf[:n])
+			file.content = append(file.content, body...)
+		}
+		// Now prepare buffer
+		buflen = copy(buf, rest)
 	}
 }
 
