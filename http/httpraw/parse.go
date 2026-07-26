@@ -11,12 +11,15 @@ import (
 )
 
 var (
-	errNoProto     = errors.New("missing protocol, HTTP/0.9 unsupported")
-	errNeedMore    = errors.New("need more data: cannot find trailing lf")
-	errUnparsed    = errors.New("need to finish parsing")
-	errInvalidName = errors.New("invalid header name")
-	errSmallBuffer = errors.New("small read buffer. Increase ReadBufferSize")
-	errOOM         = errors.New("httpraw: buffer out of memory")
+	errNoProto = errors.New("missing protocol, HTTP/0.9 unsupported")
+	// ErrNeedMoreData signals a parser was handed an incomplete buffer: append
+	// more data to it and call again.
+	ErrNeedMoreData = errors.New("need more data: cannot find trailing lf/delimiter")
+	errNoBoundary   = errors.New("httpraw: multipart boundary not set")
+	errUnparsed     = errors.New("need to finish parsing")
+	errInvalidName  = errors.New("invalid header name")
+	errSmallBuffer  = errors.New("small read buffer. Increase ReadBufferSize")
+	errOOM          = errors.New("httpraw: buffer out of memory")
 	// Header.Set and Header.Add mangles the buffer.
 	// Call them after retrieving the Body. Do not call them before parsing the header (why would you even do that?).
 	errMangledBuffer    = errors.New("httpraw: mangled buffer")
@@ -179,11 +182,11 @@ func (hb *headerBuf) parseFirstLineRequest(initFlags Flags) (method, uri, proto 
 	hb.skipLeadingCRLF()
 	flags = initFlags
 	if bytes.IndexByte(hb.offBuf(), '\n') < 0 {
-		return method, uri, proto, flags, errNeedMore // Incomplete line.
+		return method, uri, proto, flags, ErrNeedMoreData // Incomplete line.
 	}
 	b := hb.scanLine()
 	if len(b) < 5 {
-		return method, uri, proto, flags, errNeedMore
+		return method, uri, proto, flags, ErrNeedMoreData
 	}
 	debuglog("http:req:parse")
 
@@ -213,18 +216,18 @@ func (hb *headerBuf) parseFirstLineResponse(initFlags Flags) (statusCode, status
 	hb.skipLeadingCRLF()
 	flags = initFlags
 	if bytes.IndexByte(hb.offBuf(), '\n') < 0 {
-		return statusCode, statusText, flags, errNeedMore // Incomplete line.
+		return statusCode, statusText, flags, ErrNeedMoreData // Incomplete line.
 	}
 	b := hb.scanLine()
 	if len(b) < 5 {
-		return statusCode, statusText, flags, errNeedMore
+		return statusCode, statusText, flags, ErrNeedMoreData
 	}
 	debuglog("http:resp:parse")
 
 	// Parse protocol (e.g. "HTTP/1.1"), then status code, then status text.
 	protoEnd := bytes.IndexByte(b, ' ')
 	if protoEnd < 0 {
-		return statusCode, statusText, flags, errNeedMore
+		return statusCode, statusText, flags, ErrNeedMoreData
 	}
 	if b2s(b[:protoEnd]) != strHTTP11 {
 		flags |= flagNoHTTP11
@@ -444,7 +447,7 @@ func (hb *headerBuf) next(ss *scannerState) argsKV {
 		if x < 0 {
 			// A header name should always at some point be followed by a \n
 			// even if it's the one that terminates the header block.
-			ss.err = errNeedMore
+			ss.err = ErrNeedMoreData
 			return hb.noKV()
 		} else if x < n {
 			// There was a \n before the colon! This is invalid.
@@ -454,7 +457,7 @@ func (hb *headerBuf) next(ss *scannerState) argsKV {
 			// A newline is present (x>=0 reached here) but the line has no
 			// colon: malformed, not incomplete. A split arriving before the
 			// colon has no newline yet and is caught by the x<0 branch above,
-			// so it still returns errNeedMore.
+			// so it still returns ErrNeedMoreData.
 			ss.err = errInvalidName
 			return hb.noKV()
 		}
@@ -482,7 +485,7 @@ func (hb *headerBuf) next(ss *scannerState) argsKV {
 		nl := bytes.IndexByte(buf[n:], '\n')
 		if nl < 0 || nl+n+1 == len(buf) {
 			// No newline or newline is last character and can't know if is multiline.
-			ss.err = errNeedMore
+			ss.err = ErrNeedMoreData
 			return hb.noKV()
 		}
 		n += nl + 1 // Index of the newly found newline.

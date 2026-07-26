@@ -411,7 +411,7 @@ func TestHeader_LargeBufferOverflow(t *testing.T) {
 }
 
 // a complete but malformed header line with no colon must be a hard error,
-// not errNeedMore (which makes a streaming parser wait forever).
+// not ErrNeedMoreData (which makes a streaming parser wait forever).
 func TestHeader_ColonlessLineIsHardError(t *testing.T) {
 	raw := "GET / HTTP/1.1\r\nBadHeaderNoColon\r\n\r\n"
 	var h Header
@@ -419,8 +419,8 @@ func TestHeader_ColonlessLineIsHardError(t *testing.T) {
 	if err == nil {
 		t.Fatal("want error on colonless header line, got nil")
 	}
-	if err == errNeedMore {
-		t.Fatalf("colonless line reported as errNeedMore (parser would hang); want a hard error like errInvalidName")
+	if err == ErrNeedMoreData {
+		t.Fatalf("colonless line reported as ErrNeedMoreData (parser would hang); want a hard error like errInvalidName")
 	}
 }
 
@@ -437,8 +437,8 @@ func TestHeader_SplitBeforeColonStillParses(t *testing.T) {
 		t.Fatal(err)
 	}
 	needMore, err := h.TryParse(false)
-	if err != nil && err != errNeedMore {
-		t.Fatalf("split before colon: want errNeedMore/nil, got %v", err)
+	if err != nil && err != ErrNeedMoreData {
+		t.Fatalf("split before colon: want ErrNeedMoreData/nil, got %v", err)
 	}
 	if !needMore {
 		t.Fatal("want needMoreData=true after partial input")

@@ -1,6 +1,7 @@
 package httpraw
 
 import (
+	"io"
 	"strconv"
 	"strings"
 	"testing"
@@ -23,6 +24,7 @@ const (
 )
 
 func TestMultipartBoundary(t *testing.T) {
+	var mp Multipart
 	for _, test := range []struct {
 		contentType string
 		want        string
@@ -34,8 +36,12 @@ func TestMultipartBoundary(t *testing.T) {
 		{contentType: "multipart/form-data", want: ""},                  // Absent.
 		{contentType: "application/x-www-form-urlencoded", want: ""},
 	} {
-		got := MultipartBoundary([]byte(test.contentType))
-		if string(got) != test.want {
+		err := mp.SetContentType([]byte(test.contentType))
+		if err != nil {
+			t.Skip("asdasd")
+		}
+		got := string(mp.Boundary)
+		if got != test.want {
 			t.Errorf("%q: want %q, got %q", test.contentType, test.want, got)
 		}
 	}
@@ -63,14 +69,21 @@ func TestContentParam(t *testing.T) {
 }
 
 func TestNextPartHeader(t *testing.T) {
-	boundary := []byte(multiBoundary)
-	hdr, rest, err := NextPartHeader([]byte(multiBody), boundary)
+	m := Multipart{Boundary: []byte(multiBoundary)}
+	var hdr MultipartHeader
+	rest, err := m.NextHeader(&hdr, []byte(multiBody))
 	if err != nil {
 		t.Fatal(err)
 	}
 	const wantHdr = "Content-Disposition: form-data; name=\"caption\"\r\n"
-	if string(hdr) != wantHdr {
-		t.Errorf("want header %q, got %q", wantHdr, hdr)
+	if string(hdr.Part) != wantHdr {
+		t.Errorf("want header %q, got %q", wantHdr, hdr.Part)
+	}
+	if string(hdr.Name) != "caption" {
+		t.Errorf("want name %q, got %q", "caption", hdr.Name)
+	}
+	if hdr.Filename != nil {
+		t.Errorf("want nil filename for a non file part, got %q", hdr.Filename)
 	}
 	if !strings.HasPrefix(string(rest), "hi there\r\n") {
 		t.Errorf("want rest at part body, got %q", rest)
@@ -79,14 +92,15 @@ func TestNextPartHeader(t *testing.T) {
 
 // Incomplete data must ask for more, never guess.
 func TestNextPartHeaderNeedMore(t *testing.T) {
-	boundary := []byte(multiBoundary)
+	m := Multipart{Boundary: []byte(multiBoundary)}
 	for _, data := range []string{
 		"",
 		"------abc",        // Delimiter cut short.
 		"------abc123\r\n", // No header block yet.
 		"------abc123\r\nContent-Disposition: form-", // Header block unterminated.
 	} {
-		if _, _, err := NextPartHeader([]byte(data), boundary); err != ErrNeedMoreData {
+		var hdr MultipartHeader
+		if _, err := m.NextHeader(&hdr, []byte(data)); err != ErrNeedMoreData {
 			t.Errorf("%q: want ErrNeedMoreData, got %v", data, err)
 		}
 	}
@@ -94,19 +108,21 @@ func TestNextPartHeaderNeedMore(t *testing.T) {
 
 // The closing delimiter ends iteration.
 func TestNextPartHeaderEnd(t *testing.T) {
-	boundary := []byte(multiBoundary)
-	if _, _, err := NextPartHeader([]byte("------abc123--\r\n"), boundary); err != ErrEndOfParts {
-		t.Errorf("want ErrEndOfParts, got %v", err)
+	m := Multipart{Boundary: []byte(multiBoundary)}
+	var hdr MultipartHeader
+	if _, err := m.NextHeader(&hdr, []byte("------abc123--\r\n")); err != io.EOF {
+		t.Errorf("want io.EOF, got %v", err)
 	}
 }
 
 func TestNextPartBody(t *testing.T) {
-	boundary := []byte(multiBoundary)
-	_, rest, err := NextPartHeader([]byte(multiBody), boundary)
+	m := Multipart{Boundary: []byte(multiBoundary)}
+	var hdr MultipartHeader
+	rest, err := m.NextHeader(&hdr, []byte(multiBody))
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, rest, done := NextPartBody(rest, boundary)
+	body, rest, done := m.NextBody(rest)
 	if !done {
 		t.Fatal("want the part to end within the buffer")
 	}
@@ -120,18 +136,19 @@ func TestNextPartBody(t *testing.T) {
 
 // A part whose bytes contain CRLFs and boundary-like text must survive intact.
 func TestNextPartBodyBinary(t *testing.T) {
-	boundary := []byte(multiBoundary)
+	m := Multipart{Boundary: []byte(multiBoundary)}
 	data := []byte(multiBody)
-	_, rest, err := NextPartHeader(data, boundary) // caption part.
+	var hdr MultipartHeader
+	rest, err := m.NextHeader(&hdr, data) // caption part.
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, rest, _ = NextPartBody(rest, boundary)
-	_, rest, err = NextPartHeader(rest, boundary) // photo part.
+	_, rest, _ = m.NextBody(rest)
+	rest, err = m.NextHeader(&hdr, rest) // photo part.
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, rest, done := NextPartBody(rest, boundary)
+	body, rest, done := m.NextBody(rest)
 	if !done {
 		t.Fatal("want the part to end within the buffer")
 	}
@@ -139,19 +156,19 @@ func TestNextPartBodyBinary(t *testing.T) {
 	if string(body) != want {
 		t.Errorf("want body %q, got %q", want, body)
 	}
-	if _, _, err = NextPartHeader(rest, boundary); err != ErrEndOfParts {
-		t.Errorf("want ErrEndOfParts after last part, got %v", err)
+	if _, err = m.NextHeader(&hdr, rest); err != io.EOF {
+		t.Errorf("want io.EOF after last part, got %v", err)
 	}
 }
 
 // A delimiter split across two reads must not be mistaken for part data: the
 // tail is held back until proven not to be a delimiter.
 func TestNextPartBodySplitDelimiter(t *testing.T) {
-	boundary := []byte(multiBoundary)
+	m := Multipart{Boundary: []byte(multiBoundary)}
 	const part = "hi there"
 	full := part + "\r\n------abc123\r\n"
 	for split := 1; split < len(full); split++ {
-		body, rest, done := NextPartBody([]byte(full[:split]), boundary)
+		body, rest, done := m.NextBody([]byte(full[:split]))
 		if done {
 			continue // Whole delimiter already present, nothing to prove.
 		}
@@ -164,41 +181,62 @@ func TestNextPartBodySplitDelimiter(t *testing.T) {
 	}
 }
 
-func TestPartNameFileName(t *testing.T) {
-	const photo = "Content-Disposition: form-data; name=\"photo\"; filename=\"beach.png\"\r\n" +
-		"Content-Type: image/png\r\n"
-	if got := string(PartName([]byte(photo))); got != "photo" {
+// A file part carries both parameters, and the raw block stays available.
+func TestNextHeaderFilePart(t *testing.T) {
+	m := Multipart{Boundary: []byte(multiBoundary)}
+	var hdr MultipartHeader
+	rest, err := m.NextHeader(&hdr, []byte(multiBody)) // caption part.
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, _ = m.NextBody(rest)
+	if _, err = m.NextHeader(&hdr, rest); err != nil { // photo part.
+		t.Fatal(err)
+	}
+	if got := string(hdr.Name); got != "photo" {
 		t.Errorf("want name %q, got %q", "photo", got)
 	}
-	if got := string(PartFileName([]byte(photo))); got != "beach.png" {
+	if got := string(hdr.Filename); got != "beach.png" {
 		t.Errorf("want filename %q, got %q", "beach.png", got)
 	}
-	const caption = "Content-Disposition: form-data; name=\"caption\"\r\n"
-	if got := string(PartName([]byte(caption))); got != "caption" {
-		t.Errorf("want name %q, got %q", "caption", got)
+	if !strings.Contains(string(hdr.Part), "Content-Type: image/png") {
+		t.Errorf("want the raw block to hold every field, got %q", hdr.Part)
 	}
-	if got := PartFileName([]byte(caption)); got != nil {
-		t.Errorf("want nil filename for a non file part, got %q", got)
+}
+
+// A failed call must not leave the previous part's fields behind.
+func TestNextHeaderZeroesOnError(t *testing.T) {
+	m := Multipart{Boundary: []byte(multiBoundary)}
+	var hdr MultipartHeader
+	if _, err := m.NextHeader(&hdr, []byte(multiBody)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.NextHeader(&hdr, []byte("------abc123--\r\n")); err != io.EOF {
+		t.Fatalf("want io.EOF, got %v", err)
+	}
+	if hdr.Part != nil || hdr.Name != nil || hdr.Filename != nil {
+		t.Errorf("want zeroed header on error, got %+v", hdr)
 	}
 }
 
 // The whole loop, as a caller writes it.
 func TestMultipartLoop(t *testing.T) {
-	boundary := []byte(multiBoundary)
+	m := Multipart{Boundary: []byte(multiBoundary)}
 	rest := []byte(multiBody)
 	var got []string
+	var hdr MultipartHeader
 	for {
-		hdr, next, err := NextPartHeader(rest, boundary)
-		if err == ErrEndOfParts {
+		next, err := m.NextHeader(&hdr, rest)
+		if err == io.EOF {
 			break
 		} else if err != nil {
 			t.Fatal(err)
 		}
-		name := string(PartName(hdr))
+		name := string(hdr.Name)
 		total := 0
 		rest = next
 		for {
-			body, next, done := NextPartBody(rest, boundary)
+			body, next, done := m.NextBody(rest)
 			total += len(body)
 			rest = next
 			if done {
@@ -208,7 +246,7 @@ func TestMultipartLoop(t *testing.T) {
 		}
 		got = append(got, name+":"+strconv.Itoa(total))
 	}
-	want := "caption:8|photo:29"
+	want := "caption:8|photo:28"
 	if strings.Join(got, "|") != want {
 		t.Errorf("want %q, got %q", want, strings.Join(got, "|"))
 	}

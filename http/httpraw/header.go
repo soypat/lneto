@@ -114,11 +114,11 @@ func (h *Header) TryParse(asResponse bool) (needMoreData bool, err error) {
 	if asResponse && h.statusCode.len == 0 || !asResponse && h.requestTarget.start == 0 {
 		err = h.parseFirstLine(asResponse)
 		if err != nil {
-			return err == errNeedMore, err
+			return err == ErrNeedMoreData, err
 		}
 	}
 	err = h.parseNextHeaders()
-	return err == errNeedMore, err
+	return err == ErrNeedMoreData, err
 }
 
 // ParsingSuccess returns true if TryParse was successful, that is to say it returned needMoreData==false and err==nil.

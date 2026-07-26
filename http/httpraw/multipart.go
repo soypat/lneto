@@ -1,37 +1,159 @@
 package httpraw
 
-// Multipart bodies frame their fields with a delimiter instead of escaping them,
-// so a part's value has no length: it ends where the next delimiter begins. The
-// functions below split a body without storing any of it, leaving the caller to
-// decide what to keep, what to skip and when a part has grown too large:
+import (
+	"bytes"
+	"io"
+)
+
+// Multipart splits a "multipart/form-data" body into its parts. Such bodies
+// frame their fields with a delimiter instead of escaping them, so a part's
+// value has no length: it ends where the next delimiter begins.
 //
-//	boundary := httpraw.MultipartBoundary(contentType)
+// Multipart stores none of the body, leaving the caller to decide what to keep,
+// what to skip and when a part has grown too large:
+//
+//	m := httpraw.Multipart{Boundary: httpraw.MultipartBoundary(contentType)}
+//	var hdr httpraw.MultipartHeader
 //	for {
-//		hdr, rest, err := httpraw.NextPartHeader(buf, boundary)
+//		rest, err := m.NextHeader(&hdr, buf)
 //		if err != nil {
-//			break // ErrEndOfParts, or ErrNeedMoreData: read more into buf and retry.
+//			break // io.EOF, or ErrNeedMoreData: read more into buf and retry.
 //		}
-//		name := httpraw.PartName(hdr)
 //		for {
-//			body, next, done := httpraw.NextPartBody(rest, boundary)
-//			// Consume body, then compact next to the front of buf and read more.
+//			body, next, done := m.NextBody(rest)
+//			// Consume body for hdr.Name, then compact next to the front of buf
+//			// and read more.
 //			rest = next
 //			if done {
 //				break
 //			}
 //		}
 //	}
-
 type Multipart struct {
+	// Boundary is the delimiter parameter of the body's Content-Type field,
+	// without the leading "--" the delimiter carries on the wire.
 	Boundary []byte
 }
 
-func ()
+// MultipartHeader is a part's header block and the Content-Disposition
+// parameters that identify it. All fields alias the buffer they were parsed
+// from and stay valid as long as it does.
+type MultipartHeader struct {
+	// Part is the part's raw header block, ending in its final CRLF.
+	Part []byte
+	// Name is the name parameter of a part's Content-Disposition field,
+	// i.e: "photo" for `form-data; name="photo"; filename="beach.png"`.
+	Name []byte
+	// Filename is the filename parameter of a part's Content-Disposition
+	// field, nil when the part is not a file upload.
+	Filename []byte
+}
 
-// MultipartBoundary returns the boundary parameter of a Content-Type field value,
+// SetContentType sets the boundary parameter of a Content-Type field value,
 // i.e: "abc123" for "multipart/form-data; boundary=abc123". The leading "--" of
 // the wire delimiter is not included. Returns nil if there is no such parameter.
-func MultipartBoundary(contentType []byte) []byte { return ContentParam(contentType, "boundary") }
+func (m *Multipart) SetContentType(contentType []byte) error {
+	m.Boundary = ContentParam(contentType, "boundary")
+	if len(m.Boundary) == 0 || len(m.Boundary) > 70 {
+		return errNoBoundary // RFC 2046 5.1.1: 1..70 characters, required.
+	}
+	return nil
+}
+
+// NextHeader splits the leading part's header block off a multipart body into
+// dst, returning the body bytes that follow it. Returns [ErrNeedMoreData] while
+// data holds no complete delimiter and header block, and [io.EOF] once the
+// closing delimiter is reached. dst is left zeroed on error.
+func (m *Multipart) NextHeader(dst *MultipartHeader, data []byte) (rest []byte, err error) {
+	*dst = MultipartHeader{}
+	if len(m.Boundary) == 0 {
+		return nil, errNoBoundary
+	}
+	idx := m.indexDelimiter(data)
+	if idx < 0 {
+		return nil, ErrNeedMoreData
+	}
+	after := idx + len("--") + len(m.Boundary)
+	if after+2 > len(data) {
+		return nil, ErrNeedMoreData // Cannot tell a closing delimiter yet.
+	} else if data[after] == '-' && data[after+1] == '-' {
+		return nil, io.EOF
+	}
+	// Delimiter is followed by CRLF, then the part's header block.
+	if data[after] == '\r' {
+		after++
+	}
+	if after >= len(data) {
+		return nil, ErrNeedMoreData
+	} else if data[after] != '\n' {
+		return nil, errInvalidName // Junk between delimiter and part.
+	}
+	after++
+	end := bytes.Index(data[after:], []byte("\r\n\r\n"))
+	if end < 0 {
+		return nil, ErrNeedMoreData
+	}
+	dst.Part = data[after : after+end+2]
+	disposition := partField(dst.Part)
+	dst.Name = ContentParam(disposition, "name")
+	dst.Filename = ContentParam(disposition, "filename")
+	return data[after+end+4:], nil
+}
+
+// NextBody returns the part bytes available in data, holding back any tail
+// that could be the start of a delimiter. done reports the part ended, in which
+// case rest begins the next part's delimiter; otherwise rest is the held back
+// tail, which the caller compacts before reading more data into the buffer.
+func (m *Multipart) NextBody(data []byte) (body, rest []byte, done bool) {
+	idx := m.indexPartEnd(data)
+	if idx >= 0 {
+		return data[:idx], data[idx+len("\r\n"):], true
+	}
+	// Longest prefix of "\r\n--"+boundary that could still be completed.
+	hold := len("\r\n--") + len(m.Boundary) - 1
+	if hold > len(data) {
+		hold = len(data)
+	}
+	return data[:len(data)-hold], data[len(data)-hold:], false
+}
+
+// indexDelimiter returns the offset of the leading "--"+Boundary in data.
+func (m *Multipart) indexDelimiter(data []byte) int {
+	for i := 0; i+len("--")+len(m.Boundary) <= len(data); i++ {
+		dash := bytes.IndexByte(data[i:], '-')
+		if dash < 0 {
+			return -1
+		}
+		i += dash
+		if i+len("--")+len(m.Boundary) > len(data) {
+			return -1
+		}
+		if data[i+1] == '-' && b2s(data[i+2:i+2+len(m.Boundary)]) == b2s(m.Boundary) {
+			return i
+		}
+	}
+	return -1
+}
+
+// indexPartEnd returns the offset of the CRLF that closes a part, that is the
+// CRLF preceding the next delimiter.
+func (m *Multipart) indexPartEnd(data []byte) int {
+	for i := 0; i+len("\r\n--")+len(m.Boundary) <= len(data); i++ {
+		cr := bytes.IndexByte(data[i:], '\r')
+		if cr < 0 {
+			return -1
+		}
+		i += cr
+		if i+len("\r\n--")+len(m.Boundary) > len(data) {
+			return -1
+		}
+		if data[i+1] == '\n' && data[i+2] == '-' && data[i+3] == '-' &&
+			b2s(data[i+4:i+4+len(m.Boundary)]) == b2s(m.Boundary) {
+			return i
+		}
+	}
+	return -1
+}
 
 // ContentParam returns the value of a parameter of a header field value, i.e:
 // "utf-8" for key "charset" of "text/plain; charset=utf-8". Quoted values are
@@ -73,66 +195,6 @@ func ContentParam(value []byte, key string) []byte {
 	return nil
 }
 
-// NextPartHeader splits the leading part's header block off a multipart body,
-// returning it with its final CRLF and the body bytes that follow it. Returns
-// [ErrNeedMoreData] while data holds no complete delimiter and header block, and
-// [ErrEndOfParts] once the closing delimiter is reached.
-func NextPartHeader(data, boundary []byte) (partHdr, rest []byte, err error) {
-	if len(boundary) == 0 {
-		return nil, nil, errNoBoundary
-	}
-	idx := indexDelimiter(data, boundary)
-	if idx < 0 {
-		return nil, nil, ErrNeedMoreData
-	}
-	after := idx + len("--") + len(boundary)
-	if after+2 > len(data) {
-		return nil, nil, ErrNeedMoreData // Cannot tell a closing delimiter yet.
-	} else if data[after] == '-' && data[after+1] == '-' {
-		return nil, nil, ErrEndOfParts
-	}
-	// Delimiter is followed by CRLF, then the part's header block.
-	if data[after] == '\r' {
-		after++
-	}
-	if after >= len(data) {
-		return nil, nil, ErrNeedMoreData
-	} else if data[after] != '\n' {
-		return nil, nil, errInvalidName // Junk between delimiter and part.
-	}
-	after++
-	end := bytes.Index(data[after:], []byte("\r\n\r\n"))
-	if end < 0 {
-		return nil, nil, ErrNeedMoreData
-	}
-	return data[after : after+end+2], data[after+end+4:], nil
-}
-
-// NextPartBody returns the part bytes available in data, holding back any tail
-// that could be the start of a delimiter. done reports the part ended, in which
-// case rest begins the next part's delimiter; otherwise rest is the held back
-// tail, which the caller compacts before reading more data into the buffer.
-func NextPartBody(data, boundary []byte) (body, rest []byte, done bool) {
-	idx := indexPartEnd(data, boundary)
-	if idx >= 0 {
-		return data[:idx], data[idx+len("\r\n"):], true
-	}
-	// Longest prefix of "\r\n--"+boundary that could still be completed.
-	hold := len("\r\n--") + len(boundary) - 1
-	if hold > len(data) {
-		hold = len(data)
-	}
-	return data[:len(data)-hold], data[len(data)-hold:], false
-}
-
-// PartName returns the name parameter of a part's Content-Disposition field,
-// i.e: "photo" for `form-data; name="photo"; filename="beach.png"`.
-func PartName(partHdr []byte) []byte { return ContentParam(partField(partHdr), "name") }
-
-// PartFileName returns the filename parameter of a part's Content-Disposition
-// field, nil when the part is not a file upload.
-func PartFileName(partHdr []byte) []byte { return ContentParam(partField(partHdr), "filename") }
-
 // partField returns the Content-Disposition field value of a part header block.
 func partField(partHdr []byte) []byte {
 	const key = "content-disposition"
@@ -150,44 +212,6 @@ func partField(partHdr []byte) []byte {
 		}
 	}
 	return nil
-}
-
-// indexDelimiter returns the offset of the leading "--"+boundary in data.
-func indexDelimiter(data, boundary []byte) int {
-	for i := 0; i+len("--")+len(boundary) <= len(data); i++ {
-		dash := bytes.IndexByte(data[i:], '-')
-		if dash < 0 {
-			return -1
-		}
-		i += dash
-		if i+len("--")+len(boundary) > len(data) {
-			return -1
-		}
-		if data[i+1] == '-' && b2s(data[i+2:i+2+len(boundary)]) == b2s(boundary) {
-			return i
-		}
-	}
-	return -1
-}
-
-// indexPartEnd returns the offset of the CRLF that closes a part, that is the
-// CRLF preceding the next delimiter.
-func indexPartEnd(data, boundary []byte) int {
-	for i := 0; i+len("\r\n--")+len(boundary) <= len(data); i++ {
-		cr := bytes.IndexByte(data[i:], '\r')
-		if cr < 0 {
-			return -1
-		}
-		i += cr
-		if i+len("\r\n--")+len(boundary) > len(data) {
-			return -1
-		}
-		if data[i+1] == '\n' && data[i+2] == '-' && data[i+3] == '-' &&
-			b2s(data[i+4:i+4+len(boundary)]) == b2s(boundary) {
-			return i
-		}
-	}
-	return -1
 }
 
 // trimOWS trims optional whitespace off both ends of b, RFC 9110 5.6.3.
