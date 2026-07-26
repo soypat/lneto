@@ -69,6 +69,8 @@ type StackAsync struct {
 
 	ipv6enabled bool
 	stack6      Stack6
+
+	log *slog.Logger
 }
 
 type StackConfig struct {
@@ -105,6 +107,9 @@ type StackConfig struct {
 	AcceptMulticast bool
 	// Accept broadcast IPv4 packets. Needed for managing access points and DHCPv4 servers.
 	AcceptIPv4Broadcast bool
+	// Logger receives the stack's Debug and DebugErr output. A nil Logger silences
+	// them; the heap allocation probe still runs so allocation bisection keeps working.
+	Logger *slog.Logger
 }
 
 func (cfg *StackConfig) id() uint16 {
@@ -202,6 +207,7 @@ func (s *StackAsync) Reset(cfg StackConfig) (err error) {
 	defer s.mu.Unlock()
 	s.prng = uint32(cfg.RandSeed)
 	s.hostname = cfg.Hostname
+	s.log = cfg.Logger
 	// Treat last character of hostname as number.
 	id := cfg.id()
 	linkNodes := 2 // ARP and IPv4 nodes
@@ -843,20 +849,39 @@ func addr4(addr [4]byte, ok bool) netip.Addr {
 }
 
 // Debug prints debugging and heap information.
+//
+// The heap allocation probe runs unconditionally; only the log line is gated on
+// the configured Logger's level. Building the slog.Attr list allocates, so the
+// gate must come first or the allocation happens even when nothing is logged.
 func (s *StackAsync) Debug(msg string) {
-	internal.LogAttrsAndAllocs(msg, slog.Default(), slog.LevelDebug, "stackasync",
+	internal.LogAllocs(msg)
+	if !internal.LogEnabled(s.log, slog.LevelDebug) {
+		return
+	}
+	internal.LogAttrsAndAllocs(msg, s.log, slog.LevelDebug, "stackasync",
 		slog.String("umsg", msg),
 		slog.Uint64("sent", s.stats.TotalSent),
 		slog.Uint64("recv", s.stats.TotalReceived),
 	)
 }
 
-// DebugErr prints debugging and heap information.
+// DebugErr prints debugging and heap information with [slog.LevelError] level. See [StackAsync.Debug] on gating.
 func (s *StackAsync) DebugErr(msg, err string) {
-	internal.LogAttrsAndAllocs(msg, slog.Default(), slog.LevelError, "stackasync",
+	internal.LogAllocs(msg)
+	if !internal.LogEnabled(s.log, slog.LevelError) {
+		return
+	}
+	internal.LogAttrsAndAllocs(msg, s.log, slog.LevelError, "stackasync",
 		slog.String("umsg", msg),
 		slog.String("err", err),
 		slog.Uint64("sent", s.stats.TotalSent),
 		slog.Uint64("recv", s.stats.TotalReceived),
 	)
+}
+
+// LogAllocs is an lneto-tracked allocation logger. If there was an allocation between this call and a previous call
+// to LogAllocs it will be printed. This is called globally by StackAsync.Debug methods and by all logging calls in lneto
+// when build tag debugheaplog is set.
+func LogAllocs(msg string) {
+	internal.LogAllocs(msg)
 }
