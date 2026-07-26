@@ -173,6 +173,39 @@ func TestHeaderRequestPath(t *testing.T) {
 	}
 }
 
+func TestHeaderContentLength(t *testing.T) {
+	for _, test := range []struct {
+		field   string // Extra header lines, empty for an absent field.
+		want    int64
+		wantErr error
+	}{
+		{field: "Content-Length: 0", want: 0},
+		{field: "Content-Length: 12", want: 12},
+		{field: "Content-Length:  12 ", want: 12}, // OWS around the value, RFC 9110 5.6.3.
+		{field: "Content-Length: 9223372036854775807", want: 9223372036854775807},
+		{field: "", wantErr: errNoContentLength},                     // No body, RFC 9112 6.3.
+		{field: "Content-Length:", wantErr: errBadContentLength},     // Present but empty.
+		{field: "Content-Length: -1", wantErr: errBadContentLength},  // Digits only, RFC 9112 6.2.
+		{field: "Content-Length: 1 2", wantErr: errBadContentLength}, // Not a list.
+		{field: "Content-Length: 9223372036854775808", wantErr: errBadContentLength},
+	} {
+		var h Header
+		raw := "POST / HTTP/1.1\r\nHost: h\r\n"
+		if test.field != "" {
+			raw += test.field + "\r\n"
+		}
+		if err := h.ParseBytes(false, []byte(raw+"\r\n")); err != nil {
+			t.Fatal(err)
+		}
+		got, err := h.ContentLength()
+		if err != test.wantErr {
+			t.Errorf("%q: want error %v, got %v", test.field, test.wantErr, err)
+		} else if err == nil && got != test.want {
+			t.Errorf("%q: want %d, got %d", test.field, test.want, got)
+		}
+	}
+}
+
 func TestNextQueryPair(t *testing.T) {
 	for _, test := range []struct {
 		uri  string

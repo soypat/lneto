@@ -4,15 +4,17 @@ import (
 	"bytes"
 	"io"
 	"slices"
+	"strconv"
 )
 
 const (
-	methodGet        = "GET"
-	strHTTP11        = "HTTP/1.1"
-	strCRLF          = "\r\n"
-	headerCookie     = "Cookie"
-	headerConnection = "Connection"
-	strClose         = "close"
+	methodGet           = "GET"
+	strHTTP11           = "HTTP/1.1"
+	strCRLF             = "\r\n"
+	headerCookie        = "Cookie"
+	headerConnection    = "Connection"
+	headerContentLength = "Content-Length"
+	strClose            = "close"
 )
 
 // Flags is a bitset of signals gathered while parsing or building a header,
@@ -341,6 +343,28 @@ func (h *Header) Get(key string) []byte {
 	}
 	debuglog("http:get:notfound")
 	return nil
+}
+
+// ContentLength returns the body length declared by the Content-Length field.
+// Fails with an error if the field is absent, which for a request means the
+// message has no body at all unless a transfer coding applies, RFC 9112 6.3.
+// The value must be digits only, so a negative or list-valued field is rejected
+// rather than guessed at.
+func (h *Header) ContentLength() (int64, error) {
+	kv := h.peekHeader(headerContentLength)
+	if !kv.isValid() {
+		return 0, errNoContentLength
+	}
+	value := trimOWS(h.hbuf.musttoken(kv.value))
+	if len(value) == 0 {
+		return 0, errBadContentLength
+	}
+	// Unsigned parse of 63 bits rejects a sign and anything past int64's range.
+	n, err := strconv.ParseUint(b2s(value), 10, 63)
+	if err != nil {
+		return 0, errBadContentLength // strconv's error allocates and is not comparable.
+	}
+	return int64(n), nil
 }
 
 // Add adds a new key-value pair to the HTTP header. Calling Add mangles the buffer.

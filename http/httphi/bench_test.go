@@ -4,6 +4,7 @@ import (
 	"io"
 	"testing"
 
+	"github.com/soypat/lneto/http/httpraw"
 	"github.com/soypat/lneto/internal"
 )
 
@@ -93,5 +94,36 @@ func BenchmarkHandle(b *testing.B) {
 				Handle(exch, &mux, nopBackoff)
 			}
 		})
+	}
+}
+
+// benchForm is package level so the Form's pair slice is reused across requests,
+// as a real handler holding one per goroutine would.
+var benchForm httpraw.Form
+
+// BenchmarkRequestParseForm measures reading and parsing a urlencoded body into
+// a buffer the caller owns. Nothing on the path may allocate.
+func BenchmarkRequestParseForm(b *testing.B) {
+	const request = "POST /f HTTP/1.1\r\nHost: tinygo.org\r\n" +
+		"Content-Type: application/x-www-form-urlencoded\r\nContent-Length: 27\r\n\r\n" +
+		"user=gopher&msg=hello+world"
+	buf := make([]byte, 64)
+	var mux MuxSlice
+	mux.Handle("POST /f", func(ex *Exchange) {
+		err := ex.RequestParseForm(&benchForm, buf, nopBackoff)
+		if err != nil || benchForm.Len() != 2 {
+			panic("invalid result")
+		}
+	})
+	conn := &benchConn{request: request}
+	exch := benchExchange(b, conn)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(request)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		conn.rewind()
+		exch.Release()
+		exch.Acquire(conn)
+		Handle(exch, &mux, nopBackoff)
 	}
 }

@@ -33,6 +33,9 @@ var (
 	errCookiesParsed    = errors.New("cookies already parsed, reset before parsing again")
 	errBufferTooLarge   = errors.New("httpraw: buffer exceeds max size (offsets are uint16)")
 	errBadPercentEncode = errors.New("httpraw: invalid percent-encoding in URL")
+	errBadDelimiter     = errors.New("httpraw: junk between multipart delimiter and part")
+	errNoContentLength  = errors.New("httpraw: no Content-Length field")
+	errBadContentLength = errors.New("httpraw: invalid Content-Length value")
 )
 
 // maxBufLen bounds the header buffer. Offsets/lengths are stored as uint16

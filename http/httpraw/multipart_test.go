@@ -28,21 +28,51 @@ func TestMultipartBoundary(t *testing.T) {
 	for _, test := range []struct {
 		contentType string
 		want        string
+		wantErr     bool
 	}{
 		{contentType: "multipart/form-data; boundary=abc123", want: "abc123"},
 		{contentType: "multipart/form-data; boundary=\"a b\"", want: "a b"},
 		{contentType: "multipart/form-data; charset=utf-8; boundary=xyz", want: "xyz"},
-		{contentType: "multipart/form-data; BOUNDARY=xyz", want: "xyz"}, // Keys are case insensitive.
-		{contentType: "multipart/form-data", want: ""},                  // Absent.
-		{contentType: "application/x-www-form-urlencoded", want: ""},
+		{contentType: "multipart/form-data; BOUNDARY=xyz", want: "xyz"},   // Keys are case insensitive.
+		{contentType: "multipart/form-data", wantErr: true},               // Absent, RFC 2046 5.1.1 requires it.
+		{contentType: "application/x-www-form-urlencoded", wantErr: true}, // Not multipart at all.
+		{contentType: "multipart/form-data; boundary=", wantErr: true},    // Empty matches every "--".
 	} {
 		err := mp.SetContentType([]byte(test.contentType))
-		if err != nil {
-			t.Skip("asdasd")
+		if test.wantErr {
+			if err == nil {
+				t.Errorf("%q: want error, got boundary %q", test.contentType, mp.Boundary)
+			}
+			continue
+		} else if err != nil {
+			t.Errorf("%q: %s", test.contentType, err)
+			continue
 		}
 		got := string(mp.Boundary)
 		if got != test.want {
 			t.Errorf("%q: want %q, got %q", test.contentType, test.want, got)
+		}
+	}
+}
+
+func TestMediaTypeIs(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		media string
+		want  bool
+	}{
+		{value: "text/plain", media: "text/plain", want: true},
+		{value: "text/plain; charset=utf-8", media: "text/plain", want: true},
+		{value: "text/plain;charset=utf-8", media: "text/plain", want: true},
+		{value: "Text/Plain", media: "text/plain", want: true}, // Case insensitive, RFC 9110 8.3.1.
+		{value: " text/plain ; x=1", media: "text/plain", want: true},
+		{value: "text/plain", media: "text/html"},
+		{value: "text/plainish", media: "text/plain"}, // Prefix must not match.
+		{value: "", media: "text/plain"},
+		{value: "multipart/form-data; boundary=abc", media: "multipart/form-data", want: true},
+	} {
+		if got := MediaTypeIs([]byte(test.value), test.media); got != test.want {
+			t.Errorf("%q is %q: want %v, got %v", test.value, test.media, test.want, got)
 		}
 	}
 }
@@ -103,6 +133,16 @@ func TestNextPartHeaderNeedMore(t *testing.T) {
 		if _, err := m.NextHeader(&hdr, []byte(data)); err != ErrNeedMoreData {
 			t.Errorf("%q: want ErrNeedMoreData, got %v", data, err)
 		}
+	}
+}
+
+// Junk between the delimiter and the part header is a multipart framing error,
+// not a header field name error.
+func TestNextPartHeaderJunk(t *testing.T) {
+	m := Multipart{Boundary: []byte("abc")}
+	var hdr MultipartHeader
+	if _, err := m.NextHeader(&hdr, []byte("--abcX\r\nA: b\r\n\r\n")); err != errBadDelimiter {
+		t.Errorf("want errBadDelimiter, got %v", err)
 	}
 }
 

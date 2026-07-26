@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 
 	"testing"
@@ -609,5 +610,251 @@ func TestExchangeAppendQueryReusesBuffer(t *testing.T) {
 	}
 	if allocs != 0 {
 		t.Errorf("AppendQuery allocated %v times into a buffer with capacity, want 0", allocs)
+	}
+}
+
+// formString renders a form as "key=value" pairs joined by '|', a pair with no
+// value shown as the bare key.
+func formString(f *httpraw.Form) string {
+	var sb strings.Builder
+	for i := 0; i < f.Len(); i++ {
+		if i > 0 {
+			sb.WriteByte('|')
+		}
+		key, value := f.Pair(i)
+		sb.Write(key)
+		if value != nil {
+			sb.WriteByte('=')
+			sb.Write(value)
+		}
+	}
+	return sb.String()
+}
+
+const formType = "Content-Type: application/x-www-form-urlencoded\r\n"
+
+func TestExchangeRequestParseForm(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		request string
+		bufSize int // Defaults to 64.
+		want    string
+		wantErr error
+	}{
+		{
+			name:    "pairs",
+			request: "POST /f HTTP/1.1\r\nHost: h\r\n" + formType + "Content-Length: 11\r\n\r\na=1&b=2&c=3",
+			want:    "a=1|b=2|c=3",
+		}, {
+			// A flag and an empty value stay distinguishable, unlike http.FormValue.
+			name:    "flag and empty",
+			request: "POST /f HTTP/1.1\r\nHost: h\r\n" + formType + "Content-Length: 4\r\n\r\na&b=",
+			want:    "a|b=",
+		}, {
+			name:    "left encoded",
+			request: "POST /f HTTP/1.1\r\nHost: h\r\n" + formType + "Content-Length: 7\r\n\r\nn=a%20b",
+			want:    "n=a%20b",
+		}, {
+			name:    "media type parameters",
+			request: "POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: application/x-www-form-urlencoded; charset=utf-8\r\nContent-Length: 3\r\n\r\na=1",
+			want:    "a=1",
+		}, {
+			// Only the body is parsed: the query string is not folded in.
+			name:    "query not folded",
+			request: "POST /f?q=go HTTP/1.1\r\nHost: h\r\n" + formType + "Content-Length: 3\r\n\r\na=1",
+			want:    "a=1",
+		}, {
+			// No Content-Length means no body at all, RFC 9112 6.3.
+			name:    "no content length",
+			request: "POST /f HTTP/1.1\r\nHost: h\r\n" + formType + "\r\n",
+			want:    "",
+		}, {
+			name:    "wrong media type",
+			request: "POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: text/plain\r\nContent-Length: 3\r\n\r\na=1",
+			wantErr: errNotFormEncoded,
+		}, {
+			name:    "no media type",
+			request: "POST /f HTTP/1.1\r\nHost: h\r\nContent-Length: 3\r\n\r\na=1",
+			wantErr: errNotFormEncoded,
+		}, {
+			name:    "chunked",
+			request: "POST /f HTTP/1.1\r\nHost: h\r\n" + formType + "Transfer-Encoding: chunked\r\n\r\n3\r\na=1\r\n0\r\n\r\n",
+			wantErr: errUnsupportedTransferCoding,
+		}, {
+			name:    "body larger than buffer",
+			request: "POST /f HTTP/1.1\r\nHost: h\r\n" + formType + "Content-Length: 11\r\n\r\na=1&b=2&c=3",
+			bufSize: 4,
+			wantErr: lneto.ErrBufferFull,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bufSize := test.bufSize
+			if bufSize == 0 {
+				bufSize = 64
+			}
+			var form httpraw.Form
+			var gotErr error
+			var sm MuxSlice
+			sm.Reset(1)
+			sm.Handle("/f", func(exch *Exchange) {
+				gotErr = exch.RequestParseForm(&form, make([]byte, bufSize), nopBackoff)
+			})
+			serve(t, test.request, &sm)
+			if gotErr != test.wantErr {
+				t.Fatalf("want error %v, got %v", test.wantErr, gotErr)
+			}
+			if got := formString(&form); test.wantErr == nil && got != test.want {
+				t.Errorf("want %q, got %q", test.want, got)
+			}
+		})
+	}
+}
+
+// A body arriving after the header, in its own segment, must still be parsed whole.
+func TestExchangeRequestParseFormSplit(t *testing.T) {
+	conn := newConn("POST /f HTTP/1.1\r\nHost: h\r\n" + formType + "Content-Length: 11\r\n\r\na=1&")
+	conn.AddSegment("b=2&c=3")
+	conn.Hangup()
+	var form httpraw.Form
+	var gotErr error
+	var sm MuxSlice
+	sm.Reset(1)
+	sm.Handle("/f", func(exch *Exchange) {
+		gotErr = exch.RequestParseForm(&form, make([]byte, 64), nopBackoff)
+	})
+	exch := newExchange(t, conn, 1024, false)
+	if err := Handle(exch, &sm, nopBackoff); err != nil {
+		t.Fatal(err)
+	}
+	if gotErr != nil {
+		t.Fatal(gotErr)
+	}
+	if got := formString(&form); got != "a=1|b=2|c=3" {
+		t.Errorf("want %q, got %q", "a=1|b=2|c=3", got)
+	}
+}
+
+// Decode is the caller's call, and it must reach both keys and values.
+func TestExchangeRequestParseFormDecode(t *testing.T) {
+	var form httpraw.Form
+	var sm MuxSlice
+	sm.Reset(1)
+	sm.Handle("/f", func(exch *Exchange) {
+		if err := exch.RequestParseForm(&form, make([]byte, 64), nopBackoff); err != nil {
+			t.Error(err)
+		} else if err = form.Decode(); err != nil {
+			t.Error(err)
+		}
+	})
+	serve(t, "POST /f HTTP/1.1\r\nHost: h\r\n"+formType+"Content-Length: 16\r\n\r\na+b=c%20d&e=f%2B", &sm)
+	if got := formString(&form); got != "a b=c d|e=f+" {
+		t.Errorf("want %q, got %q", "a b=c d|e=f+", got)
+	}
+}
+
+// refill compacts the bytes the multipart parser held back to the front of buf
+// and reads more of the body in behind them.
+func refill(exch *Exchange, buf, rest []byte) ([]byte, error) {
+	n := copy(buf, rest)
+	if n == len(buf) {
+		return nil, lneto.ErrBufferFull // A delimiter or part header longer than buf.
+	}
+	nr, err := exch.ReadBody(buf[n:])
+	return buf[:n+nr], err
+}
+
+// The whole multipart loop as a handler writes it, over a body split so that a
+// part straddles two reads and the caller must compact and refill.
+func TestExchangeRequestParseMultipart(t *testing.T) {
+	const (
+		boundary = "--xyz"
+		head     = "POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: multipart/form-data; boundary=" + boundary + "\r\n\r\n"
+		part1    = "----xyz\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\nhi there\r\n"
+		part2    = "----xyz\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"beach.png\"\r\n\r\n\x89PNG\r\n\x00\r\n"
+		tail     = "----xyz--\r\n"
+	)
+	conn := newConn(head + part1 + part2[:20])
+	conn.AddSegment(part2[20:] + tail)
+	conn.Hangup()
+
+	var got []string
+	var gotErr error
+	var sm MuxSlice
+	sm.Reset(1)
+	sm.Handle("/f", func(exch *Exchange) {
+		var mp httpraw.Multipart
+		if mp, gotErr = exch.RequestMultipart(); gotErr != nil {
+			return
+		}
+		var hdr httpraw.MultipartHeader
+		buf := make([]byte, 128)
+		rest := buf[:0]
+		for {
+			next, err := mp.NextHeader(&hdr, rest)
+			if err == io.EOF {
+				return // Closing delimiter, body done.
+			} else if err == httpraw.ErrNeedMoreData {
+				if rest, gotErr = refill(exch, buf, rest); gotErr != nil {
+					return
+				}
+				continue
+			} else if err != nil {
+				gotErr = err
+				return
+			}
+			name, total := string(hdr.Name), 0
+			rest = next
+			for {
+				body, next, done := mp.NextBody(rest)
+				total += len(body)
+				rest = next
+				if done {
+					break
+				}
+				if rest, gotErr = refill(exch, buf, rest); gotErr != nil {
+					return
+				}
+			}
+			got = append(got, name+":"+strconv.Itoa(total))
+		}
+	})
+	exch := newExchange(t, conn, 1024, false)
+	if err := Handle(exch, &sm, nopBackoff); err != nil {
+		t.Fatal(err)
+	}
+	if gotErr != nil {
+		t.Fatal(gotErr)
+	}
+	const want = "caption:8|photo:7"
+	if strings.Join(got, "|") != want {
+		t.Errorf("want %q, got %q", want, strings.Join(got, "|"))
+	}
+}
+
+// A request that is not multipart, or whose boundary is missing, must be refused.
+func TestExchangeRequestParseMultipartRejects(t *testing.T) {
+	for _, test := range []struct {
+		contentType string
+		wantErr     bool
+	}{
+		{contentType: "multipart/form-data; boundary=xyz"},
+		{contentType: "application/x-www-form-urlencoded", wantErr: true},
+		{contentType: "multipart/form-data", wantErr: true}, // Boundary is required.
+		{contentType: "", wantErr: true},
+	} {
+		var gotErr error
+		var sm MuxSlice
+		sm.Reset(1)
+		sm.Handle("/f", func(exch *Exchange) {
+			_, gotErr = exch.RequestMultipart()
+		})
+		request := "POST /f HTTP/1.1\r\nHost: h\r\n"
+		if test.contentType != "" {
+			request += "Content-Type: " + test.contentType + "\r\n"
+		}
+		serve(t, request+"\r\n", &sm)
+		if (gotErr != nil) != test.wantErr {
+			t.Errorf("%q: want error %v, got %v", test.contentType, test.wantErr, gotErr)
+		}
 	}
 }

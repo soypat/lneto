@@ -380,6 +380,122 @@ func (exch *Exchange) RequestParseCookie(dst *httpraw.Cookie, key string) error 
 	return dst.ParseBytes(value)
 }
 
+// RequestContentType returns the request's Content-Type field value as it
+// appears on the wire, parameters included, nil if absent. Test it with
+// [httpraw.MediaTypeIs] and pick parameters out with [httpraw.ContentParam].
+func (exch *Exchange) RequestContentType() []byte {
+	return exch.RequestHeader("Content-Type")
+}
+
+// RequestContentLength returns the body length declared by the request's
+// Content-Length field. An absent field is not a client error: such a request
+// has no body at all, RFC 9112 6.3. Check for the error to answer 411 instead.
+// See [httpraw.Header.ContentLength].
+func (exch *Exchange) RequestContentLength() (int64, error) {
+	return exch.RequestHeaderRaw().ContentLength()
+}
+
+// RequestParseForm reads the request body into buf and parses it as
+// "application/x-www-form-urlencoded" into dst. buf is the only storage used and
+// the only limit: a body longer than buf is refused with [lneto.ErrBufferFull]
+// before a single byte is read, leaving the caller free to answer 413. Pairs are
+// left as they arrived, call [httpraw.Form.Decode] to decode them in place.
+//
+// Unlike http.Request.ParseForm the query string is not folded in, reach it with
+// [Exchange.RequestQuery] or [Exchange.AppendQuery]. The body is consumed, so
+// call this before [Exchange.ReadBody].
+//
+// A request with no Content-Length has no body, RFC 9112 6.3, and yields an
+// empty form. Use [Exchange.RequestContentLength] to tell that apart from a body
+// that arrived empty. backoff paces reads that return no data, as in [Handle].
+func (exch *Exchange) RequestParseForm(dst *httpraw.Form, buf []byte, backoff lneto.BackoffStrategy) error {
+	if !httpraw.MediaTypeIs(exch.RequestContentType(), "application/x-www-form-urlencoded") {
+		return errNotFormEncoded
+	} else if exch.RequestHeader("Transfer-Encoding") != nil {
+		// Chunked bodies are framed, so reading Content-Length bytes off the
+		// wire would parse chunk sizes as form data. httpraw does not decode them.
+		return errUnsupportedTransferCoding
+	}
+	length, err := exch.RequestContentLength()
+	if err != nil {
+		dst.Reset(buf[:0])
+		return dst.Parse() // No length is no body, RFC 9112 6.3.
+	} else if length > int64(len(buf)) {
+		return lneto.ErrBufferFull // Refuse before reading, caller may answer 413.
+	}
+	buf = buf[:length]
+	var consecutiveBackoffs uint
+	for read := 0; read < len(buf); {
+		n, err := exch.ReadBody(buf[read:])
+		if err != nil {
+			return err
+		} else if n == 0 {
+			backoff.Do(consecutiveBackoffs)
+			consecutiveBackoffs++
+			continue
+		}
+		consecutiveBackoffs = 0
+		read += n
+	}
+	dst.Reset(buf)
+	return dst.Parse()
+}
+
+// RequestParseMultipart prepares dst from the boundary parameter of the
+// request's Content-Type field. It reads no body: multipart parts declare no
+// length, so the caller drives the loop with a buffer it owns and decides per
+// part what to keep and when a part has grown too large.
+//
+// A part header and the bytes held back by [httpraw.Multipart.NextBody] both ask
+// to be completed the same way: compact what is left to the front of the buffer
+// and read more in behind it. A buffer that fills without completing either is
+// the caller's cue that the part is too large to go on with.
+//
+//	// refill compacts rest to the front of buf and reads more of the body in.
+//	refill := func(rest []byte) ([]byte, error) {
+//		n := copy(buf, rest)
+//		if n == len(buf) {
+//			return nil, lneto.ErrBufferFull
+//		}
+//		nr, err := exch.ReadBody(buf[n:])
+//		return buf[:n+nr], err
+//	}
+//
+//	err := exch.RequestParseMultipart(&mp)
+//	rest := buf[:0]
+//	for {
+//		next, err := mp.NextHeader(&hdr, rest)
+//		if err == io.EOF {
+//			break // Closing delimiter, body done.
+//		} else if err == httpraw.ErrNeedMoreData {
+//			rest, err = refill(rest)
+//			// ...handle err, then:
+//			continue
+//		} else if err != nil {
+//			return err
+//		}
+//		rest = next
+//		for {
+//			body, next, done := mp.NextBody(rest)
+//			// Consume body for hdr.Name, hdr.Filename.
+//			rest = next
+//			if done {
+//				break
+//			}
+//			rest, err = refill(rest)
+//			if err != nil {
+//				return err
+//			}
+//		}
+//	}
+func (exch *Exchange) RequestMultipart() (mp httpraw.Multipart, err error) {
+	contentType := exch.RequestContentType()
+	if !httpraw.MediaTypeIs(contentType, "multipart/form-data") {
+		return mp, errNotMultipart
+	}
+	return mp, mp.SetContentType(contentType)
+}
+
 // RequestHeader returns the value of the first request header field matching
 // key, or nil if absent. Key matching is case sensitive.
 func (exch *Exchange) RequestHeader(key string) []byte {

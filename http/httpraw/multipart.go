@@ -49,9 +49,12 @@ type MultipartHeader struct {
 	Filename []byte
 }
 
-// SetContentType sets the boundary parameter of a Content-Type field value,
-// i.e: "abc123" for "multipart/form-data; boundary=abc123". The leading "--" of
-// the wire delimiter is not included. Returns nil if there is no such parameter.
+// SetContentType sets [Multipart.Boundary] from the boundary parameter of a
+// Content-Type field value, i.e: "abc123" for
+// "multipart/form-data; boundary=abc123". The leading "--" the delimiter carries
+// on the wire is not included. Fails when the parameter is absent or is not
+// 1 to 70 characters long, RFC 2046 5.1.1; a zero length boundary would match
+// every "--" in the body.
 func (m *Multipart) SetContentType(contentType []byte) error {
 	m.Boundary = ContentParam(contentType, "boundary")
 	if len(m.Boundary) == 0 || len(m.Boundary) > 70 {
@@ -86,7 +89,7 @@ func (m *Multipart) NextHeader(dst *MultipartHeader, data []byte) (rest []byte, 
 	if after >= len(data) {
 		return nil, ErrNeedMoreData
 	} else if data[after] != '\n' {
-		return nil, errInvalidName // Junk between delimiter and part.
+		return nil, errBadDelimiter
 	}
 	after++
 	end := bytes.Index(data[after:], []byte("\r\n\r\n"))
@@ -153,6 +156,17 @@ func (m *Multipart) indexPartEnd(data []byte) int {
 		}
 	}
 	return -1
+}
+
+// MediaTypeIs reports whether a Content-Type field value carries the given
+// media type, ignoring case and any parameters that follow it, i.e: true for
+// "text/plain; charset=utf-8" and media type "text/plain". mediaType must be
+// ASCII lowercase. RFC 9110 8.3.1.
+func MediaTypeIs(value []byte, mediaType string) bool {
+	if semi := bytes.IndexByte(value, ';'); semi >= 0 {
+		value = value[:semi]
+	}
+	return equalFold(trimOWS(value), mediaType)
 }
 
 // ContentParam returns the value of a parameter of a header field value, i.e:

@@ -22,6 +22,10 @@ var (
 	errNoRequestProto = errors.New("httphi: request line with no HTTP version")
 	errBusyExchanges  = errors.New("httphi: exchanges still serving, cannot reuse their buffers")
 	errRouterTornDown = errors.New("httphi: router torn down, configure it before serving")
+
+	errNotFormEncoded            = errors.New("httphi: request body is not application/x-www-form-urlencoded")
+	errNotMultipart              = errors.New("httphi: request body is not multipart/form-data")
+	errUnsupportedTransferCoding = errors.New("httphi: transfer coding not decoded, read the body directly")
 )
 
 type conn = io.ReadWriteCloser
