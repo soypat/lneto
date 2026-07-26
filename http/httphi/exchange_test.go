@@ -279,3 +279,54 @@ func TestExchangeReadBody(t *testing.T) {
 		t.Errorf("want body %q, got %q", body, got)
 	}
 }
+
+// SetHeader must budget every byte it writes: colon, CRLF, and the CRLF that
+// FlushHeader appends after the last field. Buffers that fit all but the last
+// byte must be refused, never overrun.
+func TestExchangeSetHeaderExactFit(t *testing.T) {
+	const key, value = "K", "V"
+	const field = len(key) + len(value) + len(":\r\n")
+	for _, bufLen := range []int{field + 2, field + 1, field} {
+		conn := newConn("")
+		exch := new(Exchange)
+		exch.Configure(make([]byte, bufLen), bufLen, false)
+		if !exch.Acquire(conn) {
+			t.Fatal("fresh exchange failed to acquire connection")
+		}
+		set := exch.SetHeader(key, value)
+		exch.WriteHeader(200)
+
+		want := "HTTP/1.1 200 OK\r\n"
+		if set {
+			want += key + ":" + value + "\r\n"
+		}
+		want += "\r\n"
+		if got := conn.ViewWritten(); got != want {
+			t.Errorf("buffer %d: want %q, got %q", bufLen, want, got)
+		}
+		if wantSet := bufLen >= field+2; set != wantSet {
+			t.Errorf("buffer %d: want SetHeader=%v, got %v", bufLen, wantSet, set)
+		}
+	}
+}
+
+// Handle never closes the connection, on any outcome: the caller owns it so
+// that error policy and connection reuse stay the caller's decision.
+func TestHandleLeavesConnOpen(t *testing.T) {
+	var sm sliceMux
+	sm.Handle("GET /", staticPage(t, "ok"))
+	for _, request := range []string{
+		"GET / HTTP/1.1\r\nHost: h\r\n\r\n",         // Served.
+		"GET /nowhere HTTP/1.1\r\nHost: h\r\n\r\n",  // 404.
+		"GET /\r\nHost: h\r\n\r\n",                  // Rejected: no HTTP version.
+		"GET / HTTP/1.1\r\nBadFieldNoColon\r\n\r\n", // Rejected: parse error.
+	} {
+		conn := newConn(request)
+		conn.Hangup()
+		exch := newExchange(t, conn, 1024, false)
+		Handle(exch, &sm, nopBackoff)
+		if conn.IsClosed() {
+			t.Errorf("Handle closed the connection for %q", request)
+		}
+	}
+}

@@ -134,6 +134,7 @@ func (r *Router) Configure(cfg RouterConfig) error {
 
 // Handle is a extremely low-level HTTP handling method used internally in [Router].
 // Requires exchange to be acquired and configured. Will panic if any argument is nil.
+// Handle does not close the connection on any outcome: the caller owns it.
 func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
 	reqhdr := &exch.reqHdr
 	reqhdr.Reset(nil)
@@ -167,7 +168,6 @@ func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
 		// Request line with no HTTP version is a HTTP/0.9 simple-request, which
 		// httpraw tolerates. It is not a valid HTTP/1.1 request-line, RFC 9112 3.
 		exch.WriteHeader(int(StatusBadRequest))
-		exch.rw.Close()
 		return errNoRequestProto
 	}
 	// Mux URI.
@@ -181,22 +181,26 @@ func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
 		exch.WriteHeader(404)
 	}
 	// TODO write response from exchange here.
-	exch.rw.Close()
 	return nil
 }
 
 func (r *Router) Handle(conn conn) error {
-	exch := r.getExch(conn)
+	// Exchange acquisition and the configuration it is served with must be read
+	// under the same lock: [Router.Configure] may run concurrently.
+	r.mu.Lock()
+	exch := r.getExchLocked(conn)
+	numGoro, backoff, mux, queue := r.numGoro, r.backoff, r.mux, r.pendingConns
+	r.mu.Unlock()
 	if exch == nil {
 		return lneto.ErrExhausted
 	}
 
-	if r.numGoro == 0 {
-		go r.goroHandle(exch, r.backoff, r.mux)
+	if numGoro == 0 {
+		go r.goroHandle(exch, backoff, mux)
 		return nil
 	}
 	select {
-	case r.pendingConns <- job{exch: exch}:
+	case queue <- job{exch: exch}:
 		return nil
 	default:
 		// pendingConns cannot store another Conn, we drop and return error.
@@ -247,9 +251,8 @@ func (r *Router) freeExch(exch *Exchange) {
 	r.mu.Unlock()
 }
 
-func (r *Router) getExch(conn conn) (exch *Exchange) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+// getExchLocked returns an exchange acquired on conn. Requires r.mu held.
+func (r *Router) getExchLocked(conn conn) (exch *Exchange) {
 	if r.freeList != nil {
 		if r.freeList.Acquire(conn) {
 			exch = r.freeList
@@ -295,13 +298,44 @@ type Exchange struct {
 	respHeaderOff uint16
 	respHeaderLen uint16
 	reqHdr        httpraw.Header
-	rw            conn
+
+	hijacked bool
+	rw       conn
 
 	respRemains   int
 	headerWritten bool
 	normalizeKeys bool
 	nextFree      *Exchange
 	readErr       error
+}
+
+// HijackRaw is a low-level implementation of http.Hijacker interface.
+// A Hijack method is not exposed due to heap allocation implications and correctness concerns.
+// Below is what an actual implementation may look like:
+//
+//	func (exch *Exchange) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+//		conn, ok := exch.rw.(net.Conn)
+//		if !ok {
+//			return nil, nil, errors.New("net.Conn not implemented")
+//		}
+//		_, data, err := exch.HijackRaw(nil)
+//		if err != nil {
+//			return nil, nil, err
+//		}
+//		var rd *bufio.ReadWriter
+//		if len(data) > 0 {
+//			rd = &bufio.ReadWriter{Reader: bufio.NewReader(bytes.NewReader(data))}
+//		}
+//		return conn, rd, nil
+//	}
+func (exch *Exchange) HijackRaw(dstBody []byte) (conn, []byte, error) {
+	data, err := exch.remainingSurplusBody()
+	if err != nil {
+		return nil, nil, err
+	}
+	exch.hijacked = true
+	dstBody = append(dstBody, data...)
+	return exch.rw, dstBody, nil
 }
 
 func (exch *Exchange) Configure(rawbuf []byte, requestLim int, normalizeKeys bool) {
@@ -331,6 +365,9 @@ func (exch *Exchange) Acquire(conn conn) bool {
 }
 
 func (exch *Exchange) Release() {
+	if !exch.hijacked {
+		exch.rw.Close()
+	}
 	exch.rw = nil
 	exch.used.Store(false)
 }
@@ -338,7 +375,9 @@ func (exch *Exchange) Release() {
 func (exch *Exchange) SetHeader(key, value string) (enoughMemory bool) {
 	off := int(exch.respHeaderOff) + int(exch.respHeaderLen)
 	free := len(exch.rawbuf) - off
-	if len(key)+len(value)+2 > free {
+	// Field costs key+':'+value+CRLF, plus the CRLF [Exchange.FlushHeader]
+	// appends past the last field to close the header block.
+	if len(key)+len(value)+len(":\r\n")+len("\r\n") > free {
 		return false
 	}
 	n := copy(exch.rawbuf[off:], key)
@@ -410,6 +449,33 @@ func (exch *Exchange) Write(buf []byte) (int, error) {
 	return exch.rw.Write(buf)
 }
 
+func (exch *Exchange) ReadBody(dst []byte) (n int, _ error) {
+	if exch.respRemains > 0 {
+		toRead, err := exch.remainingSurplusBody()
+		if err != nil {
+			return 0, err
+		}
+		n = copy(dst, toRead)
+		exch.respRemains -= n
+		if len(dst) == n {
+			return n, nil
+		}
+		dst = dst[n:]
+	}
+	nr, err := exch.rw.Read(dst)
+	return nr + n, err
+}
+
+func (exch *Exchange) remainingSurplusBody() ([]byte, error) {
+	_, err := exch.reqHdr.Body()
+	if err != nil {
+		return nil, err // Returns mangled buffer error if request header has been misused.
+	}
+	surplus := exch.rawbuf[exch.reqHdr.BufferParsed():exch.reqHdr.BufferReceived()]
+	toRead := surplus[len(surplus)-exch.respRemains:]
+	return toRead, nil
+}
+
 func (exch *Exchange) RequestHeaderRaw() *httpraw.Header {
 	return &exch.reqHdr
 }
@@ -434,25 +500,6 @@ func (exch *Exchange) RequestMethod() []byte {
 
 func (exch *Exchange) RequestConnectionClose() bool {
 	return exch.RequestHeaderRaw().ConnectionClose()
-}
-
-func (exch *Exchange) ReadBody(dst []byte) (n int, _ error) {
-	if exch.respRemains > 0 {
-		_, err := exch.reqHdr.Body()
-		if err != nil {
-			return 0, err // Returns mangled buffer error if request header has been misused.
-		}
-		surplus := exch.rawbuf[exch.reqHdr.BufferParsed():exch.reqHdr.BufferReceived()]
-		toRead := surplus[len(surplus)-exch.respRemains:]
-		n = copy(dst, toRead)
-		exch.respRemains -= n
-		if len(dst) == n {
-			return n, nil
-		}
-		dst = dst[n:]
-	}
-	nr, err := exch.rw.Read(dst)
-	return nr + n, err
 }
 
 type HandlerFunc func(ex *Exchange)

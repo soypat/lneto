@@ -101,6 +101,13 @@ func (r *rwconn) AddReadable(b []byte) {
 	defer r.mu.Unlock()
 	r.readable.Write(b)
 }
+// IsClosed reports whether the connection was closed by its handler.
+func (r *rwconn) IsClosed() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.closed
+}
+
 func (r *rwconn) ViewWritten() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -295,4 +302,30 @@ func staticPage(t *testing.T, page string) HandlerFunc {
 			t.Error("expected written ", len(page), "got", n)
 		}
 	}
+}
+
+// Configure writes the fields Handle reads; concurrent use must not race.
+func TestRouterConfigureHandleRace(t *testing.T) {
+	const bufferSize = 1024
+	var (
+		sm     sliceMux
+		router Router
+	)
+	sm.Handle("GET /", staticPage(t, "ok"))
+	configSynchronousRouter(t, &router, bufferSize, &sm)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		configSynchronousRouter(t, &router, bufferSize, &sm)
+	}()
+	go func() {
+		defer wg.Done()
+		conn := newConn("GET / HTTP/1.1\r\nHost: h\r\n\r\n")
+		if err := router.Handle(conn); err != nil {
+			t.Error(err)
+		}
+	}()
+	wg.Wait()
 }
