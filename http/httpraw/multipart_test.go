@@ -106,8 +106,8 @@ func TestNextPartHeader(t *testing.T) {
 		t.Fatal(err)
 	}
 	const wantHdr = "Content-Disposition: form-data; name=\"caption\"\r\n"
-	if string(hdr.Part) != wantHdr {
-		t.Errorf("want header %q, got %q", wantHdr, hdr.Part)
+	if string(hdr.PartView) != wantHdr {
+		t.Errorf("want header %q, got %q", wantHdr, hdr.PartView)
 	}
 	if string(hdr.Name) != "caption" {
 		t.Errorf("want name %q, got %q", "caption", hdr.Name)
@@ -239,8 +239,8 @@ func TestNextHeaderFilePart(t *testing.T) {
 	if got := string(hdr.Filename); got != "beach.png" {
 		t.Errorf("want filename %q, got %q", "beach.png", got)
 	}
-	if !strings.Contains(string(hdr.Part), "Content-Type: image/png") {
-		t.Errorf("want the raw block to hold every field, got %q", hdr.Part)
+	if !strings.Contains(string(hdr.PartView), "Content-Type: image/png") {
+		t.Errorf("want the raw block to hold every field, got %q", hdr.PartView)
 	}
 }
 
@@ -254,7 +254,7 @@ func TestNextHeaderZeroesOnError(t *testing.T) {
 	if _, err := m.NextHeader(&hdr, []byte("------abc123--\r\n")); err != io.EOF {
 		t.Fatalf("want io.EOF, got %v", err)
 	}
-	if hdr.Part != nil || hdr.Name != nil || hdr.Filename != nil {
+	if hdr.PartView != nil || hdr.Name != nil || hdr.Filename != nil {
 		t.Errorf("want zeroed header on error, got %+v", hdr)
 	}
 }

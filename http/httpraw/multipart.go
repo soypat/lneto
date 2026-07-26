@@ -39,8 +39,8 @@ type Multipart struct {
 // parameters that identify it. All fields alias the buffer they were parsed
 // from and stay valid as long as it does.
 type MultipartHeader struct {
-	// Part is the part's raw header block, ending in its final CRLF.
-	Part []byte
+	// PartView is the part's raw header block, ending in its final CRLF.
+	PartView []byte
 	// Name is the name parameter of a part's Content-Disposition field,
 	// i.e: "photo" for `form-data; name="photo"; filename="beach.png"`.
 	Name []byte
@@ -96,11 +96,61 @@ func (m *Multipart) NextHeader(dst *MultipartHeader, data []byte) (rest []byte, 
 	if end < 0 {
 		return nil, ErrNeedMoreData
 	}
-	dst.Part = data[after : after+end+2]
-	disposition := partField(dst.Part)
-	dst.Name = ContentParam(disposition, "name")
-	dst.Filename = ContentParam(disposition, "filename")
+	dst.PartView = data[after : after+end+2]
+	disposition := partField(dst.PartView)
+	dst.Name = append(dst.Name[:0], ContentParam(disposition, "name")...)
+	dst.Filename = append(dst.Filename[:0], ContentParam(disposition, "filename")...)
 	return data[after+end+4:], nil
+}
+
+func (m *Multipart) NextHeaderInt(dst *MultipartHeader, data []byte) (parsedLen int, err error) {
+	*dst = MultipartHeader{}
+	if len(m.Boundary) == 0 {
+		return 0, errNoBoundary
+	}
+	idx := m.indexDelimiter(data)
+	if idx < 0 {
+		return 0, nil
+	}
+	after := idx + len("--") + len(m.Boundary)
+	if after+2 > len(data) {
+		return 0, nil // Cannot tell a closing delimiter yet.
+	} else if data[after] == '-' && data[after+1] == '-' {
+		return 0, io.EOF
+	}
+	// Delimiter is followed by CRLF, then the part's header block.
+	if data[after] == '\r' {
+		after++
+	}
+	if after >= len(data) {
+		return 0, nil
+	} else if data[after] != '\n' {
+		return 0, errBadDelimiter
+	}
+	after++
+	end := bytes.Index(data[after:], []byte("\r\n\r\n"))
+	if end < 0 {
+		return 0, nil
+	}
+	dst.PartView = data[after : after+end+2]
+	disposition := partField(dst.PartView)
+	dst.Name = append(dst.Name[:0], ContentParam(disposition, "name")...)
+	dst.Filename = append(dst.Filename[:0], ContentParam(disposition, "filename")...)
+	return after + end + 4, nil
+}
+
+func (m *Multipart) NextBodyInt(data []byte) (bodyLen int, done bool) {
+	idx := m.indexPartEnd(data)
+	if idx >= 0 {
+		return idx, true
+		// return data[:idx], data[idx+len("\r\n"):], true
+	}
+	// Longest prefix of "\r\n--"+boundary that could still be completed.
+	hold := len("\r\n--") + len(m.Boundary) - 1
+	if hold > len(data) {
+		hold = len(data)
+	}
+	return len(data) - hold, false
 }
 
 // NextBody returns the part bytes available in data, holding back any tail
