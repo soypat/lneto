@@ -50,9 +50,10 @@ func TestExchangeWriteHeader(t *testing.T) {
 		// Longest status text in status.go: worst case for the status line buffer.
 		{code: 511, want: "HTTP/1.1 511 Network Authentication Required\r\n\r\n"},
 	} {
-		exch := newExchange(t, newConn(""), 128, false)
+		conn := newConn("")
+		exch := newExchange(t, conn, 128, false)
 		exch.WriteHeader(test.code)
-		if got := exch.rw.(*rwconn).ViewWritten(); got != test.want {
+		if got := conn.ViewWritten(); got != test.want {
 			t.Errorf("code %d: want %q, got %q", test.code, test.want, got)
 		}
 	}

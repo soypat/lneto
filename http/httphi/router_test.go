@@ -357,7 +357,7 @@ func TestRouterConfigureDuringWorkerHandle(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 300; i++ {
+		for range 300 {
 			conn := newConn("GET / HTTP/1.1\r\nHost: h\r\n\r\n")
 			conn.Hangup()
 			router.Handle(conn) // Drops are fine, panics are not.
@@ -367,7 +367,7 @@ func TestRouterConfigureDuringWorkerHandle(t *testing.T) {
 		defer wg.Done()
 		// Each Configure sleeps 5ms tearing down the previous generation, keep
 		// the count low and let the Handle loop supply the concurrency.
-		for i := 0; i < 20; i++ {
+		for range 20 {
 			// errBusyExchanges is legitimate backpressure: the previous
 			// generation was still serving when the buffers were needed.
 			if err := router.Configure(cfg); err != nil && err != errBusyExchanges {
