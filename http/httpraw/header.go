@@ -369,11 +369,11 @@ func (h *Header) RequestTarget() []byte {
 // for "/search?q=go". Returns the whole target if it contains no query string.
 func (h *Header) RequestPath() []byte {
 	target := h.RequestTarget()
-	query := bytes.IndexByte(target, '?')
-	if query < 0 {
+	before, _, ok := bytes.Cut(target, []byte{'?'})
+	if !ok {
 		return target
 	}
-	return target[:query]
+	return before
 }
 
 // RequestQuery returns the request-target (URI) query string as it appears on the
@@ -381,11 +381,11 @@ func (h *Header) RequestPath() []byte {
 // Returns nil if the target has no query string. Iterate it with [NextQueryPair].
 func (h *Header) RequestQuery() []byte {
 	target := h.RequestTarget()
-	start := bytes.IndexByte(target, '?')
-	if start < 0 {
+	_, after, ok := bytes.Cut(target, []byte{'?'})
+	if !ok {
 		return nil
 	}
-	return target[start+1:]
+	return after
 }
 
 // NextQueryPair splits the leading key-value pair off a query string and returns
@@ -413,8 +413,8 @@ func NextQueryPair(query []byte) (rawkey, rawval, rest []byte) {
 		if len(pair) == 0 {
 			continue // Empty sequence, see WHATWG URL urlencoded parsing.
 		}
-		if eq := bytes.IndexByte(pair, '='); eq >= 0 {
-			return pair[:eq], pair[eq+1:], query
+		if before, after, ok := bytes.Cut(pair, []byte{'='}); ok {
+			return before, after, query
 		}
 		return pair, nil, query
 	}
