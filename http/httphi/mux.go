@@ -122,7 +122,7 @@ func (sm *MuxSlice) Handle(optMethodAndPath string, handler HandlerFunc) {
 	v.handler = handler
 }
 
-// Method is a HTTP request method, parsed by [MethodFromBytes].
+// Method is a HTTP request method, parsed by [MethodFrom].
 type Method uint8
 
 const (
