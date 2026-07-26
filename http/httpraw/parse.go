@@ -106,7 +106,7 @@ func (h *Header) parseFirstLine(asResponse bool) (err error) {
 	if asResponse {
 		h.statusCode, h.statusText, h.flags, err = h.hbuf.parseFirstLineResponse(h.flags)
 	} else {
-		h.method, h.requestURI, h.proto, h.flags, err = h.hbuf.parseFirstLineRequest(h.flags)
+		h.method, h.requestTarget, h.proto, h.flags, err = h.hbuf.parseFirstLineRequest(h.flags)
 	}
 	return err
 }

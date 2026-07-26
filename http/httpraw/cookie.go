@@ -74,6 +74,8 @@ func (c *Cookie) Parse() error {
 	return nil
 }
 
+// ForEach iterates over the cookie's key-value pairs, stopping on the first
+// error returned by cb and returning it.
 func (c *Cookie) ForEach(cb func(key, value []byte) error) error {
 	nc := len(c.kvs)
 	for i := range nc {
@@ -100,6 +102,8 @@ func (c *Cookie) Get(key string) []byte {
 	return nil
 }
 
+// HasKeyOrSingleValue returns true if the cookie contains a pair with the given
+// key or a valueless attribute with the given text, i.e: "Secure" or "HttpOnly".
 func (c *Cookie) HasKeyOrSingleValue(keyOrSingleValue string) bool {
 	nc := len(c.kvs)
 	for i := range nc {

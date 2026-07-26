@@ -52,8 +52,8 @@ func TestTryParse_IncrementalRequest(t *testing.T) {
 	if string(hdr.Method()) != "GET" {
 		t.Errorf("method = %q; want GET", hdr.Method())
 	}
-	if string(hdr.RequestURI()) != "/index.html" {
-		t.Errorf("URI = %q; want /index.html", hdr.RequestURI())
+	if string(hdr.RequestTarget()) != "/index.html" {
+		t.Errorf("URI = %q; want /index.html", hdr.RequestTarget())
 	}
 
 	// Verify headers via ForEach.
@@ -432,7 +432,7 @@ func TestHeader_RequestRoundTrip(t *testing.T) {
 	hdr.Reset(make([]byte, 0, 256))
 	hdr.SetProtocol("HTTP/1.1")
 	hdr.SetMethod("POST")
-	hdr.SetRequestURI("/api/data")
+	hdr.SetRequestTarget("/api/data")
 	hdr.Add("Host", "example.com")
 	hdr.Add("Content-Type", "application/json")
 
@@ -454,8 +454,8 @@ func TestHeader_RequestRoundTrip(t *testing.T) {
 	if string(hdr2.Method()) != "POST" {
 		t.Errorf("re-parsed method = %q; want POST", hdr2.Method())
 	}
-	if string(hdr2.RequestURI()) != "/api/data" {
-		t.Errorf("re-parsed URI = %q; want /api/data", hdr2.RequestURI())
+	if string(hdr2.RequestTarget()) != "/api/data" {
+		t.Errorf("re-parsed URI = %q; want /api/data", hdr2.RequestTarget())
 	}
 	if string(hdr2.Get("Host")) != "example.com" {
 		t.Errorf("re-parsed Host = %q; want example.com", hdr2.Get("Host"))
@@ -504,8 +504,8 @@ func TestParseRequest_NoProtocol(t *testing.T) {
 	if string(hdr.Method()) != "GET" {
 		t.Errorf("method = %q; want GET", hdr.Method())
 	}
-	if string(hdr.RequestURI()) != "/simple" {
-		t.Errorf("URI = %q; want /simple", hdr.RequestURI())
+	if string(hdr.RequestTarget()) != "/simple" {
+		t.Errorf("URI = %q; want /simple", hdr.RequestTarget())
 	}
 	if hdr.Protocol() != nil {
 		t.Errorf("protocol should be nil for version-less request, got %q", hdr.Protocol())

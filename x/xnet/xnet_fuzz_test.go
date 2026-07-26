@@ -32,7 +32,7 @@ func FuzzStackPacketHTTP(f *testing.F) {
 	}
 	hdr.SetMethod("GET")
 	hdr.SetProtocol("HTTP/1.1")
-	hdr.SetRequestURI("/")
+	hdr.SetRequestTarget("/")
 	data := hdr.AppendHeaders(nil)
 
 	pktnum := 0

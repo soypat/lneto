@@ -15,6 +15,9 @@ const (
 	strClose         = "close"
 )
 
+// Flags is a bitset of signals gathered while parsing or building a header,
+// such as a status code having been set or the peer requesting connection
+// close. See [Header.Flags].
 type Flags uint16
 
 const (
@@ -27,9 +30,9 @@ const (
 	flagReaderEOF
 	// set if [Header.SetStatus] or [Header.SetStatusInt] has been called.
 	FlagStatusSet
-	FlagReaderError
 )
 
+// HasAny returns true if any of the argument flags are set.
 func (f Flags) HasAny(checkThese Flags) bool {
 	return f&checkThese != 0
 }
@@ -45,9 +48,9 @@ type Header struct {
 	hbuf headerBuf
 
 	// Request fields.
-	method     headerSlice
-	requestURI headerSlice
-	proto      headerSlice
+	method        headerSlice
+	requestTarget headerSlice
+	proto         headerSlice
 
 	// Response fields.
 	statusCode headerSlice
@@ -108,7 +111,7 @@ func (h *Header) TryParse(asResponse bool) (needMoreData bool, err error) {
 	} else if h.flags.HasAny(flagMangledBuffer) {
 		return false, errMangledBuffer
 	}
-	if asResponse && h.statusCode.len == 0 || !asResponse && h.requestURI.start == 0 {
+	if asResponse && h.statusCode.len == 0 || !asResponse && h.requestTarget.start == 0 {
 		err = h.parseFirstLine(asResponse)
 		if err != nil {
 			return err == errNeedMore, err
@@ -351,37 +354,38 @@ func (h *Header) SetMethod(method string) {
 	h.method = h.reuseOrAppend(h.method, method)
 }
 
-// SetRequestURI sets RequestURI for the first HTTP request line.
-func (h *Header) SetRequestURI(requestURI string) {
-	h.requestURI = h.reuseOrAppend(h.requestURI, requestURI)
+// SetRequestTarget sets request-target (URI) for the first HTTP request line.
+func (h *Header) SetRequestTarget(requestTarget string) {
+	h.requestTarget = h.reuseOrAppend(h.requestTarget, requestTarget)
 }
 
-// RequestURI returns RequestURI from the first HTTP request line.
-func (h *Header) RequestURI() []byte {
-	return h.getNonEmptyValue(h.requestURI)
+// RequestTarget returns a view of the request-target (URI) of the first HTTP request line.
+// Called Request-URI in the obsolete RFC 2616, renamed request-target by RFC 9112.
+func (h *Header) RequestTarget() []byte {
+	return h.getNonEmptyValue(h.requestTarget)
 }
 
-// RequestPath returns the request URI up to the query string, i.e: "/search"
-// for "/search?q=go". Returns the whole URI if it contains no query string.
+// RequestPath returns the request-target (URI) up to the query string, i.e: "/search"
+// for "/search?q=go". Returns the whole target if it contains no query string.
 func (h *Header) RequestPath() []byte {
-	uri := h.RequestURI()
-	query := bytes.IndexByte(uri, '?')
+	target := h.RequestTarget()
+	query := bytes.IndexByte(target, '?')
 	if query < 0 {
-		return uri
+		return target
 	}
-	return uri[:query]
+	return target[:query]
 }
 
-// RequestQuery returns the request URI's query string as it appears on the
+// RequestQuery returns the request-target (URI) query string as it appears on the
 // wire, percent-encoded and with '+' undecoded, i.e: "q=go" for "/search?q=go".
-// Returns nil if the URI has no query string. Iterate it with [NextQueryPair].
+// Returns nil if the target has no query string. Iterate it with [NextQueryPair].
 func (h *Header) RequestQuery() []byte {
-	uri := h.RequestURI()
-	start := bytes.IndexByte(uri, '?')
+	target := h.RequestTarget()
+	start := bytes.IndexByte(target, '?')
 	if start < 0 {
 		return nil
 	}
-	return uri[start+1:]
+	return target[start+1:]
 }
 
 // NextQueryPair splits the leading key-value pair off a query string and returns
@@ -461,7 +465,7 @@ func (h *Header) AppendRequest(dst []byte) ([]byte, error) {
 	proto := h.Protocol()
 	if h.flags.HasAny(flagOOMReached) {
 		return dst, errOOM
-	} else if h.requestURI.len == 0 || h.method.len == 0 {
+	} else if h.requestTarget.len == 0 || h.method.len == 0 {
 		return dst, errNeedMethodURI
 	} else if len(proto) == 0 {
 		return dst, errNoProto
@@ -473,7 +477,7 @@ func (h *Header) AppendRequest(dst []byte) ([]byte, error) {
 	} else {
 		dst = append(dst, method...)
 	}
-	uri := h.RequestURI()
+	uri := h.RequestTarget()
 
 	dst = append(dst, ' ')
 	dst = append(dst, uri...)
@@ -531,6 +535,9 @@ func (h *Header) AppendHeaders(dst []byte) []byte {
 	return dst
 }
 
+// String returns the header's wire representation, as a request if it has a
+// request line and as a response otherwise. Returns the error text if neither
+// can be built. Allocates, so it is meant for debugging and logging only.
 func (h *Header) String() string {
 	buf, err := h.AppendRequest(nil)
 	if err != nil {

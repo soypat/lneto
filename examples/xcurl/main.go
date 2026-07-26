@@ -307,7 +307,7 @@ func run() (err error) {
 	timeHTTPCreate := timer("create HTTP GET request")
 	var hdr httpraw.Header
 	hdr.SetMethod("GET")
-	hdr.SetRequestURI("/")
+	hdr.SetRequestTarget("/")
 	hdr.SetProtocol("HTTP/1.1")
 	hdr.Set("Host", flagHostToResolve)
 	hdr.Set("User-Agent", "lneto")

@@ -27,7 +27,7 @@ func run() error {
 	// Prepare GET request.
 	var hdr httpraw.Header
 	hdr.SetMethod("GET")
-	hdr.SetRequestURI("/")
+	hdr.SetRequestTarget("/")
 	hdr.SetProtocol("HTTP/1.1")
 	req, err := hdr.AppendRequest(nil)
 	if err != nil {

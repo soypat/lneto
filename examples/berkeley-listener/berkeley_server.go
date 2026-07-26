@@ -288,7 +288,7 @@ func handleConnNet(conn net.Conn) error {
 		}
 	}
 	method := string(hdr.Method())
-	uri := string(hdr.RequestURI())
+	uri := string(hdr.RequestTarget())
 	fmt.Printf("< %s %s\n", method, uri)
 
 	var resp httpraw.Header
@@ -370,7 +370,7 @@ func mockClient(stack *xnet.StackAsync, port uint16, subnet netip.Prefix) {
 
 	var hdr httpraw.Header
 	hdr.SetMethod("GET")
-	hdr.SetRequestURI("/")
+	hdr.SetRequestTarget("/")
 	hdr.SetProtocol("HTTP/1.1")
 	hdr.Set("Host", string(ipv4.AppendFormatAddr(nil, stack.Addr4())))
 	hdr.Set("User-Agent", "lneto-mock")

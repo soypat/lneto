@@ -97,8 +97,8 @@ func homepage(exch *httphi.Exchange) {
 	n += len(strconv.AppendUint(page[n:n], visits.Add(1), 10))
 	n += copy(page[n:], htmlTail)
 
-	exch.SetHeader("Content-Type", "text/html")
-	exch.SetHeaderInt("Content-Length", int64(n), 10)
+	exch.StageHeader("Content-Type", "text/html")
+	exch.StageHeaderInt("Content-Length", int64(n), 10)
 	exch.WriteHeader(int(httphi.StatusOK))
 	exch.Write(page[:n])
 }

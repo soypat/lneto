@@ -50,8 +50,8 @@ func TestHeaderParseRequest(t *testing.T) {
 	if string(hdr.Method()) != wantMethod {
 		t.Errorf("want method %s, got %q", wantMethod, hdr.Method())
 	}
-	if !bytes.Equal(hdr.RequestURI(), []byte(wantURI)) {
-		t.Errorf("want request URI %q, got %q", wantURI, hdr.RequestURI())
+	if !bytes.Equal(hdr.RequestTarget(), []byte(wantURI)) {
+		t.Errorf("want request URI %q, got %q", wantURI, hdr.RequestTarget())
 	}
 	contentLength, _ := strconv.Atoi(string(hdr.Get("Content-Length")))
 	if contentLength != len(wantMessage) {
@@ -356,7 +356,7 @@ func TestHeaderSetOverwrite(t *testing.T) {
 	var h Header
 	h.Reset(nil)
 	h.SetMethod("GET")
-	h.SetRequestURI("/")
+	h.SetRequestTarget("/")
 	h.SetProtocol("HTTP/1.1")
 
 	h.Set("Host", "first.example.com")
@@ -485,7 +485,7 @@ func TestHeader_AddFullBufferNoPanic(t *testing.T) {
 	h.Reset(buf)
 	h.EnableBufferGrowth(false)
 	h.SetMethod("GET")
-	h.SetRequestURI("/")
+	h.SetRequestTarget("/")
 	h.SetProtocol("HTTP/1.1")
 
 	defer func() {
@@ -531,7 +531,7 @@ func TestHeader_SetIntOverwrite(t *testing.T) {
 	var h Header
 	h.Reset(nil)
 	h.SetMethod("GET")
-	h.SetRequestURI("/")
+	h.SetRequestTarget("/")
 	h.SetProtocol("HTTP/1.1")
 
 	h.SetInt("Content-Length", 100, 10)

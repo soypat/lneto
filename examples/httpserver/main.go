@@ -282,7 +282,7 @@ func handleConnection(conn *tcp.Conn) error {
 	}
 
 	method := string(hdr.Method())
-	uri := string(hdr.RequestURI())
+	uri := string(hdr.RequestTarget())
 	fmt.Printf("< %s %s\n", method, uri)
 
 	// Build response body.

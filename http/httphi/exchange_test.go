@@ -5,9 +5,10 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/soypat/lneto/http/httpraw"
 	"testing"
 	"time"
+
+	"github.com/soypat/lneto/http/httpraw"
 
 	"github.com/soypat/lneto"
 )
@@ -122,7 +123,7 @@ func TestExchangeSetHeader(t *testing.T) {
 			conn := newConn("")
 			exch := newExchange(t, conn, 128, test.normalize)
 			for _, kv := range test.set {
-				if !exch.SetHeader(kv[0], kv[1]) {
+				if !exch.StageHeader(kv[0], kv[1]) {
 					t.Fatalf("SetHeader(%q,%q) reported insufficient memory", kv[0], kv[1])
 				}
 			}
@@ -144,7 +145,7 @@ func TestExchangeSetHeaderOOM(t *testing.T) {
 	const bufferSize = 32
 	conn := newConn("")
 	exch := newExchange(t, conn, bufferSize, false)
-	if exch.SetHeader("X-Big", strings.Repeat("v", 4*bufferSize)) {
+	if exch.StageHeader("X-Big", strings.Repeat("v", 4*bufferSize)) {
 		t.Fatal("want insufficient memory reported for oversized header value")
 	}
 	exch.WriteHeader(200)
@@ -195,7 +196,7 @@ func TestHandleRequestFields(t *testing.T) {
 			route, _, _ := strings.Cut(test.wantURI, "?") // Mux matches on path.
 			sm.Handle(route, func(ex *Exchange) {
 				gotMethod = string(ex.RequestMethod())
-				gotURI = string(ex.RequestURI())
+				gotURI = string(ex.RequestTarget())
 				gotHost = string(ex.RequestHeader("Host"))
 				ex.WriteHeader(200)
 			})
@@ -299,7 +300,7 @@ func TestExchangeSetHeaderExactFit(t *testing.T) {
 		if !exch.Acquire(conn) {
 			t.Fatal("fresh exchange failed to acquire connection")
 		}
-		set := exch.SetHeader(key, value)
+		set := exch.StageHeader(key, value)
 		exch.WriteHeader(200)
 
 		want := "HTTP/1.1 200 OK\r\n"
@@ -437,7 +438,7 @@ func TestExchangeSetHeaderInt(t *testing.T) {
 	} {
 		conn := newConn("")
 		exch := newExchange(t, conn, 256, false)
-		exch.SetHeaderInt("N", test.value, test.base)
+		exch.StageHeaderInt("N", test.value, test.base)
 		exch.WriteHeader(200)
 		got, _ := strings.CutPrefix(conn.ViewWritten(), "HTTP/1.1 200 OK\r\n")
 		if got != test.want {
@@ -450,7 +451,7 @@ func TestExchangeSetHeaderInt(t *testing.T) {
 func TestExchangeSetHeaderIntNoAlloc(t *testing.T) {
 	exch := newExchange(t, newConn(""), 256, false)
 	allocs := testing.AllocsPerRun(100, func() {
-		exch.SetHeaderInt("Content-Length", 1234567890, 10)
+		exch.StageHeaderInt("Content-Length", 1234567890, 10)
 	})
 	if allocs != 0 {
 		t.Errorf("SetHeaderInt allocated %v times, want 0", allocs)

@@ -61,8 +61,8 @@ func BenchmarkHandle(b *testing.B) {
 			name:    "GETWithHeadersAndQuery",
 			request: "GET /?abc=123 HTTP/1.1\r\nHost: tinygo.org\r\nUser-Agent: bench\r\nAccept: */*\r\nConnection: close\r\n\r\n",
 			handler: func(ex *Exchange) {
-				ex.SetHeader("Content-Type", "text/plain")
-				ex.SetHeaderInt("Content-Length", int64(len(benchBody)), 10)
+				ex.StageHeader("Content-Type", "text/plain")
+				ex.StageHeaderInt("Content-Length", int64(len(benchBody)), 10)
 				data, present := ex.AppendQuery(buf[:0], "abc", true)
 				if !present || !internal.BytesEqual(data, expect) {
 					panic("invalid result")
