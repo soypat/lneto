@@ -41,10 +41,10 @@ func run() error {
 
 	var router httphi.Router
 	err = router.Configure(httphi.RouterConfig{
-		FixedNumGoroutines:    numGoroutines,
-		RequestBufferSize:     bufferSizes,
-		ResponseMinBufferSize: bufferSizes,
-		MaxAwaitingConns:      256,
+		FixedNumGoroutines:          numGoroutines,
+		RequestHeaderBufferSize:     bufferSizes,
+		ResponseHeaderMinBufferSize: bufferSizes,
+		MaxAwaitingConns:            256,
 		Backoff: func(consecutiveBackoffs uint) (sleepOrFlag time.Duration) {
 			return min(time.Second, time.Millisecond*time.Duration(consecutiveBackoffs))
 		},

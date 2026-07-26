@@ -290,7 +290,7 @@ func TestExchangeReadBody(t *testing.T) {
 // SetHeader must budget every byte it writes: colon, CRLF, and the CRLF that
 // FlushHeader appends after the last field. Buffers that fit all but the last
 // byte must be refused, never overrun.
-func TestExchangeSetHeaderExactFit(t *testing.T) {
+func TestExchangeStageOKAndFail(t *testing.T) {
 	const key, value = "K", "V"
 	const field = len(key) + len(value) + len(":\r\n")
 	for _, bufLen := range []int{field + 2, field + 1, field} {
@@ -301,13 +301,18 @@ func TestExchangeSetHeaderExactFit(t *testing.T) {
 			t.Fatal("fresh exchange failed to acquire connection")
 		}
 		set := exch.StageHeader(key, value)
-		exch.WriteHeader(200)
+		n, err := exch.FlushHeader()
 
 		want := "HTTP/1.1 200 OK\r\n"
 		if set {
 			want += key + ":" + value + "\r\n"
+			want += "\r\n"
+		} else {
+			if err != lneto.ErrBufferFull || n != 0 {
+				t.Fatal("expected buffer full and no data written:", err, n)
+			}
+			want = ""
 		}
-		want += "\r\n"
 		if got := conn.ViewWritten(); got != want {
 			t.Errorf("buffer %d: want %q, got %q", bufLen, want, got)
 		}

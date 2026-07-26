@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"sync/atomic"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/http/httpraw"
 	"github.com/soypat/lneto/internal"
 )
@@ -131,6 +132,7 @@ func (exch *Exchange) StageHeader(key, value string) (enoughMemory bool) {
 	// Field costs key+':'+value+CRLF, plus the CRLF [Exchange.FlushHeader]
 	// appends past the last field to close the header block.
 	if len(key)+len(value)+len(":\r\n")+len("\r\n") > free {
+		exch.respErr = lneto.ErrBufferFull // Omit writing header back to prevent incomplete response.
 		return false
 	}
 	n := copy(exch.rawbuf[off:], key)
@@ -158,6 +160,7 @@ func (exch *Exchange) StageHeaderInt(key string, value int64, base int) (enoughM
 	off := int(exch.respHeaderOff) + int(exch.respHeaderLen)
 	free := len(exch.rawbuf) - off
 	if len(key)+internal.IntLen(value, base)+len(":\r\n")+len("\r\n") > free {
+		exch.respErr = lneto.ErrBufferFull // Omit writing header back to prevent incomplete response.
 		return false
 	}
 	n := copy(exch.rawbuf[off:], key)

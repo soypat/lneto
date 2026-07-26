@@ -67,12 +67,14 @@ type RouterConfig struct {
 	// FixedNumGoroutines must be set to either -1 (freely allocate new goroutines) or to the number of goroutines
 	// to spawn on [Router.Configure] being called.
 	FixedNumGoroutines int
-	// RequestBufferSize determines the buffer allocated
-	// for processing requests.
-	RequestBufferSize int
-	// ResponseMinBufferSize determines buffer allocated for processing responses.
+	// RequestHeaderBufferSize determines the buffer allocated
+	// for processing request HTTP headers including request-target (URI), protocol and key/value pairs.
+	RequestHeaderBufferSize int
+	// ResponseHeaderMinBufferSize determines buffer allocated for processing response headers.
 	// Response buffer will reuse unused request memory so this is not a strict limit.
-	ResponseMinBufferSize int
+	// "HTTP/1.1 200 OK\r\n" does not count towards this memory, only actual Headers key/value pairs use this memory.
+	// After memory is fully consumed [Exchange.StageHeader] will not append more headers.
+	ResponseHeaderMinBufferSize int
 
 	// NormalizeOutgoingKeys normalizes response header field keys as they are
 	// staged, i.e: "content-type" becomes "Content-Type".
@@ -148,8 +150,8 @@ func (r *Router) Configure(cfg RouterConfig) error {
 	gen := r.gen.Load()
 	numgoro := cfg.FixedNumGoroutines
 	workerMode := cfg.workerMode()
-	r.reqBuf = cfg.RequestBufferSize
-	r.respBuf = cfg.ResponseMinBufferSize
+	r.reqBuf = cfg.RequestHeaderBufferSize
+	r.respBuf = cfg.ResponseHeaderMinBufferSize
 	r.mux = cfg.Mux
 	r.log = cfg.Logger
 	r.normalizeKeys = cfg.NormalizeOutgoingKeys
@@ -172,12 +174,12 @@ func (r *Router) Configure(cfg RouterConfig) error {
 		r.freeList = nil // Freelist entries point into the buffers reused below.
 		internal.SliceReuse(&r.exchs, numgoro)
 		r.exchs = r.exchs[:numgoro]
-		rawBuflen := cfg.RequestBufferSize + cfg.ResponseMinBufferSize
+		rawBuflen := cfg.RequestHeaderBufferSize + cfg.ResponseHeaderMinBufferSize
 		internal.SliceReuse(&r.globbuf, numgoro*rawBuflen)
 		for i := range numgoro {
 			// TODO exchange buffer alloc
 			goff := i * rawBuflen
-			r.exchs[i].Configure(r.globbuf[goff:goff+rawBuflen], cfg.RequestBufferSize, cfg.NormalizeOutgoingKeys)
+			r.exchs[i].Configure(r.globbuf[goff:goff+rawBuflen], cfg.RequestHeaderBufferSize, cfg.NormalizeOutgoingKeys)
 			go r.goroWorker(gen, jobqueue, cfg.Backoff, cfg.Mux)
 		}
 		r.pendingConns = jobqueue

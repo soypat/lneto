@@ -153,10 +153,10 @@ var _ Mux = (*MuxSlice)(nil)
 
 func configSynchronousRouter(t *testing.T, router *Router, bufferSize int, mux Mux) {
 	err := router.Configure(RouterConfig{
-		FixedNumGoroutines:    -1,
-		Mux:                   mux,
-		RequestBufferSize:     bufferSize,
-		ResponseMinBufferSize: bufferSize,
+		FixedNumGoroutines:          -1,
+		Mux:                         mux,
+		RequestHeaderBufferSize:     bufferSize,
+		ResponseHeaderMinBufferSize: bufferSize,
 		Backoff: func(consecutiveBackoffs uint) (sleepOrFlag time.Duration) {
 			return lneto.BackoffFlagNop
 		},
@@ -343,12 +343,12 @@ func TestRouterHandleAfterTeardown(t *testing.T) {
 	)
 	sm.Handle("GET /", staticPage(t, "ok"))
 	err := router.Configure(RouterConfig{
-		FixedNumGoroutines:    2,
-		MaxAwaitingConns:      4,
-		Mux:                   &sm,
-		RequestBufferSize:     512,
-		ResponseMinBufferSize: 512,
-		Backoff:               nopBackoff,
+		FixedNumGoroutines:          2,
+		MaxAwaitingConns:            4,
+		Mux:                         &sm,
+		RequestHeaderBufferSize:     512,
+		ResponseHeaderMinBufferSize: 512,
+		Backoff:                     nopBackoff,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -371,12 +371,12 @@ func TestRouterConfigureDuringWorkerHandle(t *testing.T) {
 	)
 	sm.Handle("GET /", staticPage(t, "ok"))
 	cfg := RouterConfig{
-		FixedNumGoroutines:    2,
-		MaxAwaitingConns:      4,
-		Mux:                   &sm,
-		RequestBufferSize:     512,
-		ResponseMinBufferSize: 512,
-		Backoff:               nopBackoff,
+		FixedNumGoroutines:          2,
+		MaxAwaitingConns:            4,
+		Mux:                         &sm,
+		RequestHeaderBufferSize:     512,
+		ResponseHeaderMinBufferSize: 512,
+		Backoff:                     nopBackoff,
 	}
 	if err := router.Configure(cfg); err != nil {
 		t.Fatal(err)
