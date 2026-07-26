@@ -878,3 +878,10 @@ func (s *StackAsync) DebugErr(msg, err string) {
 		slog.Uint64("recv", s.stats.TotalReceived),
 	)
 }
+
+// LogAllocs is an lneto-tracked allocation logger. If there was an allocation between this call and a previous call
+// to LogAllocs it will be printed. This is called globally by StackAsync.Debug methods and by all logging calls in lneto
+// when build tag debugheaplog is set.
+func LogAllocs(msg string) {
+	internal.LogAllocs(msg)
+}
