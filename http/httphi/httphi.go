@@ -17,7 +17,14 @@ import (
 
 //go:generate stringer -type Method,status -linecomment -output stringers.go
 
-var errNoRequestProto = errors.New("httphi: request line with no HTTP version")
+// defaultReconfigureWait is how long [Router.Configure] waits on a busy
+// previous generation when [RouterConfig.MaxReconfigureWait] is unset.
+const defaultReconfigureWait = 100 * time.Millisecond
+
+var (
+	errNoRequestProto = errors.New("httphi: request line with no HTTP version")
+	errBusyExchanges  = errors.New("httphi: exchanges still serving, cannot reuse their buffers")
+)
 
 type conn = io.ReadWriteCloser
 
@@ -61,9 +68,10 @@ type RouterConfig struct {
 
 	NormalizeOutgoingKeys bool
 	MaxAwaitingConns      int
-	Backoff               lneto.BackoffStrategy
-	Mux                   Mux
-	Logger                *slog.Logger
+
+	Backoff lneto.BackoffStrategy
+	Mux     Mux
+	Logger  *slog.Logger
 }
 
 func (cfg RouterConfig) Validate() error {
@@ -84,9 +92,19 @@ func (cfg RouterConfig) workerMode() bool {
 
 // Teardown stops fixed goroutines.
 func (r *Router) TeardownGoroutines() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.teardownGoroutinesLocked()
+}
+
+// teardownGoroutinesLocked closes the job queue fixed goroutines feed from.
+// Requires r.mu held so that a concurrent [Router.Handle] cannot be enqueueing
+// on the channel being closed.
+func (r *Router) teardownGoroutinesLocked() {
 	r.gen.Add(1)
 	if r.pendingConns != nil {
 		close(r.pendingConns)
+		r.pendingConns = nil
 	}
 }
 
@@ -96,7 +114,7 @@ func (r *Router) Configure(cfg RouterConfig) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.TeardownGoroutines()
+	r.teardownGoroutinesLocked()
 	gen := r.gen.Load()
 	numgoro := cfg.FixedNumGoroutines
 	workerMode := cfg.workerMode()
@@ -113,9 +131,14 @@ func (r *Router) Configure(cfg RouterConfig) error {
 	if workerMode {
 		jobqueue := make(chan job, cfg.MaxAwaitingConns)
 		if gen > 1 {
-			// Previously existing goroutine manager, wait a bit for it to close.
-			time.Sleep(5 * time.Millisecond)
+			// Exchange buffers below are reused: the previous generation must be
+			// done serving before they may be handed to the new one.
+			err := r.awaitIdleExchangesLocked(10 * time.Millisecond)
+			if err != nil {
+				return err
+			}
 		}
+		r.freeList = nil // Freelist entries point into the buffers reused below.
 		internal.SliceReuse(&r.exchs, numgoro)
 		r.exchs = r.exchs[:numgoro]
 		rawBuflen := cfg.RequestBufferSize + cfg.ResponseMinBufferSize
@@ -130,6 +153,31 @@ func (r *Router) Configure(cfg RouterConfig) error {
 		r.numGoro = numgoro
 	}
 	return nil
+}
+
+// awaitIdleExchangesLocked waits up to maxWait for exchanges of the previous
+// generation to finish serving so their buffers may be reused. Requires r.mu
+// held; the lock is released while waiting since [Router.freeExch] needs it to
+// free the exchanges being waited on.
+func (r *Router) awaitIdleExchangesLocked(maxWait time.Duration) error {
+	const pollInterval = time.Millisecond
+	for waited := time.Duration(0); ; waited += pollInterval {
+		busy := false
+		for i := range r.exchs {
+			if r.exchs[i].used.Load() {
+				busy = true
+				break
+			}
+		}
+		if !busy {
+			return nil
+		} else if waited >= maxWait {
+			return errBusyExchanges
+		}
+		r.mu.Unlock()
+		time.Sleep(pollInterval)
+		r.mu.Lock()
+	}
 }
 
 // Handle is a extremely low-level HTTP handling method used internally in [Router].
@@ -152,12 +200,12 @@ func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
 		consecutiveBackoffs = 0
 		const asRequest = false
 		needMore, err := reqhdr.TryParse(asRequest)
-		if !needMore && err == nil {
-			// Done!
-			break
+		if needMore {
+			continue // Request header split across reads, accumulate the rest.
 		} else if err != nil {
 			return err
 		}
+		break // Done!
 	}
 	// Setup Exchange fields necessary for correct functioning.
 	parsed := reqhdr.BufferParsed()
@@ -189,22 +237,29 @@ func (r *Router) Handle(conn conn) error {
 	// under the same lock: [Router.Configure] may run concurrently.
 	r.mu.Lock()
 	exch := r.getExchLocked(conn)
-	numGoro, backoff, mux, queue := r.numGoro, r.backoff, r.mux, r.pendingConns
-	r.mu.Unlock()
+	numGoro, backoff, mux := r.numGoro, r.backoff, r.mux
 	if exch == nil {
+		r.mu.Unlock()
 		return lneto.ErrExhausted
-	}
-
-	if numGoro == 0 {
+	} else if numGoro == 0 {
+		r.mu.Unlock()
 		go r.goroHandle(exch, backoff, mux)
 		return nil
 	}
+	// Enqueue under the lock: [Router.Configure] closes pendingConns while
+	// holding it, so an unlocked send could land on a closed channel. The send
+	// never blocks, so holding the lock cannot stall a worker.
+	var enqueued bool
 	select {
-	case queue <- job{exch: exch}:
-		return nil
+	case r.pendingConns <- job{exch: exch}:
+		enqueued = true
 	default:
 		// pendingConns cannot store another Conn, we drop and return error.
 		exch.used.Store(false) // release.
+	}
+	r.mu.Unlock()
+	if enqueued {
+		return nil
 	}
 	return lneto.ErrPacketDrop
 }
@@ -236,16 +291,17 @@ func (r *Router) goroHandle(exch *Exchange, backoff lneto.BackoffStrategy, mux M
 func (r *Router) freeExch(exch *Exchange) {
 	const freelistMaxDepth = 5
 	r.mu.Lock()
-	if r.freeList == nil {
+	depth := 0
+	for node := r.freeList; node != nil && depth < freelistMaxDepth; node = node.nextFree {
+		depth++
+	}
+	if depth < freelistMaxDepth {
+		// Push at head: appending at the tail would drop every node past the
+		// depth limit instead of dropping the exchange we cannot store.
+		exch.nextFree = r.freeList
 		r.freeList = exch
 	} else {
-		node := r.freeList
-		depth := 0
-		for depth < freelistMaxDepth && node.nextFree != nil {
-			node = node.nextFree
-			depth++
-		}
-		node.nextFree = exch
+		exch.nextFree = nil // Freelist full, exchange is dropped.
 	}
 	exch.Release()
 	r.mu.Unlock()
@@ -254,13 +310,14 @@ func (r *Router) freeExch(exch *Exchange) {
 // getExchLocked returns an exchange acquired on conn. Requires r.mu held.
 func (r *Router) getExchLocked(conn conn) (exch *Exchange) {
 	if r.freeList != nil {
+		// Successor must be read before Acquire: Acquire clears nextFree, so
+		// popping afterwards would truncate the freelist to the popped node.
+		next := r.freeList.nextFree
 		if r.freeList.Acquire(conn) {
 			exch = r.freeList
+			r.freeList = next
+			return exch
 		}
-		r.freeList = r.freeList.nextFree
-	}
-	if exch != nil {
-		return exch
 	}
 	for i := range r.exchs {
 		if r.exchs[i].Acquire(conn) {
@@ -303,6 +360,7 @@ type Exchange struct {
 	rw       conn
 
 	respRemains   int
+	respErr       error // Sticky: response is unrecoverable once a write fails.
 	headerWritten bool
 	normalizeKeys bool
 	nextFree      *Exchange
@@ -353,6 +411,8 @@ func (exch *Exchange) Acquire(conn conn) bool {
 		return false
 	}
 	exch.readErr = nil
+	exch.respErr = nil
+	exch.hijacked = false
 	exch.respTopWritten = 0
 	exch.respHeaderOff = 0
 	exch.respHeaderLen = 0
@@ -420,7 +480,9 @@ func (exch *Exchange) WriteHeader(code int) {
 	}
 }
 func (exch *Exchange) FlushHeader() (int, error) {
-	if exch.headerWritten {
+	if exch.respErr != nil {
+		return 0, exch.respErr
+	} else if exch.headerWritten {
 		return 0, nil
 	}
 	if exch.respTopWritten == 0 {
@@ -429,6 +491,7 @@ func (exch *Exchange) FlushHeader() (int, error) {
 	exch.headerWritten = true
 	ng, err := exch.rw.Write(exch.respTopBuf[:exch.respTopWritten])
 	if err != nil {
+		exch.respErr = err
 		return ng, err
 	}
 	off := int(exch.respHeaderOff)
@@ -436,17 +499,25 @@ func (exch *Exchange) FlushHeader() (int, error) {
 	headers[len(headers)-1] = '\n'
 	headers[len(headers)-2] = '\r'
 	ng2, err := exch.rw.Write(headers)
+	exch.respErr = err
 	return ng + ng2, err
 }
 
 func (exch *Exchange) Write(buf []byte) (int, error) {
-	if !exch.headerWritten {
-		exch.FlushHeader()
+	if exch.respErr != nil {
+		return 0, exch.respErr
+	} else if !exch.headerWritten {
+		_, err := exch.FlushHeader()
+		if err != nil {
+			return 0, err // Body must not reach the wire without its header.
+		}
 	}
 	if len(buf) == 0 {
 		return 0, nil
 	}
-	return exch.rw.Write(buf)
+	n, err := exch.rw.Write(buf)
+	exch.respErr = err
+	return n, err
 }
 
 func (exch *Exchange) ReadBody(dst []byte) (n int, _ error) {

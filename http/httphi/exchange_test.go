@@ -1,6 +1,8 @@
 package httphi
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -328,5 +330,88 @@ func TestHandleLeavesConnOpen(t *testing.T) {
 		if conn.IsClosed() {
 			t.Errorf("Handle closed the connection for %q", request)
 		}
+	}
+}
+
+// Hijacking hands the connection to the handler, so Release must not close it.
+// Ownership must not carry over: the next connection the exchange serves is
+// the router's again and must be closed on Release.
+func TestExchangeHijackOwnership(t *testing.T) {
+	var sm sliceMux
+	var hijackErr error
+	sm.Handle("GET /", func(ex *Exchange) {
+		_, _, hijackErr = ex.HijackRaw(nil)
+	})
+	first := newConn("GET / HTTP/1.1\r\nHost: h\r\n\r\n")
+	first.Hangup()
+	exch := newExchange(t, first, 1024, false)
+	if err := Handle(exch, &sm, nopBackoff); err != nil {
+		t.Fatal(err)
+	}
+	if hijackErr != nil {
+		t.Fatal(hijackErr)
+	}
+	exch.Release()
+	if first.IsClosed() {
+		t.Error("hijacked connection must stay open after Release")
+	}
+
+	second := newConn("")
+	if !exch.Acquire(second) {
+		t.Fatal("released exchange must be acquirable")
+	}
+	exch.Release()
+	if !second.IsClosed() {
+		t.Error("connection must be closed on Release: hijack of a previous request must not carry over")
+	}
+}
+
+// Idle peer policy belongs to the connection: Handle keeps retrying an empty
+// read until the conn itself reports failure, so a stalled peer ends the
+// exchange through the conn's deadline instead of pinning the exchange.
+func TestHandleIdlePeerEndsOnConnDeadline(t *testing.T) {
+	var sm sliceMux
+	sm.Handle("/", func(ex *Exchange) { t.Error("handler must not run on partial request") })
+	conn := newConn("GET / HTTP") // Peer stalls mid request line, never hangs up.
+	conn.SetDeadline(time.Now().Add(10 * time.Millisecond))
+	exch := newExchange(t, conn, 1024, false)
+
+	done := make(chan error, 1)
+	go func() { done <- Handle(exch, &sm, nopBackoff) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("want connection deadline error, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Handle ignored the connection deadline")
+	}
+}
+
+// A body must never reach the wire without its header: if flushing the header
+// fails, Write must report the failure and send nothing.
+func TestExchangeWriteHeaderFlushFails(t *testing.T) {
+	const body = "body"
+	conn := newConn("")
+	exch := newExchange(t, conn, 128, false)
+	conn.FailWrites(1) // Status line write fails, body write would succeed.
+
+	n, err := exch.Write([]byte(body))
+	if err == nil {
+		t.Error("want error when header flush fails, got nil")
+	}
+	if n != 0 {
+		t.Errorf("want 0 bytes written, got %d", n)
+	}
+	if got := conn.ViewWritten(); got != "" {
+		t.Errorf("want nothing on the wire, got %q", got)
+	}
+	// Writes after a failed header stay failed: the response is unrecoverable,
+	// a body without its header would corrupt the stream.
+	if _, err = exch.Write([]byte(body)); err == nil {
+		t.Error("want error on write after failed header flush, got nil")
+	}
+	if got := conn.ViewWritten(); got != "" {
+		t.Errorf("want nothing on the wire, got %q", got)
 	}
 }

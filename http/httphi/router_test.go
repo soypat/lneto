@@ -23,9 +23,11 @@ import (
 type rwconn struct {
 	mu       sync.Mutex
 	readable bytes.Buffer
+	segments []string
 	written  bytes.Buffer
 	closed   bool
 	hangup   bool
+	failWr   int
 	onClose  chan struct{}
 	deadline time.Time
 }
@@ -36,6 +38,23 @@ func newConn(request string) *rwconn {
 	r := &rwconn{onClose: make(chan struct{})}
 	r.AddReadable([]byte(request))
 	return r
+}
+
+// AddSegment queues data delivered on a later read, once everything already
+// pending has been read. Models a request split over several TCP segments
+// without depending on goroutine scheduling.
+func (r *rwconn) AddSegment(b string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.segments = append(r.segments, b)
+}
+
+// FailWrites makes the next n writes fail, as a conn refusing further data
+// would. Later writes succeed.
+func (r *rwconn) FailWrites(n int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.failWr = n
 }
 
 // Hangup makes reads past the pending data return [io.EOF], as a peer that
@@ -76,6 +95,11 @@ func (r *rwconn) Read(b []byte) (int, error) {
 	} else if r.deadlineExceeded() {
 		return 0, context.DeadlineExceeded
 	} else if r.readable.Len() == 0 {
+		if len(r.segments) > 0 {
+			r.readable.WriteString(r.segments[0])
+			r.segments = r.segments[1:]
+			return r.readable.Read(b)
+		}
 		if r.hangup {
 			return 0, io.EOF
 		}
@@ -90,6 +114,9 @@ func (r *rwconn) Write(b []byte) (int, error) {
 		return 0, net.ErrClosed
 	} else if r.deadlineExceeded() {
 		return 0, context.DeadlineExceeded
+	} else if r.failWr > 0 {
+		r.failWr--
+		return 0, io.ErrShortWrite
 	}
 	return r.written.Write(b)
 }
@@ -101,6 +128,14 @@ func (r *rwconn) AddReadable(b []byte) {
 	defer r.mu.Unlock()
 	r.readable.Write(b)
 }
+// SetDeadline makes reads and writes past t fail, as a conn with a read
+// deadline set would.
+func (r *rwconn) SetDeadline(t time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.deadline = t
+}
+
 // IsClosed reports whether the connection was closed by its handler.
 func (r *rwconn) IsClosed() bool {
 	r.mu.Lock()
@@ -281,10 +316,11 @@ func TestRouterSplitRequest(t *testing.T) {
 	configSynchronousRouter(t, &router, bufferSize, &sm)
 
 	conn := newConn("GET / HTTP/1.1\r\nHo")
+	conn.AddSegment("st: tinygo.org\r\n\r")
+	conn.AddSegment("\n") // Final CRLF lands in its own segment.
 	if err := router.Handle(conn); err != nil {
 		t.Fatal(err)
 	}
-	conn.AddReadable([]byte("st: tinygo.org\r\n\r\n"))
 	conn.AwaitClose(t, time.Second)
 
 	if got := conn.ViewWritten(); !strings.HasSuffix(got, expectResponse) {
@@ -325,6 +361,53 @@ func TestRouterConfigureHandleRace(t *testing.T) {
 		conn := newConn("GET / HTTP/1.1\r\nHost: h\r\n\r\n")
 		if err := router.Handle(conn); err != nil {
 			t.Error(err)
+		}
+	}()
+	wg.Wait()
+}
+
+// Reconfiguring a running router tears down the job queue that Handle may be
+// sending a connection on. Connections may be dropped, but never panic.
+func TestRouterConfigureDuringWorkerHandle(t *testing.T) {
+	var (
+		sm     sliceMux
+		router Router
+	)
+	sm.Handle("GET /", staticPage(t, "ok"))
+	cfg := RouterConfig{
+		FixedNumGoroutines:    2,
+		MaxAwaitingConns:      4,
+		Mux:                   &sm,
+		RequestBufferSize:     512,
+		ResponseMinBufferSize: 512,
+		Backoff:               nopBackoff,
+	}
+	if err := router.Configure(cfg); err != nil {
+		t.Fatal(err)
+	}
+	defer router.TeardownGoroutines()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 300; i++ {
+			conn := newConn("GET / HTTP/1.1\r\nHost: h\r\n\r\n")
+			conn.Hangup()
+			router.Handle(conn) // Drops are fine, panics are not.
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		// Each Configure sleeps 5ms tearing down the previous generation, keep
+		// the count low and let the Handle loop supply the concurrency.
+		for i := 0; i < 20; i++ {
+			// errBusyExchanges is legitimate backpressure: the previous
+			// generation was still serving when the buffers were needed.
+			if err := router.Configure(cfg); err != nil && err != errBusyExchanges {
+				t.Error(err)
+				return
+			}
 		}
 	}()
 	wg.Wait()
