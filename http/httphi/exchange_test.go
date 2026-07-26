@@ -188,7 +188,7 @@ func TestHandleRequestFields(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var gotMethod, gotURI, gotHost string
-			var sm sliceMux
+			var sm MuxSlice
 			sm.Handle(test.wantURI, func(ex *Exchange) {
 				gotMethod = string(ex.RequestMethod())
 				gotURI = string(ex.RequestURI())
@@ -223,7 +223,7 @@ func TestHandleMalformedRequest(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var handled bool
-			var sm sliceMux
+			var sm MuxSlice
 			sm.Handle("/", func(ex *Exchange) { handled = true })
 			conn := newConn(test.request)
 			conn.Hangup()
@@ -240,7 +240,7 @@ func TestHandleMalformedRequest(t *testing.T) {
 
 // No registered handler must yield 404, not an empty response.
 func TestHandleNoHandler(t *testing.T) {
-	var sm sliceMux
+	var sm MuxSlice
 	sm.Handle("GET /", func(ex *Exchange) { t.Error("handler must not run") })
 	conn := serve(t, "GET /nowhere HTTP/1.1\r\nHost: h\r\n\r\n", &sm)
 	const want = "HTTP/1.1 404 Not Found\r\n\r\n"
@@ -251,7 +251,7 @@ func TestHandleNoHandler(t *testing.T) {
 
 // A handler that writes nothing must still produce a valid response.
 func TestHandleSilentHandler(t *testing.T) {
-	var sm sliceMux
+	var sm MuxSlice
 	sm.Handle("/", func(ex *Exchange) {})
 	conn := serve(t, "GET / HTTP/1.1\r\nHost: h\r\n\r\n", &sm)
 	const want = "HTTP/1.1 200 OK\r\n\r\n"
@@ -265,7 +265,7 @@ func TestExchangeReadBody(t *testing.T) {
 	const body = "message body"
 	var got string
 	var readErr error
-	var sm sliceMux
+	var sm MuxSlice
 	sm.Handle("POST /", func(ex *Exchange) {
 		dst := make([]byte, len(body))
 		n, err := ex.ReadBody(dst)
@@ -315,7 +315,7 @@ func TestExchangeSetHeaderExactFit(t *testing.T) {
 // Handle never closes the connection, on any outcome: the caller owns it so
 // that error policy and connection reuse stay the caller's decision.
 func TestHandleLeavesConnOpen(t *testing.T) {
-	var sm sliceMux
+	var sm MuxSlice
 	sm.Handle("GET /", staticPage(t, "ok"))
 	for _, request := range []string{
 		"GET / HTTP/1.1\r\nHost: h\r\n\r\n",         // Served.
@@ -337,7 +337,7 @@ func TestHandleLeavesConnOpen(t *testing.T) {
 // Ownership must not carry over: the next connection the exchange serves is
 // the router's again and must be closed on Release.
 func TestExchangeHijackOwnership(t *testing.T) {
-	var sm sliceMux
+	var sm MuxSlice
 	var hijackErr error
 	sm.Handle("GET /", func(ex *Exchange) {
 		_, _, hijackErr = ex.HijackRaw(nil)
@@ -370,7 +370,7 @@ func TestExchangeHijackOwnership(t *testing.T) {
 // read until the conn itself reports failure, so a stalled peer ends the
 // exchange through the conn's deadline instead of pinning the exchange.
 func TestHandleIdlePeerEndsOnConnDeadline(t *testing.T) {
-	var sm sliceMux
+	var sm MuxSlice
 	sm.Handle("/", func(ex *Exchange) { t.Error("handler must not run on partial request") })
 	conn := newConn("GET / HTTP") // Peer stalls mid request line, never hangs up.
 	conn.SetDeadline(time.Now().Add(10 * time.Millisecond))
@@ -413,5 +413,42 @@ func TestExchangeWriteHeaderFlushFails(t *testing.T) {
 	}
 	if got := conn.ViewWritten(); got != "" {
 		t.Errorf("want nothing on the wire, got %q", got)
+	}
+}
+
+func TestExchangeSetHeaderInt(t *testing.T) {
+	for _, test := range []struct {
+		value int64
+		base  int
+		want  string // Header block emitted after the status line.
+	}{
+		{value: 1234, base: 10, want: "N:1234\r\n\r\n"},
+		{value: 0, base: 10, want: "N:0\r\n\r\n"},
+		{value: -42, base: 10, want: "N:-42\r\n\r\n"},
+		{value: 255, base: 16, want: "N:ff\r\n\r\n"},
+		{value: 9223372036854775807, base: 10, want: "N:9223372036854775807\r\n\r\n"},
+		{value: -9223372036854775808, base: 10, want: "N:-9223372036854775808\r\n\r\n"},
+		{value: 1, base: 2, want: "\r\n"},  // Below base 10, dropped.
+		{value: 1, base: 37, want: "\r\n"}, // Above base 36, dropped.
+	} {
+		conn := newConn("")
+		exch := newExchange(t, conn, 256, false)
+		exch.SetHeaderInt("N", test.value, test.base)
+		exch.WriteHeader(200)
+		got, _ := strings.CutPrefix(conn.ViewWritten(), "HTTP/1.1 200 OK\r\n")
+		if got != test.want {
+			t.Errorf("value %d base %d: want %q, got %q", test.value, test.base, test.want, got)
+		}
+	}
+}
+
+// SetHeaderInt must format into the response buffer without allocating.
+func TestExchangeSetHeaderIntNoAlloc(t *testing.T) {
+	exch := newExchange(t, newConn(""), 256, false)
+	allocs := testing.AllocsPerRun(100, func() {
+		exch.SetHeaderInt("Content-Length", 1234567890, 10)
+	})
+	if allocs != 0 {
+		t.Errorf("SetHeaderInt allocated %v times, want 0", allocs)
 	}
 }

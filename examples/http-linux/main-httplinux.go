@@ -3,15 +3,22 @@
 package main
 
 import (
+	"log/slog"
 	"os"
 	"strconv"
 	"sync/atomic"
 	"time"
 
-	"github.com/soypat/lneto/http/httpraw"
+	"github.com/soypat/lneto/http/httphi"
 )
 
-const listenPort = 8080
+const (
+	kB            = 1 << 10
+	listenPort    = 8080
+	bufferSizes   = 2 * kB
+	numGoroutines = 4
+	readTimeout   = 2 * time.Second
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -27,18 +34,44 @@ func run() error {
 		return err
 	}
 	defer ln.Close()
-	println("listening on port", listenPort)
-	conn := new(Conn)
+	print("listening on http://localhost:", listenPort, "\n")
+
+	var mux httphi.MuxSlice
+	mux.Handle("GET /", homepage)
+
+	var router httphi.Router
+	err = router.Configure(httphi.RouterConfig{
+		FixedNumGoroutines:    numGoroutines,
+		RequestBufferSize:     bufferSizes,
+		ResponseMinBufferSize: bufferSizes,
+		MaxAwaitingConns:      256,
+		Backoff: func(consecutiveBackoffs uint) (sleepOrFlag time.Duration) {
+			return min(time.Second, time.Millisecond*time.Duration(consecutiveBackoffs))
+		},
+		Mux:    &mux,
+		Logger: slog.Default(),
+	})
+	if err != nil {
+		return err
+	}
+	defer router.TeardownGoroutines()
+
 	for {
+		conn := new(Conn)
 		err := ln.Accept(conn)
 		if err != nil {
 			return err
 		}
-		visits.Add(1)
-		if err := handle(conn); err != nil {
-			println("handle:", conn.RemoteAddr().String(), err.Error())
+		// The connection owns the idle policy: a peer that opens a socket and
+		// then stalls fails its read instead of holding a router goroutine.
+		conn.SetReadTimeout(readTimeout)
+		err = router.Handle(conn)
+		if err != nil {
+			// Every goroutine is busy and the queue is full. Dropping the
+			// connection is the backpressure: memory stays bounded.
+			slog.Warn("dropped connection", slog.String("remote", conn.RemoteAddr().String()), slog.String("err", err.Error()))
+			conn.Close()
 		}
-		conn.Close()
 	}
 }
 
@@ -50,58 +83,22 @@ const (
 	htmlTail = `!</blink></h1>` +
 		`<font color="#FF00FF">Sign my guestbook!</font>` +
 		`<br><hr>Best viewed in Netscape Navigator</center></body></html>`
+	// maxPage bounds the rendered page: both halves plus the visitor number.
+	maxPage = len(htmlHead) + 20 + len(htmlTail)
 )
 
-const maxHTTPHeader = 1024
+// visits counts served requests. Handlers run on the router's goroutines, so
+// every visitor gets their own number.
+var visits atomic.Uint64
 
-var (
-	hdr     httpraw.Header
-	httpbuf [maxHTTPHeader]byte
-	htmlbuf [512]byte
-	visits  atomic.Uint64
-)
+func homepage(exch *httphi.Exchange) {
+	var page [maxPage]byte
+	n := copy(page[:], htmlHead)
+	n += len(strconv.AppendUint(page[n:n], visits.Add(1), 10))
+	n += copy(page[n:], htmlTail)
 
-func handle(conn *Conn) error {
-	hdr.Reset(httpbuf[:0])
-	hdr.EnableBufferGrowth(false)    // Limit memory to buffer capacity.
-	const incomingIsResponse = false // We get HTTP requests from clients.
-	deadline := time.Now().Add(50 * time.Millisecond)
-	for time.Until(deadline) > 0 {
-		if _, err := hdr.ReadFromLimited(conn, maxHTTPHeader); err != nil {
-			return err
-		}
-		needmoredata, err := hdr.TryParse(incomingIsResponse)
-		if err != nil {
-			return err
-		}
-		if needmoredata {
-			continue
-		}
-		break
-	}
-	println("\n\n================\n\n", hdr.String())
-	if time.Since(deadline) > 0 {
-		print("DEADLINE EXCEED: ", hdr.BufferParsed(), "/", hdr.BufferReceived(), " bytes parsed/read\n")
-		return nil
-	}
-	// Prepare tacky HTML response.
-	n := copy(htmlbuf[:], htmlHead)
-	n += len(strconv.AppendUint(htmlbuf[n:n], visits.Load(), 10))
-	n += copy(htmlbuf[n:], htmlTail)
-	contentLen := n
-	hdr.Reset(httpbuf[:0])
-	hdr.SetProtocol("HTTP/1.1")
-	hdr.SetStatus("200", "OK")
-	hdr.Set("Content-Type", "text/html")
-	hdr.SetInt("Content-Length", int64(contentLen), 10)
-	// Here we do some buffer juggling. We use remaining space
-	// of HTTP Header buffer to write the response that will be written over the wire.
-	respbuf := httpbuf[hdr.BufferUsed():]
-	header, err := hdr.AppendResponse(respbuf[:0])
-	if err != nil {
-		return err
-	}
-	conn.Write(header)
-	_, err = conn.Write(htmlbuf[:contentLen])
-	return err
+	exch.SetHeader("Content-Type", "text/html")
+	exch.SetHeaderInt("Content-Length", int64(n), 10)
+	exch.WriteHeader(int(httphi.StatusOK))
+	exch.Write(page[:n])
 }

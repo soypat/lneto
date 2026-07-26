@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/soypat/lneto"
-	"github.com/soypat/lneto/internal"
 )
 
 // rwconn is a in-memory conn. The router handles connections on another
@@ -128,6 +127,7 @@ func (r *rwconn) AddReadable(b []byte) {
 	defer r.mu.Unlock()
 	r.readable.Write(b)
 }
+
 // SetDeadline makes reads and writes past t fail, as a conn with a read
 // deadline set would.
 func (r *rwconn) SetDeadline(t time.Time) {
@@ -149,41 +149,7 @@ func (r *rwconn) ViewWritten() string {
 	return r.written.String()
 }
 
-var _ Mux = (*sliceMux)(nil)
-
-type sliceMux struct {
-	_handlers []struct {
-		method  Method
-		uri     string
-		handler HandlerFunc
-	}
-}
-
-func (sm *sliceMux) LookupHandler(method Method, uri []byte) HandlerFunc {
-	for _, endpoint := range sm._handlers {
-		if endpoint.method != MethUndefined && endpoint.method != method {
-			continue
-		}
-		// Method matches.
-		if b2s(uri) == endpoint.uri {
-			return endpoint.handler
-		}
-	}
-	return nil
-}
-func (sm *sliceMux) Handle(reg string, handler HandlerFunc) {
-	v := internal.SliceReclaim(&sm._handlers)
-	method := MethUndefined
-	methodOrURL, url, methodFound := strings.Cut(reg, " ")
-	if methodFound {
-		method = MethodFromBytes([]byte(methodOrURL))
-	} else {
-		url = methodOrURL
-	}
-	v.method = method
-	v.uri = url
-	v.handler = handler
-}
+var _ Mux = (*MuxSlice)(nil)
 
 func configSynchronousRouter(t *testing.T, router *Router, bufferSize int, mux Mux) {
 	err := router.Configure(RouterConfig{
@@ -204,7 +170,7 @@ func TestRouterGet(t *testing.T) {
 	const bufferSize = 1024
 	const expectResponse = "its time"
 	var (
-		sm     sliceMux
+		sm     MuxSlice
 		router Router
 	)
 	sm.Handle("GET /", staticPage(t, expectResponse))
@@ -230,7 +196,7 @@ func TestRouterGet(t *testing.T) {
 func TestRouterRequestVisibleToHandler(t *testing.T) {
 	const bufferSize = 1024
 	var (
-		sm     sliceMux
+		sm     MuxSlice
 		router Router
 	)
 	var gotMethod, gotURI, gotHost string
@@ -276,7 +242,7 @@ func TestRouterMux(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var (
-				sm     sliceMux
+				sm     MuxSlice
 				router Router
 			)
 			sm.Handle("GET /", staticPage(t, "root"))
@@ -309,7 +275,7 @@ func TestRouterSplitRequest(t *testing.T) {
 	const bufferSize = 1024
 	const expectResponse = "split ok"
 	var (
-		sm     sliceMux
+		sm     MuxSlice
 		router Router
 	)
 	sm.Handle("GET /", staticPage(t, expectResponse))
@@ -344,7 +310,7 @@ func staticPage(t *testing.T, page string) HandlerFunc {
 func TestRouterConfigureHandleRace(t *testing.T) {
 	const bufferSize = 1024
 	var (
-		sm     sliceMux
+		sm     MuxSlice
 		router Router
 	)
 	sm.Handle("GET /", staticPage(t, "ok"))
@@ -370,7 +336,7 @@ func TestRouterConfigureHandleRace(t *testing.T) {
 // sending a connection on. Connections may be dropped, but never panic.
 func TestRouterConfigureDuringWorkerHandle(t *testing.T) {
 	var (
-		sm     sliceMux
+		sm     MuxSlice
 		router Router
 	)
 	sm.Handle("GET /", staticPage(t, "ok"))

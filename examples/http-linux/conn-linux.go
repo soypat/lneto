@@ -5,6 +5,7 @@ package main
 import (
 	"net/netip"
 	"syscall"
+	"time"
 )
 
 // Conn wraps an accepted TCP connection from a raw Linux socket file descriptor.
@@ -45,6 +46,25 @@ func (c *Conn) Write(b []byte) (int, error) {
 // Close closes the underlying file descriptor.
 func (c *Conn) Close() error {
 	return syscall.Close(c.fd)
+}
+
+// SetReadTimeout limits how long a single Read waits for data before failing
+// with [syscall.EAGAIN]. Zero blocks indefinitely. This is what stops a peer
+// that opens a connection and then stalls from holding a server worker: the
+// connection, not the HTTP handler, owns the idle policy.
+func (c *Conn) SetReadTimeout(timeout time.Duration) error {
+	return setSockTimeout(c.fd, syscall.SO_RCVTIMEO, timeout)
+}
+
+// SetWriteTimeout limits how long a single Write waits for the send buffer to
+// drain before failing with [syscall.EAGAIN]. Zero blocks indefinitely.
+func (c *Conn) SetWriteTimeout(timeout time.Duration) error {
+	return setSockTimeout(c.fd, syscall.SO_SNDTIMEO, timeout)
+}
+
+func setSockTimeout(fd, option int, timeout time.Duration) error {
+	tv := syscall.NsecToTimeval(int64(timeout))
+	return syscall.SetsockoptTimeval(fd, syscall.SOL_SOCKET, option, &tv)
 }
 
 // RemoteAddr returns the peer address of the connection.

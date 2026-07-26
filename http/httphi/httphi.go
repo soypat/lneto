@@ -17,9 +17,9 @@ import (
 
 //go:generate stringer -type Method,status -linecomment -output stringers.go
 
-// defaultReconfigureWait is how long [Router.Configure] waits on a busy
-// previous generation when [RouterConfig.MaxReconfigureWait] is unset.
-const defaultReconfigureWait = 100 * time.Millisecond
+// reconfigureWait bounds how long [Router.Configure] waits for the previous
+// generation to stop serving before reusing its exchange buffers.
+const reconfigureWait = 10 * time.Millisecond
 
 var (
 	errNoRequestProto = errors.New("httphi: request line with no HTTP version")
@@ -49,10 +49,6 @@ type Router struct {
 
 type job struct {
 	exch *Exchange
-}
-
-type Mux interface {
-	LookupHandler(get Method, uri []byte) HandlerFunc
 }
 
 type RouterConfig struct {
@@ -121,6 +117,7 @@ func (r *Router) Configure(cfg RouterConfig) error {
 	r.reqBuf = cfg.RequestBufferSize
 	r.respBuf = cfg.ResponseMinBufferSize
 	r.mux = cfg.Mux
+	r.log = cfg.Logger
 	r.normalizeKeys = cfg.NormalizeOutgoingKeys
 	if !workerMode {
 		r.backoff = cfg.Backoff
@@ -133,7 +130,7 @@ func (r *Router) Configure(cfg RouterConfig) error {
 		if gen > 1 {
 			// Exchange buffers below are reused: the previous generation must be
 			// done serving before they may be handed to the new one.
-			err := r.awaitIdleExchangesLocked(10 * time.Millisecond)
+			err := r.awaitIdleExchangesLocked(reconfigureWait)
 			if err != nil {
 				return err
 			}
@@ -447,6 +444,33 @@ func (exch *Exchange) SetHeader(key, value string) (enoughMemory bool) {
 	exch.rawbuf[off+n] = ':'
 	n++
 	n += copy(exch.rawbuf[off+n:], value)
+	exch.rawbuf[off+n] = '\r'
+	exch.rawbuf[off+n+1] = '\n'
+	n += 2
+	exch.respHeaderLen += uint16(n)
+	return true
+}
+
+// SetHeaderInt is [Exchange.SetHeader] with an integer value, i.e: Content-Length.
+// It formats the value directly into the response buffer without allocating.
+// base must be in the range 10..36; lower bases are dropped, no HTTP header
+// field value is written below base 10.
+func (exch *Exchange) SetHeaderInt(key string, value int64, base int) (enoughMemory bool) {
+	if base < 10 || base > 36 {
+		return false
+	}
+	off := int(exch.respHeaderOff) + int(exch.respHeaderLen)
+	free := len(exch.rawbuf) - off
+	if len(key)+internal.IntLen(value, base)+len(":\r\n")+len("\r\n") > free {
+		return false
+	}
+	n := copy(exch.rawbuf[off:], key)
+	if exch.normalizeKeys {
+		httpraw.NormalizeHeaderKey(exch.rawbuf[off : off+n])
+	}
+	exch.rawbuf[off+n] = ':'
+	n++
+	n += len(strconv.AppendInt(exch.rawbuf[off+n:off+n], value, base))
 	exch.rawbuf[off+n] = '\r'
 	exch.rawbuf[off+n+1] = '\n'
 	n += 2

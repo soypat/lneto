@@ -341,7 +341,7 @@ func (h *Header) appendHeader(key, value string) {
 // appendHeaderInt is appendHeader's integer counterpart: it appends key and the
 // formatted integer value as a new header field.
 func (h *Header) appendHeaderInt(key string, value int64, base int) {
-	n := intLen(value, base)
+	n := internal.IntLen(value, base)
 	if !h.reserve(len(key) + n) {
 		return // Drop and flag OOM; never panic.
 	}
@@ -382,7 +382,7 @@ func (h *Header) reserve(need int) bool {
 // reuseOrAppendInt writes value into tok's slot in place when it fits, avoiding
 // any buffer growth; otherwise it appends a fresh slot.
 func (h *Header) reuseOrAppendInt(tok headerSlice, value int64, base int) headerSlice {
-	n := intLen(value, base)
+	n := internal.IntLen(value, base)
 	if int(tok.len) >= n {
 		// Reuse: format directly over the existing slot. No free space needed
 		// since n <= tok.len and the slot already lives inside buf.
@@ -404,7 +404,7 @@ func (h *Header) appendInt(value int64, base, n int) headerSlice {
 }
 
 // mustAppendInt formats value into the buffer's free region and commits it.
-// The caller must have reserved at least intLen(value, base) free bytes.
+// The caller must have reserved at least internal.IntLen(value, base) free bytes.
 func (hb *headerBuf) mustAppendInt(value int64, base int) headerSlice {
 	L := len(hb.buf)
 	if L == 0 {
@@ -413,23 +413,6 @@ func (hb *headerBuf) mustAppendInt(value int64, base int) headerSlice {
 	v := strconv.AppendInt(hb.buf[L:L], value, base)
 	hb.buf = hb.buf[:L+len(v)]
 	return hb.slice(hb.buf[L : L+len(v)])
-}
-
-// intLen returns the number of bytes strconv.AppendInt would emit for value in
-// the given base (including a leading minus sign for negatives). Used to size
-// the buffer and to test whether a value fits an existing slot without writing.
-func intLen(value int64, base int) int {
-	n := 1
-	u := uint64(value)
-	if value < 0 {
-		n++    // Leading minus sign.
-		u = -u // Two's-complement magnitude; correct even for math.MinInt64.
-	}
-	for u >= uint64(base) {
-		u /= uint64(base)
-		n++
-	}
-	return n
 }
 
 func (hb *headerBuf) noKV() argsKV { return argsKV{} }
