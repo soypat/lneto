@@ -113,7 +113,7 @@ func (sm *MuxSlice) Handle(optMethodAndPath string, handler HandlerFunc) {
 	method := MethUndefined
 	methodOrURL, url, methodFound := strings.Cut(optMethodAndPath, " ")
 	if methodFound {
-		method = MethodFromBytes([]byte(methodOrURL))
+		method = MethodFrom(methodOrURL)
 	} else {
 		url = methodOrURL
 	}
@@ -141,14 +141,14 @@ const (
 	MethUnknown // unknown
 )
 
-// MethodFromBytes returns the [Method] matching meth, [MethUndefined] if meth is
+// MethodFrom returns the [Method] matching meth, [MethUndefined] if meth is
 // empty and [MethUnknown] if it names a method this package does not know.
 // Comparison is case sensitive: methods are uppercase, RFC 9110 9.1.
-func MethodFromBytes(meth []byte) (res Method) {
+func MethodFrom(meth string) (res Method) {
 	if len(meth) == 0 {
 		return MethUndefined
 	}
-	switch unsafe.String(&meth[0], len(meth)) {
+	switch meth {
 	case "GET":
 		res = MethGet
 	case "HEAD":
@@ -171,6 +171,14 @@ func MethodFromBytes(meth []byte) (res Method) {
 		res = MethUnknown
 	}
 	return res
+}
+
+// MethodFromBytes is a [MethodFrom] wrapper with bytes argument instead of string.
+func MethodFromBytes(meth []byte) (res Method) {
+	if len(meth) == 0 {
+		return MethUndefined
+	}
+	return MethodFrom(b2s(meth))
 }
 
 // b2s converts byte slice to a string without memory allocation.
