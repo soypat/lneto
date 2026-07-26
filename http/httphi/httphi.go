@@ -596,10 +596,10 @@ func (exch *Exchange) RequestPath() []byte {
 	return exch.RequestHeaderRaw().RequestPath()
 }
 
-// ForEachQueryRaw iterates over the request's query string key-value pairs as
-// they appear on the wire. See [httpraw.Header.ForEachQuery].
-func (exch *Exchange) ForEachQueryRaw(fn func(rawkey, rawval []byte) bool) {
-	exch.RequestHeaderRaw().ForEachQuery(fn)
+// RequestQuery returns the request's query string as it appears on the wire.
+// Iterate it with [httpraw.NextQueryPair]. See [httpraw.Header.RequestQuery].
+func (exch *Exchange) RequestQuery() []byte {
+	return exch.RequestHeaderRaw().RequestQuery()
 }
 
 // AppendQuery appends the value of the first query parameter matching key to
@@ -617,39 +617,32 @@ func (exch *Exchange) ForEachQueryRaw(fn func(rawkey, rawval []byte) bool) {
 func (exch *Exchange) AppendQuery(dst []byte, key string, decoded bool) (valueAppended []byte, present bool) {
 	const plusAsSpace = true // Query strings are form encoded, unlike paths.
 	base := len(dst)
-	valueAppended = dst
-	exch.ForEachQueryRaw(func(rawkey, rawval []byte) bool {
+	rawkey, rawval, rest := httpraw.NextQueryPair(exch.RequestQuery())
+	for ; rawkey != nil; rawkey, rawval, rest = httpraw.NextQueryPair(rest) {
 		if b2s(rawkey) != key {
 			// Key may be encoded: decode it over dst's free space and compare.
 			// A decoded key cannot appear raw, so this cannot alias a real key.
-			valueAppended = slices.Grow(valueAppended, len(rawkey))
-			scratch := valueAppended[base : base+len(rawkey)]
+			dst = slices.Grow(dst, len(rawkey))
+			scratch := dst[base : base+len(rawkey)]
 			n, err := httpraw.CopyDecodedPercentURL(scratch, rawkey, plusAsSpace)
 			if err != nil || b2s(scratch[:n]) != key {
-				return true // Malformed or different key, keep looking.
+				continue // Malformed or different key, keep looking.
 			}
 		}
-		present = true
 		if len(rawval) == 0 {
-			return false
+			return dst[:base], true // Flag or empty value, nothing to append.
 		}
-		valueAppended = slices.Grow(valueAppended, len(rawval))
+		dst = slices.Grow(dst, len(rawval))
 		if !decoded {
-			valueAppended = append(valueAppended[:base], rawval...)
-			return false
+			return append(dst[:base], rawval...), true
 		}
-		n, err := httpraw.CopyDecodedPercentURL(valueAppended[base:base+len(rawval)], rawval, plusAsSpace)
+		n, err := httpraw.CopyDecodedPercentURL(dst[base:base+len(rawval)], rawval, plusAsSpace)
 		if err != nil {
-			present = false // Malformed value, do not hand back half a decode.
-			return false
+			return dst[:base], false // Do not hand back half a decode.
 		}
-		valueAppended = valueAppended[:base+n]
-		return false
-	})
-	if !present {
-		valueAppended = valueAppended[:base]
+		return dst[:base+n], true
 	}
-	return valueAppended, present
+	return dst[:base], false
 }
 
 func (exch *Exchange) RequestMethod() []byte {

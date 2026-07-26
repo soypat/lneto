@@ -173,7 +173,7 @@ func TestHeaderRequestPath(t *testing.T) {
 	}
 }
 
-func TestHeaderForEachQuery(t *testing.T) {
+func TestNextQueryPair(t *testing.T) {
 	for _, test := range []struct {
 		uri  string
 		want string // "key=value" pairs joined by '|'; nil value shown as "key".
@@ -196,7 +196,8 @@ func TestHeaderForEachQuery(t *testing.T) {
 			t.Fatal(err)
 		}
 		var got []byte
-		h.ForEachQuery(func(rawkey, rawval []byte) bool {
+		rawkey, rawval, rest := NextQueryPair(h.RequestQuery())
+		for rawkey != nil {
 			if len(got) > 0 {
 				got = append(got, '|')
 			}
@@ -205,28 +206,30 @@ func TestHeaderForEachQuery(t *testing.T) {
 				got = append(got, '=')
 				got = append(got, rawval...)
 			}
-			return true
-		})
+			rawkey, rawval, rest = NextQueryPair(rest)
+		}
 		if string(got) != test.want {
 			t.Errorf("uri %q: want %q, got %q", test.uri, test.want, got)
 		}
 	}
 }
 
-// fn returning false stops iteration.
-func TestHeaderForEachQueryStop(t *testing.T) {
-	var h Header
-	err := h.ParseBytes(false, []byte("GET /x?a=1&b=2&c=3 HTTP/1.1\r\nHost: h\r\n\r\n"))
-	if err != nil {
-		t.Fatal(err)
+// A nil key ends iteration, and stopping early is just not looping again.
+func TestNextQueryPairEnd(t *testing.T) {
+	rawkey, rawval, rest := NextQueryPair([]byte("a=1&b=2"))
+	if string(rawkey) != "a" || string(rawval) != "1" || string(rest) != "b=2" {
+		t.Fatalf("want a=1 with rest b=2, got %q=%q rest %q", rawkey, rawval, rest)
 	}
-	visited := 0
-	h.ForEachQuery(func(rawkey, rawval []byte) bool {
-		visited++
-		return string(rawkey) != "b"
-	})
-	if visited != 2 {
-		t.Errorf("want iteration stopped after 2 pairs, visited %d", visited)
+	rawkey, _, rest = NextQueryPair(rest)
+	if string(rawkey) != "b" || len(rest) != 0 {
+		t.Fatalf("want b with empty rest, got %q rest %q", rawkey, rest)
+	}
+	if rawkey, _, _ = NextQueryPair(rest); rawkey != nil {
+		t.Fatalf("want nil key at end of query, got %q", rawkey)
+	}
+	// Trailing separators yield no pair rather than an empty one.
+	if rawkey, _, _ = NextQueryPair([]byte("&&")); rawkey != nil {
+		t.Fatalf("want nil key for empty sequences, got %q", rawkey)
 	}
 }
 

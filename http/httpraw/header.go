@@ -372,21 +372,32 @@ func (h *Header) RequestPath() []byte {
 	return uri[:query]
 }
 
-// ForEachQuery iterates over the request URI's query string key-value pairs as
-// they appear on the wire, percent-encoded and with '+' undecoded. fn returns
-// true to continue iterating, false to stop.
-//
-// A pair with no '=' yields a nil value, i.e: "debug" in "?debug&q=go", which
-// distinguishes it from "?debug=" where the value is present and empty. Empty
-// sequences are skipped, so "?&&q=go&" yields a single pair. Only '&' separates
-// pairs and only the first '=' splits a pair.
-func (h *Header) ForEachQuery(fn func(rawkey, rawval []byte) bool) {
+// RequestQuery returns the request URI's query string as it appears on the
+// wire, percent-encoded and with '+' undecoded, i.e: "q=go" for "/search?q=go".
+// Returns nil if the URI has no query string. Iterate it with [NextQueryPair].
+func (h *Header) RequestQuery() []byte {
 	uri := h.RequestURI()
 	start := bytes.IndexByte(uri, '?')
 	if start < 0 {
-		return
+		return nil
 	}
-	query := uri[start+1:]
+	return uri[start+1:]
+}
+
+// NextQueryPair splits the leading key-value pair off a query string and returns
+// what remains of it. Loop until rawkey is nil:
+//
+//	rawkey, rawval, rest := httpraw.NextQueryPair(h.RequestQuery())
+//	for rawkey != nil {
+//		// use rawkey, rawval.
+//		rawkey, rawval, rest = httpraw.NextQueryPair(rest)
+//	}
+//
+// A pair with no '=' yields a nil rawval, i.e: "debug" in "?debug&q=go", which
+// distinguishes it from "?debug=" where the value is present and empty. Empty
+// sequences are skipped, so "?&&q=go&" yields a single pair. Only '&' separates
+// pairs and only the first '=' splits a pair.
+func NextQueryPair(query []byte) (rawkey, rawval, rest []byte) {
 	for len(query) > 0 {
 		pair := query
 		amp := bytes.IndexByte(query, '&')
@@ -398,14 +409,12 @@ func (h *Header) ForEachQuery(fn func(rawkey, rawval []byte) bool) {
 		if len(pair) == 0 {
 			continue // Empty sequence, see WHATWG URL urlencoded parsing.
 		}
-		key, value := pair, []byte(nil)
 		if eq := bytes.IndexByte(pair, '='); eq >= 0 {
-			key, value = pair[:eq], pair[eq+1:]
+			return pair[:eq], pair[eq+1:], query
 		}
-		if !fn(key, value) {
-			return
-		}
+		return pair, nil, query
 	}
+	return nil, nil, nil
 }
 
 // Protocol returns the request header's HTTP protocol. Usually "HTTP/1.1".

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"strings"
+
+	"github.com/soypat/lneto/http/httpraw"
 	"testing"
 	"time"
 
@@ -461,10 +463,11 @@ func TestHandleMuxOnPath(t *testing.T) {
 	var gotPath, gotQuery string
 	sm.Handle("GET /search", func(ex *Exchange) {
 		gotPath = string(ex.RequestPath())
-		ex.ForEachQueryRaw(func(rawkey, rawval []byte) bool {
+		rawkey, rawval, rest := httpraw.NextQueryPair(ex.RequestQuery())
+		for rawkey != nil {
 			gotQuery += string(rawkey) + "=" + string(rawval) + ";"
-			return true
-		})
+			rawkey, rawval, rest = httpraw.NextQueryPair(rest)
+		}
 		ex.WriteHeader(200)
 	})
 	conn := serve(t, "GET /search?q=go&n=1 HTTP/1.1\r\nHost: h\r\n\r\n", &sm)
@@ -490,9 +493,9 @@ func TestExchangeAppendQuery(t *testing.T) {
 	}{
 		{uri: "/x?q=go", key: "q", want: "go", wantPresent: true},
 		{uri: "/x?q=go&n=1", key: "n", want: "1", wantPresent: true},
-		{uri: "/x?a=1&a=2", key: "a", want: "1", wantPresent: true},  // First match wins.
-		{uri: "/x?q=go", key: "nope", want: "", wantPresent: false},  // Absent.
-		{uri: "/x", key: "q", want: "", wantPresent: false},          // No query at all.
+		{uri: "/x?a=1&a=2", key: "a", want: "1", wantPresent: true},       // First match wins.
+		{uri: "/x?q=go", key: "nope", want: "", wantPresent: false},       // Absent.
+		{uri: "/x", key: "q", want: "", wantPresent: false},               // No query at all.
 		{uri: "/x?debug&q=go", key: "debug", want: "", wantPresent: true}, // Flag: present, no value.
 		{uri: "/x?q=", key: "q", want: "", wantPresent: true},             // Present, empty.
 		// Decoding is opt-in and applies to the value only.
