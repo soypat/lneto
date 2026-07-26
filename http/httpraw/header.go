@@ -196,6 +196,10 @@ func (h *Header) BufferParsed() int {
 	return h.hbuf.off
 }
 
+// BufferRaw returns the undeerlying buffer as stored currently in memory.
+// The length of the returned buffer is the used portion. Capacity of returned slice is [Header.BufferCapacity].
+func (h *Header) BufferRaw() []byte { return h.hbuf.buf }
+
 // BufferUsed returns the raw memory used.
 //
 //	BufferUsed + BufferFree == BufferCapacity

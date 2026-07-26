@@ -222,7 +222,7 @@ func (r *Router) awaitIdleExchangesLocked(maxWait time.Duration) error {
 // full, and an error when the router's goroutines have been torn down. On every
 // one of them conn is left untouched and unclosed for the caller to dispose of:
 // refusing connections is how a router with fixed memory applies backpressure.
-func (r *Router) Handle(conn conn) error {
+func (r *Router) Handle(conn io.ReadWriteCloser) error {
 	// Exchange acquisition and the configuration it is served with must be read
 	// under the same lock: [Router.Configure] may run concurrently.
 	r.mu.Lock()

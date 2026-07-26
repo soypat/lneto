@@ -119,6 +119,18 @@ func (exch *Exchange) Release() {
 	exch.used.Store(false)
 }
 
+// UnsafeRawBuffer returns the contiguous buffer being used for the request and response.
+// Writing to it will mangle the entire request header+body and/or any staged response headers.
+// Does not return the buffer used for the response first line so can be safely
+// written to and used without modifying the staged response first line.
+//
+// Staging headers will write to this buffer so use mindfully.
+// To access only the request header buffer portion use [httpraw.Header.BufferRaw] limited
+// to [httpraw.Header.BufferParsed] as returned by [Exchange.RequestHeaderRaw].
+//
+// In [Router] context, the size of this buffer is influenced directly by [RouterConfig] HeaderBufferSize fields.
+func (exch *Exchange) UnsafeRawBuffer() []byte { return exch.rawbuf }
+
 // StageHeader stages a response header field, written on the first
 // [Exchange.FlushHeader], [Exchange.WriteHeader] or [Exchange.Write].
 // Returns false and drops the field if the response buffer cannot fit it.
