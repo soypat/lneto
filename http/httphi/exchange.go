@@ -174,10 +174,10 @@ func (exch *Exchange) StageHeaderInt(key string, value int64, base int) (enoughM
 	return true
 }
 
-// StageWriteStatus prepares the status line for the given code without writing
+// StageStatus prepares the status line for the given code without writing
 // it, i.e: "HTTP/1.1 404 Not Found". Codes with no [StatusText] get an empty
 // reason phrase. Has no effect once the header has been written.
-func (exch *Exchange) StageWriteStatus(code int) {
+func (exch *Exchange) StageStatus(code int) {
 	if code >= 1000 || exch.headerWritten {
 		return
 	} else if code == 200 {
@@ -200,7 +200,7 @@ func (exch *Exchange) StageWriteStatus(code int) {
 // fields. Only the first call reaches the wire, as in http.ResponseWriter.
 func (exch *Exchange) WriteHeader(code int) {
 	if !exch.headerWritten {
-		exch.StageWriteStatus(code)
+		exch.StageStatus(code)
 		exch.FlushHeader()
 	}
 }
@@ -215,7 +215,7 @@ func (exch *Exchange) FlushHeader() (int, error) {
 		return 0, nil
 	}
 	if exch.respTopWritten == 0 {
-		exch.StageWriteStatus(200)
+		exch.StageStatus(200)
 	}
 	exch.headerWritten = true
 	ng, err := exch.rw.Write(exch.respTopBuf[:exch.respTopWritten])

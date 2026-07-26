@@ -21,11 +21,24 @@ const reconfigureWait = 10 * time.Millisecond
 var (
 	errNoRequestProto = errors.New("httphi: request line with no HTTP version")
 	errBusyExchanges  = errors.New("httphi: exchanges still serving, cannot reuse their buffers")
+	errRouterTornDown = errors.New("httphi: router torn down, configure it before serving")
 )
 
 type conn = io.ReadWriteCloser
 
-// Router hosts concurrent safe data.
+// Router serves HTTP connections handed to it with [Router.Handle], routing
+// each request to a handler found through its [Mux]. It plays the part of
+// http.Server minus the listening: accepting connections is the caller's job,
+// which is what lets the same router run over a TCP stack, a socket or a test
+// pipe.
+//
+// A Router owns the exchanges and goroutines that serve connections and sizes
+// both at [Router.Configure] time, so serving load costs no allocation and
+// bounded memory. Connections arriving with nothing left to serve them are
+// refused rather than queued, see [Router.Handle].
+//
+// Methods are safe for concurrent use. The zero value is not usable: configure
+// it first.
 type Router struct {
 	mu            sync.Mutex
 	gen           atomic.Uint32
@@ -44,6 +57,7 @@ type Router struct {
 	log     *slog.Logger
 }
 
+// job is a connection waiting on an exchange for a worker goroutine to serve it.
 type job struct {
 	exch *Exchange
 }
@@ -60,12 +74,21 @@ type RouterConfig struct {
 	// Response buffer will reuse unused request memory so this is not a strict limit.
 	ResponseMinBufferSize int
 
+	// NormalizeOutgoingKeys normalizes response header field keys as they are
+	// staged, i.e: "content-type" becomes "Content-Type".
 	NormalizeOutgoingKeys bool
-	MaxAwaitingConns      int
+	// MaxAwaitingConns is the depth of the queue connections wait in for a free
+	// goroutine. [Router.Handle] drops connections once it is full. Required and
+	// must be non-zero when running a fixed number of goroutines, unused otherwise.
+	MaxAwaitingConns int
 
+	// Backoff is consulted when a read off a connection yields no data, letting
+	// the caller decide whether to sleep, yield or spin. Required.
 	Backoff lneto.BackoffStrategy
-	Mux     Mux
-	Logger  *slog.Logger
+	// Mux resolves each request's method and path to the handler serving it. Required.
+	Mux Mux
+	// Logger receives failed exchanges. Optional, nil disables logging.
+	Logger *slog.Logger
 }
 
 // Validate returns a non-nil error if the configuration cannot be used to
@@ -86,7 +109,10 @@ func (cfg RouterConfig) workerMode() bool {
 	return cfg.FixedNumGoroutines > 0
 }
 
-// Teardown stops fixed goroutines.
+// TeardownGoroutines stops the router's fixed goroutines once they finish the
+// exchanges they are serving. [Router.Configure] calls it before installing a
+// new generation. A torn down router refuses connections with a non-nil error
+// until it is configured again.
 func (r *Router) TeardownGoroutines() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -189,16 +215,22 @@ func (r *Router) awaitIdleExchangesLocked(maxWait time.Duration) error {
 // done. It does not block on the exchange: the connection is handed to a
 // goroutine and Handle returns immediately.
 //
-// Handle returns [lneto.ErrExhausted] when no exchange is free and
-// [lneto.ErrPacketDrop] when the job queue is full. Both leave conn untouched
-// and unclosed for the caller to dispose of: dropping is how a router with
-// fixed memory applies backpressure.
+// Handle returns [lneto.ErrExhausted] when no exchange is free,
+// [lneto.ErrPacketDrop] when the queue of connections awaiting a goroutine is
+// full, and an error when the router's goroutines have been torn down. On every
+// one of them conn is left untouched and unclosed for the caller to dispose of:
+// refusing connections is how a router with fixed memory applies backpressure.
 func (r *Router) Handle(conn conn) error {
 	// Exchange acquisition and the configuration it is served with must be read
 	// under the same lock: [Router.Configure] may run concurrently.
 	r.mu.Lock()
-	exch := r.getExchLocked(conn)
 	numGoro, backoff, mux := r.numGoro, r.backoff, r.mux
+	if numGoro > 0 && r.pendingConns == nil {
+		// Goroutines torn down: refuse before claiming an exchange.
+		r.mu.Unlock()
+		return errRouterTornDown
+	}
+	exch := r.getExchLocked(conn)
 	if exch == nil {
 		r.mu.Unlock()
 		return lneto.ErrExhausted

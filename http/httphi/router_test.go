@@ -334,6 +334,36 @@ func TestRouterConfigureHandleRace(t *testing.T) {
 
 // Reconfiguring a running router tears down the job queue that Handle may be
 // sending a connection on. Connections may be dropped, but never panic.
+// A torn down router has nothing left to serve with: it must say so instead of
+// dropping the connection as if it were merely busy.
+func TestRouterHandleAfterTeardown(t *testing.T) {
+	var (
+		sm     MuxSlice
+		router Router
+	)
+	sm.Handle("GET /", staticPage(t, "ok"))
+	err := router.Configure(RouterConfig{
+		FixedNumGoroutines:    2,
+		MaxAwaitingConns:      4,
+		Mux:                   &sm,
+		RequestBufferSize:     512,
+		ResponseMinBufferSize: 512,
+		Backoff:               nopBackoff,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router.TeardownGoroutines()
+
+	conn := newConn("GET / HTTP/1.1\r\nHost: h\r\n\r\n")
+	if err = router.Handle(conn); err != errRouterTornDown {
+		t.Errorf("want errRouterTornDown, got %v", err)
+	}
+	if conn.IsClosed() {
+		t.Error("refused connection must be left for the caller to dispose of")
+	}
+}
+
 func TestRouterConfigureDuringWorkerHandle(t *testing.T) {
 	var (
 		sm     MuxSlice
