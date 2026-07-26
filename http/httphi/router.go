@@ -12,7 +12,7 @@ import (
 	"github.com/soypat/lneto/internal"
 )
 
-//go:generate stringer -type Method,status -linecomment -output stringers.go
+//go:generate stringer -type Method -linecomment -output stringers.go
 
 // reconfigureWait bounds how long [Router.Configure] waits for the previous
 // generation to stop serving before reusing its exchange buffers.

@@ -133,139 +133,141 @@ func StatusText(code int) string {
 	}
 }
 
+const ()
+
 type status int
 
 // HTTP status codes as registered with IANA.
 // See: https://www.iana.org/assignments/http-status-codes/http-status-codes.xhtml
 const (
 	// RFC 9110, 15.2.1
-	StatusContinue status = 100 // Continue
+	StatusContinue = 100 // Continue
 	// RFC 9110, 15.2.2
-	StatusSwitchingProtocols status = 101 // Switching Protocols
+	StatusSwitchingProtocols = 101 // Switching Protocols
 	// RFC 2518, 10.1
-	StatusProcessing status = 102 // Processing
+	StatusProcessing = 102 // Processing
 	// RFC 8297
-	StatusEarlyHints status = 103 // Early Hints
+	StatusEarlyHints = 103 // Early Hints
 
 	// RFC 9110, 15.3.1
-	StatusOK status = 200 // OK
+	StatusOK = 200 // OK
 	// RFC 9110, 15.3.2
-	StatusCreated status = 201 // Created
+	StatusCreated = 201 // Created
 	// RFC 9110, 15.3.3
-	StatusAccepted status = 202 // Accepted
+	StatusAccepted = 202 // Accepted
 	// RFC 9110, 15.3.4
-	StatusNonAuthoritativeInfo status = 203 // Non-Authoritative Information
+	StatusNonAuthoritativeInfo = 203 // Non-Authoritative Information
 	// RFC 9110, 15.3.5
-	StatusNoContent status = 204 // No Content
+	StatusNoContent = 204 // No Content
 	// RFC 9110, 15.3.6
-	StatusResetContent status = 205 // Reset Content
+	StatusResetContent = 205 // Reset Content
 	// RFC 9110, 15.3.7
-	StatusPartialContent status = 206 // Partial Content
+	StatusPartialContent = 206 // Partial Content
 	// RFC 4918, 11.1
-	StatusMultiStatus status = 207 // Multi-Status
+	StatusMultiStatus = 207 // Multi-Status
 	// RFC 5842, 7.1
-	StatusAlreadyReported status = 208 // Already Reported
+	StatusAlreadyReported = 208 // Already Reported
 	// RFC 3229, 10.4.1
-	StatusIMUsed status = 226 // IM Used
+	StatusIMUsed = 226 // IM Used
 
 	// RFC 9110, 15.4.1
-	StatusMultipleChoices status = 300 // Multiple Choices
+	StatusMultipleChoices = 300 // Multiple Choices
 	// RFC 9110, 15.4.2
-	StatusMovedPermanently status = 301 // Moved Permanently
+	StatusMovedPermanently = 301 // Moved Permanently
 	// RFC 9110, 15.4.3
-	StatusFound status = 302 // Found
+	StatusFound = 302 // Found
 	// RFC 9110, 15.4.4
-	StatusSeeOther status = 303 // See Other
+	StatusSeeOther = 303 // See Other
 	// RFC 9110, 15.4.5
-	StatusNotModified status = 304 // Not Modified
+	StatusNotModified = 304 // Not Modified
 	// RFC 9110, 15.4.6
-	StatusUseProxy status = 305 // Use Proxy
+	StatusUseProxy = 305 // Use Proxy
 	// RFC 9110, 15.4.7 (Unused)
-	_ status = 306
+	_ = 306
 	// RFC 9110, 15.4.8
-	StatusTemporaryRedirect status = 307 // Temporary Redirect
+	StatusTemporaryRedirect = 307 // Temporary Redirect
 	// RFC 9110, 15.4.9
-	StatusPermanentRedirect status = 308 // Permanent Redirect
+	StatusPermanentRedirect = 308 // Permanent Redirect
 
 	// RFC 9110, 15.5.1
-	StatusBadRequest status = 400 // Bad Request
+	StatusBadRequest = 400 // Bad Request
 	// RFC 9110, 15.5.2
-	StatusUnauthorized status = 401 // Unauthorized
+	StatusUnauthorized = 401 // Unauthorized
 	// RFC 9110, 15.5.3
-	StatusPaymentRequired status = 402 // Payment Required
+	StatusPaymentRequired = 402 // Payment Required
 	// RFC 9110, 15.5.4
-	StatusForbidden status = 403 // Forbidden
+	StatusForbidden = 403 // Forbidden
 	// RFC 9110, 15.5.5
-	StatusNotFound status = 404 // Not Found
+	StatusNotFound = 404 // Not Found
 	// RFC 9110, 15.5.6
-	StatusMethodNotAllowed status = 405 // Method Not Allowed
+	StatusMethodNotAllowed = 405 // Method Not Allowed
 	// RFC 9110, 15.5.7
-	StatusNotAcceptable status = 406 // Not Acceptable
+	StatusNotAcceptable = 406 // Not Acceptable
 	// RFC 9110, 15.5.8
-	StatusProxyAuthRequired status = 407 // Proxy Authentication Required
+	StatusProxyAuthRequired = 407 // Proxy Authentication Required
 	// RFC 9110, 15.5.9
-	StatusRequestTimeout status = 408 // Request Timeout
+	StatusRequestTimeout = 408 // Request Timeout
 	// RFC 9110, 15.5.10
-	StatusConflict status = 409 // Conflict
+	StatusConflict = 409 // Conflict
 	// RFC 9110, 15.5.11
-	StatusGone status = 410 // Gone
+	StatusGone = 410 // Gone
 	// RFC 9110, 15.5.12
-	StatusLengthRequired status = 411 // Length Required
+	StatusLengthRequired = 411 // Length Required
 	// RFC 9110, 15.5.13
-	StatusPreconditionFailed status = 412 // Precondition Failed
+	StatusPreconditionFailed = 412 // Precondition Failed
 	// RFC 9110, 15.5.14
-	StatusRequestEntityTooLarge status = 413 // Request Entity Too Large
+	StatusRequestEntityTooLarge = 413 // Request Entity Too Large
 	// RFC 9110, 15.5.15
-	StatusRequestURITooLong status = 414 // Request URI Too Long
+	StatusRequestURITooLong = 414 // Request URI Too Long
 	// RFC 9110, 15.5.16
-	StatusUnsupportedMediaType status = 415 // Unsupported Media Type
+	StatusUnsupportedMediaType = 415 // Unsupported Media Type
 	// RFC 9110, 15.5.17
-	StatusRequestedRangeNotSatisfiable status = 416 // Requested Range Not Satisfiable
+	StatusRequestedRangeNotSatisfiable = 416 // Requested Range Not Satisfiable
 	// RFC 9110, 15.5.18
-	StatusExpectationFailed status = 417 // Expectation Failed
+	StatusExpectationFailed = 417 // Expectation Failed
 	// RFC 9110, 15.5.19 (Unused)
-	StatusTeapot status = 418 // I'm a teapot
+	StatusTeapot = 418 // I'm a teapot
 	// RFC 9110, 15.5.20
-	StatusMisdirectedRequest status = 421 // Misdirected Request
+	StatusMisdirectedRequest = 421 // Misdirected Request
 	// RFC 9110, 15.5.21
-	StatusUnprocessableEntity status = 422 // Unprocessable Entity
+	StatusUnprocessableEntity = 422 // Unprocessable Entity
 	// RFC 4918, 11.3
-	StatusLocked status = 423 // Locked
+	StatusLocked = 423 // Locked
 	// RFC 4918, 11.4
-	StatusFailedDependency status = 424 // Failed Dependency
+	StatusFailedDependency = 424 // Failed Dependency
 	// RFC 8470, 5.2.
-	StatusTooEarly status = 425 // Too Early
+	StatusTooEarly = 425 // Too Early
 	// RFC 9110, 15.5.22
-	StatusUpgradeRequired status = 426 // Upgrade Required
+	StatusUpgradeRequired = 426 // Upgrade Required
 	// RFC 6585, 3
-	StatusPreconditionRequired status = 428 // Precondition Required
+	StatusPreconditionRequired = 428 // Precondition Required
 	// RFC 6585, 4
-	StatusTooManyRequests status = 429 // Too Many Requests
+	StatusTooManyRequests = 429 // Too Many Requests
 	// RFC 6585, 5
-	StatusRequestHeaderFieldsTooLarge status = 431 // Request Header Fields Too Large
+	StatusRequestHeaderFieldsTooLarge = 431 // Request Header Fields Too Large
 	// RFC 7725, 3
-	StatusUnavailableForLegalReasons status = 451 // Unavailable For Legal Reasons
+	StatusUnavailableForLegalReasons = 451 // Unavailable For Legal Reasons
 
 	// RFC 9110, 15.6.1
-	StatusInternalServerError status = 500 // Internal Server Error
+	StatusInternalServerError = 500 // Internal Server Error
 	// RFC 9110, 15.6.2
-	StatusNotImplemented status = 501 // Not Implemented
+	StatusNotImplemented = 501 // Not Implemented
 	// RFC 9110, 15.6.3
-	StatusBadGateway status = 502 // Bad Gateway
+	StatusBadGateway = 502 // Bad Gateway
 	// RFC 9110, 15.6.4
-	StatusServiceUnavailable status = 503 // Service Unavailable
+	StatusServiceUnavailable = 503 // Service Unavailable
 	// RFC 9110, 15.6.5
-	StatusGatewayTimeout status = 504 // Gateway Timeout
+	StatusGatewayTimeout = 504 // Gateway Timeout
 	// RFC 9110, 15.6.6
-	StatusHTTPVersionNotSupported status = 505 // HTTP Version Not Supported
+	StatusHTTPVersionNotSupported = 505 // HTTP Version Not Supported
 	// RFC 2295, 8.1
-	StatusVariantAlsoNegotiates status = 506 // Variant Also Negotiates
+	StatusVariantAlsoNegotiates = 506 // Variant Also Negotiates
 	// RFC 4918, 11.5
-	StatusInsufficientStorage status = 507 // Insufficient Storage
+	StatusInsufficientStorage = 507 // Insufficient Storage
 	// RFC 5842, 7.2
-	StatusLoopDetected status = 508 // Loop Detected
+	StatusLoopDetected = 508 // Loop Detected
 	// RFC 2774, 7
-	StatusNotExtended status = 510 // Not Extended
+	StatusNotExtended = 510 // Not Extended
 	// RFC 6585, 6
-	StatusNetworkAuthenticationRequired status = 511 // Network Authentication Required
+	StatusNetworkAuthenticationRequired = 511 // Network Authentication Required
 )
