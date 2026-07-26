@@ -296,7 +296,9 @@ func TestRouterSplitRequest(t *testing.T) {
 
 func staticPage(t *testing.T, page string) HandlerFunc {
 	return func(ex *Exchange) {
-		n, err := io.WriteString(ex, page)
+		var rw ExchangeRW // Streaming APIs take the ReadWriter view.
+		ex.ReadWriter(&rw)
+		n, err := io.WriteString(&rw, page)
 		// Handler runs on the router goroutine: Error, never Fatal.
 		if err != nil {
 			t.Error(err)

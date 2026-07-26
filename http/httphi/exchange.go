@@ -1,6 +1,7 @@
 package httphi
 
 import (
+	"net"
 	"slices"
 	"strconv"
 	"sync/atomic"
@@ -16,7 +17,7 @@ const maxStatusLine = len("HTTP/1.1 ") + 3 + 1 + len("Network Authentication Req
 
 // Exchange is a single request-response cycle over a connection, playing the
 // part of both http.Request and http.ResponseWriter: Request* methods read the
-// request, [Exchange.StageHeader] and [Exchange.Write] produce the response.
+// request, [Exchange.StageHeader] and [Exchange.WriteBody] produce the response.
 // A [Router] owns a fixed pool of them, which is what bounds its memory.
 //
 // Request and response share one buffer, the response header being written over
@@ -24,6 +25,7 @@ const maxStatusLine = len("HTTP/1.1 ") + 3 + 1 + len("Network Authentication Req
 // [Exchange.ReadBody] before setting response headers.
 type Exchange struct {
 	used           atomic.Bool
+	gen            atomic.Uint32
 	respTopBuf     [maxStatusLine]byte
 	respTopWritten uint8
 
@@ -94,6 +96,7 @@ func (exch *Exchange) Acquire(conn conn) bool {
 	if !exch.used.CompareAndSwap(false, true) {
 		return false
 	}
+	exch.gen.Add(1)
 	exch.readErr = nil
 	exch.respErr = nil
 	exch.hijacked = false
@@ -116,10 +119,12 @@ func (exch *Exchange) Release() {
 		exch.rw.Close()
 	}
 	exch.rw = nil
+	exch.gen.Add(1)
 	exch.used.Store(false)
 }
 
-// UnsafeRawBuffer returns the contiguous buffer being used for the request and response.
+// UnsafeRawBuffer returns the contiguous buffer owned by [Exchange] being used for the request and response.
+//
 // Writing to it will mangle the entire request header+body and/or any staged response headers.
 // Does not return the buffer used for the response first line so can be safely
 // written to and used without modifying the staged response first line.
@@ -127,12 +132,13 @@ func (exch *Exchange) Release() {
 // Staging headers will write to this buffer so use mindfully.
 // To access only the request header buffer portion use [httpraw.Header.BufferRaw] limited
 // to [httpraw.Header.BufferParsed] as returned by [Exchange.RequestHeaderRaw].
+// Writing to this section will not change the contents read by [Exchange.ReadBody].
 //
 // In [Router] context, the size of this buffer is influenced directly by [RouterConfig] HeaderBufferSize fields.
 func (exch *Exchange) UnsafeRawBuffer() []byte { return exch.rawbuf }
 
 // StageHeader stages a response header field, written on the first
-// [Exchange.FlushHeader], [Exchange.WriteHeader] or [Exchange.Write].
+// [Exchange.FlushHeader], [Exchange.WriteHeader] or [Exchange.WriteBody].
 // Returns false and drops the field if the response buffer cannot fit it.
 // Has no effect once the header has been written.
 func (exch *Exchange) StageHeader(key, value string) (enoughMemory bool) {
@@ -247,11 +253,71 @@ func (exch *Exchange) FlushHeader() (int, error) {
 	return ng + ng2, err
 }
 
+// ExchangeRW is an [io.ReadWriteCloser] view of an [Exchange] wrapping
+// [Exchange.ReadBody] and [Exchange.WriteBody] methods.
+//
+// Exchanges are pooled and reused, so a handle records the exchange generation
+// it was taken at and refuses to touch the connection once that exchange moves
+// on to another request. Obtain one with [Exchange.ReadWriter].
+type ExchangeRW struct {
+	gen  uint32
+	exch *Exchange
+}
+
+// IsValid returns true while the handle still refers to the request it was
+// taken from, i.e: false once the exchange was released or hijacked away.
+func (rw *ExchangeRW) IsValid() bool {
+	return rw.gen == rw.exch.gen.Load() && rw.exch.used.Load()
+}
+
+func (rw *ExchangeRW) validate() error {
+	if !rw.IsValid() {
+		return net.ErrClosed
+	}
+	return nil
+}
+
+// Write writes response body bytes. See [Exchange.WriteBody].
+// Fails with [net.ErrClosed] once the handle is no longer valid.
+func (rw *ExchangeRW) Write(buf []byte) (int, error) {
+	if err := rw.validate(); err != nil {
+		return 0, err
+	}
+	return rw.exch.WriteBody(buf)
+}
+
+// Read reads request body bytes. See [Exchange.ReadBody].
+// Fails with [net.ErrClosed] once the handle is no longer valid.
+func (rw *ExchangeRW) Read(buf []byte) (int, error) {
+	if err := rw.validate(); err != nil {
+		return 0, err
+	}
+	return rw.exch.ReadBody(buf)
+}
+
+// Close invalidates this handle so later reads and writes fail. It does not
+// close the connection nor end the exchange, both of which the [Router] owns.
+func (rw *ExchangeRW) Close() error {
+	if err := rw.validate(); err != nil {
+		return err
+	}
+	rw.gen--
+	return nil
+}
+
+// ReadWriter fills dst with a stream view of the exchange, valid until the
+// exchange is released. The caller owns dst, so a handler may keep one and
+// refill it every request without allocating.
+func (exch *Exchange) ReadWriter(dst *ExchangeRW) {
+	dst.gen = exch.gen.Load()
+	dst.exch = exch
+}
+
 // Write writes response body bytes, flushing the header first if the handler
 // has not written it yet. Once a write to the connection fails the response is
 // unrecoverable and every later write returns that same error, so a body never
 // reaches the wire without its header.
-func (exch *Exchange) Write(buf []byte) (int, error) {
+func (exch *Exchange) WriteBody(buf []byte) (int, error) {
 	if exch.respErr != nil {
 		return 0, exch.respErr
 	} else if !exch.headerWritten {

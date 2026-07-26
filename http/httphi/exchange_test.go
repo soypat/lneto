@@ -3,6 +3,7 @@ package httphi
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 
 	"testing"
@@ -79,7 +80,7 @@ func TestExchangeWriteFlushesHeader(t *testing.T) {
 	const body = "hello"
 	conn := newConn("")
 	exch := newExchange(t, conn, 128, false)
-	n, err := exch.Write([]byte(body))
+	n, err := exch.WriteBody([]byte(body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,6 +267,56 @@ func TestHandleSilentHandler(t *testing.T) {
 }
 
 // Body bytes arriving in the same segment as the header must be readable.
+var _ io.ReadWriteCloser = (*ExchangeRW)(nil)
+
+// ExchangeRW writes the response body and reads the request body, so it may be
+// handed to code that wants an io.ReadWriter.
+func TestExchangeRW(t *testing.T) {
+	const body = "hello"
+	conn := newConn("")
+	exch := newExchange(t, conn, 128, false)
+	var rw ExchangeRW
+	exch.ReadWriter(&rw)
+
+	n, err := io.WriteString(&rw, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != len(body) {
+		t.Errorf("want %d bytes written, got %d", len(body), n)
+	}
+	const want = "HTTP/1.1 200 OK\r\n\r\n" + body
+	if got := conn.ViewWritten(); got != want {
+		t.Errorf("want %q, got %q", want, got)
+	}
+}
+
+// The exchange is pooled and reused: a handle kept past the request it was
+// taken from must fail instead of reaching the next request's connection.
+func TestExchangeRWOutlivesExchange(t *testing.T) {
+	conn := newConn("")
+	exch := newExchange(t, conn, 128, false)
+	var rw ExchangeRW
+	exch.ReadWriter(&rw)
+	if !rw.IsValid() {
+		t.Fatal("want a fresh handle to be valid")
+	}
+	exch.Release()
+
+	if rw.IsValid() {
+		t.Error("want handle invalidated by release")
+	}
+	if _, err := rw.Write([]byte("late")); err == nil {
+		t.Error("want error writing through a released exchange, got nil")
+	}
+	if _, err := rw.Read(make([]byte, 4)); err == nil {
+		t.Error("want error reading through a released exchange, got nil")
+	}
+	if got := conn.ViewWritten(); strings.Contains(got, "late") {
+		t.Errorf("late write reached the connection: %q", got)
+	}
+}
+
 func TestExchangeReadBody(t *testing.T) {
 	const body = "message body"
 	var got string
@@ -406,7 +457,7 @@ func TestExchangeWriteHeaderFlushFails(t *testing.T) {
 	exch := newExchange(t, conn, 128, false)
 	conn.FailWrites(1) // Status line write fails, body write would succeed.
 
-	n, err := exch.Write([]byte(body))
+	n, err := exch.WriteBody([]byte(body))
 	if err == nil {
 		t.Error("want error when header flush fails, got nil")
 	}
@@ -418,7 +469,7 @@ func TestExchangeWriteHeaderFlushFails(t *testing.T) {
 	}
 	// Writes after a failed header stay failed: the response is unrecoverable,
 	// a body without its header would corrupt the stream.
-	if _, err = exch.Write([]byte(body)); err == nil {
+	if _, err = exch.WriteBody([]byte(body)); err == nil {
 		t.Error("want error on write after failed header flush, got nil")
 	}
 	if got := conn.ViewWritten(); got != "" {

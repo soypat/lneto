@@ -67,7 +67,7 @@ func BenchmarkHandle(b *testing.B) {
 				if !present || !internal.BytesEqual(data, expect) {
 					panic("invalid result")
 				}
-				ex.Write(benchBody)
+				ex.WriteBody(benchBody)
 			},
 		},
 		{

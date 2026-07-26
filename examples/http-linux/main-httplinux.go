@@ -100,5 +100,5 @@ func homepage(exch *httphi.Exchange) {
 	exch.StageHeader("Content-Type", "text/html")
 	exch.StageHeaderInt("Content-Length", int64(n), 10)
 	exch.WriteHeader(int(httphi.StatusOK))
-	exch.Write(page[:n])
+	exch.WriteBody(page[:n])
 }
