@@ -190,7 +190,8 @@ func TestHandleRequestFields(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var gotMethod, gotURI, gotHost string
 			var sm MuxSlice
-			sm.Handle(test.wantURI, func(ex *Exchange) {
+			route, _, _ := strings.Cut(test.wantURI, "?") // Mux matches on path.
+			sm.Handle(route, func(ex *Exchange) {
 				gotMethod = string(ex.RequestMethod())
 				gotURI = string(ex.RequestURI())
 				gotHost = string(ex.RequestHeader("Host"))
@@ -451,5 +452,102 @@ func TestExchangeSetHeaderIntNoAlloc(t *testing.T) {
 	})
 	if allocs != 0 {
 		t.Errorf("SetHeaderInt allocated %v times, want 0", allocs)
+	}
+}
+
+// The Mux matches on the request path: a query string must not defeat routing.
+func TestHandleMuxOnPath(t *testing.T) {
+	var sm MuxSlice
+	var gotPath, gotQuery string
+	sm.Handle("GET /search", func(ex *Exchange) {
+		gotPath = string(ex.RequestPath())
+		ex.ForEachQueryRaw(func(rawkey, rawval []byte) bool {
+			gotQuery += string(rawkey) + "=" + string(rawval) + ";"
+			return true
+		})
+		ex.WriteHeader(200)
+	})
+	conn := serve(t, "GET /search?q=go&n=1 HTTP/1.1\r\nHost: h\r\n\r\n", &sm)
+
+	if gotPath != "/search" {
+		t.Errorf("want path %q, got %q", "/search", gotPath)
+	}
+	if gotQuery != "q=go;n=1;" {
+		t.Errorf("want query %q, got %q", "q=go;n=1;", gotQuery)
+	}
+	if got := conn.ViewWritten(); !strings.HasPrefix(got, "HTTP/1.1 200 OK\r\n") {
+		t.Errorf("want the handler to have run, got %q", got)
+	}
+}
+
+func TestExchangeAppendQuery(t *testing.T) {
+	for _, test := range []struct {
+		uri         string
+		key         string
+		decoded     bool
+		want        string
+		wantPresent bool
+	}{
+		{uri: "/x?q=go", key: "q", want: "go", wantPresent: true},
+		{uri: "/x?q=go&n=1", key: "n", want: "1", wantPresent: true},
+		{uri: "/x?a=1&a=2", key: "a", want: "1", wantPresent: true},  // First match wins.
+		{uri: "/x?q=go", key: "nope", want: "", wantPresent: false},  // Absent.
+		{uri: "/x", key: "q", want: "", wantPresent: false},          // No query at all.
+		{uri: "/x?debug&q=go", key: "debug", want: "", wantPresent: true}, // Flag: present, no value.
+		{uri: "/x?q=", key: "q", want: "", wantPresent: true},             // Present, empty.
+		// Decoding is opt-in and applies to the value only.
+		{uri: "/x?q=hello%20world", key: "q", want: "hello%20world", wantPresent: true},
+		{uri: "/x?q=hello%20world", key: "q", decoded: true, want: "hello world", wantPresent: true},
+		{uri: "/x?q=a+b", key: "q", want: "a+b", wantPresent: true},
+		{uri: "/x?q=a+b", key: "q", decoded: true, want: "a b", wantPresent: true},
+		// Keys are matched decoded: "a b" cannot appear raw.
+		{uri: "/x?a%20b=c", key: "a b", want: "c", wantPresent: true},
+		{uri: "/x?a+b=c", key: "a b", want: "c", wantPresent: true},
+		// Malformed escapes: a bad key is skipped, a bad value is not returned.
+		{uri: "/x?%zz=1&q=go", key: "q", want: "go", wantPresent: true},
+		{uri: "/x?q=%zz", key: "q", decoded: true, want: "", wantPresent: false},
+		{uri: "/x?q=%zz", key: "q", want: "%zz", wantPresent: true}, // Undecoded, passed through.
+	} {
+		var sm MuxSlice
+		var got string
+		var present bool
+		sm.Handle("/x", func(ex *Exchange) {
+			var value []byte
+			value, present = ex.AppendQuery(nil, test.key, test.decoded)
+			got = string(value)
+		})
+		serve(t, "GET "+test.uri+" HTTP/1.1\r\nHost: h\r\n\r\n", &sm)
+
+		if present != test.wantPresent {
+			t.Errorf("%s key %q decoded=%v: want present=%v, got %v", test.uri, test.key, test.decoded, test.wantPresent, present)
+		}
+		if got != test.want {
+			t.Errorf("%s key %q decoded=%v: want %q, got %q", test.uri, test.key, test.decoded, test.want, got)
+		}
+	}
+}
+
+// AppendQuery appends to dst, leaving what was already there untouched, and
+// does not allocate when dst has the capacity.
+func TestExchangeAppendQueryReusesBuffer(t *testing.T) {
+	var sm MuxSlice
+	var got string
+	var allocs float64
+	dst := make([]byte, 0, 64)
+	sm.Handle("/x", func(ex *Exchange) {
+		var value []byte
+		allocs = testing.AllocsPerRun(50, func() {
+			value, _ = ex.AppendQuery(dst[:len("prefix:")], "q", true)
+		})
+		got = string(value) // Conversion allocates, keep it out of the measurement.
+	})
+	copy(dst[:cap(dst)], "prefix:")
+	serve(t, "GET /x?q=hello%20world HTTP/1.1\r\nHost: h\r\n\r\n", &sm)
+
+	if got != "prefix:hello world" {
+		t.Errorf("want %q, got %q", "prefix:hello world", got)
+	}
+	if allocs != 0 {
+		t.Errorf("AppendQuery allocated %v times into a buffer with capacity, want 0", allocs)
 	}
 }

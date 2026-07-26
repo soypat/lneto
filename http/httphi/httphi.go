@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -215,10 +216,10 @@ func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
 		exch.WriteHeader(int(StatusBadRequest))
 		return errNoRequestProto
 	}
-	// Mux URI.
-	uri := reqhdr.RequestURI()
+	// Mux on the request path: the query string is the handler's business.
+	path := reqhdr.RequestPath()
 	meth := reqhdr.Method()
-	handler := mux.LookupHandler(MethodFromBytes(meth), uri)
+	handler := mux.LookupHandler(MethodFromBytes(meth), path)
 	if handler != nil {
 		handler(exch)
 		exch.FlushHeader()
@@ -587,6 +588,68 @@ func (exch *Exchange) RequestHeader(key string) []byte {
 
 func (exch *Exchange) RequestURI() []byte {
 	return exch.RequestHeaderRaw().RequestURI()
+}
+
+// RequestPath returns the request URI up to the query string. This is what the
+// [Mux] matches on, i.e: "/search" for a request to "/search?q=go".
+func (exch *Exchange) RequestPath() []byte {
+	return exch.RequestHeaderRaw().RequestPath()
+}
+
+// ForEachQueryRaw iterates over the request's query string key-value pairs as
+// they appear on the wire. See [httpraw.Header.ForEachQuery].
+func (exch *Exchange) ForEachQueryRaw(fn func(rawkey, rawval []byte) bool) {
+	exch.RequestHeaderRaw().ForEachQuery(fn)
+}
+
+// AppendQuery appends the value of the first query parameter matching key to
+// dst and reports whether the parameter was present. A parameter with no value
+// ("?debug") and one with an empty value ("?debug=") are both present with
+// nothing appended.
+//
+// Keys are matched decoded, so key "a b" finds "a%20b" and "a+b". Values are
+// appended raw unless decoded is set, in which case percent escapes and '+' are
+// decoded. A parameter whose value fails to decode is reported absent, and a
+// parameter whose key fails to decode is skipped.
+//
+// dst doubles as scratch space for decoding candidate keys, so AppendQuery only
+// allocates when dst lacks the capacity to hold the longest key it inspects.
+func (exch *Exchange) AppendQuery(dst []byte, key string, decoded bool) (valueAppended []byte, present bool) {
+	const plusAsSpace = true // Query strings are form encoded, unlike paths.
+	base := len(dst)
+	valueAppended = dst
+	exch.ForEachQueryRaw(func(rawkey, rawval []byte) bool {
+		if b2s(rawkey) != key {
+			// Key may be encoded: decode it over dst's free space and compare.
+			// A decoded key cannot appear raw, so this cannot alias a real key.
+			valueAppended = slices.Grow(valueAppended, len(rawkey))
+			scratch := valueAppended[base : base+len(rawkey)]
+			n, err := httpraw.CopyDecodedPercentURL(scratch, rawkey, plusAsSpace)
+			if err != nil || b2s(scratch[:n]) != key {
+				return true // Malformed or different key, keep looking.
+			}
+		}
+		present = true
+		if len(rawval) == 0 {
+			return false
+		}
+		valueAppended = slices.Grow(valueAppended, len(rawval))
+		if !decoded {
+			valueAppended = append(valueAppended[:base], rawval...)
+			return false
+		}
+		n, err := httpraw.CopyDecodedPercentURL(valueAppended[base:base+len(rawval)], rawval, plusAsSpace)
+		if err != nil {
+			present = false // Malformed value, do not hand back half a decode.
+			return false
+		}
+		valueAppended = valueAppended[:base+n]
+		return false
+	})
+	if !present {
+		valueAppended = valueAppended[:base]
+	}
+	return valueAppended, present
 }
 
 func (exch *Exchange) RequestMethod() []byte {

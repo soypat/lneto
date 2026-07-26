@@ -151,6 +151,85 @@ func strSameSite(mode http.SameSite) string {
 	}
 }
 
+func TestHeaderRequestPath(t *testing.T) {
+	for _, test := range []struct {
+		uri  string
+		want string
+	}{
+		{uri: "/", want: "/"},
+		{uri: "/search?q=go", want: "/search"},
+		{uri: "/search?", want: "/search"},
+		{uri: "/a/b/c?x=1&y=2", want: "/a/b/c"},
+		{uri: "/?q=go", want: "/"},
+	} {
+		var h Header
+		err := h.ParseBytes(false, []byte("GET "+test.uri+" HTTP/1.1\r\nHost: h\r\n\r\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := string(h.RequestPath()); got != test.want {
+			t.Errorf("uri %q: want path %q, got %q", test.uri, test.want, got)
+		}
+	}
+}
+
+func TestHeaderForEachQuery(t *testing.T) {
+	for _, test := range []struct {
+		uri  string
+		want string // "key=value" pairs joined by '|'; nil value shown as "key".
+	}{
+		{uri: "/", want: ""},
+		{uri: "/x?", want: ""},
+		{uri: "/x?q=go", want: "q=go"},
+		{uri: "/x?q=go&n=1", want: "q=go|n=1"},
+		{uri: "/x?debug&q=go", want: "debug|q=go"},   // No '=' yields a nil value.
+		{uri: "/x?q=", want: "q="},                   // Empty but present value.
+		{uri: "/x?&&q=go&", want: "q=go"},            // Empty sequences skipped.
+		{uri: "/x?=v", want: "=v"},                   // Empty name is kept.
+		{uri: "/x?a=1&a=2", want: "a=1|a=2"},         // Duplicates all yielded.
+		{uri: "/x?a%20b=c%20d", want: "a%20b=c%20d"}, // Raw, undecoded.
+		{uri: "/x?a=b=c", want: "a=b=c"},             // Only first '=' splits.
+	} {
+		var h Header
+		err := h.ParseBytes(false, []byte("GET "+test.uri+" HTTP/1.1\r\nHost: h\r\n\r\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []byte
+		h.ForEachQuery(func(rawkey, rawval []byte) bool {
+			if len(got) > 0 {
+				got = append(got, '|')
+			}
+			got = append(got, rawkey...)
+			if rawval != nil {
+				got = append(got, '=')
+				got = append(got, rawval...)
+			}
+			return true
+		})
+		if string(got) != test.want {
+			t.Errorf("uri %q: want %q, got %q", test.uri, test.want, got)
+		}
+	}
+}
+
+// fn returning false stops iteration.
+func TestHeaderForEachQueryStop(t *testing.T) {
+	var h Header
+	err := h.ParseBytes(false, []byte("GET /x?a=1&b=2&c=3 HTTP/1.1\r\nHost: h\r\n\r\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	visited := 0
+	h.ForEachQuery(func(rawkey, rawval []byte) bool {
+		visited++
+		return string(rawkey) != "b"
+	})
+	if visited != 2 {
+		t.Errorf("want iteration stopped after 2 pairs, visited %d", visited)
+	}
+}
+
 func TestHeaderNormalizeKey(t *testing.T) {
 	var tests = []struct {
 		key      string

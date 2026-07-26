@@ -3,6 +3,8 @@ package httphi
 import (
 	"io"
 	"testing"
+
+	"github.com/soypat/lneto/internal"
 )
 
 // benchConn replays a fixed request and discards the response. It allocates
@@ -48,17 +50,23 @@ func benchExchange(b *testing.B, conn conn) *Exchange {
 
 // BenchmarkHandle measures a whole exchange: read, parse, mux and respond.
 func BenchmarkHandle(b *testing.B) {
+	expect := []byte("123")
+	buf := make([]byte, 64)
 	for _, bb := range []struct {
 		name    string
 		request string
 		handler HandlerFunc
 	}{
 		{
-			name:    "GETWithHeaders",
-			request: "GET / HTTP/1.1\r\nHost: tinygo.org\r\nUser-Agent: bench\r\nAccept: */*\r\nConnection: close\r\n\r\n",
+			name:    "GETWithHeadersAndQuery",
+			request: "GET /?abc=123 HTTP/1.1\r\nHost: tinygo.org\r\nUser-Agent: bench\r\nAccept: */*\r\nConnection: close\r\n\r\n",
 			handler: func(ex *Exchange) {
 				ex.SetHeader("Content-Type", "text/plain")
 				ex.SetHeaderInt("Content-Length", int64(len(benchBody)), 10)
+				data, present := ex.AppendQuery(buf[:0], "abc", true)
+				if !present || !internal.BytesEqual(data, expect) {
+					panic("invalid result")
+				}
 				ex.Write(benchBody)
 			},
 		},
@@ -78,7 +86,7 @@ func BenchmarkHandle(b *testing.B) {
 			b.ReportAllocs()
 			b.SetBytes(int64(len(bb.request)))
 			b.ResetTimer()
-			for b.Loop() {
+			for i := 0; i < b.N; i++ {
 				conn.rewind()
 				exch.Release()
 				exch.Acquire(conn)

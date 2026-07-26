@@ -361,6 +361,53 @@ func (h *Header) RequestURI() []byte {
 	return h.getNonEmptyValue(h.requestURI)
 }
 
+// RequestPath returns the request URI up to the query string, i.e: "/search"
+// for "/search?q=go". Returns the whole URI if it contains no query string.
+func (h *Header) RequestPath() []byte {
+	uri := h.RequestURI()
+	query := bytes.IndexByte(uri, '?')
+	if query < 0 {
+		return uri
+	}
+	return uri[:query]
+}
+
+// ForEachQuery iterates over the request URI's query string key-value pairs as
+// they appear on the wire, percent-encoded and with '+' undecoded. fn returns
+// true to continue iterating, false to stop.
+//
+// A pair with no '=' yields a nil value, i.e: "debug" in "?debug&q=go", which
+// distinguishes it from "?debug=" where the value is present and empty. Empty
+// sequences are skipped, so "?&&q=go&" yields a single pair. Only '&' separates
+// pairs and only the first '=' splits a pair.
+func (h *Header) ForEachQuery(fn func(rawkey, rawval []byte) bool) {
+	uri := h.RequestURI()
+	start := bytes.IndexByte(uri, '?')
+	if start < 0 {
+		return
+	}
+	query := uri[start+1:]
+	for len(query) > 0 {
+		pair := query
+		amp := bytes.IndexByte(query, '&')
+		if amp >= 0 {
+			pair, query = query[:amp], query[amp+1:]
+		} else {
+			query = nil
+		}
+		if len(pair) == 0 {
+			continue // Empty sequence, see WHATWG URL urlencoded parsing.
+		}
+		key, value := pair, []byte(nil)
+		if eq := bytes.IndexByte(pair, '='); eq >= 0 {
+			key, value = pair[:eq], pair[eq+1:]
+		}
+		if !fn(key, value) {
+			return
+		}
+	}
+}
+
 // Protocol returns the request header's HTTP protocol. Usually "HTTP/1.1".
 func (h *Header) Protocol() []byte {
 	return h.getNonEmptyValue(h.proto)
