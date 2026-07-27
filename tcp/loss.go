@@ -132,10 +132,11 @@ type TxDirective struct {
 	// snd.NXT to snd.UNA and resends unacknowledged data from the oldest
 	// sequence number.
 	RetransmitAll bool
-	// HoldNew pauses transmission of new data (for example when the congestion
-	// window is exhausted). Retransmissions already directed by this same
-	// directive still proceed.
-	// HoldNew bool
+	// HoldNew pauses transmission of new (not yet sent) data, for example when a
+	// congestion controller's window is exhausted. Retransmissions directed by
+	// this same directive, pending control segments and ACKs still proceed; only
+	// fresh data from the send buffer is withheld until a later PreTx clears it.
+	HoldNew bool
 }
 
 // RxDirective is returned by [LossRecovery.PreRx].
