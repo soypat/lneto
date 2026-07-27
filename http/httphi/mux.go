@@ -49,8 +49,9 @@ func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
 	// Mux on the request path: the query string is the handler's business.
 	path := reqhdr.RequestPath()
 	meth := reqhdr.Method()
-	handler := mux.LookupHandler(MethodFromBytes(meth), b2s(path))
+	matchedPattern, handler := mux.LookupHandler(MethodFromBytes(meth), b2s(path))
 	if handler != nil {
+		exch.matchedPattern = matchedPattern
 		handler(exch)
 		exch.FlushHeader()
 	} else {
@@ -70,7 +71,9 @@ type HandlerFunc func(ex *Exchange)
 // LookupHandler with the request-target's path, not the whole target, and
 // replies 404 when it returns nil.
 type Mux interface {
-	LookupHandler(get Method, requestPath string) HandlerFunc
+	// LookupHandler matches the requestPath and method to a handler and returns it and the
+	// pattern it matched.
+	LookupHandler(get Method, requestPath string) (matchedPattern string, handler HandlerFunc)
 }
 
 // MuxSlice is a [Mux] backed by a slice of registered endpoints, matched by
@@ -92,17 +95,17 @@ func (sm *MuxSlice) Reset(capacity int) {
 
 // LookupHandler returns the handler registered for request path, or nil if none matches.
 // The first registration matching both method and uri wins.
-func (sm *MuxSlice) LookupHandler(method Method, path string) HandlerFunc {
+func (sm *MuxSlice) LookupHandler(method Method, path string) (matched string, _ HandlerFunc) {
 	for _, endpoint := range sm._handlers {
 		if endpoint.method != MethUndefined && endpoint.method != method {
 			continue
 		}
 		// Method matches.
 		if path == endpoint.path {
-			return endpoint.handler
+			return endpoint.path, endpoint.handler
 		}
 	}
-	return nil
+	return "", nil
 }
 
 // Handle registers handler for reg, either a bare path matching any method or a

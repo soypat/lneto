@@ -38,6 +38,8 @@ type Exchange struct {
 	hijacked bool
 	rw       conn
 
+	matchedPattern string
+
 	respRemains   int
 	respErr       error // Sticky: response is unrecoverable once a write fails.
 	headerWritten bool
@@ -97,6 +99,7 @@ func (exch *Exchange) Acquire(conn conn) bool {
 	if !exch.used.CompareAndSwap(false, true) {
 		return false
 	}
+	exch.matchedPattern = ""
 	exch.gen.Add(1)
 	exch.readErr = nil
 	exch.respErr = nil
@@ -364,6 +367,11 @@ func (exch *Exchange) remainingSurplusBody() ([]byte, error) {
 	surplus := exch.rawbuf[exch.reqHdr.BufferParsed():exch.reqHdr.BufferReceived()]
 	toRead := surplus[len(surplus)-exch.respRemains:]
 	return toRead, nil
+}
+
+// MuxPattern returns the pattern [Mux] matched to the request.
+func (exch *Exchange) MuxPattern() string {
+	return exch.matchedPattern
 }
 
 // RequestHeaderRaw returns the parsed request header for access beyond the

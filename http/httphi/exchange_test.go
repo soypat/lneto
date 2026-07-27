@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"strings"
+	"unsafe"
 
 	"testing"
 	"time"
@@ -792,6 +794,7 @@ func serveMultipart(t *testing.T, request string, bufSize int, skip string, segm
 		}
 		parts, gotErr = exch.ReadMultiparts(parts, make([]byte, bufSize), newSink)
 	})
+	const x = unsafe.Sizeof(http.Request{})
 	exch := newExchange(t, conn, 1024, false)
 	if err := Handle(exch, &sm, nopBackoff); err != nil {
 		t.Fatal(err)
