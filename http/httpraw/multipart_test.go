@@ -101,7 +101,7 @@ func TestContentParam(t *testing.T) {
 func TestNextPartHeader(t *testing.T) {
 	m := Multipart{Boundary: []byte(multiBoundary)}
 	var hdr MultipartHeader
-	rest, err := m.NextHeader(&hdr, []byte(multiBody))
+	parsed, err := m.NextHeader(&hdr, []byte(multiBody))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,11 +112,28 @@ func TestNextPartHeader(t *testing.T) {
 	if string(hdr.Name) != "caption" {
 		t.Errorf("want name %q, got %q", "caption", hdr.Name)
 	}
-	if hdr.Filename != nil {
-		t.Errorf("want nil filename for a non file part, got %q", hdr.Filename)
+	if len(hdr.Filename) != 0 {
+		t.Errorf("want no filename for a non file part, got %q", hdr.Filename)
 	}
-	if !strings.HasPrefix(string(rest), "hi there\r\n") {
-		t.Errorf("want rest at part body, got %q", rest)
+	if !strings.HasPrefix(multiBody[parsed:], "hi there\r\n") {
+		t.Errorf("want rest at part body, got %q", multiBody[parsed:])
+	}
+}
+
+// Names and filenames must outlive the buffer they were parsed from, so a
+// caller may compact it and read more without losing the part it is reading.
+func TestNextPartHeaderOutlivesBuffer(t *testing.T) {
+	m := Multipart{Boundary: []byte(multiBoundary)}
+	data := []byte(multiBody)
+	var hdr MultipartHeader
+	if _, err := m.NextHeader(&hdr, data); err != nil {
+		t.Fatal(err)
+	}
+	for i := range data {
+		data[i] = 'x' // Buffer reused for the next read.
+	}
+	if string(hdr.Name) != "caption" {
+		t.Errorf("want name %q to survive the buffer, got %q", "caption", hdr.Name)
 	}
 }
 
@@ -130,8 +147,9 @@ func TestNextPartHeaderNeedMore(t *testing.T) {
 		"------abc123\r\nContent-Disposition: form-", // Header block unterminated.
 	} {
 		var hdr MultipartHeader
-		if _, err := m.NextHeader(&hdr, []byte(data)); err != ErrNeedMoreData {
-			t.Errorf("%q: want ErrNeedMoreData, got %v", data, err)
+		parsed, err := m.NextHeader(&hdr, []byte(data))
+		if parsed != 0 || err != nil {
+			t.Errorf("%q: want (0, nil) asking for more data, got (%d, %v)", data, parsed, err)
 		}
 	}
 }
@@ -158,45 +176,48 @@ func TestNextPartHeaderEnd(t *testing.T) {
 func TestNextPartBody(t *testing.T) {
 	m := Multipart{Boundary: []byte(multiBoundary)}
 	var hdr MultipartHeader
-	rest, err := m.NextHeader(&hdr, []byte(multiBody))
+	parsed, err := m.NextHeader(&hdr, []byte(multiBody))
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, rest, done := m.NextBody(rest)
+	rest := multiBody[parsed:]
+	bodyLen, restOff, done := m.NextBody([]byte(rest))
 	if !done {
 		t.Fatal("want the part to end within the buffer")
 	}
-	if string(body) != "hi there" {
-		t.Errorf("want body %q, got %q", "hi there", body)
+	if rest[:bodyLen] != "hi there" {
+		t.Errorf("want body %q, got %q", "hi there", rest[:bodyLen])
 	}
-	if !strings.HasPrefix(string(rest), "------abc123\r\n") {
-		t.Errorf("want rest at next delimiter, got %q", rest)
+	if !strings.HasPrefix(rest[restOff:], "------abc123\r\n") {
+		t.Errorf("want rest at next delimiter, got %q", rest[restOff:])
 	}
 }
 
 // A part whose bytes contain CRLFs and boundary-like text must survive intact.
 func TestNextPartBodyBinary(t *testing.T) {
 	m := Multipart{Boundary: []byte(multiBoundary)}
-	data := []byte(multiBody)
+	rest := []byte(multiBody)
 	var hdr MultipartHeader
-	rest, err := m.NextHeader(&hdr, data) // caption part.
+	parsed, err := m.NextHeader(&hdr, rest) // caption part.
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, rest, _ = m.NextBody(rest)
-	rest, err = m.NextHeader(&hdr, rest) // photo part.
+	_, restOff, _ := m.NextBody(rest[parsed:])
+	rest = rest[parsed+restOff:]
+	parsed, err = m.NextHeader(&hdr, rest) // photo part.
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, rest, done := m.NextBody(rest)
+	rest = rest[parsed:]
+	bodyLen, restOff, done := m.NextBody(rest)
 	if !done {
 		t.Fatal("want the part to end within the buffer")
 	}
 	const want = "\x89PNG\r\n--not-the-boundary\r\n\x00\xff"
-	if string(body) != want {
-		t.Errorf("want body %q, got %q", want, body)
+	if string(rest[:bodyLen]) != want {
+		t.Errorf("want body %q, got %q", want, rest[:bodyLen])
 	}
-	if _, err = m.NextHeader(&hdr, rest); err != io.EOF {
+	if _, err = m.NextHeader(&hdr, rest[restOff:]); err != io.EOF {
 		t.Errorf("want io.EOF after last part, got %v", err)
 	}
 }
@@ -208,15 +229,16 @@ func TestNextPartBodySplitDelimiter(t *testing.T) {
 	const part = "hi there"
 	full := part + "\r\n------abc123\r\n"
 	for split := 1; split < len(full); split++ {
-		body, rest, done := m.NextBody([]byte(full[:split]))
+		data := full[:split]
+		bodyLen, restOff, done := m.NextBody([]byte(data))
 		if done {
 			continue // Whole delimiter already present, nothing to prove.
 		}
-		if len(body) > len(part) {
-			t.Fatalf("split %d: emitted %q, past the end of the part", split, body)
+		if bodyLen > len(part) {
+			t.Fatalf("split %d: emitted %q, past the end of the part", split, data[:bodyLen])
 		}
-		if string(body)+string(rest) != full[:split] {
-			t.Fatalf("split %d: body+rest %q%q does not reconstruct input", split, body, rest)
+		if data[:bodyLen]+data[restOff:] != data {
+			t.Fatalf("split %d: body+rest %q%q does not reconstruct input", split, data[:bodyLen], data[restOff:])
 		}
 	}
 }
@@ -225,12 +247,13 @@ func TestNextPartBodySplitDelimiter(t *testing.T) {
 func TestNextHeaderFilePart(t *testing.T) {
 	m := Multipart{Boundary: []byte(multiBoundary)}
 	var hdr MultipartHeader
-	rest, err := m.NextHeader(&hdr, []byte(multiBody)) // caption part.
+	parsed, err := m.NextHeader(&hdr, []byte(multiBody)) // caption part.
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, rest, _ = m.NextBody(rest)
-	if _, err = m.NextHeader(&hdr, rest); err != nil { // photo part.
+	rest := []byte(multiBody[parsed:])
+	_, restOff, _ := m.NextBody(rest)
+	if _, err = m.NextHeader(&hdr, rest[restOff:]); err != nil { // photo part.
 		t.Fatal(err)
 	}
 	if got := string(hdr.Name); got != "photo" {
@@ -245,7 +268,7 @@ func TestNextHeaderFilePart(t *testing.T) {
 }
 
 // A failed call must not leave the previous part's fields behind.
-func TestNextHeaderZeroesOnError(t *testing.T) {
+func TestNextHeaderResetsOnError(t *testing.T) {
 	m := Multipart{Boundary: []byte(multiBoundary)}
 	var hdr MultipartHeader
 	if _, err := m.NextHeader(&hdr, []byte(multiBody)); err != nil {
@@ -254,31 +277,49 @@ func TestNextHeaderZeroesOnError(t *testing.T) {
 	if _, err := m.NextHeader(&hdr, []byte("------abc123--\r\n")); err != io.EOF {
 		t.Fatalf("want io.EOF, got %v", err)
 	}
-	if hdr.PartView != nil || hdr.Name != nil || hdr.Filename != nil {
-		t.Errorf("want zeroed header on error, got %+v", hdr)
+	if hdr.PartView != nil || len(hdr.Name) != 0 || len(hdr.Filename) != 0 {
+		t.Errorf("want cleared header on error, got %+v", hdr)
 	}
 }
 
-// The whole loop, as a caller writes it.
+// A header reused across parts must stop allocating once its name and filename
+// buffers are big enough.
+func TestNextHeaderReuseNoAlloc(t *testing.T) {
+	m := Multipart{Boundary: []byte(multiBoundary)}
+	data := []byte(multiBody)
+	var hdr MultipartHeader
+	allocs := testing.AllocsPerRun(10, func() {
+		if _, err := m.NextHeader(&hdr, data); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if allocs != 0 {
+		t.Errorf("want a reused header to allocate 0 times, got %v", allocs)
+	}
+}
+
+// The whole loop, as a caller writes it over a buffer it compacts.
 func TestMultipartLoop(t *testing.T) {
 	m := Multipart{Boundary: []byte(multiBoundary)}
 	rest := []byte(multiBody)
 	var got []string
 	var hdr MultipartHeader
 	for {
-		next, err := m.NextHeader(&hdr, rest)
+		parsed, err := m.NextHeader(&hdr, rest)
 		if err == io.EOF {
 			break
 		} else if err != nil {
 			t.Fatal(err)
+		} else if parsed == 0 {
+			t.Fatal("header must complete within the buffer")
 		}
 		name := string(hdr.Name)
 		total := 0
-		rest = next
+		rest = rest[parsed:]
 		for {
-			body, next, done := m.NextBody(rest)
-			total += len(body)
-			rest = next
+			bodyLen, restOff, done := m.NextBody(rest)
+			total += bodyLen
+			rest = rest[restOff:]
 			if done {
 				break
 			}

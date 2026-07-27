@@ -10,20 +10,25 @@ import (
 // value has no length: it ends where the next delimiter begins.
 //
 // Multipart stores none of the body, leaving the caller to decide what to keep,
-// what to skip and when a part has grown too large:
+// what to skip and when a part has grown too large. Both methods report how much
+// of buf they consumed, which the caller compacts away before reading more in:
 //
-//	m := httpraw.Multipart{Boundary: httpraw.MultipartBoundary(contentType)}
+//	var m httpraw.Multipart
+//	m.SetContentType(contentType)
 //	var hdr httpraw.MultipartHeader
 //	for {
-//		rest, err := m.NextHeader(&hdr, buf)
+//		parsed, err := m.NextHeader(&hdr, buf[:buflen])
 //		if err != nil {
-//			break // io.EOF, or ErrNeedMoreData: read more into buf and retry.
+//			break // io.EOF at the closing delimiter, body done.
+//		} else if parsed == 0 {
+//			// Header block incomplete: read more into buf[buflen:] and retry.
+//			continue
 //		}
+//		buflen = copy(buf, buf[parsed:buflen])
 //		for {
-//			body, next, done := m.NextBody(rest)
-//			// Consume body for hdr.Name, then compact next to the front of buf
-//			// and read more.
-//			rest = next
+//			bodyLen, restOff, done := m.NextBody(buf[:buflen])
+//			// Consume buf[:bodyLen] for hdr.Name, then compact and read more.
+//			buflen = copy(buf, buf[restOff:buflen])
 //			if done {
 //				break
 //			}
@@ -36,17 +41,27 @@ type Multipart struct {
 }
 
 // MultipartHeader is a part's header block and the Content-Disposition
-// parameters that identify it. All fields alias the buffer they were parsed
-// from and stay valid as long as it does.
+// parameters that identify it.
 type MultipartHeader struct {
-	// PartView is the part's raw header block, ending in its final CRLF.
+	// PartView is the part's raw header block, ending in its final CRLF. It
+	// aliases the buffer it was parsed from, so it is only valid until that
+	// buffer is compacted or read into again.
 	PartView []byte
 	// Name is the name parameter of a part's Content-Disposition field,
 	// i.e: "photo" for `form-data; name="photo"; filename="beach.png"`.
+	// Copied out of the buffer, so it outlives it, and reused between parts.
 	Name []byte
 	// Filename is the filename parameter of a part's Content-Disposition
-	// field, nil when the part is not a file upload.
+	// field, empty when the part is not a file upload. Copied like Name.
 	Filename []byte
+}
+
+// Reset clears the header for the next part, keeping the buffers Name and
+// Filename were copied into so a reused header stops allocating.
+func (hdr *MultipartHeader) Reset() {
+	hdr.PartView = nil
+	hdr.Name = hdr.Name[:0]
+	hdr.Filename = hdr.Filename[:0]
 }
 
 // SetContentType sets [Multipart.Boundary] from the boundary parameter of a
@@ -63,48 +78,13 @@ func (m *Multipart) SetContentType(contentType []byte) error {
 	return nil
 }
 
-// NextHeader splits the leading part's header block off a multipart body into
-// dst, returning the body bytes that follow it. Returns [ErrNeedMoreData] while
-// data holds no complete delimiter and header block, and [io.EOF] once the
-// closing delimiter is reached. dst is left zeroed on error.
-func (m *Multipart) NextHeader(dst *MultipartHeader, data []byte) (rest []byte, err error) {
-	*dst = MultipartHeader{}
-	if len(m.Boundary) == 0 {
-		return nil, errNoBoundary
-	}
-	idx := m.indexDelimiter(data)
-	if idx < 0 {
-		return nil, ErrNeedMoreData
-	}
-	after := idx + len("--") + len(m.Boundary)
-	if after+2 > len(data) {
-		return nil, ErrNeedMoreData // Cannot tell a closing delimiter yet.
-	} else if data[after] == '-' && data[after+1] == '-' {
-		return nil, io.EOF
-	}
-	// Delimiter is followed by CRLF, then the part's header block.
-	if data[after] == '\r' {
-		after++
-	}
-	if after >= len(data) {
-		return nil, ErrNeedMoreData
-	} else if data[after] != '\n' {
-		return nil, errBadDelimiter
-	}
-	after++
-	end := bytes.Index(data[after:], []byte("\r\n\r\n"))
-	if end < 0 {
-		return nil, ErrNeedMoreData
-	}
-	dst.PartView = data[after : after+end+2]
-	disposition := partField(dst.PartView)
-	dst.Name = append(dst.Name[:0], ContentParam(disposition, "name")...)
-	dst.Filename = append(dst.Filename[:0], ContentParam(disposition, "filename")...)
-	return data[after+end+4:], nil
-}
-
-func (m *Multipart) NextHeaderInt(dst *MultipartHeader, data []byte) (parsedLen int, err error) {
-	*dst = MultipartHeader{}
+// NextHeader parses the leading part's header block off a multipart body into
+// dst, returning how many bytes of data it consumed: the part's content begins
+// at data[parsedLen]. A zero parsedLen and no error means data holds no complete
+// delimiter and header block yet, so the caller reads more in and retries.
+// Returns [io.EOF] once the closing delimiter is reached. dst is reset on error.
+func (m *Multipart) NextHeader(dst *MultipartHeader, data []byte) (parsedLen int, err error) {
+	dst.Reset()
 	if len(m.Boundary) == 0 {
 		return 0, errNoBoundary
 	}
@@ -139,35 +119,22 @@ func (m *Multipart) NextHeaderInt(dst *MultipartHeader, data []byte) (parsedLen 
 	return after + end + 4, nil
 }
 
-func (m *Multipart) NextBodyInt(data []byte) (bodyLen int, done bool) {
+// NextBody reports how much of data is part content, data[:bodyLen], and where
+// what is left begins, data[restOff:], which the caller compacts to the front of
+// its buffer before reading more in. done reports the part ended, in which case
+// data[restOff:] begins the next part's delimiter; otherwise the bytes past
+// bodyLen are a tail held back because it could still turn into a delimiter.
+func (m *Multipart) NextBody(data []byte) (bodyLen, restOff int, done bool) {
 	idx := m.indexPartEnd(data)
 	if idx >= 0 {
-		return idx, true
-		// return data[:idx], data[idx+len("\r\n"):], true
+		return idx, idx + len("\r\n"), true
 	}
 	// Longest prefix of "\r\n--"+boundary that could still be completed.
 	hold := len("\r\n--") + len(m.Boundary) - 1
 	if hold > len(data) {
 		hold = len(data)
 	}
-	return len(data) - hold, false
-}
-
-// NextBody returns the part bytes available in data, holding back any tail
-// that could be the start of a delimiter. done reports the part ended, in which
-// case rest begins the next part's delimiter; otherwise rest is the held back
-// tail, which the caller compacts before reading more data into the buffer.
-func (m *Multipart) NextBody(data []byte) (body, rest []byte, done bool) {
-	idx := m.indexPartEnd(data)
-	if idx >= 0 {
-		return data[:idx], data[idx+len("\r\n"):], true
-	}
-	// Longest prefix of "\r\n--"+boundary that could still be completed.
-	hold := len("\r\n--") + len(m.Boundary) - 1
-	if hold > len(data) {
-		hold = len(data)
-	}
-	return data[:len(data)-hold], data[len(data)-hold:], false
+	return len(data) - hold, len(data) - hold, false
 }
 
 // indexDelimiter returns the offset of the leading "--"+Boundary in data.

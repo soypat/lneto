@@ -1,6 +1,7 @@
 package httphi
 
 import (
+	"io"
 	"net"
 	"slices"
 	"strconv"
@@ -441,59 +442,124 @@ func (exch *Exchange) RequestParseForm(dst *httpraw.Form, buf []byte, backoff ln
 	return dst.Parse()
 }
 
-// RequestParseMultipart prepares dst from the boundary parameter of the
+// RequestMultipart returns a parser prepared from the boundary parameter of the
 // request's Content-Type field. It reads no body: multipart parts declare no
 // length, so the caller drives the loop with a buffer it owns and decides per
-// part what to keep and when a part has grown too large.
-//
-// A part header and the bytes held back by [httpraw.Multipart.NextBody] both ask
-// to be completed the same way: compact what is left to the front of the buffer
-// and read more in behind it. A buffer that fills without completing either is
-// the caller's cue that the part is too large to go on with.
-//
-//	// refill compacts rest to the front of buf and reads more of the body in.
-//	refill := func(rest []byte) ([]byte, error) {
-//		n := copy(buf, rest)
-//		if n == len(buf) {
-//			return nil, lneto.ErrBufferFull
-//		}
-//		nr, err := exch.ReadBody(buf[n:])
-//		return buf[:n+nr], err
-//	}
-//
-//	err := exch.RequestParseMultipart(&mp)
-//	rest := buf[:0]
-//	for {
-//		next, err := mp.NextHeader(&hdr, rest)
-//		if err == io.EOF {
-//			break // Closing delimiter, body done.
-//		} else if err == httpraw.ErrNeedMoreData {
-//			rest, err = refill(rest)
-//			// ...handle err, then:
-//			continue
-//		} else if err != nil {
-//			return err
-//		}
-//		rest = next
-//		for {
-//			body, next, done := mp.NextBody(rest)
-//			// Consume body for hdr.Name, hdr.Filename.
-//			rest = next
-//			if done {
-//				break
-//			}
-//			rest, err = refill(rest)
-//			if err != nil {
-//				return err
-//			}
-//		}
-//	}
+// part what to keep and when a part has grown too large. See
+// [Exchange.ReadMultiparts] for that loop already written.
 func (exch *Exchange) RequestMultipart() (mp httpraw.Multipart, err error) {
 	contentType := exch.RequestContentType()
 	if !httpraw.MediaTypeIs(contentType, "multipart/form-data") {
 		return mp, errNotMultipart
 	}
 	return mp, mp.SetContentType(contentType)
+}
+
+// MultipartSink is a part of a multipart body together with the writer its
+// content was streamed to, as appended by [Exchange.ReadMultiparts].
+type MultipartSink struct {
+	// Header identifies the part. Name and Filename are copies, so they
+	// outlive the read buffer; PartView does not, see [httpraw.MultipartHeader].
+	Header httpraw.MultipartHeader
+	// Sink received the part's content and was closed when the part ended,
+	// nil for a part newSink chose to discard.
+	Sink io.WriteCloser
+}
+
+// ReadMultiparts streams the request's "multipart/form-data" body, writing each
+// part to a sink newSink returns for it and appending the pair to dst. buf is the
+// only storage used and content is never held whole, so a part of any length
+// streams through a buffer the caller sized. dst is appended to and returned, so
+// a handler may hand back the slice of a previous request to reuse its parts.
+//
+// newSink is called once per part, before any of its content is read, and picks
+// what to do with it from hdr.Name and hdr.Filename: return a writer to keep the
+// part, or nil to discard its content and keep only the header. Each sink is
+// closed as soon as its part ends, so Close reports the part arrived whole; on
+// error the sink of the part being read is left open for the caller to deal with.
+//
+// A part header that does not fit buf is refused with [lneto.ErrShortBuffer],
+// since reading more can never complete it, leaving the caller free to answer
+// 413. backoff paces reads that return no data, as in [Handle]. The body is
+// consumed, so call this before [Exchange.ReadBody].
+func (exch *Exchange) ReadMultiparts(dst []MultipartSink, buf []byte, newSink func(hdr *httpraw.MultipartHeader) io.WriteCloser, backoff lneto.BackoffStrategy) (_ []MultipartSink, _ error) {
+	mp, err := exch.RequestMultipart()
+	if err != nil {
+		return dst, err
+	} else if newSink == nil || len(buf) <= len("\r\n--")+len(mp.Boundary) {
+		// A buffer that cannot outgrow a delimiter never makes progress.
+		return dst, lneto.ErrInvalidConfig
+	}
+	buflen := 0
+	for {
+		// Slot for the next part, given back when the body turns out to be
+		// over, so its Name and Filename buffers stay available for reuse.
+		part := internal.SliceReclaim(&dst)
+		var parsed int
+		for {
+			parsed, err = mp.NextHeader(&part.Header, buf[:buflen])
+			if err != nil {
+				dst = dst[:len(dst)-1]
+				if err == io.EOF {
+					err = nil // Closing delimiter, body done.
+				}
+				return dst, err
+			} else if parsed > 0 {
+				break // Delimiter and header block complete.
+			} else if buflen == len(buf) {
+				dst = dst[:len(dst)-1]
+				return dst, lneto.ErrShortBuffer // Header longer than buf.
+			}
+			buflen, err = exch.readBodyMore(buf, buflen, backoff)
+			if err != nil {
+				dst = dst[:len(dst)-1]
+				return dst, err
+			}
+		}
+		part.Sink = newSink(&part.Header)
+		buflen = copy(buf, buf[parsed:buflen])
+		for {
+			bodyLen, restOff, done := mp.NextBody(buf[:buflen])
+			if bodyLen > 0 && part.Sink != nil {
+				_, err = part.Sink.Write(buf[:bodyLen])
+				if err != nil {
+					return dst, err
+				}
+			}
+			buflen = copy(buf, buf[restOff:buflen])
+			if done {
+				break // Buffer now starts at the next part's delimiter.
+			}
+			buflen, err = exch.readBodyMore(buf, buflen, backoff)
+			if err != nil {
+				return dst, err
+			}
+		}
+		if part.Sink != nil {
+			if err = part.Sink.Close(); err != nil {
+				return dst, err
+			}
+		}
+	}
+}
+
+// readBodyMore reads more of the body in behind the buflen bytes already in buf,
+// returning the new length once at least one byte arrived. A parser that stalled
+// for want of data always makes progress or gets an error, never spins.
+func (exch *Exchange) readBodyMore(buf []byte, buflen int, backoff lneto.BackoffStrategy) (int, error) {
+	for backoffs := uint(0); ; backoffs++ {
+		n, err := exch.ReadBody(buf[buflen:])
+		buflen += n
+		if n > 0 {
+			// Data first: a read that both delivered and failed, as the last
+			// of the body followed by a hangup does, may still hold the
+			// closing delimiter. The error surfaces on the next read.
+			return buflen, nil
+		} else if err != nil {
+			return buflen, err
+		}
+		backoff.Do(backoffs) // Nothing pending on the conn yet.
+	}
 }
 
 // RequestHeader returns the value of the first request header field matching

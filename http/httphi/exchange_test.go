@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/soypat/lneto/http/httpraw"
-	"github.com/soypat/lneto/internal"
 
 	"github.com/soypat/lneto"
 )
@@ -752,151 +751,46 @@ func TestExchangeRequestParseFormDecode(t *testing.T) {
 	}
 }
 
-// refill compacts the bytes the multipart parser held back to the front of buf
-// and reads more of the body in behind them. It returns once at least one byte
-// arrived, so a caller that got [httpraw.ErrNeedMoreData] always makes progress
-// or gets an error, never spins.
-func refill(exch *Exchange, buf, rest []byte, backoff lneto.BackoffStrategy) ([]byte, error) {
-	n := copy(buf, rest)
-	if n == len(buf) {
-		return nil, lneto.ErrBufferFull // A delimiter or part header longer than buf.
-	}
-	for backoffs := uint(0); ; backoffs++ {
-		nr, err := exch.ReadBody(buf[n:])
-		if nr > 0 || err != nil {
-			return buf[:n+nr], err
-		}
-		backoff.Do(backoffs) // Nothing pending on the conn yet.
-	}
+// partBuffer is a sink that keeps a part's content in memory and records that
+// [Exchange.ReadMultiparts] closed it.
+type partBuffer struct {
+	content []byte
+	closed  bool
 }
 
-// multiPart is one part of a multipart body, copied out of the read buffer so it
-// outlives the reads that produced it.
-type multiPart struct {
-	name     string
-	filename string
-	content  []byte
+func (p *partBuffer) Write(b []byte) (int, error) {
+	if p.closed {
+		return 0, errors.New("write to closed part sink")
+	}
+	p.content = append(p.content, b...)
+	return len(b), nil
 }
 
-// readMultiPart drains the request's multipart body into parts, using buf as its
-// only scratch space. It is the shape of the loop a handler writes: NextHeader
-// and NextBody both ask to be completed the same way, by compacting what is left
-// to the front of buf and reading more in behind it, so parts of any length fit
-// a buffer the caller sized. A part header that does not fit is reported as
-// [lneto.ErrBufferFull], since reading more can never complete it.
-func readMultiPart(exch *Exchange, buf []byte, backoff lneto.BackoffStrategy) (parts []multiPart, _ error) {
-	mp, err := exch.RequestMultipart()
-	if err != nil {
-		return nil, err
-	}
-	var hdr httpraw.MultipartHeader
-	rest := buf[:0]
-	for {
-		next, err := mp.NextHeader(&hdr, rest)
-		if err == io.EOF {
-			return parts, nil // Closing delimiter, body done.
-		} else if err == httpraw.ErrNeedMoreData {
-			if rest, err = refill(exch, buf, rest, backoff); err != nil {
-				return nil, err
-			}
-			continue
-		} else if err != nil {
-			return nil, err
-		}
-		// hdr aliases buf, so copy it out before a refill moves those bytes.
-		part := internal.SliceReclaim(&parts)
-		part.name, part.filename = string(hdr.Name), string(hdr.Filename)
-		part.content = part.content[:0] // Reclaimed from an earlier body.
-		rest = next
-		for {
-			body, next, done := mp.NextBody(rest)
-			part.content = append(part.content, body...)
-			rest = next
-			if done {
-				break // rest begins the next part's delimiter.
-			}
-			if rest, err = refill(exch, buf, rest, backoff); err != nil {
-				return nil, err
-			}
-		}
-	}
-}
+func (p *partBuffer) Close() error { p.closed = true; return nil }
 
-type MultipartSink struct {
-	Header httpraw.MultipartHeader
-	Sink   io.Writer
-}
-
-func (exch *Exchange) ReadMultiparts(dst []MultipartSink, buf []byte, newSink func(hdr *httpraw.MultipartHeader) io.WriteCloser) (_ []MultipartSink, _ error) {
-	if newSink == nil || len(buf) < 72 {
-		return dst, lneto.ErrInvalidConfig
-	}
-	mp, err := exch.RequestMultipart()
-	if err != nil {
-		return dst, err
-	}
-	buflen := 0
-	for {
-		n, err := exch.ReadBody(buf[buflen:])
-		if err != nil {
-			return dst, err
-		}
-		buflen += n
-		extendedDst := dst
-		maybePart := internal.SliceReclaim(&extendedDst)
-		parsed, err := mp.NextHeaderInt(&maybePart.Header, buf[:buflen])
-		if err != nil {
-			if err == io.EOF {
-				err = nil // Closing delimiter, body done.
-			}
-			return dst, err
-		} else if parsed == 0 {
-			// Need more data before being able to parse header.
-			if buflen == len(buf) {
-				return dst, lneto.ErrShortBuffer
-			}
-			continue
-		}
-		dst = extendedDst
-		maybePart.Sink = newSink(&maybePart.Header)
-		buflen = copy(buf, buf[parsed:])
-		for {
-			bodylen, done := mp.NextBodyInt(buf[:buflen])
-			if bodylen > 0 {
-				_, err = maybePart.Sink.Write(buf[:bodylen])
-				if err != nil {
-					return dst, err
-				}
-			}
-			if done {
-				break
-			}
-			buflen = copy(buf, buf[bodylen:buflen])
-			n, err := exch.ReadBody(buf[buflen:])
-			if err != nil {
-				return dst, err
-			}
-			buflen += n
-		}
-	}
-}
-
-// serveMultipart serves request to a handler that drains its multipart body
-// with readMultiPart over a buffer of bufSize bytes. segments are delivered on
-// later reads, so the parser must compact and refill to see them.
-func serveMultipart(t *testing.T, request string, bufSize int, segments ...string) ([]multiPart, error) {
+// serveMultipart serves request to a handler that streams its multipart body
+// with [Exchange.ReadMultiparts] over a buffer of bufSize bytes. segments are
+// delivered on later reads, so the parser must compact and read more to see
+// them. skip names the parts whose sink is refused, exercising discarding.
+func serveMultipart(t *testing.T, request string, bufSize int, skip string, segments ...string) ([]MultipartSink, error) {
 	t.Helper()
 	conn := newConn(request)
 	for _, segment := range segments {
 		conn.AddSegment(segment)
 	}
 	conn.Hangup()
-	var parts []multiPart
+	var parts []MultipartSink
 	var gotErr error
 	var sm MuxSlice
 	sm.Reset(1)
 	sm.Handle("/f", func(exch *Exchange) {
-		parts, gotErr = readMultiPart(exch, make([]byte, bufSize), nopBackoff)
+		newSink := func(hdr *httpraw.MultipartHeader) io.WriteCloser {
+			if skip != "" && string(hdr.Name) == skip {
+				return nil // Discard this part's content.
+			}
+			return new(partBuffer)
+		}
+		parts, gotErr = exch.ReadMultiparts(parts, make([]byte, bufSize), newSink, nopBackoff)
 	})
 	exch := newExchange(t, conn, 1024, false)
 	if err := Handle(exch, &sm, nopBackoff); err != nil {
@@ -906,70 +800,115 @@ func serveMultipart(t *testing.T, request string, bufSize int, segments ...strin
 }
 
 // partsString renders parts as "name=content" joined by '|', a file part shown
-// as "name(filename)=content".
-func partsString(parts []multiPart) string {
+// as "name(filename)=content" and a discarded one as "name=<nil>". Fails the
+// test if a sink was left open, which would hide a part that never ended.
+func partsString(t *testing.T, parts []MultipartSink) string {
+	t.Helper()
 	var sb strings.Builder
-	for i, part := range parts {
+	for i := range parts {
 		if i > 0 {
 			sb.WriteByte('|')
 		}
-		sb.WriteString(part.name)
-		if part.filename != "" {
+		part := &parts[i]
+		sb.Write(part.Header.Name)
+		if len(part.Header.Filename) > 0 {
 			sb.WriteByte('(')
-			sb.WriteString(part.filename)
+			sb.Write(part.Header.Filename)
 			sb.WriteByte(')')
 		}
 		sb.WriteByte('=')
-		sb.Write(part.content)
+		if part.Sink == nil {
+			sb.WriteString("<nil>")
+			continue
+		}
+		sink := part.Sink.(*partBuffer)
+		if !sink.closed {
+			t.Errorf("part %q: sink left open", part.Header.Name)
+		}
+		sb.Write(sink.content)
 	}
 	return sb.String()
 }
 
 // Names, filenames and content of every part, over a body split so that a part
-// straddles two reads and the caller must compact and refill.
-func TestExchangeReadMultipart(t *testing.T) {
+// straddles two reads and the parser must compact and read more.
+func TestExchangeReadMultiparts(t *testing.T) {
 	const (
 		head  = "POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: multipart/form-data; boundary=--xyz\r\n\r\n"
 		part1 = "----xyz\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\nhi there\r\n"
 		part2 = "----xyz\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"beach.png\"\r\n\r\n\x89PNG\r\n\x00\r\n"
 		tail  = "----xyz--\r\n"
 	)
-	parts, err := serveMultipart(t, head+part1+part2[:20], 128, part2[20:]+tail)
+	parts, err := serveMultipart(t, head+part1+part2[:20], 128, "", part2[20:]+tail)
 	if err != nil {
 		t.Fatal(err)
 	}
 	const want = "caption=hi there|photo(beach.png)=\x89PNG\r\n\x00"
-	if got := partsString(parts); got != want {
+	if got := partsString(t, parts); got != want {
 		t.Errorf("want %q, got %q", want, got)
 	}
 }
 
-// A part longer than the buffer must come out whole: each refill has to keep the
-// tail NextBody held back, or content that looks like the start of a delimiter
-// is dropped.
-func TestExchangeReadMultipartPartLargerThanBuffer(t *testing.T) {
+// A part longer than the buffer must come out whole: every compaction has to
+// keep the tail NextBody held back, or content that looks like the start of a
+// delimiter is dropped. The header's Name must survive those reads too.
+func TestExchangeReadMultipartsPartLargerThanBuffer(t *testing.T) {
 	// Content teases the parser with delimiter prefixes that never complete.
 	content := strings.Repeat("\r\n--xy", 16) + strings.Repeat("A", 100) + "\r\n--xyy"
 	body := "--xyz\r\nContent-Disposition: form-data; name=\"blob\"\r\n\r\n" + content + "\r\n--xyz--\r\n"
 	head := "POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: multipart/form-data; boundary=xyz\r\n\r\n"
-	parts, err := serveMultipart(t, head, 64, body[:30], body[30:])
+	parts, err := serveMultipart(t, head, 64, "", body[:30], body[30:])
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := "blob=" + content
-	if got := partsString(parts); got != want {
+	if got := partsString(t, parts); got != want {
+		t.Errorf("want %q, got %q", want, got)
+	}
+}
+
+// A nil sink discards a part's content without losing its place in the body:
+// the parts around it must still arrive whole.
+func TestExchangeReadMultipartsDiscardsPart(t *testing.T) {
+	const (
+		head  = "POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: multipart/form-data; boundary=xyz\r\n\r\n"
+		part1 = "--xyz\r\nContent-Disposition: form-data; name=\"keep\"\r\n\r\nkept\r\n"
+		part2 = "--xyz\r\nContent-Disposition: form-data; name=\"huge\"; filename=\"big.bin\"\r\n\r\n"
+		part3 = "--xyz\r\nContent-Disposition: form-data; name=\"also\"\r\n\r\nkept too\r\n"
+		tail  = "--xyz--\r\n"
+	)
+	discarded := strings.Repeat("Z", 200) + "\r\n"
+	parts, err := serveMultipart(t, head+part1+part2+discarded+part3+tail, 96, "huge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "keep=kept|huge(big.bin)=<nil>|also=kept too"
+	if got := partsString(t, parts); got != want {
 		t.Errorf("want %q, got %q", want, got)
 	}
 }
 
 // A part header that does not fit the buffer cannot be completed by reading
 // more, so the caller is told instead of spinning.
-func TestExchangeReadMultipartHeaderLargerThanBuffer(t *testing.T) {
+func TestExchangeReadMultipartsHeaderLargerThanBuffer(t *testing.T) {
 	head := "POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: multipart/form-data; boundary=xyz\r\n\r\n"
 	body := "--xyz\r\nContent-Disposition: form-data; name=\"" + strings.Repeat("n", 64) + "\"\r\n\r\nv\r\n--xyz--\r\n"
-	_, err := serveMultipart(t, head+body, 32)
-	if err != lneto.ErrBufferFull {
-		t.Errorf("want %v, got %v", lneto.ErrBufferFull, err)
+	parts, err := serveMultipart(t, head+body, 32, "")
+	if err != lneto.ErrShortBuffer {
+		t.Errorf("want %v, got %v", lneto.ErrShortBuffer, err)
+	}
+	if len(parts) != 0 {
+		t.Errorf("want no parts reported for a header that never parsed, got %d", len(parts))
+	}
+}
+
+// A buffer too small to ever outgrow a delimiter is a caller error, refused
+// before any of the body is read.
+func TestExchangeReadMultipartsBufferUnusable(t *testing.T) {
+	head := "POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: multipart/form-data; boundary=xyz\r\n\r\n"
+	body := "--xyz\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nv\r\n--xyz--\r\n"
+	if _, err := serveMultipart(t, head+body, len("\r\n--xyz"), ""); err != lneto.ErrInvalidConfig {
+		t.Errorf("want %v, got %v", lneto.ErrInvalidConfig, err)
 	}
 }
 
