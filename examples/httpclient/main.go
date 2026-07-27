@@ -50,7 +50,7 @@ func run() error {
 	}()
 	fmt.Println(time.Now().Format("15:04:05.000"), "writing...")
 	conn.Write(req)
-	hdr.Reset(nil)
+	hdr.Reset(nil, 0) // No preallocation. Both key/value and raw buffer will grow and allocate.
 	var needMore bool = true
 	for needMore {
 		_, err = hdr.ReadFromLimited(conn, 1024)

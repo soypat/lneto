@@ -10,14 +10,19 @@ import (
 	"time"
 
 	"github.com/soypat/lneto/http/httphi"
+	"github.com/soypat/lneto/internal/rawsock"
 )
 
 const (
-	kB            = 1 << 10
-	listenPort    = 8080
-	bufferSizes   = 2 * kB
-	numGoroutines = 4
-	readTimeout   = 2 * time.Second
+	kB          = 1 << 10
+	listenPort  = 8080
+	bufferSizes = 2 * kB
+	// A browser sends around twenty header fields; a request carrying more
+	// than this is answered 431 rather than parsed into memory it was not
+	// given. Each field costs 8 bytes of table.
+	numHeaderFields = 32
+	numGoroutines   = 4
+	readTimeout     = 2 * time.Second
 )
 
 func main() {
@@ -29,7 +34,7 @@ func main() {
 }
 
 func run() error {
-	ln, err := Listen(listenPort)
+	ln, err := rawsock.Listen(listenPort)
 	if err != nil {
 		return err
 	}
@@ -43,6 +48,7 @@ func run() error {
 	err = router.Configure(httphi.RouterConfig{
 		FixedNumGoroutines:          numGoroutines,
 		RequestHeaderBufferSize:     bufferSizes,
+		RequestNumHeaderKVCap:       numHeaderFields,
 		ResponseHeaderMinBufferSize: bufferSizes,
 		MaxAwaitingConns:            256,
 		Backoff: func(consecutiveBackoffs uint) (sleepOrFlag time.Duration) {
@@ -57,8 +63,8 @@ func run() error {
 	defer router.TeardownGoroutines()
 
 	for {
-		conn := new(Conn)
-		err := ln.Accept(conn)
+		conn := new(rawsock.Conn)
+		err := ln.AcceptConn(conn)
 		if err != nil {
 			return err
 		}

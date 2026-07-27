@@ -1,18 +1,57 @@
 //go:build !tinygo && linux
 
-package main
+// Package rawsock listens and reads over Linux sockets through syscalls
+// directly, without the net package. It exists so a server can be measured
+// without net.TCPConn, its netFD and its poller on the path.
+//
+// [Conn] and [Listener] implement [net.Conn] and [net.Listener] the way
+// TinyGo's net package does: a connection is its file descriptor plus its
+// addresses, deadlines live on the struct and are handed to the socket, and
+// nothing sits between a Read and the syscall. A server written against these
+// interfaces runs unchanged over the net package, over this package and over
+// TinyGo's netdev.
+package rawsock
 
 import (
+	"net"
 	"net/netip"
 	"syscall"
 	"time"
 )
 
-// Conn wraps an accepted TCP connection from a raw Linux socket file descriptor.
-// It implements io.Reader/io.Writer/io.Closer over syscall.Read/Write/Close.
+// The interfaces this package exists to satisfy: an http.Server and a heapless
+// router must both accept what Listen hands back.
+var (
+	_ net.Conn     = (*Conn)(nil)
+	_ net.Listener = (*Listener)(nil)
+)
+
+// Addr is a socket address. It implements [net.Addr] over a
+// [netip.AddrPort], which costs no allocation to carry around, unlike
+// [net.TCPAddr] and its IP slice.
+type Addr netip.AddrPort
+
+// Network returns "tcp".
+func (a Addr) Network() string { return "tcp" }
+
+// String returns the address in host:port form.
+func (a Addr) String() string { return netip.AddrPort(a).String() }
+
+// AddrPort returns the address as a [netip.AddrPort].
+func (a Addr) AddrPort() netip.AddrPort { return netip.AddrPort(a) }
+
+// Conn is an accepted TCP connection over a raw socket file descriptor. It
+// implements [net.Conn], so both an [net/http.Server] and a heapless router can
+// be handed the same connection.
+//
+// Deadlines are enforced by the socket itself through SO_RCVTIMEO and
+// SO_SNDTIMEO: a read that runs out of time fails with a [net.Error] that
+// reports Timeout, as callers of net.Conn expect.
 type Conn struct {
-	fd     int
-	remote netip.AddrPort
+	fd            int
+	local, remote Addr
+	readDeadline  time.Time
+	writeDeadline time.Time
 }
 
 // Read reads bytes from the connection into b.
@@ -22,7 +61,7 @@ func (c *Conn) Read(b []byte) (int, error) {
 	}
 	n, err := syscall.Read(c.fd, b)
 	if err != nil {
-		return 0, err
+		return 0, c.opError("read", err)
 	}
 	if n == 0 {
 		return 0, syscall.ECONNRESET // Peer closed.
@@ -36,7 +75,7 @@ func (c *Conn) Write(b []byte) (int, error) {
 	for total < len(b) {
 		n, err := syscall.Write(c.fd, b[total:])
 		if err != nil {
-			return total, err
+			return total, c.opError("write", err)
 		}
 		total += n
 	}
@@ -48,8 +87,37 @@ func (c *Conn) Close() error {
 	return syscall.Close(c.fd)
 }
 
+// LocalAddr returns the address the connection was accepted on.
+func (c *Conn) LocalAddr() net.Addr { return c.local }
+
+// RemoteAddr returns the peer address of the connection.
+func (c *Conn) RemoteAddr() net.Addr { return c.remote }
+
+// SetDeadline sets both the read and write deadline. A zero time removes them.
+func (c *Conn) SetDeadline(t time.Time) error {
+	err := c.SetReadDeadline(t)
+	if err != nil {
+		return err
+	}
+	return c.SetWriteDeadline(t)
+}
+
+// SetReadDeadline makes reads after t fail with a timeout error. A zero time
+// lets reads block indefinitely.
+func (c *Conn) SetReadDeadline(t time.Time) error {
+	c.readDeadline = t
+	return c.SetReadTimeout(untilDeadline(t))
+}
+
+// SetWriteDeadline makes writes after t fail with a timeout error. A zero time
+// lets writes block indefinitely.
+func (c *Conn) SetWriteDeadline(t time.Time) error {
+	c.writeDeadline = t
+	return c.SetWriteTimeout(untilDeadline(t))
+}
+
 // SetReadTimeout limits how long a single Read waits for data before failing
-// with [syscall.EAGAIN]. Zero blocks indefinitely. This is what stops a peer
+// with a timeout error. Zero blocks indefinitely. This is what stops a peer
 // that opens a connection and then stalls from holding a server worker: the
 // connection, not the HTTP handler, owns the idle policy.
 func (c *Conn) SetReadTimeout(timeout time.Duration) error {
@@ -57,9 +125,38 @@ func (c *Conn) SetReadTimeout(timeout time.Duration) error {
 }
 
 // SetWriteTimeout limits how long a single Write waits for the send buffer to
-// drain before failing with [syscall.EAGAIN]. Zero blocks indefinitely.
+// drain before failing with a timeout error. Zero blocks indefinitely.
 func (c *Conn) SetWriteTimeout(timeout time.Duration) error {
 	return setSockTimeout(c.fd, syscall.SO_SNDTIMEO, timeout)
+}
+
+// opError wraps a socket error the way the net package does, so that callers
+// which test for a timeout with [net.Error] see one. A deadline that has passed
+// surfaces from the kernel as EAGAIN, which on a blocking socket only ever
+// means the timeout fired.
+func (c *Conn) opError(op string, err error) error {
+	if err == syscall.EAGAIN || err == syscall.EWOULDBLOCK {
+		err = errTimeout{}
+	}
+	return &net.OpError{Op: op, Net: "tcp", Source: c.local, Addr: c.remote, Err: err}
+}
+
+// errTimeout is the error a read or write past its deadline fails with.
+type errTimeout struct{}
+
+func (errTimeout) Error() string   { return "i/o timeout" }
+func (errTimeout) Timeout() bool   { return true }
+func (errTimeout) Temporary() bool { return true }
+
+func untilDeadline(t time.Time) time.Duration {
+	if t.IsZero() {
+		return 0 // No deadline: block indefinitely.
+	}
+	remaining := time.Until(t)
+	if remaining <= 0 {
+		return time.Nanosecond // Already past: fail the next call, do not block.
+	}
+	return remaining
 }
 
 func setSockTimeout(fd, option int, timeout time.Duration) error {
@@ -67,15 +164,15 @@ func setSockTimeout(fd, option int, timeout time.Duration) error {
 	return syscall.SetsockoptTimeval(fd, syscall.SOL_SOCKET, option, &tv)
 }
 
-// RemoteAddr returns the peer address of the connection.
-func (c *Conn) RemoteAddr() netip.AddrPort { return c.remote }
-
-// Listener wraps a listening TCP socket bound to a local port.
+// Listener is a listening TCP socket bound to a local port. It implements
+// [net.Listener].
 type Listener struct {
-	fd int
+	fd    int
+	local Addr
 }
 
-// Listen creates a listening TCP socket bound to port on all interfaces.
+// Listen creates a listening TCP socket bound to port on all interfaces. A
+// zero port lets the kernel choose one, see [Listener.Addr].
 func Listen(port uint16) (*Listener, error) {
 	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
 	if err != nil {
@@ -95,22 +192,50 @@ func Listen(port uint16) (*Listener, error) {
 		syscall.Close(fd)
 		return nil, err
 	}
-	return &Listener{fd: fd}, nil
+	l := &Listener{fd: fd}
+	bound, err := syscall.Getsockname(fd)
+	if err != nil {
+		syscall.Close(fd)
+		return nil, err
+	}
+	if sa4, ok := bound.(*syscall.SockaddrInet4); ok {
+		l.local = Addr(netip.AddrPortFrom(netip.AddrFrom4(sa4.Addr), uint16(sa4.Port)))
+	}
+	return l, nil
 }
 
-// Accept blocks until an incoming connection arrives and returns it as a Conn.
-func (l *Listener) Accept(conn *Conn) error {
+// Accept blocks until an incoming connection arrives and returns it. It
+// allocates the connection, as [net.Listener] requires. A server that keeps its
+// own connection storage should call [Listener.AcceptConn] instead.
+func (l *Listener) Accept() (net.Conn, error) {
+	conn := new(Conn)
+	err := l.AcceptConn(conn)
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
+}
+
+// AcceptConn blocks until an incoming connection arrives and stores it in conn,
+// reusing whatever conn already held. Nothing is allocated.
+func (l *Listener) AcceptConn(conn *Conn) error {
 	nfd, sa, err := syscall.Accept(l.fd)
 	if err != nil {
 		return err
 	}
-
-	conn.fd = nfd
+	*conn = Conn{fd: nfd, local: l.local}
 	if sa4, ok := sa.(*syscall.SockaddrInet4); ok {
-		conn.remote = netip.AddrPortFrom(netip.AddrFrom4(sa4.Addr), uint16(sa4.Port))
+		conn.remote = Addr(netip.AddrPortFrom(netip.AddrFrom4(sa4.Addr), uint16(sa4.Port)))
 	}
 	return nil
 }
+
+// Addr returns the address the socket is bound to, which carries the port the
+// kernel picked when the listener was created with port zero.
+func (l *Listener) Addr() net.Addr { return l.local }
+
+// Port returns the port the socket is bound to.
+func (l *Listener) Port() uint16 { return l.local.AddrPort().Port() }
 
 // Close closes the listening socket.
 func (l *Listener) Close() error { return syscall.Close(l.fd) }
