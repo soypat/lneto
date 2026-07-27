@@ -130,10 +130,7 @@ func (m *Multipart) NextBody(data []byte) (bodyLen, restOff int, done bool) {
 		return idx, idx + len("\r\n"), true
 	}
 	// Longest prefix of "\r\n--"+boundary that could still be completed.
-	hold := len("\r\n--") + len(m.Boundary) - 1
-	if hold > len(data) {
-		hold = len(data)
-	}
+	hold := min(len("\r\n--")+len(m.Boundary)-1, len(data))
 	return len(data) - hold, len(data) - hold, false
 }
 
