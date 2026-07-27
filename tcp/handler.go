@@ -398,10 +398,13 @@ func (h *Handler) Send(b []byte) (int, error) {
 		return 0, net.ErrClosed
 	}
 	var now int64
+	var holdNew bool
 	buffered := h.bufTx.BufferedUnsent()
 	if h.lossEnabled() {
 		now = h.nanotime()
-		if h.loss.PreTx(h.txIntent(now, buffered)).RetransmitAll {
+		dir := h.loss.PreTx(h.txIntent(now, buffered))
+		holdNew = dir.HoldNew
+		if dir.RetransmitAll {
 			// Go-back-N retransmission directed by loss recovery: rewind the
 			// send sequence and transmit buffer so unacknowledged data is resent
 			// from snd.UNA. Done before the early short-circuit below so an
@@ -467,6 +470,12 @@ func (h *Handler) Send(b []byte) (int, error) {
 	} else {
 		var ok bool
 		maxPayload := len(b) - sizeHeaderTCP
+		if holdNew {
+			// Loss recovery is holding new data (e.g. congestion window full):
+			// emit only a pending control segment/ACK, no fresh payload. Already
+			// directed retransmissions ran above and are unaffected.
+			maxPayload = 0
+		}
 		segment, ok = h.scb.PendingSegment(maxPayload)
 		segment.WND = h.recvWindow()
 		if !ok {
