@@ -19,6 +19,31 @@ package tcp
 // Introspection (smoothed RTT, current window, ...) is deliberately left off the
 // interface; expose it on the concrete implementation the caller constructs and
 // hands to [ConnConfig].
+//
+// # Why a runtime interface and not a type parameter
+//
+// A compile-time alternative was considered, parameterizing the connection on
+// the policy (Endpoint[P LossRecovery]) with a zero-sized no-op default, on the
+// expectation that unused hooks would specialize away and leave the plain path
+// call-free. Measurement does not support that on this project's primary
+// toolchain:
+//
+//   - gc (and therefore TamaGo, a gc fork) compiles method calls on a type
+//     parameter into indirect calls through the instantiation dictionary. A
+//     zero-sized policy is not devirtualized or inlined, so the plain path pays
+//     the same dispatch as an interface. The nil check used here compiles to a
+//     branch and no call at all, which is strictly cheaper.
+//   - TinyGo (LLVM) does fully specialize and eliminate the no-op hooks, so the
+//     type parameter would win there, but only there.
+//
+// A type parameter would also be viral: [Conn] is threaded concretely through
+// the stack APIs, and a connection registry holding differently-parameterized
+// endpoints has to erase the type anyway, which reintroduces dispatch one level
+// up at demultiplexing.
+//
+// The cost of this seam is measured by BenchmarkHandlerDatapath versus
+// BenchmarkHandlerDatapathLossRecovery. Revisit the decision with those numbers
+// rather than by assertion.
 type LossRecovery interface {
 	// Reset returns the implementation to its initial, pre-connection state. It
 	// is invoked whenever the connection is (re)opened or aborted so a single
