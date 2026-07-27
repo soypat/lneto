@@ -208,6 +208,11 @@ func (c *CUBIC) PreTx(intent tcp.TxIntent) tcp.TxDirective {
 	return dir
 }
 
+// WriteOptions adds no TCP options. Congestion control needs none; a policy
+// composing timestamps or SACK would write them here. It implements
+// [tcp.LossRecovery].
+func (c *CUBIC) WriteOptions(plan tcp.TxPlan, opts []byte) uint8 { return 0 }
+
 // PostTx forwards the emitted segment to the retransmission timer. It
 // implements [tcp.LossRecovery].
 func (c *CUBIC) PostTx(outgoing tcp.Segment, now int64) { c.rto.PostTx(outgoing, now) }

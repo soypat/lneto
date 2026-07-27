@@ -443,18 +443,67 @@ func (h *Handler) Send(b []byte) (int, error) {
 			return 0, io.EOF
 		}
 	}
-	offset := uint8(5)
+	state := h.scb.State()
+	isSyn := awaitingSyn || requeueControl && state == StateSynSent
+	isSynAck := state == StateSynRcvd
+	if requeueControl && !isSyn && !isSynAck {
+		// Nothing to requeue in this state. Checked before options are written
+		// so no policy is asked to describe a segment that is never built.
+		h.requeueControl = false
+		return 0, nil
+	}
+	// Determine the option layout before the payload is sized: the option
+	// length is what is left over for data. The core reserves the leading
+	// option area for the MSS option it writes itself on SYN and SYN-ACK.
+	kind := TxKindSegment
+	coreOptLen := 0
+	if isSyn {
+		kind, coreOptLen = TxKindSYN, sizeOptionMSS
+	} else if isSynAck {
+		kind, coreOptLen = TxKindSYNACK, sizeOptionMSS
+	}
+	// Without a policy the core's own options are the entire option area and are
+	// already four-octet aligned, so the layout needs no further work. Only an
+	// installed policy can give the option area an arbitrary length.
+	paddedOptLen := coreOptLen
+	if h.lossEnabled() {
+		optLen := coreOptLen
+		optEnd := min(sizeHeaderTCP+maxTCPOptionBytes, len(b))
+		optStart := sizeHeaderTCP + coreOptLen
+		if optStart < optEnd {
+			n := h.loss.WriteOptions(TxPlan{Now: now, State: state, Kind: kind}, b[optStart:optEnd])
+			if int(n) > optEnd-optStart {
+				// The policy overran the buffer it was lent. Refuse to build a
+				// segment from a header of unknown layout.
+				return 0, errOptionOverflow
+			}
+			optLen += int(n)
+		}
+		// Pad the option area to a four-octet boundary with End Of Option List.
+		paddedOptLen = (optLen + 3) &^ 3
+		for i := sizeHeaderTCP + optLen; i < sizeHeaderTCP+paddedOptLen; i++ {
+			b[i] = 0
+		}
+		if sizeHeaderTCP+paddedOptLen > len(b) {
+			return 0, lneto.ErrShortBuffer
+		}
+	}
+	payloadAt := sizeHeaderTCP + paddedOptLen
+	offset := uint8(5 + paddedOptLen/4)
+	// The advertised MSS states how much payload this side can receive, derived
+	// from the buffer and the fixed headers. It is deliberately not reduced by
+	// the options carried in this particular segment, which say nothing about
+	// the capacity of the receive path.
 	mss := uint16(len(b) - sizeHeaderTCP)
 	var segment Segment
-	if awaitingSyn || requeueControl && h.scb.State() == StateSynSent {
+	if isSyn {
 		// Handling init syn segment.
 		segment = ClientSynSegment(h.bufTx.iss, Size(h.bufRx.Size()))
 		h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
-		offset++
 		if requeueControl {
 			h.info("tcp.Handler:requeue-syn", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("rport", uint64(h.remotePort)))
 		}
-	} else if requeueControl && h.scb.State() == StateSynRcvd {
+	} else if requeueControl && isSynAck {
 		segment = Segment{
 			SEQ:   h.scb.snd.UNA,
 			ACK:   h.scb.rcv.NXT,
@@ -462,14 +511,10 @@ func (h *Handler) Send(b []byte) (int, error) {
 			Flags: synack,
 		}
 		h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
-		offset++
 		h.info("tcp.Handler:requeue-synack", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("rport", uint64(h.remotePort)))
-	} else if requeueControl {
-		h.requeueControl = false
-		return 0, nil
 	} else {
 		var ok bool
-		maxPayload := len(b) - sizeHeaderTCP
+		maxPayload := len(b) - payloadAt
 		if holdNew {
 			// Loss recovery is holding new data (e.g. congestion window full):
 			// emit only a pending control segment/ACK, no fresh payload. Already
@@ -483,9 +528,16 @@ func (h *Handler) Send(b []byte) (int, error) {
 			return 0, nil
 		} else if segment.Flags == synack {
 			h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
-			offset++
 		} else if segment.DATALEN > 0 {
-			n, err := h.bufTx.MakePacket(b[sizeHeaderTCP:sizeHeaderTCP+segment.DATALEN], segment.SEQ)
+			if coreOptLen > 0 {
+				// Space was reserved for an MSS option that this segment does
+				// not carry. Fill it with No-Operation so the header stays a
+				// valid option stream.
+				for i := sizeHeaderTCP; i < sizeHeaderTCP+coreOptLen; i++ {
+					b[i] = byte(OptNop)
+				}
+			}
+			n, err := h.bufTx.MakePacket(b[payloadAt:payloadAt+int(segment.DATALEN)], segment.SEQ)
 			if err != nil {
 				return 0, err
 			}

@@ -20,6 +20,13 @@ type recordingLoss struct {
 	// Directives handed back to the Handler.
 	keep bool        // PreRx result. Default true (see newRecordingLoss).
 	tx   TxDirective // PreTx result.
+
+	// Option injection. plans records every WriteOptions call; writeOpts is
+	// copied into the option area offered, and overrun makes the fake claim it
+	// wrote more than it did so the Handler's validation can be exercised.
+	plans     []TxPlan
+	writeOpts []byte
+	overrun   bool
 }
 
 type hookCall struct {
@@ -42,6 +49,14 @@ func (l *recordingLoss) PreRx(incoming Segment, now int64) RxDirective {
 func (l *recordingLoss) PreTx(intent TxIntent) TxDirective {
 	l.preTx = append(l.preTx, intent)
 	return l.tx
+}
+
+func (l *recordingLoss) WriteOptions(plan TxPlan, opts []byte) uint8 {
+	l.plans = append(l.plans, plan)
+	if l.overrun {
+		return uint8(len(opts) + 1)
+	}
+	return uint8(copy(opts, l.writeOpts))
 }
 
 func (l *recordingLoss) PostTx(outgoing Segment, now int64) {

@@ -21,6 +21,7 @@ var (
 	errInvalidState              = errors.New("invalid state")
 	errConnNotExist              = errors.New("connection does not exist")
 	errConnectionClosing         = errors.New("connection closing")
+	errOptionOverflow            = errors.New("loss recovery wrote more TCP options than the space offered")
 	errExpectedSYN               = errors.New("seqs:expected SYN")
 	errBadSegack                 = errors.New("seqs:bad segack")
 	errFinwaitExpectedACK        = errors.New("seqs:finwait1 expected ACK")

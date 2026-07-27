@@ -45,6 +45,8 @@ func (p *windowPolicy) PreTx(intent tcp.TxIntent) tcp.TxDirective {
 
 func (p *windowPolicy) PostTx(outgoing tcp.Segment, now int64) { p.postTx++ }
 
+func (p *windowPolicy) WriteOptions(tcp.TxPlan, []byte) uint8 { return 0 }
+
 // TestLossRecovery_ExternallyImplementable drives a connection with a policy
 // defined outside package tcp, proving the hooks carry enough exported state to
 // implement window-based congestion control there.

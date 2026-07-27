@@ -73,6 +73,18 @@ type LossRecovery interface {
 	// not yet known here. Observe those in [LossRecovery.PostTx].
 	PreTx(intent TxIntent) TxDirective
 
+	// WriteOptions is called once the kind of the outgoing segment is known but
+	// before its payload is sized, so that the option length can be subtracted
+	// from the space left for data. The policy appends TCP options to opts and
+	// returns how many octets it wrote; returning 0 adds no options.
+	//
+	// opts is a borrowed view of the remaining option area of the segment being
+	// built, already positioned after any option the core writes itself. It must
+	// not be retained beyond the call and must not be written past its length.
+	// The core validates the resulting option stream, pads the header to a
+	// four-octet boundary and sets the data offset.
+	WriteOptions(plan TxPlan, opts []byte) uint8
+
 	// PostTx is called on leaving the transmit path with the segment that was
 	// actually emitted and the monotonic time it was sent. This is where segment
 	// timing (for RTT sampling and the retransmission timer) is recorded.
@@ -116,6 +128,35 @@ type TxIntent struct {
 	// have not been sent yet. Zero means holding back new data has no effect
 	// because there is none to send.
 	BufferedUnsent Size
+}
+
+// TxKind classifies the segment the transmit path is about to build. It is
+// what a policy needs to decide which TCP options apply without owning the
+// handshake state machine.
+type TxKind uint8
+
+const (
+	// TxKindSegment is an ordinary post-handshake segment: data, a pure ACK, or
+	// a segment carrying FIN or RST.
+	TxKindSegment TxKind = iota
+	// TxKindSYN is a connection-initiating SYN. Options offered here are the
+	// ones being negotiated.
+	TxKindSYN
+	// TxKindSYNACK is a SYN-ACK responding to a peer's SYN. Options here answer
+	// what the peer offered.
+	TxKindSYNACK
+)
+
+// TxPlan describes the segment about to be built when [LossRecovery.WriteOptions]
+// is called. It is passed by value and must not be retained.
+type TxPlan struct {
+	// Now is the current monotonic time in nanoseconds, the same instant
+	// reported to [LossRecovery.PreTx] for this transmit.
+	Now int64
+	// State is the connection state.
+	State State
+	// Kind classifies the segment, which determines the applicable options.
+	Kind TxKind
 }
 
 // TxDirective is returned by [LossRecovery.PreTx] to steer the transmit path.

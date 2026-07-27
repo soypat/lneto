@@ -135,6 +135,10 @@ func (r *RTO) PreRx(incoming Segment, now int64) RxDirective {
 	return RxDirective{Keep: true}
 }
 
+// WriteOptions adds no TCP options: retransmission timing needs none of its
+// own. It implements [LossRecovery].
+func (r *RTO) WriteOptions(plan TxPlan, opts []byte) uint8 { return 0 }
+
 // PreTx reports whether the retransmission timer has expired and, if so, applies
 // the RFC 6298 §5.4–§5.6 timeout response — discard the outstanding RTT sample
 // (Karn), back the RTO off exponentially and restart the timer — returning a
