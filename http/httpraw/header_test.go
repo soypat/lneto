@@ -609,15 +609,16 @@ func TestHeader_SetIntNoAlloc(t *testing.T) {
 // exceeds.
 func TestHeader_FieldTableSizedFromBuffer(t *testing.T) {
 	const wantVal = "the-canary-value"
-	raw := "GET / HTTP/1.1\r\nHost: lneto.test\r\n"
-	for i := 0; i < 40; i++ {
-		raw += "X-Field-" + strconv.Itoa(i) + ": value-of-a-realistic-length-here\r\n"
+	var raw strings.Builder
+	raw.WriteString("GET / HTTP/1.1\r\nHost: lneto.test\r\n")
+	for i := range 40 {
+		raw.WriteString("X-Field-" + strconv.Itoa(i) + ": value-of-a-realistic-length-here\r\n")
 	}
-	raw += "X-Canary: " + wantVal + "\r\n\r\n"
+	raw.WriteString("X-Canary: " + wantVal + "\r\n\r\n")
 
 	var h Header
 	h.Reset(make([]byte, 0, 8192), numHeaderCapacity) // Room for the block with plenty to spare.
-	err := h.ParseBytes(false, []byte(raw))
+	err := h.ParseBytes(false, []byte(raw.String()))
 	if err != nil {
 		t.Fatalf("parsing a 42 field request into an 8kB buffer: %s", err)
 	}
@@ -629,15 +630,16 @@ func TestHeader_FieldTableSizedFromBuffer(t *testing.T) {
 // A buffer too small for the fields it is handed must be refused with an error
 // the caller can act on, so a server answers 431 instead of dropping the peer.
 func TestHeader_FieldTableFullIsReported(t *testing.T) {
-	raw := "GET / HTTP/1.1\r\n"
-	for i := 0; i < 64; i++ {
-		raw += "H" + strconv.Itoa(i) + ":v\r\n" // As short as a field gets.
+	var raw strings.Builder
+	raw.WriteString("GET / HTTP/1.1\r\n")
+	for i := range 64 {
+		raw.WriteString("H" + strconv.Itoa(i) + ":v\r\n") // As short as a field gets.
 	}
-	raw += "\r\n"
+	raw.WriteString("\r\n")
 	var h Header
 	h.Reset(make([]byte, 0, 512), numHeaderCapacity)
 	h.ConfigBufferGrowth(false)
-	err := h.ParseBytes(false, []byte(raw))
+	err := h.ParseBytes(false, []byte(raw.String()))
 	if !errors.Is(err, ErrHeaderTooMany) {
 		t.Fatalf("want ErrHeaderFieldsTooLarge, got %v", err)
 	}

@@ -1012,11 +1012,12 @@ func TestHandleBrowserSizedRequest(t *testing.T) {
 // connection go away. Either bound may be the one it ran into, and both are
 // reported to the caller.
 func TestHandleRequestTooLargeAnswers431(t *testing.T) {
-	request := "GET /echo HTTP/1.1\r\nHost: lneto.test\r\n"
-	for i := 0; i < 512; i++ {
-		request += "H" + strconv.Itoa(i) + ":v\r\n"
+	var request strings.Builder
+	request.WriteString("GET /echo HTTP/1.1\r\nHost: lneto.test\r\n")
+	for i := range 512 {
+		request.WriteString("H" + strconv.Itoa(i) + ":v\r\n")
 	}
-	request += "\r\n"
+	request.WriteString("\r\n")
 
 	for _, test := range []struct {
 		name    string
@@ -1046,7 +1047,7 @@ func TestHandleRequestTooLargeAnswers431(t *testing.T) {
 			var sm MuxSlice
 			sm.Reset(1)
 			sm.Handle("GET /echo", func(exch *Exchange) { served = true })
-			conn := newConn(request)
+			conn := newConn(request.String())
 			conn.Hangup()
 			exch := newExchange(t, conn, test.cfg)
 			err := Handle(exch, &sm, nopBackoff)
@@ -1065,8 +1066,8 @@ func TestHandleRequestTooLargeAnswers431(t *testing.T) {
 }
 
 func firstLine(s string) string {
-	if i := strings.Index(s, "\r\n"); i >= 0 {
-		return s[:i]
+	if before, _, ok := strings.Cut(s, "\r\n"); ok {
+		return before
 	}
 	return s
 }
