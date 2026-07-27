@@ -129,3 +129,37 @@ func BenchmarkHandlerDatapath(b *testing.B) {
 		benchExchange(b, client, server, data, packetBuf, readBuf)
 	}
 }
+
+// nopLoss is a LossRecovery that does nothing. It measures the cost of the
+// hook dispatch itself, with no policy work attributed to it.
+type nopLoss struct{}
+
+func (nopLoss) Reset()                           {}
+func (nopLoss) NextDeadline() int64              { return 0 }
+func (nopLoss) PreRx(Segment, int64) RxDirective { return RxDirective{Keep: true} }
+func (nopLoss) PreTx(int64) TxDirective          { return TxDirective{} }
+func (nopLoss) PostTx(Segment, int64)            {}
+
+// BenchmarkHandlerDatapathLossRecovery measures the same exchange as
+// BenchmarkHandlerDatapath with a do-nothing LossRecovery installed. The delta
+// between the two is the per-exchange cost of the optional policy seam:
+// interface dispatch plus the clock reads the hooks require.
+func BenchmarkHandlerDatapathLossRecovery(b *testing.B) {
+	client, server, packetBuf := benchEstablished(b)
+	var now int64
+	nanotime := func() int64 { now += 1000; return now }
+	client.SetLossRecovery(nopLoss{}, nanotime)
+	server.SetLossRecovery(nopLoss{}, nanotime)
+
+	data := make([]byte, benchPayload)
+	readBuf := make([]byte, benchPayload)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	b.SetBytes(benchPayload)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		benchExchange(b, client, server, data, packetBuf, readBuf)
+	}
+}
