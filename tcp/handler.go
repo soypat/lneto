@@ -91,6 +91,23 @@ func (h *Handler) SetLossRecovery(loss LossRecovery, nanotime func() int64) {
 
 func (h *Handler) lossEnabled() bool { return h.loss != nil }
 
+// txIntent snapshots the send state handed to [LossRecovery.PreTx]. It is only
+// called when loss recovery is installed. buffered is passed in because the
+// transmit path already has it.
+func (h *Handler) txIntent(now int64, buffered int) TxIntent {
+	snd := &h.scb.snd
+	return TxIntent{
+		Now:            now,
+		State:          h.scb.State(),
+		UNA:            snd.UNA,
+		NXT:            snd.NXT,
+		InFlight:       snd.inFlight(),
+		SendWindow:     snd.WND,
+		MSS:            snd.MSS,
+		BufferedUnsent: Size(buffered),
+	}
+}
+
 // NextDeadline returns the monotonic-nanosecond instant at which the connection
 // must next be serviced by a transmit attempt (e.g. an RTO expiry), or 0 when
 // there is no deadline or no loss recovery is configured. See [LossRecovery].
@@ -381,20 +398,22 @@ func (h *Handler) Send(b []byte) (int, error) {
 		return 0, net.ErrClosed
 	}
 	var now int64
+	buffered := h.bufTx.BufferedUnsent()
 	if h.lossEnabled() {
 		now = h.nanotime()
-		if h.loss.PreTx(now).RetransmitAll {
+		if h.loss.PreTx(h.txIntent(now, buffered)).RetransmitAll {
 			// Go-back-N retransmission directed by loss recovery: rewind the
 			// send sequence and transmit buffer so unacknowledged data is resent
 			// from snd.UNA. Done before the early short-circuit below so an
 			// expired RTO retransmits even with no new data queued.
 			h.scb.RetransmitAll()
 			h.bufTx.RetransmitFromUNA()
+			// The rewind turns already-sent data back into unsent data.
+			buffered = h.bufTx.BufferedUnsent()
 		}
 	}
 	awaitingSyn := h.AwaitingSynSend()
 	requeueControl := h.requeueControl
-	buffered := h.bufTx.BufferedUnsent()
 	if h.scb.State() == StateCloseWait && !h.closing && buffered == 0 && !h.scb.HasPending() {
 		// Remote closed with no application data left to send: initiate our own close.
 		// Checked here (not in Recv) so the application can still write in CLOSE-WAIT

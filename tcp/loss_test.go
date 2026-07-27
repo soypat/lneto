@@ -13,7 +13,7 @@ import (
 type recordingLoss struct {
 	resets   int
 	preRx    []hookCall
-	preTx    []int64
+	preTx    []TxIntent
 	postTx   []hookCall
 	deadline int64 // value NextDeadline reports back.
 
@@ -39,8 +39,8 @@ func (l *recordingLoss) PreRx(incoming Segment, now int64) RxDirective {
 	return RxDirective{Keep: l.keep}
 }
 
-func (l *recordingLoss) PreTx(now int64) TxDirective {
-	l.preTx = append(l.preTx, now)
+func (l *recordingLoss) PreTx(intent TxIntent) TxDirective {
+	l.preTx = append(l.preTx, intent)
 	return l.tx
 }
 
@@ -106,9 +106,9 @@ func TestLossRecovery_HooksInvoked(t *testing.T) {
 			t.Fatalf("PostTx[%d].now = %d, want clock %d", i, c.now, clockNow)
 		}
 	}
-	for i, now := range loss.preTx {
-		if now != clockNow {
-			t.Fatalf("PreTx[%d].now = %d, want clock %d", i, now, clockNow)
+	for i, intent := range loss.preTx {
+		if intent.Now != clockNow {
+			t.Fatalf("PreTx[%d].Now = %d, want clock %d", i, intent.Now, clockNow)
 		}
 	}
 	for i, c := range loss.preRx {
@@ -228,6 +228,75 @@ func TestLossRecovery_PreTxRetransmitAll(t *testing.T) {
 	}
 	if rtSeg.DATALEN != firstSeg.DATALEN {
 		t.Fatalf("retransmit DATALEN=%d, want %d", rtSeg.DATALEN, firstSeg.DATALEN)
+	}
+}
+
+// TestLossRecovery_PreTxIntent verifies the send-state snapshot handed to PreTx
+// tracks the connection: queued-but-unsent data appears as BufferedUnsent
+// before transmission and as InFlight once sent and still unacknowledged. These
+// are the quantities congestion control needs to gate new data.
+func TestLossRecovery_PreTxIntent(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	rng := rand.New(rand.NewSource(7))
+	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
+
+	loss := newRecordingLoss()
+	client.SetLossRecovery(loss, func() int64 { return 1 })
+	setupClientServer(t, rng, client, server)
+	var buf [mtu]byte
+	establish(t, client, server, buf[:])
+
+	data := []byte("payload")
+	if _, err := client.Write(data); err != nil {
+		t.Fatal("client write:", err)
+	}
+	loss.preTx = loss.preTx[:0]
+	clear(buf[:])
+	n, err := client.Send(buf[:])
+	if err != nil {
+		t.Fatal("client send data:", err)
+	} else if n <= sizeHeaderTCP {
+		t.Fatal("expected data segment")
+	}
+	if len(loss.preTx) != 1 {
+		t.Fatalf("PreTx calls=%d, want 1", len(loss.preTx))
+	}
+	intent := loss.preTx[0]
+	if intent.State != StateEstablished {
+		t.Errorf("State=%s, want Established", intent.State)
+	}
+	if intent.BufferedUnsent != Size(len(data)) {
+		t.Errorf("BufferedUnsent=%d, want %d", intent.BufferedUnsent, len(data))
+	}
+	if intent.InFlight != 0 {
+		t.Errorf("InFlight=%d before transmission, want 0", intent.InFlight)
+	}
+	if intent.UNA != intent.NXT {
+		t.Errorf("UNA=%d NXT=%d, want equal with nothing in flight", intent.UNA, intent.NXT)
+	}
+
+	// The segment is now sent but unacknowledged: it must show up as in flight
+	// and no longer as buffered.
+	loss.preTx = loss.preTx[:0]
+	clear(buf[:])
+	if _, err = client.Send(buf[:]); err != nil {
+		t.Fatal("client send again:", err)
+	}
+	if len(loss.preTx) != 1 {
+		t.Fatalf("PreTx calls=%d on second send, want 1", len(loss.preTx))
+	}
+	intent = loss.preTx[0]
+	if intent.InFlight != Size(len(data)) {
+		t.Errorf("InFlight=%d, want %d", intent.InFlight, len(data))
+	}
+	if intent.BufferedUnsent != 0 {
+		t.Errorf("BufferedUnsent=%d after transmission, want 0", intent.BufferedUnsent)
+	}
+	if Sizeof(intent.UNA, intent.NXT) != intent.InFlight {
+		t.Errorf("UNA=%d NXT=%d inconsistent with InFlight=%d", intent.UNA, intent.NXT, intent.InFlight)
+	}
+	if intent.SendWindow == 0 {
+		t.Error("SendWindow=0, want the window advertised by the peer")
 	}
 }
 

@@ -23,6 +23,10 @@ func newRTO() *RTO {
 	return &r
 }
 
+// txAt builds the minimal TxIntent for driving RTO.PreTx directly: the RTO
+// tracks the send sequence itself via PostTx and only reads the clock.
+func txAt(now int64) TxIntent { return TxIntent{Now: now} }
+
 func TestRTO_Reset(t *testing.T) {
 	var r RTO
 	r.Reset()
@@ -74,10 +78,10 @@ func TestRTO_RetransmitOnTimeout(t *testing.T) {
 	const iss = uint32(1000)
 	r.PostTx(rtoDataSeg(iss, 100), 0)
 
-	if r.PreTx(int64(rtoInitial) - 1).RetransmitAll {
+	if r.PreTx(txAt(int64(rtoInitial) - 1)).RetransmitAll {
 		t.Fatal("must not retransmit before the deadline")
 	}
-	dir := r.PreTx(int64(rtoInitial))
+	dir := r.PreTx(txAt(int64(rtoInitial)))
 	if !dir.RetransmitAll {
 		t.Fatal("RTO must fire at the deadline with data outstanding")
 	}
@@ -98,7 +102,7 @@ func TestRTO_KarnNoSampleOnRetransmittedAck(t *testing.T) {
 	const iss = uint32(1000)
 	r.PostTx(rtoDataSeg(iss, 100), 0)
 	// Timeout and retransmit.
-	r.PreTx(int64(rtoInitial))
+	r.PreTx(txAt(int64(rtoInitial)))
 	r.PostTx(rtoDataSeg(iss, 100), int64(rtoInitial))
 	// ACK now arrives; no sample should be taken since timing was discarded.
 	r.PreRx(rtoAckSeg(iss+100), int64(rtoInitial)+10*rtoMs)
@@ -143,7 +147,7 @@ func TestRTO_BackoffCollapsesOnValidSample(t *testing.T) {
 	r := newRTO()
 	const iss = uint32(1000)
 	r.PostTx(rtoDataSeg(iss, 100), 0)
-	r.PreTx(int64(rtoInitial))                        // one timeout: backoff=1.
+	r.PreTx(txAt(int64(rtoInitial)))                  // one timeout: backoff=1.
 	r.PostTx(rtoDataSeg(iss, 100), int64(rtoInitial)) // retransmit (no sample).
 	if r.backoff != 1 {
 		t.Fatalf("backoff=%d, want 1 after a timeout", r.backoff)

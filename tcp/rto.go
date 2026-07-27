@@ -140,7 +140,8 @@ func (r *RTO) PreRx(incoming Segment, now int64) RxDirective {
 // (Karn), back the RTO off exponentially and restart the timer — returning a
 // directive that asks the connection to retransmit from snd.UNA (go-back-N). It
 // implements [LossRecovery].
-func (r *RTO) PreTx(now int64) TxDirective {
+func (r *RTO) PreTx(intent TxIntent) TxDirective {
+	now := intent.Now
 	if !r.running || now < r.deadline || r.sndUNA == r.sndNXT {
 		return TxDirective{}
 	}

@@ -64,15 +64,58 @@ type LossRecovery interface {
 	PreRx(incoming Segment, now int64) RxDirective
 
 	// PreTx is called on entering the transmit path (Encapsulate), before a
-	// segment is built, with the current monotonic time. Its directive tells the
-	// connection whether to retransmit unacknowledged data, rewind the send
+	// segment is built, with a snapshot of the send state. Its directive tells
+	// the connection whether to retransmit unacknowledged data, rewind the send
 	// pointer, or hold back new data.
-	PreTx(now int64) TxDirective
+	//
+	// It runs before the segment is planned because its directives change what
+	// gets planned; consequently the outgoing segment's flags and payload are
+	// not yet known here. Observe those in [LossRecovery.PostTx].
+	PreTx(intent TxIntent) TxDirective
 
 	// PostTx is called on leaving the transmit path with the segment that was
 	// actually emitted and the monotonic time it was sent. This is where segment
 	// timing (for RTT sampling and the retransmission timer) is recorded.
 	PostTx(outgoing Segment, now int64)
+}
+
+// TxIntent is the snapshot of send state handed to [LossRecovery.PreTx] before
+// a segment is planned. It is passed by value and must not be retained.
+//
+// It carries what a loss-recovery or congestion-control algorithm needs to
+// decide whether to retransmit and whether new data may be sent, without
+// exposing the control block or the transmit buffer. Notably it never carries
+// payload bytes: outgoing data may eventually live in application memory
+// referenced by the retransmission queue rather than in a contiguous internal
+// buffer (the zero-copy transmit direction sketched in discussion #87), so
+// policy addresses data by sequence number only.
+type TxIntent struct {
+	// Now is the current monotonic time in nanoseconds, as read from the
+	// connection's clock. It is the only time source a hook may rely on.
+	Now int64
+	// State is the connection state on entering the transmit path.
+	State State
+	// UNA is the oldest unacknowledged sequence number (snd.UNA), the point a
+	// go-back-N retransmission rewinds to.
+	UNA Value
+	// NXT is the next sequence number to be sent (snd.NXT).
+	NXT Value
+	// InFlight is the number of octets sent but not yet acknowledged,
+	// equivalently the distance from UNA to NXT. Congestion control compares it
+	// against its window to decide whether new data may go out.
+	InFlight Size
+	// SendWindow is the receive window most recently advertised by the remote
+	// peer (snd.WND), already unscaled. The effective limit on new data is the
+	// lesser of this and any window the policy imposes itself.
+	SendWindow Size
+	// MSS is the maximum segment size advertised by the remote peer, or 0 if it
+	// sent none. Congestion-control windows are conventionally maintained in
+	// multiples of it.
+	MSS Size
+	// BufferedUnsent is the number of octets the application has queued that
+	// have not been sent yet. Zero means holding back new data has no effect
+	// because there is none to send.
+	BufferedUnsent Size
 }
 
 // TxDirective is returned by [LossRecovery.PreTx] to steer the transmit path.
