@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/soypat/lneto/http/httphi"
-	"github.com/soypat/lneto/internal/rawsock"
+	"github.com/soypat/lneto/x/rawsock"
 )
 
 const (
@@ -34,7 +34,8 @@ func main() {
 }
 
 func run() error {
-	ln, err := rawsock.Listen(listenPort)
+	var ln rawsock.Listener
+	err := ln.Listen(listenPort)
 	if err != nil {
 		return err
 	}

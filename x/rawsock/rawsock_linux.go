@@ -17,6 +17,7 @@ import (
 	"net/netip"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 // The interfaces this package exists to satisfy: an http.Server and a heapless
@@ -173,35 +174,36 @@ type Listener struct {
 
 // Listen creates a listening TCP socket bound to port on all interfaces. A
 // zero port lets the kernel choose one, see [Listener.Addr].
-func Listen(port uint16) (*Listener, error) {
+func (l *Listener) Listen(port uint16) error {
 	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	// Allow quick rebind after restart.
 	if err = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
 		syscall.Close(fd)
-		return nil, err
+		return err
 	}
 	addr := &syscall.SockaddrInet4{Port: int(port)}
 	if err = syscall.Bind(fd, addr); err != nil {
 		syscall.Close(fd)
-		return nil, err
+		return err
 	}
 	if err = syscall.Listen(fd, syscall.SOMAXCONN); err != nil {
 		syscall.Close(fd)
-		return nil, err
+		return err
 	}
-	l := &Listener{fd: fd}
+	l.fd = fd
+	l.local = Addr{}
 	bound, err := syscall.Getsockname(fd)
 	if err != nil {
 		syscall.Close(fd)
-		return nil, err
+		return err
 	}
 	if sa4, ok := bound.(*syscall.SockaddrInet4); ok {
 		l.local = Addr(netip.AddrPortFrom(netip.AddrFrom4(sa4.Addr), uint16(sa4.Port)))
 	}
-	return l, nil
+	return nil
 }
 
 // Accept blocks until an incoming connection arrives and returns it. It
@@ -218,14 +220,25 @@ func (l *Listener) Accept() (net.Conn, error) {
 
 // AcceptConn blocks until an incoming connection arrives and stores it in conn,
 // reusing whatever conn already held. Nothing is allocated.
+//
+// The syscall is made by hand because [syscall.Accept] allocates the
+// [syscall.Sockaddr] it returns, one per accepted connection: the kernel is
+// given address storage this call owns instead, and the address is read out of
+// it into conn.
 func (l *Listener) AcceptConn(conn *Conn) error {
-	nfd, sa, err := syscall.Accept(l.fd)
-	if err != nil {
-		return err
+	var rsa syscall.RawSockaddrAny
+	salen := uint32(unsafe.Sizeof(rsa))
+	nfd, _, errno := syscall.Syscall6(syscall.SYS_ACCEPT4, uintptr(l.fd),
+		uintptr(unsafe.Pointer(&rsa)), uintptr(unsafe.Pointer(&salen)), 0, 0, 0)
+	if errno != 0 {
+		return errno
 	}
-	*conn = Conn{fd: nfd, local: l.local}
-	if sa4, ok := sa.(*syscall.SockaddrInet4); ok {
-		conn.remote = Addr(netip.AddrPortFrom(netip.AddrFrom4(sa4.Addr), uint16(sa4.Port)))
+	*conn = Conn{fd: int(nfd), local: l.local}
+	if rsa.Addr.Family == syscall.AF_INET {
+		sa4 := (*syscall.RawSockaddrInet4)(unsafe.Pointer(&rsa))
+		// Port is in network byte order in the sockaddr the kernel filled.
+		port := uint16(sa4.Port<<8) | uint16(sa4.Port>>8)
+		conn.remote = Addr(netip.AddrPortFrom(netip.AddrFrom4(sa4.Addr), port))
 	}
 	return nil
 }
