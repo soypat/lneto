@@ -790,7 +790,7 @@ func serveMultipart(t *testing.T, request string, bufSize int, skip string, segm
 			}
 			return new(partBuffer)
 		}
-		parts, gotErr = exch.ReadMultiparts(parts, make([]byte, bufSize), newSink, nopBackoff)
+		parts, gotErr = exch.ReadMultiparts(parts, make([]byte, bufSize), newSink)
 	})
 	exch := newExchange(t, conn, 1024, false)
 	if err := Handle(exch, &sm, nopBackoff); err != nil {

@@ -480,9 +480,8 @@ type MultipartSink struct {
 //
 // A part header that does not fit buf is refused with [lneto.ErrShortBuffer],
 // since reading more can never complete it, leaving the caller free to answer
-// 413. backoff paces reads that return no data, as in [Handle]. The body is
-// consumed, so call this before [Exchange.ReadBody].
-func (exch *Exchange) ReadMultiparts(dst []MultipartSink, buf []byte, newSink func(hdr *httpraw.MultipartHeader) io.WriteCloser, backoff lneto.BackoffStrategy) (_ []MultipartSink, _ error) {
+// 413. The body is consumed, so call this before [Exchange.ReadBody].
+func (exch *Exchange) ReadMultiparts(dst []MultipartSink, buf []byte, newSink func(hdr *httpraw.MultipartHeader) io.WriteCloser) (_ []MultipartSink, _ error) {
 	mp, err := exch.RequestMultipart()
 	if err != nil {
 		return dst, err
@@ -510,10 +509,15 @@ func (exch *Exchange) ReadMultiparts(dst []MultipartSink, buf []byte, newSink fu
 				dst = dst[:len(dst)-1]
 				return dst, lneto.ErrShortBuffer // Header longer than buf.
 			}
-			buflen, err = exch.readBodyMore(buf, buflen, backoff)
-			if err != nil {
+			// A read that both delivers and fails, as the last of the body
+			// followed by a hangup does, may still hold what the parser is
+			// waiting for: take the data and let the error surface on the
+			// next read.
+			n, readErr := exch.ReadBody(buf[buflen:])
+			buflen += n
+			if n == 0 && readErr != nil {
 				dst = dst[:len(dst)-1]
-				return dst, err
+				return dst, readErr
 			}
 		}
 		part.Sink = newSink(&part.Header)
@@ -530,9 +534,10 @@ func (exch *Exchange) ReadMultiparts(dst []MultipartSink, buf []byte, newSink fu
 			if done {
 				break // Buffer now starts at the next part's delimiter.
 			}
-			buflen, err = exch.readBodyMore(buf, buflen, backoff)
-			if err != nil {
-				return dst, err
+			n, readErr := exch.ReadBody(buf[buflen:])
+			buflen += n
+			if n == 0 && readErr != nil {
+				return dst, readErr // Body ended mid part.
 			}
 		}
 		if part.Sink != nil {
@@ -540,25 +545,6 @@ func (exch *Exchange) ReadMultiparts(dst []MultipartSink, buf []byte, newSink fu
 				return dst, err
 			}
 		}
-	}
-}
-
-// readBodyMore reads more of the body in behind the buflen bytes already in buf,
-// returning the new length once at least one byte arrived. A parser that stalled
-// for want of data always makes progress or gets an error, never spins.
-func (exch *Exchange) readBodyMore(buf []byte, buflen int, backoff lneto.BackoffStrategy) (int, error) {
-	for backoffs := uint(0); ; backoffs++ {
-		n, err := exch.ReadBody(buf[buflen:])
-		buflen += n
-		if n > 0 {
-			// Data first: a read that both delivered and failed, as the last
-			// of the body followed by a hangup does, may still hold the
-			// closing delimiter. The error surfaces on the next read.
-			return buflen, nil
-		} else if err != nil {
-			return buflen, err
-		}
-		backoff.Do(backoffs) // Nothing pending on the conn yet.
 	}
 }
 
