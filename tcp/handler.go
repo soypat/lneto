@@ -89,9 +89,34 @@ func (h *Handler) SetPolicy(policy Policy) {
 }
 func (h *Handler) policyEnabled() bool { return h.policy != nil }
 
-// ControlBlock returns the state machine underlying the Handler, mainly so a
-// [Policy] can read the sequence spaces. Not for modification.
-func (h *Handler) ControlBlock() *ControlBlock { return &h.scb }
+func (h *Handler) lossEnabled() bool { return h.loss != nil }
+
+// txIntent snapshots the send state handed to [LossRecovery.PreTx]. It is only
+// called when loss recovery is installed. buffered is passed in because the
+// transmit path already has it.
+func (h *Handler) txIntent(now int64, buffered int) TxIntent {
+	snd := &h.scb.snd
+	return TxIntent{
+		Now:            now,
+		State:          h.scb.State(),
+		UNA:            snd.UNA,
+		NXT:            snd.NXT,
+		InFlight:       snd.inFlight(),
+		SendWindow:     snd.WND,
+		MSS:            snd.MSS,
+		BufferedUnsent: Size(buffered),
+	}
+}
+
+// NextDeadline returns the monotonic-nanosecond instant at which the connection
+// must next be serviced by a transmit attempt (e.g. an RTO expiry), or 0 when
+// there is no deadline or no loss recovery is configured. See [LossRecovery].
+func (h *Handler) NextDeadline() int64 {
+	if h.loss == nil {
+		return 0
+	}
+	return h.loss.NextDeadline()
+}
 
 // LocalPort returns the local port of the connection. Returns 0 if the connection is closed and uninitialized.
 func (h *Handler) LocalPort() uint16 {
@@ -384,36 +409,23 @@ func (h *Handler) Send(b []byte) (int, error) {
 	if h.IsTxOver() {
 		return 0, net.ErrClosed
 	}
-	tfrm, err := NewFrame(b)
-	if err != nil {
-		return 0, err
-	}
-	offset := uint8(5)
-	txLimit := TransmitUnlimited
-	if h.policyEnabled() {
-		// Hand the Policy a defined frame: zeroed header at the minimum offset.
-		// It may append options and raise the offset, which is read back below.
-		tfrm.ClearHeader()
-		tfrm.SetOffsetAndFlags(offset, 0)
-		limit, rtxFrom, doRtx := h.policy.PreTx(h, tfrm)
-		txLimit = limit
-		if limit == 0 {
-			h.info("tcp.Policy:newTxLimit=0") // Can cause headaches for users.
-		}
-		if doRtx && h.scb.RetransmitFrom(rtxFrom) {
-			// Retransmission directed by the Policy: rewind the transmit buffer
-			// to match the send sequence so unacknowledged data is resent. Done
-			// before the early short-circuit below so an expired RTO
-			// retransmits even with no new data queued.
-			h.bufTx.RetransmitFrom(rtxFrom)
-		}
-		if o, _ := tfrm.OffsetAndFlags(); o > offset && int(o)*4 < len(b) {
-			offset = o
+	var now int64
+	buffered := h.bufTx.BufferedUnsent()
+	if h.lossEnabled() {
+		now = h.nanotime()
+		if h.loss.PreTx(h.txIntent(now, buffered)).RetransmitAll {
+			// Go-back-N retransmission directed by loss recovery: rewind the
+			// send sequence and transmit buffer so unacknowledged data is resent
+			// from snd.UNA. Done before the early short-circuit below so an
+			// expired RTO retransmits even with no new data queued.
+			h.scb.RetransmitAll()
+			h.bufTx.RetransmitFromUNA()
+			// The rewind turns already-sent data back into unsent data.
+			buffered = h.bufTx.BufferedUnsent()
 		}
 	}
 	awaitingSyn := h.AwaitingSynSend()
 	requeueControl := h.requeueControl
-	buffered := h.bufTx.BufferedUnsent()
 	if h.scb.State() == StateCloseWait && !h.closing && buffered == 0 && !h.scb.HasPending() {
 		// Remote closed with no application data left to send: initiate our own close.
 		// Checked here (not in Recv) so the application can still write in CLOSE-WAIT
