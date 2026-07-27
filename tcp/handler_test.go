@@ -148,7 +148,7 @@ func sendDataFull(t *testing.T, client, server *Handler, data, packetBuf []byte)
 	}
 }
 
-func newHandler(t *testing.T, mtu, mintaxpackets int) *Handler {
+func newHandler(t testing.TB, mtu, mintaxpackets int) *Handler {
 	h := new(Handler)
 	err := h.SetBuffers(make([]byte, mtu), make([]byte, mtu), mintaxpackets)
 	if err != nil {
@@ -157,7 +157,7 @@ func newHandler(t *testing.T, mtu, mintaxpackets int) *Handler {
 	return h
 }
 
-func setupClientServer(t *testing.T, rng *rand.Rand, client, server *Handler) {
+func setupClientServer(t testing.TB, rng *rand.Rand, client, server *Handler) {
 	// Ensure buffer sizes are OK with reused buffers.
 	err := client.SetBuffers(nil, nil, 0)
 	if err != nil {
@@ -183,7 +183,7 @@ func setupClientServer(t *testing.T, rng *rand.Rand, client, server *Handler) {
 	}
 }
 
-func establish(t *testing.T, client, server *Handler, packetBuf []byte) {
+func establish(t testing.TB, client, server *Handler, packetBuf []byte) {
 	if client.State() != StateClosed {
 		t.Fatal("client in wrong state")
 	} else if server.State() != StateListen {
