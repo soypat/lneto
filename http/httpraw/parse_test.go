@@ -10,7 +10,7 @@ func TestTryParse_IncrementalRequest(t *testing.T) {
 	// Full HTTP request split across multiple ReadFromBytes calls.
 	full := "GET /index.html HTTP/1.1\r\nHost: example.com\r\nContent-Type: text/html\r\n\r\nbody here"
 	var hdr Header
-	hdr.Reset(make([]byte, 0, 256))
+	hdr.Reset(make([]byte, 0, 256), numHeaderCapacity)
 
 	// Feed data in small chunks to exercise incremental parsing.
 	chunks := splitInto(full, 10)
@@ -85,7 +85,7 @@ func TestTryParse_IncrementalRequest(t *testing.T) {
 func TestTryParse_IncrementalResponse(t *testing.T) {
 	full := "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nServer: lneto\r\n\r\nhello"
 	var hdr Header
-	hdr.Reset(make([]byte, 0, 256))
+	hdr.Reset(make([]byte, 0, 256), numHeaderCapacity)
 
 	chunks := splitInto(full, 8)
 	var done bool
@@ -137,7 +137,7 @@ func TestReadFromLimited(t *testing.T) {
 	r := strings.NewReader(data)
 
 	var hdr Header
-	hdr.Reset(make([]byte, 0, 256))
+	hdr.Reset(make([]byte, 0, 256), numHeaderCapacity)
 
 	// Read in one shot.
 	n, err := hdr.ReadFromLimited(r, 256)
@@ -163,7 +163,7 @@ func TestReadFromLimited(t *testing.T) {
 
 func TestReadFromLimited_MaxBytes(t *testing.T) {
 	var hdr Header
-	hdr.Reset(make([]byte, 0, 256))
+	hdr.Reset(make([]byte, 0, 256), numHeaderCapacity)
 
 	// Zero maxBytesToRead should error.
 	_, err := hdr.ReadFromLimited(strings.NewReader("data"), 0)
@@ -174,7 +174,7 @@ func TestReadFromLimited_MaxBytes(t *testing.T) {
 
 func TestReadFromBytes_Empty(t *testing.T) {
 	var hdr Header
-	hdr.Reset(make([]byte, 0, 256))
+	hdr.Reset(make([]byte, 0, 256), numHeaderCapacity)
 
 	_, err := hdr.ReadFromBytes(nil)
 	if err == nil {
@@ -184,7 +184,7 @@ func TestReadFromBytes_Empty(t *testing.T) {
 
 func TestBufferFreeAndCapacity(t *testing.T) {
 	var hdr Header
-	hdr.Reset(make([]byte, 0, 100))
+	hdr.Reset(make([]byte, 0, 100), numHeaderCapacity)
 
 	if hdr.BufferCapacity() != 100 {
 		t.Errorf("capacity = %d; want 100", hdr.BufferCapacity())
@@ -202,9 +202,8 @@ func TestBufferFreeAndCapacity(t *testing.T) {
 func TestEnableBufferGrowth(t *testing.T) {
 	var hdr Header
 	buf := make([]byte, 0, 64)
-	hdr.Reset(buf)
-	hdr.EnableBufferGrowth(false)
-
+	hdr.Reset(buf, numHeaderCapacity)
+	hdr.ConfigBufferGrowth(false)
 	// With growth disabled, reading more than capacity should fail.
 	big := make([]byte, 128)
 	for i := range big {
@@ -389,7 +388,7 @@ func TestHeader_MultilineValue(t *testing.T) {
 
 func TestHeader_ResponseRoundTrip(t *testing.T) {
 	var hdr Header
-	hdr.Reset(make([]byte, 0, 256))
+	hdr.Reset(make([]byte, 0, 256), numHeaderCapacity)
 	hdr.SetProtocol("HTTP/1.1")
 	hdr.SetStatus("404", "Not Found")
 	hdr.Add("Content-Type", "text/plain")
@@ -429,7 +428,7 @@ func TestHeader_ResponseRoundTrip(t *testing.T) {
 
 func TestHeader_RequestRoundTrip(t *testing.T) {
 	var hdr Header
-	hdr.Reset(make([]byte, 0, 256))
+	hdr.Reset(make([]byte, 0, 256), numHeaderCapacity)
 	hdr.SetProtocol("HTTP/1.1")
 	hdr.SetMethod("POST")
 	hdr.SetRequestTarget("/api/data")

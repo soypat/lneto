@@ -14,12 +14,17 @@ var (
 	errNoProto = errors.New("missing protocol, HTTP/0.9 unsupported")
 	// ErrNeedMoreData signals a parser was handed an incomplete buffer: append
 	// more data to it and call again.
-	ErrNeedMoreData = errors.New("need more data: cannot find trailing lf/delimiter")
-	errNoBoundary   = errors.New("httpraw: multipart boundary not set")
-	errUnparsed     = errors.New("need to finish parsing")
-	errInvalidName  = errors.New("invalid header name")
-	errSmallBuffer  = errors.New("small read buffer. Increase ReadBufferSize")
-	errOOM          = errors.New("httpraw: buffer out of memory")
+	ErrNeedMoreData      = errors.New("need more data: cannot find trailing lf/delimiter")
+	errNoBoundary        = errors.New("httpraw: multipart boundary not set")
+	errUnparsed          = errors.New("need to finish parsing")
+	errInvalidName       = errors.New("invalid header name")
+	ErrSmallHeaderBuffer = errors.New("httpraw: Header buffer exhausted, increase size")
+	errOOM               = errors.New("httpraw: Header incomplete due to OOM")
+	// ErrHeaderTooMany signals a header block carrying more fields than
+	// the buffer it is parsed into has room for, see [Header.Reset]. A server
+	// answers it with 431, RFC 6585 5: no larger buffer is coming, so reading
+	// the rest of the block would only spend memory on a request already lost.
+	ErrHeaderTooMany = errors.New("httpraw: more header fields than buffer holds")
 	// Header.Set and Header.Add mangles the buffer.
 	// Call them after retrieving the Body. Do not call them before parsing the header (why would you even do that?).
 	errMangledBuffer    = errors.New("httpraw: mangled buffer")
@@ -52,17 +57,21 @@ type headerBuf struct {
 	headers []argsKV
 }
 
-// reset sets the buffer data and discards all parsed data.
-func (h *headerBuf) reset(buf []byte) {
+// reset sets the buffer data and discards all parsed data. The field table is
+// grown to match the new buffer's capacity and never shrinks, so a header
+// reused across requests settles on its largest buffer and stops allocating.
+func (h *headerBuf) reset(buf []byte, numHeaderCapacity int) {
 	if buf == nil {
 		buf = h.buf[:0] // Reuse buffer but discard raw data on nil input.
 	}
-	if cap(h.headers) == 0 {
-		h.headers = make([]argsKV, 16)
+	if numHeaderCapacity != 0 {
+		internal.SliceReuse(&h.headers, numHeaderCapacity)
+	} else {
+		h.headers = h.headers[:0]
 	}
 	*h = headerBuf{
 		buf:     buf,
-		headers: h.headers[:0],
+		headers: h.headers,
 	}
 }
 
@@ -100,7 +109,7 @@ func (h *Header) parse(asResponse bool) (err error) {
 		return err
 	}
 	debuglog("http:firstline:done")
-	err = h.parseNextHeaders()
+	err = h.parseNextHeaders(h.flags)
 	debuglog("http:headers:done")
 	return err
 }
@@ -117,9 +126,9 @@ func (h *Header) parseFirstLine(asResponse bool) (err error) {
 	return err
 }
 
-func (h *Header) parseNextHeaders() error {
+func (h *Header) parseNextHeaders(flags Flags) error {
 	var ss scannerState
-	h.hbuf.parseNextHeaders(&ss)
+	h.hbuf.parseNextHeaders(&ss, flags)
 	if ss.err != nil {
 		h.flags |= flagConnClose
 		return ss.err
@@ -134,13 +143,13 @@ func (hb *headerBuf) readFromBytes(b []byte) {
 
 func (hb *headerBuf) free() int { return cap(hb.buf) - len(hb.buf) }
 
-func (hb *headerBuf) parseNextHeaders(ss *scannerState) {
+func (hb *headerBuf) parseNextHeaders(ss *scannerState, flags Flags) {
 	debuglog("http:nexthdr:loop")
 	for kv := hb.next(ss); kv.isValid(); kv = hb.next(ss) {
-		if len(hb.headers) == cap(hb.headers) {
-			// Refuse to grow the headers slice: caller must pre-allocate
-			// sufficient capacity via reset or use a larger initial size.
-			ss.err = errOOM
+		if len(hb.headers) == cap(hb.headers) && flags.HasAny(flagNoBufferGrow) {
+			// Refuse to grow the headers slice: the caller granted this much
+			// memory and no more, see [Header.Reset].
+			ss.err = ErrHeaderTooMany
 			return
 		}
 		hb.headers = append(hb.headers, kv)

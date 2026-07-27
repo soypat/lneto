@@ -44,14 +44,15 @@ type conn = io.ReadWriteCloser
 // Methods are safe for concurrent use. The zero value is not usable: configure
 // it first.
 type Router struct {
-	mu            sync.Mutex
-	gen           atomic.Uint32
-	numGoro       int
-	reqBuf        int
-	respBuf       int
-	normalizeKeys bool
-	pendingConns  chan job
-	mux           Mux
+	mu              sync.Mutex
+	gen             atomic.Uint32
+	numGoro         int
+	reqBuf          int
+	respBuf         int
+	reqNumHeaderCap int
+	normalizeKeys   bool
+	pendingConns    chan job
+	mux             Mux
 
 	globbuf  []byte
 	exchs    []Exchange
@@ -79,6 +80,8 @@ type RouterConfig struct {
 	// "HTTP/1.1 200 OK\r\n" does not count towards this memory, only actual Headers key/value pairs use this memory.
 	// After memory is fully consumed [Exchange.StageHeader] will not append more headers.
 	ResponseHeaderMinBufferSize int
+	// Number of request header key/value pairs to parse before failing and returning [StatusRequestHeaderFieldsTooLarge].
+	RequestNumHeaderCap int
 
 	// NormalizeOutgoingKeys normalizes response header field keys as they are
 	// staged, i.e: "content-type" becomes "Content-Type".
@@ -154,6 +157,7 @@ func (r *Router) Configure(cfg RouterConfig) error {
 	gen := r.gen.Load()
 	numgoro := cfg.FixedNumGoroutines
 	workerMode := cfg.workerMode()
+	r.reqNumHeaderCap = cfg.RequestNumHeaderCap
 	r.reqBuf = cfg.RequestHeaderBufferSize
 	r.respBuf = cfg.ResponseHeaderMinBufferSize
 	r.mux = cfg.Mux
@@ -183,7 +187,13 @@ func (r *Router) Configure(cfg RouterConfig) error {
 		for i := range numgoro {
 			// TODO exchange buffer alloc
 			goff := i * rawBuflen
-			r.exchs[i].Configure(r.globbuf[goff:goff+rawBuflen], cfg.RequestHeaderBufferSize, cfg.NormalizeOutgoingKeys)
+			// r.globbuf[goff:goff+rawBuflen], cfg.RequestHeaderBufferSize, cfg.RequestNumHeaderCap, cfg.NormalizeOutgoingKeys
+			r.exchs[i].Configure(ExchangeConfig{
+				RawBuf:                r.globbuf[goff : goff+rawBuflen],
+				RequestBufferLim:      cfg.RequestHeaderBufferSize,
+				NumHeaderCap:          cfg.RequestNumHeaderCap,
+				NormalizeOutgoingKeys: cfg.NormalizeOutgoingKeys,
+			})
 			go r.goroWorker(gen, jobqueue, cfg.Backoff, cfg.Mux)
 		}
 		r.pendingConns = jobqueue
@@ -324,9 +334,14 @@ func (r *Router) getExchLocked(conn conn) (exch *Exchange) {
 		}
 	}
 
-	if r.numGoro == 0 {
+	if r.numGoro == -1 {
 		exch := new(Exchange)
-		exch.Configure(make([]byte, r.respBuf+r.reqBuf), r.reqBuf, r.normalizeKeys)
+		exch.Configure(ExchangeConfig{
+			RawBuf:                make([]byte, r.respBuf+r.reqBuf),
+			RequestBufferLim:      r.reqBuf,
+			NumHeaderCap:          r.reqNumHeaderCap,
+			NormalizeOutgoingKeys: r.normalizeKeys,
+		})
 		exch.Acquire(conn) // Fresh exchange, CAS cannot fail.
 		return exch
 	}

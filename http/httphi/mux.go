@@ -5,6 +5,7 @@ import (
 	"unsafe"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/http/httpraw"
 	"github.com/soypat/lneto/internal"
 )
 
@@ -13,7 +14,7 @@ import (
 // Handle does not close the connection on any outcome: the caller owns it.
 func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
 	reqhdr := &exch.reqHdr
-	reqhdr.Reset(nil)
+	reqhdr.Reset(nil, 0) // Assume exchange has been configured and reuse memory.
 	var consecutiveBackoffs uint
 	for {
 		n, err := reqhdr.ReadFromLimited(exch.rw, reqhdr.BufferFree())
@@ -31,6 +32,12 @@ func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
 		if needMore {
 			continue // Request header split across reads, accumulate the rest.
 		} else if err != nil {
+			if err == httpraw.ErrHeaderTooMany || err == httpraw.ErrSmallHeaderBuffer {
+				// The peer is owed an answer: no larger buffer is coming, so
+				// say so instead of dropping the connection, RFC 6585 5.
+				exch.StageHeader("Content-Length", "0")
+				exch.WriteHeader(int(StatusRequestHeaderFieldsTooLarge))
+			}
 			return err
 		}
 		break // Done!

@@ -48,6 +48,13 @@ type Exchange struct {
 	readErr       error
 }
 
+type ExchangeConfig struct {
+	RawBuf                []byte
+	RequestBufferLim      int
+	NumHeaderCap          int
+	NormalizeOutgoingKeys bool
+}
+
 // HijackRaw is a low-level implementation of http.Hijacker interface.
 // A Hijack method is not exposed due to heap allocation implications and correctness concerns.
 // Below is what an actual implementation may look like:
@@ -82,14 +89,15 @@ func (exch *Exchange) HijackRaw(dstBody []byte) (conn, []byte, error) {
 // of which the first requestLim bytes are reserved for the request header.
 // Panics if requestLim exceeds the buffer. Set normalizeKeys to normalize
 // outgoing header keys, i.e: "content-type" to "Content-Type".
-func (exch *Exchange) Configure(rawbuf []byte, requestLim int, normalizeKeys bool) {
-	respSize := len(rawbuf) - requestLim
+func (exch *Exchange) Configure(cfg ExchangeConfig) {
+	respSize := len(cfg.RawBuf) - cfg.RequestBufferLim
 	if respSize < 0 {
 		panic("request lim larger than buffer")
 	}
-	exch.rawbuf = rawbuf
-	exch.reqHdr.Reset(rawbuf[:0:requestLim])
-	exch.normalizeKeys = normalizeKeys
+	exch.rawbuf = cfg.RawBuf
+	exch.reqHdr.Reset(cfg.RawBuf[:0:cfg.RequestBufferLim], cfg.NumHeaderCap)
+	exch.reqHdr.ConfigBufferGrowth(false)
+	exch.normalizeKeys = cfg.NormalizeOutgoingKeys
 }
 
 // Acquire claims the exchange for conn and resets it to serve a new request,
@@ -111,7 +119,7 @@ func (exch *Exchange) Acquire(conn conn) bool {
 	exch.rw = conn
 	exch.headerWritten = false
 	exch.nextFree = nil
-	exch.reqHdr.Reset(nil)
+	exch.reqHdr.Reset(nil, 0)
 	return true
 }
 
@@ -350,13 +358,11 @@ func (exch *Exchange) ReadBody(dst []byte) (n int, _ error) {
 		}
 		n = copy(dst, toRead)
 		exch.respRemains -= n
-		if len(dst) == n {
-			return n, nil
-		}
-		dst = dst[n:]
+		// hand over what already arrived since conn might have
+		// exhausted data and could block indefinetely.
+		return n, nil
 	}
-	nr, err := exch.rw.Read(dst)
-	return nr + n, err
+	return exch.rw.Read(dst)
 }
 
 func (exch *Exchange) remainingSurplusBody() ([]byte, error) {

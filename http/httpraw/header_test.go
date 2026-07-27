@@ -2,6 +2,7 @@ package httpraw
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -9,6 +10,8 @@ import (
 	"testing"
 	"time"
 )
+
+const numHeaderCapacity = 16
 
 func TestHeaderParseRequest(t *testing.T) {
 	const (
@@ -387,7 +390,7 @@ func TestCopyDecodedPercentURLInPlace(t *testing.T) {
 
 func TestHeaderSetOverwrite(t *testing.T) {
 	var h Header
-	h.Reset(nil)
+	h.Reset(nil, numHeaderCapacity)
 	h.SetMethod("GET")
 	h.SetRequestTarget("/")
 	h.SetProtocol("HTTP/1.1")
@@ -410,7 +413,7 @@ func TestHeaderSetOverwrite(t *testing.T) {
 
 func TestHeaderSetBytesEmptyValue(t *testing.T) {
 	var h Header
-	h.Reset(nil)
+	h.Reset(nil, numHeaderCapacity)
 	h.SetBytes("X-Empty", nil)
 	if got := h.Get("X-Empty"); len(got) != 0 {
 		t.Errorf("want empty value, got %q", got)
@@ -465,7 +468,7 @@ func TestHeader_SplitBeforeColonStillParses(t *testing.T) {
 	const part2 = ": example.com\r\n\r\n"
 
 	var h Header
-	h.Reset(nil)
+	h.Reset(nil, numHeaderCapacity)
 	if _, err := h.ReadFromBytes([]byte(part1)); err != nil {
 		t.Fatal(err)
 	}
@@ -498,7 +501,7 @@ func TestHeader_AppendHeaderExactCapNoPanic(t *testing.T) {
 	const key, value = "K", "V"
 	buf := make([]byte, 0, len(key)+len(value)) // exact cap, no slack.
 	var h Header
-	h.Reset(buf)
+	h.Reset(buf, numHeaderCapacity)
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("appendHeader panicked on exact-cap buffer: %v", r)
@@ -515,8 +518,8 @@ func TestHeader_AppendHeaderExactCapNoPanic(t *testing.T) {
 func TestHeader_AddFullBufferNoPanic(t *testing.T) {
 	buf := make([]byte, 0, 40) // Small cap; enough for Reset (len 0) but not the field below.
 	var h Header
-	h.Reset(buf)
-	h.EnableBufferGrowth(false)
+	h.Reset(buf, numHeaderCapacity)
+	h.ConfigBufferGrowth(false)
 	h.SetMethod("GET")
 	h.SetRequestTarget("/")
 	h.SetProtocol("HTTP/1.1")
@@ -550,7 +553,7 @@ func TestHeader_SetInt(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var h Header
-			h.Reset(nil)
+			h.Reset(nil, numHeaderCapacity)
 			h.SetInt("Content-Length", tc.value, tc.base)
 			if got := string(h.Get("Content-Length")); got != tc.want {
 				t.Fatalf("want %q, got %q", tc.want, got)
@@ -562,7 +565,7 @@ func TestHeader_SetInt(t *testing.T) {
 // SetInt on an existing key must reuse the slot in place (single field, latest value).
 func TestHeader_SetIntOverwrite(t *testing.T) {
 	var h Header
-	h.Reset(nil)
+	h.Reset(nil, numHeaderCapacity)
 	h.SetMethod("GET")
 	h.SetRequestTarget("/")
 	h.SetProtocol("HTTP/1.1")
@@ -586,8 +589,8 @@ func TestHeader_SetIntOverwrite(t *testing.T) {
 func TestHeader_SetIntNoAlloc(t *testing.T) {
 	buf := make([]byte, 0, 256)
 	var h Header
-	h.Reset(buf)
-	h.EnableBufferGrowth(false)
+	h.Reset(buf, numHeaderCapacity)
+	h.ConfigBufferGrowth(false)
 	h.Add("Content-Length", "0000000000000000000000") // pre-size a reusable slot.
 	allocs := testing.AllocsPerRun(100, func() {
 		h.SetInt("Content-Length", 1234567890, 10)
@@ -597,5 +600,45 @@ func TestHeader_SetIntNoAlloc(t *testing.T) {
 	}
 	if got := string(h.Get("Content-Length")); got != "1234567890" {
 		t.Fatalf("want %q, got %q", "1234567890", got)
+	}
+}
+
+// A browser sends upwards of twenty header fields and an API client with a few
+// custom fields is not far behind. The field table must be sized from the
+// buffer the caller handed over, not fixed at a count that a real request
+// exceeds.
+func TestHeader_FieldTableSizedFromBuffer(t *testing.T) {
+	const wantVal = "the-canary-value"
+	raw := "GET / HTTP/1.1\r\nHost: lneto.test\r\n"
+	for i := 0; i < 40; i++ {
+		raw += "X-Field-" + strconv.Itoa(i) + ": value-of-a-realistic-length-here\r\n"
+	}
+	raw += "X-Canary: " + wantVal + "\r\n\r\n"
+
+	var h Header
+	h.Reset(make([]byte, 0, 8192), numHeaderCapacity) // Room for the block with plenty to spare.
+	err := h.ParseBytes(false, []byte(raw))
+	if err != nil {
+		t.Fatalf("parsing a 42 field request into an 8kB buffer: %s", err)
+	}
+	if got := string(h.Get("X-Canary")); got != wantVal {
+		t.Fatalf("want X-Canary %q, got %q", wantVal, got)
+	}
+}
+
+// A buffer too small for the fields it is handed must be refused with an error
+// the caller can act on, so a server answers 431 instead of dropping the peer.
+func TestHeader_FieldTableFullIsReported(t *testing.T) {
+	raw := "GET / HTTP/1.1\r\n"
+	for i := 0; i < 64; i++ {
+		raw += "H" + strconv.Itoa(i) + ":v\r\n" // As short as a field gets.
+	}
+	raw += "\r\n"
+	var h Header
+	h.Reset(make([]byte, 0, 512), numHeaderCapacity)
+	h.ConfigBufferGrowth(false)
+	err := h.ParseBytes(false, []byte(raw))
+	if !errors.Is(err, ErrHeaderTooMany) {
+		t.Fatalf("want ErrHeaderFieldsTooLarge, got %v", err)
 	}
 }

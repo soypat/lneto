@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"unsafe"
 
@@ -19,10 +20,11 @@ import (
 func nopBackoff(consecutiveBackoffs uint) time.Duration { return lneto.BackoffFlagNop }
 
 // newExchange returns an Exchange acquired on conn, ready to serve a request.
-func newExchange(t *testing.T, conn conn, bufferSize int, normalizeKeys bool) *Exchange {
+func newExchange(t *testing.T, conn conn, cfg ExchangeConfig) *Exchange {
 	t.Helper()
 	exch := new(Exchange)
-	exch.Configure(make([]byte, 2*bufferSize), bufferSize, normalizeKeys)
+	const numHeaderCap = 1
+	exch.Configure(cfg)
 	if !exch.Acquire(conn) {
 		t.Fatal("fresh exchange failed to acquire connection")
 	}
@@ -46,6 +48,7 @@ func serve(t *testing.T, request string, mux Mux) *rwconn {
 // WriteHeader must emit a complete status line terminated in CRLF followed by
 // the end-of-headers CRLF, for every status code including the longest text.
 func TestExchangeWriteHeader(t *testing.T) {
+	var buf [128]byte
 	for _, test := range []struct {
 		code int
 		want string
@@ -57,7 +60,7 @@ func TestExchangeWriteHeader(t *testing.T) {
 		{code: 511, want: "HTTP/1.1 511 Network Authentication Required\r\n\r\n"},
 	} {
 		conn := newConn("")
-		exch := newExchange(t, conn, 128, false)
+		exch := newExchange(t, conn, ExchangeConfig{RawBuf: buf[:], RequestBufferLim: 64})
 		exch.WriteHeader(test.code)
 		if got := conn.ViewWritten(); got != test.want {
 			t.Errorf("code %d: want %q, got %q", test.code, test.want, got)
@@ -67,8 +70,9 @@ func TestExchangeWriteHeader(t *testing.T) {
 
 // Status line is written once: a second WriteHeader must not reach the wire.
 func TestExchangeWriteHeaderOnce(t *testing.T) {
+	var buf [128]byte
 	conn := newConn("")
-	exch := newExchange(t, conn, 128, false)
+	exch := newExchange(t, conn, ExchangeConfig{RawBuf: buf[:], RequestBufferLim: 64})
 	exch.WriteHeader(404)
 	exch.WriteHeader(500)
 	const want = "HTTP/1.1 404 Not Found\r\n\r\n"
@@ -79,9 +83,10 @@ func TestExchangeWriteHeaderOnce(t *testing.T) {
 
 // Write with no prior WriteHeader must flush a 200 header ahead of the body.
 func TestExchangeWriteFlushesHeader(t *testing.T) {
+	var buf [128]byte
 	const body = "hello"
 	conn := newConn("")
-	exch := newExchange(t, conn, 128, false)
+	exch := newExchange(t, conn, ExchangeConfig{RawBuf: buf[:], RequestBufferLim: 64})
 	n, err := exch.WriteBody([]byte(body))
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +129,7 @@ func TestExchangeSetHeader(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			conn := newConn("")
-			exch := newExchange(t, conn, 128, test.normalize)
+			exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 128), RequestBufferLim: 64, NormalizeOutgoingKeys: test.normalize})
 			for _, kv := range test.set {
 				if !exch.StageHeader(kv[0], kv[1]) {
 					t.Fatalf("SetHeader(%q,%q) reported insufficient memory", kv[0], kv[1])
@@ -147,7 +152,7 @@ func TestExchangeSetHeader(t *testing.T) {
 func TestExchangeSetHeaderOOM(t *testing.T) {
 	const bufferSize = 32
 	conn := newConn("")
-	exch := newExchange(t, conn, bufferSize, false)
+	exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, bufferSize), RequestBufferLim: 64})
 	if exch.StageHeader("X-Big", strings.Repeat("v", 4*bufferSize)) {
 		t.Fatal("want insufficient memory reported for oversized header value")
 	}
@@ -346,10 +351,11 @@ func TestExchangeReadBody(t *testing.T) {
 func TestExchangeStageOKAndFail(t *testing.T) {
 	const key, value = "K", "V"
 	const field = len(key) + len(value) + len(":\r\n")
+	const numHeaderCap = 4
 	for _, bufLen := range []int{field + 2, field + 1, field} {
 		conn := newConn("")
 		exch := new(Exchange)
-		exch.Configure(make([]byte, bufLen), bufLen, false)
+		exch.Configure(make([]byte, bufLen), bufLen, numHeaderCap, false)
 		if !exch.Acquire(conn) {
 			t.Fatal("fresh exchange failed to acquire connection")
 		}
@@ -942,3 +948,144 @@ func TestExchangeRequestParseMultipartRejects(t *testing.T) {
 		}
 	}
 }
+
+// A request from a browser carries around twenty header fields. Serving one
+// must not depend on how many fields the parser happens to have room for: the
+// exchange's buffer is the memory the caller granted, and the field table comes
+// out of it.
+func TestHandleBrowserSizedRequest(t *testing.T) {
+	const wantMode = "navigate"
+	request := "GET /echo HTTP/1.1\r\nHost: lneto.test\r\n" +
+		"User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36\r\n" +
+		"Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8\r\n" +
+		"Accept-Language: en-US,en;q=0.5\r\nAccept-Encoding: gzip, deflate, br\r\n" +
+		"Upgrade-Insecure-Requests: 1\r\nSec-Fetch-Dest: document\r\nSec-Fetch-Site: none\r\n" +
+		"Sec-Ch-Ua: \"Chromium\";v=\"120\"\r\nCache-Control: max-age=0\r\nDnt: 1\r\n" +
+		"Referer: https://lneto.test/index.html\r\nCookie: session=abcdef0123456789; theme=dark\r\n" +
+		"X-Trace: 0123456789abcdef\r\nX-Client: bench\r\nX-Seq: 42\r\nX-Tag: alpha\r\n" +
+		"X-Nonce: cafebabe\r\nX-Mode: " + wantMode + "\r\n\r\n"
+
+	var gotMode string
+	var fields int
+	var sm MuxSlice
+	sm.Reset(1)
+	sm.Handle("GET /echo", func(exch *Exchange) {
+		gotMode = string(exch.RequestHeader("X-Mode"))
+		exch.RequestHeaderRaw().ForEach(func(key, value []byte) error {
+			fields++
+			return nil
+		})
+	})
+	conn := newConn(request)
+	conn.Hangup()
+	exch := newExchange(t, conn, 8192, false)
+	if err := Handle(exch, &sm, nopBackoff); err != nil {
+		t.Fatalf("serving a browser sized request: %s", err)
+	}
+	if gotMode != wantMode {
+		t.Errorf("last header field read back as %q, want %q", gotMode, wantMode)
+	}
+	const sent = 19
+	if fields < sent {
+		t.Errorf("handler saw %d header fields, request carried %d", fields, sent)
+	}
+}
+
+// A request with more header fields than the exchange has room for must be
+// answered, not dropped: the peer learns its request was too large instead of
+// seeing the connection go away.
+func TestHandleTooManyHeaderFields(t *testing.T) {
+	request := "GET /echo HTTP/1.1\r\nHost: lneto.test\r\n"
+	for i := 0; i < 512; i++ {
+		request += "H" + strconv.Itoa(i) + ":v\r\n"
+	}
+	request += "\r\n"
+
+	var served bool
+	var sm MuxSlice
+	sm.Reset(1)
+	sm.Handle("GET /echo", func(exch *Exchange) { served = true })
+	conn := newConn(request)
+	conn.Hangup()
+	exch := newExchange(t, conn, 1024, false)
+	err := Handle(exch, &sm, nopBackoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if served {
+		t.Fatal("handler ran on a request the parser could not hold")
+	}
+	got := conn.ViewWritten()
+	if !strings.HasPrefix(got, "HTTP/1.1 431 ") {
+		t.Errorf("want a 431 answer, got %q", firstLine(got))
+	}
+}
+
+func firstLine(s string) string {
+	if i := strings.Index(s, "\r\n"); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// A body that already arrived alongside the request header must be handed over
+// without touching the connection again. A peer that sent a whole request and
+// is waiting for its answer sends nothing more, so a read for bytes already in
+// hand blocks until the connection's deadline, or forever without one.
+func TestExchangeReadBodyDoesNotReadPastWhatArrived(t *testing.T) {
+	const body = "message body"
+	dst := make([]byte, 64) // Deliberately larger than the body.
+	var got string
+	var readErr error
+	var sm MuxSlice
+	sm.Reset(1)
+	sm.Handle("POST /", func(ex *Exchange) {
+		n, err := ex.ReadBody(dst)
+		got, readErr = string(dst[:n]), err
+		ex.WriteHeader(200)
+	})
+	// The peer is still there, waiting to be answered: a read for bytes it is
+	// not going to send blocks, exactly as it does on a socket.
+	conn := &blockingConn{request: "POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 12\r\n\r\n" + body}
+	exch := newExchange(t, conn, 1024, false)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		Handle(exch, &sm, nopBackoff)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ReadBody blocked waiting for a body that had already arrived")
+	}
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if got != body {
+		t.Errorf("want body %q, got %q", body, got)
+	}
+}
+
+// blockingConn delivers a request and then blocks on reads, the way a peer
+// awaiting its answer does. Writes are discarded.
+type blockingConn struct {
+	request string
+	read    int
+	blocked chan struct{}
+}
+
+func (c *blockingConn) Read(b []byte) (int, error) {
+	if c.read >= len(c.request) {
+		if c.blocked == nil {
+			c.blocked = make(chan struct{})
+		}
+		<-c.blocked // Nothing more is coming, and nothing unblocks this.
+		return 0, io.EOF
+	}
+	n := copy(b, c.request[c.read:])
+	c.read += n
+	return n, nil
+}
+
+func (c *blockingConn) Write(b []byte) (int, error) { return len(b), nil }
+func (c *blockingConn) Close() error                { return nil }

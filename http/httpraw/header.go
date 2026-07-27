@@ -65,10 +65,12 @@ type Header struct {
 // Flags returns [Flags] to signal status code has been set, Connection:Close or other useful signals provided by flags.
 func (h *Header) Flags() Flags { return h.flags }
 
-// EnableBufferGrowth disables buffer growth during parsing if b is false. Is enabled by default.
-// Disabling buffer growth prevents allocations but methods may throw errors on insufficient memory.
-func (h *Header) EnableBufferGrowth(b bool) {
-	if !b {
+// ConfigBufferGrowth configures the memory the header may use. Setting
+// outlives [Header.Reset]. Call before parsing/reading.
+//
+// enableBufferGrowth enables growing both the header buffer and the header key/value pair slice.
+func (h *Header) ConfigBufferGrowth(enableBufferGrowth bool) {
+	if !enableBufferGrowth {
 		h.flags |= flagNoBufferGrow
 	} else {
 		h.flags &^= flagNoBufferGrow
@@ -77,7 +79,7 @@ func (h *Header) EnableBufferGrowth(b bool) {
 
 // ParseBytes copies the bytes into buffer and parses the HTTP header. It fails if HTTP header data is incomplete.
 func (h *Header) ParseBytes(asResponse bool, b []byte) error {
-	h.Reset(nil)
+	h.Reset(nil, 0)
 	h.hbuf.readFromBytes(b)
 	return h.parse(asResponse)
 }
@@ -86,7 +88,7 @@ func (h *Header) ParseBytes(asResponse bool, b []byte) error {
 // It fails if HTTP data is incomplete.
 func (h *Header) Parse(asResponse bool) error {
 	debuglog("http:parse:reset")
-	h.Reset(h.hbuf.buf)
+	h.Reset(h.hbuf.buf, 0)
 	debuglog("http:parse:start")
 	return h.parse(asResponse)
 }
@@ -119,7 +121,7 @@ func (h *Header) TryParse(asResponse bool) (needMoreData bool, err error) {
 			return err == ErrNeedMoreData, err
 		}
 	}
-	err = h.parseNextHeaders()
+	err = h.parseNextHeaders(h.flags)
 	return err == ErrNeedMoreData, err
 }
 
@@ -133,7 +135,7 @@ func (h *Header) ParsingSuccess() bool {
 // If read is successful (read length>0) and reader returns [io.EOF] then ReadFromLimited will return a nil error.
 func (h *Header) ReadFromLimited(r io.Reader, maxBytesToRead int) (int, error) {
 	if maxBytesToRead <= 0 {
-		return 0, errSmallBuffer
+		return 0, ErrSmallHeaderBuffer
 	} else if h.flags.HasAny(flagMangledBuffer) {
 		return 0, errMangledBuffer
 	} else if h.flags.HasAny(flagReaderEOF) {
@@ -142,14 +144,14 @@ func (h *Header) ReadFromLimited(r io.Reader, maxBytesToRead int) (int, error) {
 	free := h.BufferFree()
 	if free < maxBytesToRead {
 		if h.flags.HasAny(flagNoBufferGrow) {
-			return 0, errSmallBuffer
+			return 0, ErrSmallHeaderBuffer
 		}
 		h.hbuf.buf = slices.Grow(h.hbuf.buf, maxBytesToRead)
 	}
 	blen := len(h.hbuf.buf)
 	b := h.hbuf.buf[blen:min(blen+maxBytesToRead, cap(h.hbuf.buf))]
 	if len(b) == 0 {
-		return 0, errSmallBuffer
+		return 0, ErrSmallHeaderBuffer
 	}
 	n, err := r.Read(b)
 	if err != nil && err == io.EOF {
@@ -166,12 +168,12 @@ func (h *Header) ReadFromLimited(r io.Reader, maxBytesToRead int) (int, error) {
 // Used to accumulate HTTP header for later parsing with [Header.TryParse].
 func (h *Header) ReadFromBytes(b []byte) (int, error) {
 	if len(b) == 0 {
-		return 0, errSmallBuffer
+		return 0, ErrSmallHeaderBuffer
 	}
 	free := h.BufferFree()
 	if free < len(b) {
 		if h.flags.HasAny(flagNoBufferGrow) {
-			return 0, errSmallBuffer
+			return 0, ErrSmallHeaderBuffer
 		}
 		h.hbuf.buf = slices.Grow(h.hbuf.buf, len(b))
 	}
@@ -253,13 +255,13 @@ func (hb *headerBuf) forEach(cb func(key, value []byte) error) error {
 //	h.Reset(prealloc[:0]); h.ParseBytes(httpHeader) // Tell header to use a pre-allocated buffer capacity.
 //	h.Reset(httpHeader); h.Parse() // Parse bytes in place with no copying.
 //	h.Reset(nil) // Reuse buffer previously set in a call to Reset.
-func (h *Header) Reset(buf []byte) {
-	if h.flags.HasAny(flagNoBufferGrow) && cap(buf) < 32 {
-		panic("small buffer and flagNoBufferGrow set")
-	}
+func (h *Header) Reset(buf []byte, numHeaderCapacity int) {
 	const persistentFlags = flagNoBufferGrow
 	debuglog("http:reset:hbuf")
-	h.hbuf.reset(buf)
+	h.hbuf.reset(buf, numHeaderCapacity)
+	if h.flags.HasAny(flagNoBufferGrow) && cap(h.hbuf.buf) < 32 {
+		panic("small buffer and flagNoBufferGrow set")
+	}
 	*h = Header{
 		hbuf:  h.hbuf,
 		flags: h.flags & persistentFlags,
