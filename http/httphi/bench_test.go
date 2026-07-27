@@ -115,7 +115,7 @@ func BenchmarkRequestParseForm(b *testing.B) {
 	buf := make([]byte, 64)
 	var mux MuxSlice
 	mux.Handle("POST /f", func(ex *Exchange) {
-		err := ex.RequestParseForm(&benchForm, buf, nopBackoff)
+		err := ex.RequestParseForm(&benchForm, buf)
 		if err != nil || benchForm.Len() != 2 {
 			panic("invalid result")
 		}

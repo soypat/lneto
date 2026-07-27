@@ -720,7 +720,7 @@ func TestExchangeRequestParseForm(t *testing.T) {
 			var sm MuxSlice
 			sm.Reset(1)
 			sm.Handle("/f", func(exch *Exchange) {
-				gotErr = exch.RequestParseForm(&form, make([]byte, bufSize), nopBackoff)
+				gotErr = exch.RequestParseForm(&form, make([]byte, bufSize))
 			})
 			serve(t, test.request, &sm)
 			if gotErr != test.wantErr {
@@ -743,7 +743,7 @@ func TestExchangeRequestParseFormSplit(t *testing.T) {
 	var sm MuxSlice
 	sm.Reset(1)
 	sm.Handle("/f", func(exch *Exchange) {
-		gotErr = exch.RequestParseForm(&form, make([]byte, 64), nopBackoff)
+		gotErr = exch.RequestParseForm(&form, make([]byte, 64))
 	})
 	exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 2*1024), RequestBufferLim: 1024})
 	if err := Handle(exch, &sm, nopBackoff); err != nil {
@@ -763,7 +763,7 @@ func TestExchangeRequestParseFormDecode(t *testing.T) {
 	var sm MuxSlice
 	sm.Reset(1)
 	sm.Handle("/f", func(exch *Exchange) {
-		if err := exch.RequestParseForm(&form, make([]byte, 64), nopBackoff); err != nil {
+		if err := exch.RequestParseForm(&form, make([]byte, 64)); err != nil {
 			t.Error(err)
 		} else if err = form.Decode(); err != nil {
 			t.Error(err)
@@ -1015,7 +1015,9 @@ func TestHandleRequestTooLargeAnswers431(t *testing.T) {
 	var request strings.Builder
 	request.WriteString("GET /echo HTTP/1.1\r\nHost: lneto.test\r\n")
 	for i := range 512 {
-		request.WriteString("H" + strconv.Itoa(i) + ":v\r\n")
+		request.WriteByte('H')
+		request.WriteString(strconv.Itoa(i))
+		request.WriteString(":v\r\n")
 	}
 	request.WriteString("\r\n")
 

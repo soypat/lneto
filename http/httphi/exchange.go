@@ -423,8 +423,8 @@ func (exch *Exchange) RequestContentLength() (int64, error) {
 //
 // A request with no Content-Length has no body, RFC 9112 6.3, and yields an
 // empty form. Use [Exchange.RequestContentLength] to tell that apart from a body
-// that arrived empty. backoff paces reads that return no data, as in [Handle].
-func (exch *Exchange) RequestParseForm(dst *httpraw.Form, buf []byte, backoff lneto.BackoffStrategy) error {
+// that arrived empty.
+func (exch *Exchange) RequestParseForm(dst *httpraw.Form, buf []byte) error {
 	if !httpraw.MediaTypeIs(exch.RequestContentType(), "application/x-www-form-urlencoded") {
 		return errNotFormEncoded
 	} else if exch.RequestHeader("Transfer-Encoding") != nil {
@@ -440,18 +440,12 @@ func (exch *Exchange) RequestParseForm(dst *httpraw.Form, buf []byte, backoff ln
 		return lneto.ErrBufferFull // Refuse before reading, caller may answer 413.
 	}
 	buf = buf[:length]
-	var consecutiveBackoffs uint
 	for read := 0; read < len(buf); {
 		n, err := exch.ReadBody(buf[read:])
-		if err != nil {
-			return err
-		} else if n == 0 {
-			backoff.Do(consecutiveBackoffs)
-			consecutiveBackoffs++
-			continue
-		}
-		consecutiveBackoffs = 0
 		read += n
+		if n == 0 && err != nil {
+			return err
+		}
 	}
 	dst.Reset(buf)
 	return dst.Parse()
