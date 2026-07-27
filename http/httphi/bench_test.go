@@ -43,7 +43,11 @@ func benchExchange(b *testing.B, conn conn) *Exchange {
 	const bufferSize = 1024
 	const numHeaderCap = 2
 	exch := new(Exchange)
-	exch.Configure(make([]byte, 2*bufferSize), bufferSize, numHeaderCap, false)
+	exch.Configure(ExchangeConfig{
+		RawBuf:           make([]byte, 2*bufferSize),
+		RequestBufferLim: bufferSize,
+		NumHeaderKVCap:   numHeaderCap,
+	})
 	if !exch.Acquire(conn) {
 		b.Fatal("fresh exchange failed to acquire connection")
 	}

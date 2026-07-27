@@ -51,8 +51,9 @@ type Exchange struct {
 type ExchangeConfig struct {
 	RawBuf                []byte
 	RequestBufferLim      int
-	NumHeaderCap          int
+	NumHeaderKVCap        int
 	NormalizeOutgoingKeys bool
+	NoRequestBufferGrowth bool
 }
 
 // HijackRaw is a low-level implementation of http.Hijacker interface.
@@ -95,8 +96,8 @@ func (exch *Exchange) Configure(cfg ExchangeConfig) {
 		panic("request lim larger than buffer")
 	}
 	exch.rawbuf = cfg.RawBuf
-	exch.reqHdr.Reset(cfg.RawBuf[:0:cfg.RequestBufferLim], cfg.NumHeaderCap)
-	exch.reqHdr.ConfigBufferGrowth(false)
+	exch.reqHdr.Reset(cfg.RawBuf[:0:cfg.RequestBufferLim], cfg.NumHeaderKVCap)
+	exch.reqHdr.ConfigBufferGrowth(!cfg.NoRequestBufferGrowth)
 	exch.normalizeKeys = cfg.NormalizeOutgoingKeys
 }
 

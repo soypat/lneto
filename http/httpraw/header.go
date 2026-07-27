@@ -252,8 +252,8 @@ func (hb *headerBuf) forEach(cb func(key, value []byte) error) error {
 // data with Reset to parse data in-place.
 // If buf is nil then the current buffer is reused. There are 3 ways to use Reset:
 //
-//	h.Reset(prealloc[:0]); h.ParseBytes(httpHeader) // Tell header to use a pre-allocated buffer capacity.
-//	h.Reset(httpHeader); h.Parse() // Parse bytes in place with no copying.
+//	h.Reset(prealloc[:0], 16); h.ParseBytes(httpHeader) // Tell header to use a pre-allocated buffer capacity.
+//	h.Reset(httpHeader, 16); h.Parse() // Parse bytes in place with no copying.
 //	h.Reset(nil) // Reuse buffer previously set in a call to Reset.
 func (h *Header) Reset(buf []byte, numHeaderCapacity int) {
 	const persistentFlags = flagNoBufferGrow

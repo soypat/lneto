@@ -20,6 +20,7 @@ func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
 		n, err := reqhdr.ReadFromLimited(exch.rw, reqhdr.BufferFree())
 		if err != nil {
 			exch.readErr = err
+			exch.handleError(err)
 			return err
 		} else if n == 0 {
 			backoff.Do(consecutiveBackoffs)
@@ -32,12 +33,7 @@ func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
 		if needMore {
 			continue // Request header split across reads, accumulate the rest.
 		} else if err != nil {
-			if err == httpraw.ErrHeaderTooMany || err == httpraw.ErrSmallHeaderBuffer {
-				// The peer is owed an answer: no larger buffer is coming, so
-				// say so instead of dropping the connection, RFC 6585 5.
-				exch.StageHeader("Content-Length", "0")
-				exch.WriteHeader(int(StatusRequestHeaderFieldsTooLarge))
-			}
+			exch.handleError(err)
 			return err
 		}
 		break // Done!
@@ -66,6 +62,15 @@ func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
 	}
 	// TODO write response from exchange here.
 	return nil
+}
+
+func (exch *Exchange) handleError(err error) {
+	if err == httpraw.ErrHeaderTooMany || err == httpraw.ErrSmallHeaderBuffer || exch.reqHdr.BufferFree() == 0 {
+		// The peer is owed an answer: no larger buffer is coming, so
+		// say so instead of dropping the connection, RFC 6585 5.
+		exch.StageHeader("Content-Length", "0")
+		exch.WriteHeader(int(StatusRequestHeaderFieldsTooLarge))
+	}
 }
 
 // HandlerFunc serves a single request, playing the part of http.Handler.

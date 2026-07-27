@@ -768,6 +768,11 @@ func httpBodyClass(contentType, body []byte) FieldClass {
 	return FieldClassText
 }
 
+// maxCapturedHeaderFields bounds the field table a captured HTTP header is
+// parsed into. Captures are read once and discarded, so the table is sized for
+// a realistic request rather than for whatever the capture happens to hold.
+const maxCapturedHeaderFields = 64
+
 func (pc *PacketBreakdown) CaptureHTTP(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
 	debuglog("pcap:http:start")
 	const httpProtocol = "HTTP"
@@ -777,10 +782,10 @@ func (pc *PacketBreakdown) CaptureHTTP(dst []Frame, pkt []byte, bitOffset int) (
 	const asResponse = true
 	const asRequest = false
 	httpData := pkt[bitOffset/8:]
-	pc.hdr.Reset(httpData)
+	pc.hdr.Reset(httpData, maxCapturedHeaderFields)
 	err := pc.hdr.Parse(asResponse)
 	if err != nil {
-		pc.hdr.Reset(httpData)
+		pc.hdr.Reset(httpData, 0)     // Field table already sized, reuse it.
 		err = pc.hdr.Parse(asRequest) // try as request.
 	}
 	if err != nil {

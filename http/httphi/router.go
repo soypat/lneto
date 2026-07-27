@@ -81,7 +81,7 @@ type RouterConfig struct {
 	// After memory is fully consumed [Exchange.StageHeader] will not append more headers.
 	ResponseHeaderMinBufferSize int
 	// Number of request header key/value pairs to parse before failing and returning [StatusRequestHeaderFieldsTooLarge].
-	RequestNumHeaderCap int
+	RequestNumHeaderKVCap int
 
 	// NormalizeOutgoingKeys normalizes response header field keys as they are
 	// staged, i.e: "content-type" becomes "Content-Type".
@@ -106,6 +106,7 @@ func (cfg RouterConfig) Validate() error {
 	workerMode := cfg.workerMode()
 	if workerMode && cfg.MaxAwaitingConns == 0 ||
 		cfg.Mux == nil ||
+		cfg.RequestNumHeaderKVCap <= 0 ||
 		!workerMode && cfg.FixedNumGoroutines != -1 {
 		return lneto.ErrInvalidConfig
 	} else if cfg.Backoff == nil {
@@ -157,7 +158,7 @@ func (r *Router) Configure(cfg RouterConfig) error {
 	gen := r.gen.Load()
 	numgoro := cfg.FixedNumGoroutines
 	workerMode := cfg.workerMode()
-	r.reqNumHeaderCap = cfg.RequestNumHeaderCap
+	r.reqNumHeaderCap = cfg.RequestNumHeaderKVCap
 	r.reqBuf = cfg.RequestHeaderBufferSize
 	r.respBuf = cfg.ResponseHeaderMinBufferSize
 	r.mux = cfg.Mux
@@ -191,8 +192,9 @@ func (r *Router) Configure(cfg RouterConfig) error {
 			r.exchs[i].Configure(ExchangeConfig{
 				RawBuf:                r.globbuf[goff : goff+rawBuflen],
 				RequestBufferLim:      cfg.RequestHeaderBufferSize,
-				NumHeaderCap:          cfg.RequestNumHeaderCap,
+				NumHeaderKVCap:        cfg.RequestNumHeaderKVCap,
 				NormalizeOutgoingKeys: cfg.NormalizeOutgoingKeys,
+				NoRequestBufferGrowth: true, // Hard memory limit.
 			})
 			go r.goroWorker(gen, jobqueue, cfg.Backoff, cfg.Mux)
 		}
@@ -334,13 +336,16 @@ func (r *Router) getExchLocked(conn conn) (exch *Exchange) {
 		}
 	}
 
-	if r.numGoro == -1 {
+	// Unbounded mode is stored as zero, see [Router.Configure]: a router that
+	// spawns a goroutine per connection allocates the exchange to go with it.
+	if r.numGoro == 0 {
 		exch := new(Exchange)
 		exch.Configure(ExchangeConfig{
 			RawBuf:                make([]byte, r.respBuf+r.reqBuf),
 			RequestBufferLim:      r.reqBuf,
-			NumHeaderCap:          r.reqNumHeaderCap,
+			NumHeaderKVCap:        r.reqNumHeaderCap,
 			NormalizeOutgoingKeys: r.normalizeKeys,
+			NoRequestBufferGrowth: true,
 		})
 		exch.Acquire(conn) // Fresh exchange, CAS cannot fail.
 		return exch

@@ -156,6 +156,7 @@ func configSynchronousRouter(t *testing.T, router *Router, bufferSize int, mux M
 		FixedNumGoroutines:          -1,
 		Mux:                         mux,
 		RequestHeaderBufferSize:     bufferSize,
+		RequestNumHeaderKVCap:       16,
 		ResponseHeaderMinBufferSize: bufferSize,
 		Backoff: func(consecutiveBackoffs uint) (sleepOrFlag time.Duration) {
 			return lneto.BackoffFlagNop
@@ -349,6 +350,7 @@ func TestRouterHandleAfterTeardown(t *testing.T) {
 		MaxAwaitingConns:            4,
 		Mux:                         &sm,
 		RequestHeaderBufferSize:     512,
+		RequestNumHeaderKVCap:       16,
 		ResponseHeaderMinBufferSize: 512,
 		Backoff:                     nopBackoff,
 	})
@@ -377,6 +379,7 @@ func TestRouterConfigureDuringWorkerHandle(t *testing.T) {
 		MaxAwaitingConns:            4,
 		Mux:                         &sm,
 		RequestHeaderBufferSize:     512,
+		RequestNumHeaderKVCap:       16,
 		ResponseHeaderMinBufferSize: 512,
 		Backoff:                     nopBackoff,
 	}
