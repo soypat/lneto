@@ -64,6 +64,53 @@ func benchExchange(b *testing.B, client, server *Handler, data, packetBuf, readB
 	}
 }
 
+// TestHandlerDatapathZeroAlloc enforces the discussion soypat/lneto#87
+// requirement that the datapath allocates nothing after initialization. It is
+// a regression guard: optional policy hooks must not introduce allocation on
+// the plain path.
+func TestHandlerDatapathZeroAlloc(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	rng := rand.New(rand.NewSource(1))
+	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
+	setupClientServer(t, rng, client, server)
+	packetBuf := make([]byte, mtu)
+	establish(t, client, server, packetBuf)
+
+	data := make([]byte, benchPayload)
+	readBuf := make([]byte, benchPayload)
+	allocs := testing.AllocsPerRun(100, func() {
+		n, err := client.Write(data)
+		if err != nil || n != len(data) {
+			t.Fatal("client write:", n, err)
+		}
+		n, err = client.Send(packetBuf)
+		if err != nil || n == 0 {
+			t.Fatal("client send:", n, err)
+		}
+		err = server.Recv(packetBuf[:n])
+		if err != nil {
+			t.Fatal("server recv:", err)
+		}
+		n, err = server.Read(readBuf)
+		if err != nil || n != len(data) {
+			t.Fatal("server read:", n, err)
+		}
+		n, err = server.Send(packetBuf)
+		if err != nil {
+			t.Fatal("server send:", err)
+		}
+		if n > 0 {
+			err = client.Recv(packetBuf[:n])
+			if err != nil {
+				t.Fatal("client recv:", err)
+			}
+		}
+	})
+	if allocs != 0 {
+		t.Errorf("datapath allocated %v times per exchange, want 0", allocs)
+	}
+}
+
 // BenchmarkHandlerDatapath measures the steady-state cost of moving one
 // segment of application data across an established connection with no loss
 // recovery installed. This is the plain-TCP datapath that optional policy work
