@@ -73,7 +73,7 @@ func TestComposite_FansOutEveryHook(t *testing.T) {
 // silently dropping a policy that would never be driven.
 func TestComposite_AddLimit(t *testing.T) {
 	var c Composite
-	for i := 0; i < MaxComposedPolicies; i++ {
+	for i := range MaxComposedPolicies {
 		if err := c.Add(newStub("p")); err != nil {
 			t.Fatalf("Add %d: %v", i, err)
 		}
@@ -329,7 +329,7 @@ func TestComposite_DrivesRealPoliciesOnAConnection(t *testing.T) {
 // what the fixed-size storage is for.
 func TestComposite_ZeroAlloc(t *testing.T) {
 	var c Composite
-	for i := 0; i < MaxComposedPolicies; i++ {
+	for range MaxComposedPolicies {
 		if err := c.Add(newStub("p")); err != nil {
 			t.Fatal(err)
 		}
