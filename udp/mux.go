@@ -175,7 +175,7 @@ func (mh *muxHandler) Demux(carrierData []byte, frameOffset int) error {
 	}
 
 	// Header size validation.
-	// No CRC validation at this level.
+	// No CRC validation at this level; see [Handler.Recv] for why.
 	ul := ufrm.Length()
 	if ul < sizeHeader {
 		return lneto.ErrInvalidLengthField
