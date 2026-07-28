@@ -15,6 +15,7 @@ package timestamps
 
 import (
 	"github.com/soypat/lneto/tcp"
+	"github.com/soypat/lneto/tcp/rto"
 )
 
 const (
@@ -35,15 +36,15 @@ const (
 // Timestamps implements RFC 7323 timestamp negotiation, echoing and RTT
 // measurement as a [tcp.LossRecovery].
 //
-// It composes a [tcp.RTO] so that installing it also installs RFC 6298
+// It composes a [rto.Timer] so that installing it also installs RFC 6298
 // retransmission timing; round-trip samples taken from echoed timestamps are
 // handed to that timer, which is the point of the option for a sender.
 //
 // The zero value is ready to use and offers the option on the next handshake.
 type Timestamps struct {
-	// rto provides retransmission timing. Timestamp-derived samples are fed to
+	// timer provides retransmission timing. Timestamp-derived samples are fed to
 	// it in addition to the samples it takes from acknowledgments.
-	rto tcp.RTO
+	timer rto.Timer
 	// codec serializes and walks the option area.
 	codec tcp.OptionCodec
 
@@ -97,7 +98,7 @@ func (ts *Timestamps) Configure(cfg Config) {
 func (ts *Timestamps) Reset() {
 	paws := ts.paws
 	*ts = Timestamps{paws: paws}
-	ts.rto.Reset()
+	ts.timer.Reset()
 }
 
 // Enabled reports whether the option was successfully negotiated with the peer.
@@ -112,19 +113,19 @@ func (ts *Timestamps) LastRTT() (int64, bool) { return ts.lastRTT, ts.haveRTT }
 
 // SmoothedRTT returns the smoothed round-trip time of the embedded timer in
 // nanoseconds.
-func (ts *Timestamps) SmoothedRTT() int64 { return int64(ts.rto.SmoothedRTT()) }
+func (ts *Timestamps) SmoothedRTT() int64 { return int64(ts.timer.SmoothedRTT()) }
 
 // NextDeadline returns the retransmission deadline of the embedded timer. It
 // implements [tcp.LossRecovery].
-func (ts *Timestamps) NextDeadline() int64 { return ts.rto.NextDeadline() }
+func (ts *Timestamps) NextDeadline() int64 { return ts.timer.NextDeadline() }
 
 // PostTx forwards the emitted segment to the retransmission timer. It
 // implements [tcp.LossRecovery].
-func (ts *Timestamps) PostTx(outgoing tcp.Segment, now int64) { ts.rto.PostTx(outgoing, now) }
+func (ts *Timestamps) PostTx(outgoing tcp.Segment, now int64) { ts.timer.PostTx(outgoing, now) }
 
 // PreTx forwards to the retransmission timer. It implements
 // [tcp.LossRecovery].
-func (ts *Timestamps) PreTx(intent tcp.TxIntent) tcp.TxDirective { return ts.rto.PreTx(intent) }
+func (ts *Timestamps) PreTx(intent tcp.TxIntent) tcp.TxDirective { return ts.timer.PreTx(intent) }
 
 // tsval returns the timestamp clock value to place in an outgoing segment.
 func (ts *Timestamps) tsval(now int64) uint32 {
@@ -210,7 +211,7 @@ func (ts *Timestamps) PreRx(rx tcp.RxMeta) tcp.RxDirective {
 		ts.sample(tsecr, rx.Now)
 	}
 	// Let the retransmission timer see every segment the state machine will.
-	return ts.rto.PreRx(rx)
+	return ts.timer.PreRx(rx)
 }
 
 // updateRecent applies the RFC 7323 §4.3 rule for advancing TS.Recent: the

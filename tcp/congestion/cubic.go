@@ -3,7 +3,7 @@
 //
 // A controller here observes the segment stream through the loss-recovery
 // hooks and throttles the connection by withholding new data once the octets
-// in flight reach its congestion window. It composes [tcp.RTO] rather than
+// in flight reach its congestion window. It composes [rto.Timer] rather than
 // reimplementing retransmission timing, so a single installed policy provides
 // both the RFC 6298 timer and the congestion window, which is what the single
 // composite-policy design calls for.
@@ -17,6 +17,7 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/tcp"
+	"github.com/soypat/lneto/tcp/rto"
 )
 
 // CUBIC tuning constants as defined by [RFC9438]. Windows are expressed in
@@ -72,7 +73,7 @@ type CUBICConfig struct {
 // The window is tracked in MSS-sized segments; [CUBIC.CongestionWindow] reports
 // it in bytes. Slow start uses the Reno algorithm, which §4.10 permits.
 //
-// CUBIC embeds an [tcp.RTO] and forwards the loss-recovery hooks to it, so
+// CUBIC embeds an [rto.Timer] and forwards the loss-recovery hooks to it, so
 // installing a CUBIC also installs RFC 6298 retransmission timing. Loss is
 // detected from that timer and from duplicate ACKs.
 //
@@ -80,10 +81,10 @@ type CUBICConfig struct {
 //
 // [RFC9438]: https://www.rfc-editor.org/rfc/rfc9438
 type CUBIC struct {
-	// rto provides retransmission timing and the smoothed RTT the cubic curve
+	// timer provides retransmission timing and the smoothed RTT the cubic curve
 	// is evaluated against.
-	rto tcp.RTO
-	cfg cubicConfig
+	timer rto.Timer
+	cfg   cubicConfig
 
 	cwnd     float64 // congestion window, segments.
 	ssthresh float64 // slow-start threshold, segments.
@@ -166,18 +167,18 @@ func (c *CUBIC) Reset() {
 		wEst:     cfg.initCwnd,
 		mss:      cfg.mss,
 	}
-	c.rto.Reset()
+	c.timer.Reset()
 }
 
 // NextDeadline returns the retransmission deadline of the embedded timer. It
 // implements [tcp.LossRecovery].
-func (c *CUBIC) NextDeadline() int64 { return c.rto.NextDeadline() }
+func (c *CUBIC) NextDeadline() int64 { return c.timer.NextDeadline() }
 
 // PreRx forwards the segment to the retransmission timer for RTT sampling and
 // then updates the congestion window from the acknowledgment it carries. It
 // implements [tcp.LossRecovery].
 func (c *CUBIC) PreRx(rx tcp.RxMeta) tcp.RxDirective {
-	dir := c.rto.PreRx(rx)
+	dir := c.timer.PreRx(rx)
 	if dir.Keep && rx.Segment.Flags.HasAny(tcp.FlagACK) {
 		c.observeACK(rx.Segment, rx.Now)
 	}
@@ -192,7 +193,7 @@ func (c *CUBIC) PreTx(intent tcp.TxIntent) tcp.TxDirective {
 	if intent.MSS != 0 {
 		c.mss = intent.MSS
 	}
-	dir := c.rto.PreTx(intent)
+	dir := c.timer.PreTx(intent)
 	if dir.Retransmit {
 		// The retransmission timer expired: collapse the window (§4.8).
 		c.onRTO()
@@ -217,7 +218,7 @@ func (c *CUBIC) WriteOptions(plan tcp.TxPlan, opts []byte) uint8 { return 0 }
 
 // PostTx forwards the emitted segment to the retransmission timer. It
 // implements [tcp.LossRecovery].
-func (c *CUBIC) PostTx(outgoing tcp.Segment, now int64) { c.rto.PostTx(outgoing, now) }
+func (c *CUBIC) PostTx(outgoing tcp.Segment, now int64) { c.timer.PostTx(outgoing, now) }
 
 // CongestionWindow returns the congestion window in bytes: the maximum number
 // of unacknowledged octets the sender should allow in flight. It never reports
@@ -241,7 +242,7 @@ func (c *CUBIC) SlowStartThresh() float64 { return c.ssthresh }
 func (c *CUBIC) InSlowStart() bool { return c.cwnd < c.ssthresh }
 
 // SmoothedRTT returns the smoothed round-trip time of the embedded timer.
-func (c *CUBIC) SmoothedRTT() int64 { return int64(c.rto.SmoothedRTT()) }
+func (c *CUBIC) SmoothedRTT() int64 { return int64(c.timer.SmoothedRTT()) }
 
 func (c *CUBIC) segMSS() tcp.Size {
 	if c.mss == 0 {
@@ -317,7 +318,7 @@ func (c *CUBIC) congestionAvoidance(ackSeg float64, now int64) {
 
 	// target = W_cubic(t+RTT) clamped to [cwnd, 1.5*cwnd] so the increase rate
 	// is non-decreasing yet below slow start's (§4.2).
-	rtt := float64(c.rto.SmoothedRTT()) / nanosPerSecond
+	rtt := float64(c.timer.SmoothedRTT()) / nanosPerSecond
 	t := float64(now-c.epoch)/nanosPerSecond + rtt
 	target := c.cubicTarget(t)
 	if target < c.cwnd {
