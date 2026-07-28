@@ -339,15 +339,6 @@ func (sl sentlist) Oldest() *ringidx {
 	return &sl.pkts[0]
 }
 
-func (sl *sentlist) EndSeq() Value {
-	seq := sl.ssn
-	lastPkt := sl.Newest()
-	if lastPkt != nil {
-		seq = lastPkt.endSeq()
-	}
-	return seq
-}
-
 func (sl *sentlist) Free() int {
 	return cap(sl.pkts) - len(sl.pkts)
 }
