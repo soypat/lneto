@@ -17,6 +17,12 @@ const (
 	// maxChallengeRejects is the number of consecutive challenge ACKs sent without
 	// a successful Recv before aborting. Prevents infinite ACK ping-pong when both
 	// sides have diverged state (e.g. after packet mutation).
+	//
+	// Only segments outside the receive window count toward it, since only those are
+	// evidence of divergence. A segment in window that merely cannot be taken yet —
+	// arriving ahead of rcv.NXT, or against a closed window — is ordinary traffic and
+	// is acknowledged without counting, or loss and flow control would abort healthy
+	// connections.
 	maxChallengeRejects = 8
 	// maxWindShift is the largest window scale shift RFC 7323 §2.3 permits, giving
 	// a maximum window just under 1 GiB.
@@ -787,13 +793,35 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	if err != nil {
 		// RFC 9293 §3.4: If segment not acceptable, send ACK (unless RST).
 		switch err {
-		case errSeqNotInWindow, errLastNotInWindow, errRequireSequential, errZeroWindow:
+		case errSeqNotInWindow, errLastNotInWindow:
+			// Outside the window altogether, which is evidence the two sides no
+			// longer agree on the sequence space. Left alone the peers acknowledge
+			// each other forever, so these are counted toward the abort.
 			if !flags.HasAny(FlagRST) {
 				if tcb.tooManyChallengeAcks() {
 					tcb.Abort()
 					return net.ErrClosed
 				}
 				tcb.triggerChallengeAckEmit()
+			}
+		case errRequireSequential, errZeroWindow:
+			// In window, so the two sides do agree; this segment simply cannot be
+			// taken yet. Both cases are ordinary traffic on a working connection and
+			// must not count toward an abort.
+			//
+			// A segment ahead of rcv.NXT is what every lossy or reordering path
+			// produces, and specifically what arrives behind a dropped segment, so
+			// counting it means loss tears the connection down instead of being
+			// recovered. A segment against a closed window is a zero-window probe,
+			// which deliberately carries an octet that cannot be accepted in order to
+			// draw the window update that unblocks the sender; counting those means a
+			// connection stalled by a slow application is destroyed by the mechanism
+			// meant to recover it, the sooner the more patiently the peer probes.
+			//
+			// Both are still acknowledged, since RFC 9293 §3.10.7.4 requires it and
+			// the acknowledgement is what tells the peer where this side is.
+			if !flags.HasAny(FlagRST) {
+				tcb.TriggerWindowUpdate()
 			}
 		}
 		return err
