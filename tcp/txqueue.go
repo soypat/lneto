@@ -218,51 +218,27 @@ func (rtx *ringTx) ring(off, end int) internal.Ring {
 // Result of addEnd will never be 0 unless arguments are (0,0).
 func (rtx *ringTx) addEnd(a, b int) int { return addEnd(a, b, len(rtx.rawbuf)) }
 
-// RetransmitFrom rewinds the transmit queue so that sent-but-unacked data at
-// and after start becomes unsent again. The next MakePacket call re-sends from
-// the returned sequence number. This is the smoltcp-style pointer-rewind
-// approach: no extra mode flag, Send() has a single code path.
+// retransmitBoundary reports the sequence number a retransmission asking to resume
+// at start must actually resume at, which is the boundary of the queued packet
+// containing start.
 //
-// start is clamped down to the boundary of the queued packet that contains it,
-// because the queue tracks whole packets: the returned sequence is that
-// boundary and is at or before start. Resending a few already-received octets
-// is always valid on the wire, whereas splitting a queued packet would
-// misreport what was sent. Callers must rewind snd.NXT to the returned value,
-// not to start.
+// The queue tracks whole packets and [ringTx.MakePacket] resends one by its exact
+// starting sequence, so a request landing inside a packet is clamped down to that
+// packet's first octet: the returned sequence is at or before start. Resending a few
+// octets the peer already has is always valid on the wire, whereas splitting a
+// queued packet would misreport what was sent. A selective acknowledgement names
+// ranges the peer chose, not ranges this side sent, so an interior sequence is the
+// normal case rather than an error.
 //
 // ok is false when start is not in the queued range [snd.UNA, snd.NXT), which
-// includes the case of an empty retransmission queue.
-//
-// Implements "send the segment at the front of the retransmission queue"
-// per RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT), generalized to resume from an
-// arbitrary point for selective retransmission.
-func (rtx *ringTx) RetransmitFrom(start Value) (rewound Value, ok bool) {
-	idx := -1
+// includes the case of an empty retransmission queue. The queue is not modified.
+func (rtx *ringTx) retransmitBoundary(start Value) (boundary Value, ok bool) {
 	for i := range rtx.slist.pkts {
 		if pkt := &rtx.slist.pkts[i]; start.InWindow(pkt.seq, pkt.size) {
-			idx = i
-			break
+			return pkt.seq, true
 		}
 	}
-	if idx < 0 {
-		return 0, false // Not in the retransmission queue.
-	}
-	pkt := &rtx.slist.pkts[idx]
-	rewound = pkt.seq
-	// Merge sent region [pkt.off, sentend) back into unsent. The two regions are
-	// contiguous (sentend==unsentoff) so unsent only needs its start moved back.
-	if rtx.unsentend == 0 {
-		rtx.unsentend = rtx.sentend
-	}
-	rtx.unsentoff = pkt.off
-	if idx == 0 {
-		rtx.sentoff = 0
-		rtx.sentend = 0
-	} else {
-		rtx.sentend = rtx.slist.pkts[idx-1].end
-	}
-	rtx.slist.DropFrom(idx)
-	return rewound, true
+	return 0, false // Not in the retransmission queue.
 }
 
 func (rtx *ringTx) consolidateBufs() {
@@ -362,19 +338,6 @@ func (sl *sentlist) AddPacket(datalen, off, bufsize int, seq Value) *ringidx {
 		size: Size(datalen),
 	})
 	return &sl.pkts[len(sl.pkts)-1]
-}
-
-// DropFrom discards the packet at idx and every packet sent after it, so their
-// data may be queued for transmission again. When the whole list is discarded
-// the auxiliary sequence counter is rewound to the dropped packet's sequence
-// number so [sentlist.EndSeq] keeps reporting where the next packet starts.
-// Queue capacity is retained.
-func (sl *sentlist) DropFrom(idx int) {
-	seq := sl.pkts[idx].seq
-	sl.pkts = sl.pkts[:idx]
-	if idx == 0 {
-		sl.ssn = seq
-	}
 }
 
 func (sl *sentlist) RecvAck(ack Value, bufsize int) error {

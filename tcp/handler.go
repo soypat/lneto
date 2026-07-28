@@ -468,11 +468,19 @@ func (h *Handler) Send(b []byte) (int, error) {
 			//
 			// The pointer leaves the transmit queue's sent/unsent split alone, so
 			// data after the resent range stays sent and the connection does not
-			// forget how far it has got. A range the queue no longer holds is
-			// rejected when the segment is built rather than corrupting the send
-			// sequence. Retransmission of a control segment is not reachable from
-			// here; see [Handler.RequeueControl].
-			h.scb.RetransmitAt(dir.RetransmitFrom)
+			// forget how far it has got.
+			//
+			// The queue decides the effective sequence, since it resends whole
+			// packets and so can only resume at a packet boundary, and it rejects
+			// sequences it holds no data for. Only then is the pointer set, so a
+			// directive the queue cannot honour leaves the two consistent instead of
+			// pointing the connection at data it can no longer produce — which
+			// matters because a selective acknowledgement names ranges the peer
+			// chose, not ranges this side sent. Retransmission of a control segment
+			// is not reachable from here; see [Handler.RequeueControl].
+			if at, ok := h.bufTx.retransmitBoundary(dir.RetransmitFrom); ok {
+				h.scb.RetransmitAt(at)
+			}
 		}
 	}
 	awaitingSyn := h.AwaitingSynSend()

@@ -355,38 +355,16 @@ func (tcb *ControlBlock) HasPendingRetransmit() bool {
 	return tcb._state.TxDataOpen() && tcb.dupack >= retransmitAfterDupacks && tcb.nRetransmit <= tcb.dupack-retransmitAfterDupacks
 }
 
-// RewindNXT moves snd.NXT back to seq so the next PendingSegment and Send calls
-// retransmit unacknowledged data from there. seq is clamped into
-// [snd.UNA, snd.NXT], so rewinding to snd.UNA retransmits everything outstanding
-// (go-back-N) and a sequence outside the outstanding range is a no-op rather
-// than an error. It must be paired with ringTx.RetransmitFrom to rewind the
-// transmit buffer. Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
-func (tcb *ControlBlock) RewindNXT(seq Value) {
-	if seq.LessThan(tcb.snd.UNA) {
-		seq = tcb.snd.UNA
-	} else if tcb.snd.NXT.LessThan(seq) {
-		return // Nothing sent from seq onward.
-	}
-	tcb.snd.NXT = seq
-	tcb.dupack = 0
-	tcb.nRetransmit = 0
-	// A rewind resends everything from seq onward, which subsumes any selective
-	// retransmission and would otherwise leave its pointer stranded at or past the
-	// new high-water mark.
-	tcb.rtxPtr, tcb.rtxActive = 0, false
-}
-
 // RetransmitAt directs the next segments to resend already-sent data starting at
 // seq, without disturbing how far the stream has been sent. It returns the
 // sequence retransmission will actually resume at and whether anything will be
 // retransmitted at all.
 //
-// This is the selective counterpart to [ControlBlock.RewindNXT]. Rewinding snd.NXT
-// resends everything from a point onward and cannot skip a range the peer has
-// already acknowledged selectively, because snd.NXT is simultaneously the resume
-// point and the record of how far the stream has gone. Holding the resume point
-// separately means a single missing range can be resent while the data after it
-// stays sent, which is what a selective acknowledgement asks for (RFC 6675 §2).
+// Holding the resume point apart from snd.NXT is what makes a selective
+// retransmission expressible. Rewinding snd.NXT to resend, as this once did, resends
+// everything from that point onward and cannot skip a range the peer has already
+// acknowledged, because snd.NXT is then simultaneously the resume point and the
+// record of how far the stream has gone (RFC 6675 §2).
 //
 // seq is clamped into [snd.UNA, snd.NXT): retransmitting before snd.UNA would
 // resend acknowledged data, and there is nothing at or past snd.NXT to resend. A
