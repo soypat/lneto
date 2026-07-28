@@ -211,7 +211,38 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 
 // Recv receives an incoming TCP packet frame with the first byte being the first octet of the TCP frame.
 // The [Handler]'s internal state is updated if the packet is admitted successfully.
+//
+// It reports no congestion mark. Use [Handler.RecvWithECN] where the IP header is in
+// hand, since the mark lives there.
 func (h *Handler) Recv(incomingPacket []byte) error {
+	return h.RecvWithECN(incomingPacket, ECNNotECT)
+}
+
+// RecvWithECN receives a TCP frame together with the ECN codepoint of the IP header
+// that carried it, which is where congestion is signalled (RFC 3168 §5). A codepoint
+// of [ECNCE] on a connection that negotiated ECN starts echoing the congestion back
+// to the peer.
+//
+// The codepoint is a separate argument rather than read from the frame because the
+// handler is given only the TCP frame; the caller that has the IP header passes what
+// it found there.
+func (h *Handler) RecvWithECN(incomingPacket []byte, ecn uint8) error {
+	h.scb.observeECN(ecn)
+	return h.recv(incomingPacket)
+}
+
+// ECNCodepoint returns the ECN codepoint the IP layer should mark outgoing packets
+// with. See [ControlBlock.ECNCodepoint].
+func (h *Handler) ECNCodepoint() uint8 { return h.scb.ECNCodepoint() }
+
+// EnableECN configures whether this connection offers ECN on its next handshake. It
+// must be set before the connection is opened. See [ControlBlock.EnableECN].
+func (h *Handler) EnableECN(enable bool) { h.scb.EnableECN(enable) }
+
+// ECNEnabled reports whether ECN was negotiated with the peer.
+func (h *Handler) ECNEnabled() bool { return h.scb.ECNEnabled() }
+
+func (h *Handler) recv(incomingPacket []byte) error {
 	if h.IsTxOver() {
 		return net.ErrClosed
 	}
@@ -631,7 +662,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 		if !ok {
 			// No pending control segment or data to send. Yield.
 			return 0, nil
-		} else if segment.Flags == synack {
+		} else if segment.Flags&^flagECN == synack {
 			// A SYN-ACK's window is never scaled (RFC 7323 §2.2).
 			segment.WND = h.synWindow()
 			synShift, sentSynOpts = h.putSynOptions(b[sizeHeaderTCP:], mss)
@@ -654,6 +685,9 @@ func (h *Handler) Send(b []byte) (int, error) {
 			}
 		}
 	}
+	// The congestion flags are added last, once the segment is otherwise decided,
+	// because whether CWR belongs on it depends on whether it ended up carrying data.
+	segment.Flags |= h.scb.ecnSendFlags(segment)
 	prevState := h.scb.State()
 	err = h.scb.Send(segment)
 	if err != nil {

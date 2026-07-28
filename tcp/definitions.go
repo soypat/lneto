@@ -70,7 +70,7 @@ func (seg *Segment) Last() Value {
 }
 
 func (seg Segment) isFirstSYN() bool {
-	return seg.Flags == FlagSYN && seg.ACK == 0 && seg.DATALEN == 0 && seg.WND > 0
+	return seg.Flags&^flagECN == FlagSYN && seg.ACK == 0 && seg.DATALEN == 0 && seg.WND > 0
 }
 
 func (seg Segment) String() string {
@@ -166,19 +166,12 @@ const (
 	FlagNS                    // FlagNS  - Nonce Sum flag (see RFC 3540).
 )
 
-// TODO(RFC 3168 ECN): Explicit Congestion Notification is not implemented. The
-// ECE/CWR flags above are defined but never negotiated (ECN-setup SYN/SYN-ACK)
-// nor acted upon: a CE-marked segment should make the receiver echo ECE and the
-// sender reduce its congestion window and set CWR, treating congestion as a
-// signal rather than only as loss.
-//
-// This needs a decision on the extension seam, deferred until selective
-// retransmission settles: reducing the window belongs to a [Policy]
-// policy, but echoing ECE and setting CWR means influencing the flags of an
-// outgoing segment, which no directive currently allows. Adding flag control to
-// [TxDirective] would be hard to walk back, so the alternative of keeping ECN
-// wholly in the core and consulting the policy only for the window reduction
-// should be weighed first.
+// flagECN are the flags RFC 3168 uses to negotiate ECN and to signal congestion.
+// They ride on segments whose control flags are otherwise compared exactly — an
+// ECN-setup SYN is SYN|ECE|CWR and an ECN-setup SYN-ACK is SYN|ACK|ECE — so those
+// comparisons mask them out. Matching a SYN exactly would silently fail to recognise
+// one from any ECN-capable peer.
+const flagECN = FlagECE | FlagCWR
 
 const flagMask = 0x01ff
 
