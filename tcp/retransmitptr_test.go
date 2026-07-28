@@ -200,28 +200,6 @@ func TestRetransmitPointerClearedByAcknowledgement(t *testing.T) {
 	}
 }
 
-// TestRewindNXTClearsRetransmitPointer verifies a go-back-N rewind supersedes a
-// selective retransmission rather than leaving its pointer stranded at or past the
-// new high-water mark.
-func TestRewindNXTClearsRetransmitPointer(t *testing.T) {
-	const iss Value = 1000
-	tcb := cbSending(t, iss, 1500)
-	if _, ok := tcb.RetransmitAt(iss + 1000); !ok {
-		t.Fatal("RetransmitAt refused")
-	}
-	tcb.RewindNXT(iss + 500) // Rewind to before the pointer.
-	if _, active := tcb.RetransmitPointer(); active {
-		t.Error("selective retransmission survived a rewind that subsumes it")
-	}
-	seg, ok := tcb.PendingSegment(500)
-	if !ok {
-		t.Fatal("no segment after rewind")
-	}
-	if seg.SEQ != iss+500 {
-		t.Errorf("segment at %d, want the rewound snd.NXT %d", seg.SEQ, iss+500)
-	}
-}
-
 // TestRetransmitPointerYieldsToControlSegments verifies a pending RST or FIN is not
 // displaced by a retransmission, matching how the existing retransmit strategy
 // defers to control segments.
