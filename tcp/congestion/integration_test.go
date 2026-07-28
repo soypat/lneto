@@ -103,7 +103,7 @@ func TestCUBIC_ThrottlesRealConnection(t *testing.T) {
 	// Transmit without delivering: everything sent stays in flight.
 	cwnd := cubic.CongestionWindow()
 	var sent, segments int
-	for i := 0; i < 32; i++ {
+	for range 32 {
 		n := sendOnly(t, client, packet)
 		if n == 0 {
 			break // Withheld by congestion control.
@@ -188,7 +188,7 @@ func TestCUBIC_ResumesAfterAcknowledgement(t *testing.T) {
 
 	// Fill the window, delivering each segment so the server can acknowledge.
 	var delivered int
-	for i := 0; i < 32; i++ {
+	for range 32 {
 		n := relay(t, client, server, packet)
 		if n == 0 {
 			break
