@@ -44,7 +44,7 @@ func (c *Conn) SetWriteTimeout(timeout time.Duration) error { return errors.ErrU
 type Listener struct{}
 
 // Listen is unsupported on this platform.
-func Listen(port uint16) (*Listener, error) { return nil, errors.ErrUnsupported }
+func (l *Listener) Listen(port uint16) error { return errors.ErrUnsupported }
 
 func (l *Listener) Accept() (net.Conn, error)   { return nil, errors.ErrUnsupported }
 func (l *Listener) AcceptConn(conn *Conn) error { return errors.ErrUnsupported }
