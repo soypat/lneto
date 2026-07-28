@@ -828,10 +828,7 @@ func errstr(err error) string {
 // segments carry the window unscaled (RFC 7323 §2.2), so it is clamped to what the
 // 16-bit field holds; the scaled window takes effect from the next segment on.
 func (h *Handler) synWindow() Size {
-	wnd := Size(h.bufRx.Size())
-	if wnd > math.MaxUint16 {
-		wnd = math.MaxUint16
-	}
+	wnd := min(Size(h.bufRx.Size()), math.MaxUint16)
 	return wnd
 }
 

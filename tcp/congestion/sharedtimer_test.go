@@ -91,7 +91,7 @@ func TestSharedTimer_DrivesRealConnection(t *testing.T) {
 	if _, err := client.Write(payload); err != nil {
 		t.Fatal("write:", err)
 	}
-	for i := 0; i < 12; i++ {
+	for range 12 {
 		if relay(t, client, server, packet) == 0 {
 			break
 		}
