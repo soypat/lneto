@@ -216,3 +216,35 @@ func TestRTO_ImplementsLossRecovery(t *testing.T) {
 		t.Error("expected disarmed timer after full ack")
 	}
 }
+
+// TestRTO_RetransmitsZeroWindowProbe verifies the timer takes over the periodic
+// probing of a closed send window. A zero-window probe is a single octet the peer
+// cannot accept, so it goes unacknowledged; the timer must keep resending it, with
+// exponential backoff, which is the persist-timer behaviour of RFC 9293 §3.8.6.1.
+// The tcp package relies on this and refuses to probe without a policy installed.
+func TestRTO_RetransmitsZeroWindowProbe(t *testing.T) {
+	r := newRTO()
+	const iss = uint32(5000)
+	probe := dataSeg(iss, 1) // The one-octet probe.
+	r.PostTx(probe, 0)
+
+	now := int64(rtoInitial)
+	prevRTO := r.CurrentRTO()
+	for attempt := 1; attempt <= 4; attempt++ {
+		dir := r.PreTx(tcp.TxIntent{Now: now, UNA: tcp.Value(iss), NXT: tcp.Value(iss + 1)})
+		if !dir.Retransmit {
+			t.Fatalf("attempt %d: timer did not fire; the probe would never be resent", attempt)
+		}
+		if dir.RetransmitFrom != tcp.Value(iss) {
+			t.Errorf("attempt %d: retransmit from %d, want the probe octet at %d",
+				attempt, dir.RetransmitFrom, iss)
+		}
+		if got := r.CurrentRTO(); got <= prevRTO {
+			t.Errorf("attempt %d: rto %v did not back off past %v", attempt, got, prevRTO)
+		}
+		prevRTO = r.CurrentRTO()
+		// The peer still cannot accept the octet, so it stays unacknowledged.
+		r.PostTx(probe, now)
+		now += int64(prevRTO)
+	}
+}

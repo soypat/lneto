@@ -113,11 +113,14 @@ func (h *Handler) txIntent(now int64, buffered int) TxIntent {
 // there is no deadline or no loss recovery is configured. See [LossRecovery].
 //
 // TODO(connection timers): only the installed policy feeds this deadline. The
-// 2MSL TIME-WAIT timer, the keepalive interval and a future persist timer are
-// also time-driven, but this package holds no clock, so they remain the caller's
-// responsibility. They should be folded in here as the earliest of all pending
-// deadlines once the Conn.SetDeadline family is reconciled with
-// ConnConfig.Nanotime.
+// 2MSL TIME-WAIT timer and the keepalive interval are also time-driven, but this
+// package holds no clock, so they remain the caller's responsibility. They
+// should be folded in here as the earliest of all pending deadlines once the
+// Conn.SetDeadline family is reconciled with ConnConfig.Nanotime.
+//
+// Zero-window probing is deliberately not one of them: it is throttled by
+// counting stalled transmit attempts rather than time, precisely so that it
+// works on a connection with no clock at all. See [ControlBlock.ZeroWindowProbe].
 func (h *Handler) NextDeadline() int64 {
 	if h.loss == nil {
 		return 0
@@ -555,6 +558,17 @@ func (h *Handler) Send(b []byte) (int, error) {
 			maxPayload = 0
 		}
 		segment, ok = h.scb.PendingSegment(maxPayload)
+		if !ok && buffered > 0 && !holdNew && h.lossEnabled() {
+			// Data is queued but nothing can be sent. If the peer's window is
+			// closed this is the persist-timer case and a probe must go out, else a
+			// lost window update stalls the connection forever.
+			//
+			// Loss recovery is required, not incidental: the peer cannot accept the
+			// probe octet, so it must be retransmitted until it can. With no
+			// retransmission timer the probe would leave a hole nothing ever fills,
+			// which is a worse failure than the stall it set out to cure.
+			segment, ok = h.scb.ZeroWindowProbe()
+		}
 		segment.WND = h.recvWindow()
 		if !ok {
 			// No pending control segment or data to send. Yield.

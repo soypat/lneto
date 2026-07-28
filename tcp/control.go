@@ -274,6 +274,43 @@ func (tcb *ControlBlock) RewindNXT(seq Value) {
 	tcb.nRetransmit = 0
 }
 
+// ZeroWindowProbe returns a zero-length probe segment to elicit a window update
+// from a peer that has closed its receive window, or ok=false when it is not yet
+// time to probe. Callers use it when [ControlBlock.PendingSegment] declines to
+// produce a segment while data is still queued for transmission.
+//
+// Without a probe the connection can stall permanently: the peer sends a window
+// update once its application reads, but that update is a bare ACK and is never
+// retransmitted, so losing it leaves the sender waiting forever. RFC 9293
+// §3.8.6.1 requires a persist timer for exactly this reason. It applies only
+// when nothing is outstanding; while data is unacknowledged the retransmission
+// timer already forces the peer to respond.
+//
+// One probe per stall is enough and no timer is needed to space them out, which
+// is what lets this work in a package that holds no clock. The probe leaves an
+// octet unacknowledged, so the stall is no longer unprobeable: from then on the
+// retransmission timer resends that octet with real exponential backoff, which
+// is the periodic probing RFC 9293 §3.8.6.1 asks for. Without a [LossRecovery]
+// installed there is no such timer and the single probe is all that is sent.
+//
+// Like PendingSegment this does not modify the ControlBlock.
+func (tcb *ControlBlock) ZeroWindowProbe() (_ Segment, ok bool) {
+	if tcb.snd.WND != 0 || !tcb._state.TxDataOpen() || tcb.snd.UNA != tcb.snd.NXT {
+		// Three things disqualify a probe. A non-zero window is not a stall at
+		// all, merely a full one awaiting acknowledgements. A state that cannot
+		// send data has no window to probe. And outstanding data means a
+		// retransmission is already due, which doubles as a probe because the peer
+		// must acknowledge it; injecting probes there would fragment the stream
+		// into single octets and starve the transmit queue.
+		return Segment{}, false
+	}
+	// The probe carries one octet, because a bare ACK draws no reply: an
+	// acknowledgement needs no acknowledgement, so the peer would process it and
+	// stay silent. One octet the peer cannot accept forces it to respond with an
+	// ACK reporting its current window (RFC 9293 §3.10.7.4).
+	return Segment{SEQ: tcb.snd.NXT, DATALEN: 1, ACK: tcb.rcv.NXT, WND: tcb.rcv.WND, Flags: FlagACK}, true
+}
+
 // TriggerWindowUpdate queues a bare ACK so that a peer whose segment could not
 // be accepted learns the current receive window. RFC 9293 §3.10.7.4 requires an
 // acknowledgement in reply to a segment that is not acceptable; dropping it in
@@ -520,8 +557,9 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	isFirst := tcb._state == StateClosed && seg.isFirstSYN()
 	checkSeq := !isFirst && !seg.Flags.HasAny(FlagRST)
 	seglast := seg.Last()
-	// Extra check for when send Window is zero and no data is being sent.
-	zeroWindowOK := tcb.snd.WND == 0 && seg.DATALEN == 0 && seg.SEQ == tcb.snd.NXT
+	// Extra check for when send Window is zero and no data, or a single octet of
+	// zero-window probe, is being sent. See [ControlBlock.ZeroWindowProbe].
+	zeroWindowOK := tcb.snd.WND == 0 && seg.DATALEN <= 1 && seg.SEQ == tcb.snd.NXT
 	outOfWindow := checkSeq && !seg.SEQ.InWindow(tcb.snd.NXT, tcb.snd.WND) &&
 		!zeroWindowOK
 	isRetransmit := checkSeq && seg.SEQ.InRange(tcb.snd.UNA, tcb.snd.NXT)
@@ -533,11 +571,6 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	case hasAck && seg.ACK != tcb.rcv.NXT:
 		err = errAckNotNext
 
-	// TODO(RFC 9293 §3.8.6.1 persist timer): a zero send window is reported as an
-	// error and the sender simply stops. There is no persist timer to send
-	// zero-window probes, so if the ACK that reopens the peer's window is lost the
-	// connection can deadlock. A persist timer should probe periodically and, like
-	// the RTO, surface its next fire time through Handler.NextDeadline.
 	case outOfWindow && !isRetransmit:
 		if tcb.snd.WND == 0 {
 			err = errZeroWindow
@@ -548,7 +581,7 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	case seg.DATALEN > 0 && (tcb._state == StateFinWait1 || tcb._state == StateFinWait2):
 		err = errConnectionClosing // Case 1: No further SENDs from the user will be accepted by the TCP implementation.
 
-	case checkSeq && tcb.snd.WND == 0 && seg.DATALEN > 0 && seg.SEQ == tcb.snd.NXT:
+	case checkSeq && tcb.snd.WND == 0 && seg.DATALEN > 1 && seg.SEQ == tcb.snd.NXT:
 		err = errZeroWindow
 
 	case checkSeq && !seglast.InWindow(tcb.snd.NXT, tcb.snd.WND) && !zeroWindowOK && !isRetransmit:
