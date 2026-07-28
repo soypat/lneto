@@ -139,6 +139,15 @@ func (conn *Conn) RequeueControl() {
 	conn.h.RequeueControl()
 }
 
+// NextDeadline returns the monotonic-nanosecond instant at which this connection
+// must next be given a chance to transmit, or 0 when it has no such deadline.
+// See [Handler.NextDeadline].
+func (conn *Conn) NextDeadline() int64 {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.h.NextDeadline()
+}
+
 // RemoteAddr returns the address of the peer Conn is exchanging data with.
 func (conn *Conn) RemoteAddr() []byte {
 	conn.mu.Lock()
