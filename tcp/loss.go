@@ -61,7 +61,22 @@ type LossRecovery interface {
 	// PreRx is called for every segment received on the TCP port before the
 	// state machine processes it. It returns whether the segment should be kept
 	// (processed) or dropped.
+	//
+	// Because it runs first, nothing is yet known about whether the segment is
+	// acceptable. State that depends on the segment counting, such as
+	// acknowledgement accounting or a recorded timestamp, belongs in [PostRx]
+	// instead; PreRx is for deciding the segment's fate, not for recording it.
 	PreRx(rx RxMeta) RxDirective
+
+	// PostRx is called once the connection has finished with a received segment,
+	// reporting what it did with it. It is the counterpart to PreRx and the place
+	// for state that must only change for a segment that counted: an acknowledgement
+	// that really advanced the send sequence, a timestamp from a segment that was
+	// acceptable, a duplicate acknowledgement that really was one.
+	//
+	// It is called for rejected segments too, with Accepted false, so a policy can
+	// observe a segment being refused without having to infer it.
+	PostRx(event RxEvent)
 
 	// PreTx is called on entering the transmit path (Encapsulate), before a
 	// segment is built, with a snapshot of the send state. Its directive tells
@@ -222,6 +237,45 @@ type TxDirective struct {
 	// this same directive, pending control segments and ACKs still proceed; only
 	// fresh data from the send buffer is withheld until a later PreTx clears it.
 	HoldNew bool
+}
+
+// RxEvent reports what a connection did with a received segment. It is passed by
+// value to [LossRecovery.PostRx] and must not be retained.
+//
+// It exists so that a policy does not have to reconstruct the state machine's
+// decisions from the raw segment. Reconstructing them means duplicating the
+// acceptance rules, and getting them subtly wrong means accounting for data the
+// connection never accepted.
+type RxEvent struct {
+	// Now is the current monotonic time in nanoseconds, the same instant reported
+	// to [LossRecovery.PreRx] for this segment.
+	Now int64
+	// Segment is the segment as received.
+	Segment Segment
+	// Options is the option area of the received segment, borrowed for the duration
+	// of the call exactly as [RxMeta.Options] is. A policy that records an option's
+	// value only for a segment that counted reads it here rather than in PreRx.
+	Options []byte
+	// RcvNXT is the receive sequence the connection expects next, after this
+	// segment. Some option rules are stated against it, such as the RFC 7323 §4.3
+	// condition for advancing the recorded timestamp.
+	RcvNXT Value
+	// Accepted reports whether the connection took the segment. A false value means
+	// it was refused or dropped, and nothing about it should be accounted for.
+	Accepted bool
+	// BytesAcked is how much previously unacknowledged data this segment
+	// acknowledged, zero when it advanced nothing.
+	BytesAcked Size
+	// DupACK reports an acknowledgement that did not advance the send sequence,
+	// which is the signal fast retransmit counts.
+	DupACK bool
+	// DataDelivered is the count of payload octets the receive path took, which is
+	// zero for a pure acknowledgement and for data that was buffered out of order.
+	DataDelivered Size
+	// StateBefore and StateAfter bracket the connection state across the segment,
+	// so a policy sees a transition without watching for it.
+	StateBefore State
+	StateAfter  State
 }
 
 // RxDirective is returned by [LossRecovery.PreRx].

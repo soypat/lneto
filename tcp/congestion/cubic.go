@@ -174,15 +174,24 @@ func (c *CUBIC) Reset() {
 // implements [tcp.LossRecovery].
 func (c *CUBIC) NextDeadline() int64 { return c.timer.NextDeadline() }
 
-// PreRx forwards the segment to the retransmission timer for RTT sampling and
-// then updates the congestion window from the acknowledgment it carries. It
-// implements [tcp.LossRecovery].
-func (c *CUBIC) PreRx(rx tcp.RxMeta) tcp.RxDirective {
-	dir := c.timer.PreRx(rx)
-	if dir.Keep && rx.Segment.Flags.HasAny(tcp.FlagACK) {
-		c.observeACK(rx.Segment, rx.Now)
+// PreRx keeps every segment: a congestion controller drops nothing and records
+// nothing before the connection has judged the segment. It implements
+// [tcp.LossRecovery].
+func (c *CUBIC) PreRx(rx tcp.RxMeta) tcp.RxDirective { return c.timer.PreRx(rx) }
+
+// PostRx forwards an accepted segment to the retransmission timer and updates the
+// congestion window from the acknowledgement it carries. It implements
+// [tcp.LossRecovery].
+//
+// A refused segment is ignored, which is the difference between counting real
+// feedback and counting whatever arrives: an acknowledgement the state machine
+// rejected would otherwise grow the window for data that was never delivered, and
+// a rejected duplicate would count toward fast retransmit.
+func (c *CUBIC) PostRx(event tcp.RxEvent) {
+	c.timer.PostRx(event)
+	if event.Accepted && event.Segment.Flags.HasAny(tcp.FlagACK) {
+		c.observeACK(event.Segment, event.Now)
 	}
-	return dir
 }
 
 // PreTx applies the retransmission timer's directive, adds a duplicate-ACK

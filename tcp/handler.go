@@ -240,18 +240,43 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		return nil
 	}
 
-	// Notify loss recovery of the received segment (RTT sampling, timer
-	// management) and let it drop the segment before processing if it asks to.
-	if h.lossEnabled() && !h.loss.PreRx(RxMeta{
-		Now:     h.nanotime(),
-		Segment: segIncoming,
-		Options: tfrm.Options(),
-		State:   h.scb.State(),
-		SndUNA:  h.scb.snd.UNA,
-		SndNXT:  h.scb.snd.NXT,
-		RcvNXT:  h.scb.rcv.NXT,
-	}).Keep {
-		return nil
+	// Notify loss recovery of the received segment and let it drop the segment
+	// before processing if it asks to. Anything the policy records about a segment
+	// that counted belongs in PostRx below, since nothing here knows yet whether
+	// the state machine will accept it.
+	var event RxEvent
+	if h.lossEnabled() {
+		now := h.nanotime()
+		if !h.loss.PreRx(RxMeta{
+			Now:     now,
+			Segment: segIncoming,
+			Options: tfrm.Options(),
+			State:   h.scb.State(),
+			SndUNA:  h.scb.snd.UNA,
+			SndNXT:  h.scb.snd.NXT,
+			RcvNXT:  h.scb.rcv.NXT,
+		}).Keep {
+			return nil
+		}
+		event = RxEvent{
+			Now:         now,
+			Segment:     segIncoming,
+			Options:     tfrm.Options(),
+			StateBefore: h.scb.State(),
+		}
+		una := h.scb.snd.UNA
+		// Reported on every path out of here, so a policy sees a refusal as well as
+		// an acceptance and never has to infer one from silence.
+		defer func() {
+			event.StateAfter = h.scb.State()
+			event.RcvNXT = h.scb.rcv.NXT
+			if event.Accepted {
+				event.BytesAcked = Sizeof(una, h.scb.snd.UNA)
+				event.DupACK = event.BytesAcked == 0 &&
+					segIncoming.Flags.HasAny(FlagACK) && segIncoming.ACK == una
+			}
+			h.loss.PostRx(event)
+		}()
 	}
 
 	// Out-of-order reassembly: buffer in-window data that arrived ahead of the
@@ -295,10 +320,12 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		return nil
 	}
 	if segIncoming.DATALEN != 0 && !h.shutdownRx {
-		_, err = h.bufRx.Write(payload)
+		var nw int
+		nw, err = h.bufRx.Write(payload)
 		if err != nil {
 			return err
 		}
+		event.DataDelivered = Size(nw)
 	}
 	if segIncoming.DATALEN != 0 {
 		// The just-accepted in-order segment may have filled a gap; deliver any
@@ -314,6 +341,7 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 			h.bufTx.RecvACK(segIncoming.ACK)
 		}
 	}
+	event.Accepted = true
 	if segIncoming.Flags.HasAny(FlagSYN) {
 		// Parse the options only a SYN carries: the peer's maximum segment size and
 		// its window scale. The window of this very SYN was recorded unscaled just

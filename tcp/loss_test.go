@@ -15,6 +15,7 @@ type recordingLoss struct {
 	preRx    []hookCall
 	preTx    []TxIntent
 	postTx   []hookCall
+	postRx   []RxEvent
 	deadline int64 // value NextDeadline reports back.
 
 	// Directives handed back to the Handler.
@@ -63,6 +64,10 @@ func (l *recordingLoss) WriteOptions(plan TxPlan, opts []byte) uint8 {
 
 func (l *recordingLoss) PostTx(outgoing Segment, now int64) {
 	l.postTx = append(l.postTx, hookCall{seg: outgoing, now: now})
+}
+
+func (l *recordingLoss) PostRx(event RxEvent) {
+	l.postRx = append(l.postRx, event)
 }
 
 // TestLossRecovery_DisabledByDefault verifies the Handler runs normally with no
@@ -398,5 +403,85 @@ func TestLossRecovery_ResetOnReopen(t *testing.T) {
 	}
 	if loss.resets <= afterAbort {
 		t.Fatalf("Reset not called on reopen: resets=%d, want >%d", loss.resets, afterAbort)
+	}
+}
+
+// TestLossRecovery_PostRxReportsRejection verifies the connection tells the policy
+// what it did with a segment, rather than leaving the policy to infer it. PreRx runs
+// before the state machine has judged anything, so a policy accounting for
+// acknowledgements there would count one for data that was never sent.
+func TestLossRecovery_PostRxReportsRejection(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	rng := rand.New(rand.NewSource(17))
+	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
+	loss := newRecordingLoss()
+	client.SetLossRecovery(loss, func() int64 { return 1 })
+	setupClientServer(t, rng, client, server)
+	var buf [mtu]byte
+	establish(t, client, server, buf[:])
+
+	// Send data and have it acknowledged: the event must report the acceptance and
+	// the octets it acknowledged.
+	data := []byte("payload")
+	if _, err := client.Write(data); err != nil {
+		t.Fatal("write:", err)
+	}
+	clear(buf[:])
+	n, err := client.Send(buf[:])
+	if err != nil {
+		t.Fatal("send:", err)
+	}
+	if err = server.Recv(buf[:n]); err != nil {
+		t.Fatal("server recv:", err)
+	}
+	clear(buf[:])
+	m, err := server.Send(buf[:])
+	if err != nil || m == 0 {
+		t.Fatalf("server ack: n=%d err=%v", m, err)
+	}
+	before := len(loss.postRx)
+	if err = client.Recv(buf[:m]); err != nil {
+		t.Fatal("client recv ack:", err)
+	}
+	if len(loss.postRx) != before+1 {
+		t.Fatalf("PostRx called %d times for one segment, want 1", len(loss.postRx)-before)
+	}
+	ack := loss.postRx[len(loss.postRx)-1]
+	if !ack.Accepted {
+		t.Error("a valid acknowledgement must be reported as accepted")
+	}
+	if ack.BytesAcked != Size(len(data)) {
+		t.Errorf("BytesAcked=%d, want %d", ack.BytesAcked, len(data))
+	}
+
+	// Now a segment the state machine refuses: an acknowledgement for data never
+	// sent. The policy must be told it did not count.
+	bogus := Segment{
+		SEQ:   client.scb.rcv.NXT,
+		ACK:   client.scb.snd.NXT + 100000,
+		WND:   1024,
+		Flags: FlagACK,
+	}
+	clear(buf[:])
+	tfrm, err := NewFrame(buf[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	tfrm.SetSourcePort(server.LocalPort())
+	tfrm.SetDestinationPort(client.LocalPort())
+	tfrm.SetSegment(bogus, 5)
+	before = len(loss.postRx)
+	if err = client.Recv(buf[:sizeHeaderTCP]); err == nil {
+		t.Fatal("expected the bogus acknowledgement to be refused")
+	}
+	if len(loss.postRx) != before+1 {
+		t.Fatalf("PostRx called %d times for a refused segment, want 1", len(loss.postRx)-before)
+	}
+	got := loss.postRx[len(loss.postRx)-1]
+	if got.Accepted {
+		t.Error("a refused segment must not be reported as accepted")
+	}
+	if got.BytesAcked != 0 {
+		t.Errorf("BytesAcked=%d for a refused segment, want 0", got.BytesAcked)
 	}
 }

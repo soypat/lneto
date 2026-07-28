@@ -110,13 +110,23 @@ func (r *Timer) NextDeadline() int64 {
 	return r.deadline
 }
 
-// PreRx samples the RTT and manages the retransmission timer from a received
-// segment (RFC 6298 §5.2/§5.3). It implements [tcp.LossRecovery] and always keeps
-// the segment (the estimator never drops traffic).
+// PreRx keeps every segment: the estimator never drops traffic and records
+// nothing before the connection has decided whether the segment counts. It
+// implements [tcp.LossRecovery].
 func (r *Timer) PreRx(rx tcp.RxMeta) tcp.RxDirective {
-	incoming, now := rx.Segment, rx.Now
-	if !r.haveSeq || !incoming.Flags.HasAny(tcp.FlagACK) {
-		return tcp.RxDirective{Keep: true}
+	return tcp.RxDirective{Keep: true}
+}
+
+// PostRx samples the RTT and manages the retransmission timer from a segment the
+// connection accepted (RFC 6298 §5.2/§5.3). It implements [tcp.LossRecovery].
+//
+// A refused segment is ignored. Acting on one would let an acknowledgement the
+// state machine rejected, for data never sent, collapse the backoff and take a
+// bogus RTT sample.
+func (r *Timer) PostRx(event tcp.RxEvent) {
+	incoming, now := event.Segment, event.Now
+	if !event.Accepted || !r.haveSeq || !incoming.Flags.HasAny(tcp.FlagACK) {
+		return
 	}
 	ack := incoming.ACK
 	if r.timing && !ack.LessThan(r.timedSeq) {
@@ -137,7 +147,6 @@ func (r *Timer) PreRx(rx tcp.RxMeta) tcp.RxDirective {
 		r.running = true
 		r.deadline = now + int64(r.CurrentRTO())
 	}
-	return tcp.RxDirective{Keep: true}
 }
 
 // WriteOptions adds no TCP options: retransmission timing needs none of its

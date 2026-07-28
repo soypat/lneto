@@ -183,20 +183,17 @@ func TestTimestamps_RecentDoesNotRegress(t *testing.T) {
 	ts.recent, ts.haveRecent = 1000, true
 	ts.haveEpoch = true
 
-	older := rxWithTimestamp(500, 0, 100, 100)
-	ts.PreRx(older)
+	ts.PostRx(acceptedWithTimestamp(500, 0, 100, 100))
 	if got, _ := ts.Recent(); got != 1000 {
 		t.Errorf("TS.Recent=%d after an older timestamp, want 1000", got)
 	}
-	newer := rxWithTimestamp(2000, 0, 100, 100)
-	ts.PreRx(newer)
+	ts.PostRx(acceptedWithTimestamp(2000, 0, 100, 100))
 	if got, _ := ts.Recent(); got != 2000 {
 		t.Errorf("TS.Recent=%d after a newer timestamp, want 2000", got)
 	}
 	// A newer timestamp on a segment ahead of what has been acknowledged is not
 	// eligible to advance TS.Recent.
-	ahead := rxWithTimestamp(3000, 0, 500, 100)
-	ts.PreRx(ahead)
+	ts.PostRx(acceptedWithTimestamp(3000, 0, 500, 100))
 	if got, _ := ts.Recent(); got != 2000 {
 		t.Errorf("TS.Recent=%d after an out-of-order segment, want it held at 2000", got)
 	}
@@ -259,15 +256,15 @@ func TestTimestamps_ImplausibleEchoIgnored(t *testing.T) {
 	ts.epoch = 0
 
 	// An echo from the future relative to our clock.
-	ts.PreRx(rxWithTimestamp(10, 1_000_000, 100, 100))
+	ts.PostRx(acceptedWithTimestamp(10, 1_000_000, 100, 100))
 	if _, sampled := ts.LastRTT(); sampled {
 		t.Error("an echo ahead of our clock must not yield an RTT sample")
 	}
 	// An echo implausibly far in the past.
 	ts.haveEpoch, ts.epoch = true, 0
-	rx := rxWithTimestamp(10, 1, 100, 100)
-	rx.Now = int64(maxPlausibleRTTMillis+10) * nanosPerMilli
-	ts.PreRx(rx)
+	ev := acceptedWithTimestamp(10, 1, 100, 100)
+	ev.Now = int64(maxPlausibleRTTMillis+10) * nanosPerMilli
+	ts.PostRx(ev)
 	if _, sampled := ts.LastRTT(); sampled {
 		t.Error("an implausibly old echo must not yield an RTT sample")
 	}
@@ -308,6 +305,20 @@ func rxWithTimestamp(tsval, tsecr uint32, seq, rcvNxt tcp.Value) tcp.RxMeta {
 		Segment: tcp.Segment{SEQ: seq, ACK: 1, Flags: tcp.FlagACK},
 		Options: opts,
 		RcvNXT:  rcvNxt,
+	}
+}
+
+// acceptedWithTimestamp builds the post-acceptance event for the same segment
+// rxWithTimestamp describes. Recording a timestamp and sampling the round trip are
+// tied to a segment being acceptable, so they are driven from here.
+func acceptedWithTimestamp(tsval, tsecr uint32, seq, rcvNxt tcp.Value) tcp.RxEvent {
+	rx := rxWithTimestamp(tsval, tsecr, seq, rcvNxt)
+	return tcp.RxEvent{
+		Now:      rx.Now,
+		Segment:  rx.Segment,
+		Options:  rx.Options,
+		RcvNXT:   rx.RcvNXT,
+		Accepted: true,
 	}
 }
 
@@ -352,9 +363,9 @@ func TestTimestamps_SampleReachesEstimator(t *testing.T) {
 	// An echo of the TSval we stamped one tick after our epoch, arriving 40ms of
 	// our clock after that tick.
 	const rttMillis = 40
-	rx := rxWithTimestamp(10, 1, 100, 100)
-	rx.Now = (rttMillis + 1) * nanosPerMilli
-	ts.PreRx(rx)
+	ev := acceptedWithTimestamp(10, 1, 100, 100)
+	ev.Now = (rttMillis + 1) * nanosPerMilli
+	ts.PostRx(ev)
 
 	sample, ok := ts.LastRTT()
 	if !ok {
@@ -383,9 +394,9 @@ func TestTimestamps_SampleBypassesKarn(t *testing.T) {
 	// No segment was ever handed to PostTx, so the timer has taken no sample of its
 	// own and is not timing anything.
 	const rttMillis = 25
-	rx := rxWithTimestamp(10, 1, 100, 100)
-	rx.Now = (rttMillis + 1) * nanosPerMilli
-	ts.PreRx(rx)
+	ev := acceptedWithTimestamp(10, 1, 100, 100)
+	ev.Now = (rttMillis + 1) * nanosPerMilli
+	ts.PostRx(ev)
 
 	if got, want := ts.SmoothedRTT(), int64(rttMillis)*nanosPerMilli; got != want {
 		t.Errorf("smoothed RTT = %d, want %d from the echo alone", got, want)
