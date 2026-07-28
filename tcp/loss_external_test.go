@@ -19,6 +19,11 @@ import (
 // flight reach a fixed window, which is the core of any window-based
 // controller.
 type windowPolicy struct {
+	// sackBlocks is the most out-of-order blocks ever offered to WriteOptions and
+	// firstBlock the lowest of them, both read through the exported view.
+	sackBlocks int
+	firstBlock [2]tcp.Value
+
 	window   tcp.Size
 	resets   int
 	preTx    int
@@ -45,7 +50,17 @@ func (p *windowPolicy) PreTx(intent tcp.TxIntent) tcp.TxDirective {
 
 func (p *windowPolicy) PostTx(outgoing tcp.Segment, now int64) { p.postTx++ }
 
-func (p *windowPolicy) WriteOptions(tcp.TxPlan, []byte) uint8 { return 0 }
+// WriteOptions records the out-of-order blocks it was offered, which is what a
+// SACK-generating policy would encode here. Reaching them through the exported
+// view is the property this file exists to guard.
+func (p *windowPolicy) WriteOptions(plan tcp.TxPlan, _ []byte) uint8 {
+	if n := plan.Reassembly.Len(); n > p.sackBlocks {
+		p.sackBlocks = n
+		start, end := plan.Reassembly.Block(0)
+		p.firstBlock = [2]tcp.Value{start, end}
+	}
+	return 0
+}
 
 // TestLossRecovery_ExternallyImplementable drives a connection with a policy
 // defined outside package tcp, proving the hooks carry enough exported state to
@@ -132,5 +147,12 @@ func TestLossRecovery_ExternallyImplementable(t *testing.T) {
 	}
 	if client.BufferedUnsent() != before {
 		t.Fatalf("held data must stay buffered: got %d, want %d", client.BufferedUnsent(), before)
+	}
+
+	// This side only sends, so it holds nothing out of order and has no selective
+	// acknowledgement to advertise. The value is asserted rather than ignored
+	// because reaching it at all is what proves the view is usable from outside.
+	if policy.sackBlocks != 0 {
+		t.Errorf("a sender reported %d out-of-order blocks, want 0", policy.sackBlocks)
 	}
 }

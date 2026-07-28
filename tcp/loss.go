@@ -187,6 +187,14 @@ type TxPlan struct {
 	State State
 	// Kind classifies the segment, which determines the applicable options.
 	Kind TxKind
+	// Reassembly reports the out-of-order blocks the receive path is holding, for
+	// a policy that advertises them as selective acknowledgements (RFC 2018). It
+	// is read here, while the outgoing segment's options are being written, rather
+	// than on receive, because that is when the blocks are put on the wire.
+	//
+	// It borrows connection state for the duration of the call and must not be
+	// retained. See [ReassemblyView].
+	Reassembly ReassemblyView
 }
 
 // TxDirective is returned by [LossRecovery.PreTx] to steer the transmit path.

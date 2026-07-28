@@ -2,8 +2,10 @@ package tcp
 
 import (
 	"bytes"
+	"math/rand"
 	"testing"
 
+	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
 )
 
@@ -252,4 +254,112 @@ func byteOrEOF(b []byte, i int) any {
 		return b[i]
 	}
 	return "EOF"
+}
+
+// TestReassemblyViewReportsHeldBlocks verifies the view a policy is handed while
+// writing options reports exactly the out-of-order blocks being held, in
+// ascending order, and that reading it allocates nothing. These are the blocks a
+// SACK-generating policy puts on the wire (RFC 2018).
+func TestReassemblyViewReportsHeldBlocks(t *testing.T) {
+	const ringLen = 4096
+	rx := internal.Ring{Buf: make([]byte, ringLen)}
+	var r reassembly
+	r.reset(maxReasmSegments)
+	view := ReassemblyView{r: &r}
+
+	if got := view.Len(); got != 0 {
+		t.Errorf("empty reassembly reports %d blocks, want 0", got)
+	}
+	if got := (ReassemblyView{}).Len(); got != 0 {
+		t.Errorf("zero view reports %d blocks, want 0", got)
+	}
+
+	// Stage two out-of-order blocks with a gap before each, stored out of order to
+	// prove the view reports them sorted rather than as inserted.
+	payload := make([]byte, 100)
+	const nxt = Value(1000)
+	if !r.store(&rx, nxt, 1300, payload) {
+		t.Fatal("store second block")
+	}
+	if !r.store(&rx, nxt, 1100, payload) {
+		t.Fatal("store first block")
+	}
+
+	if got := view.Len(); got != 2 {
+		t.Fatalf("view reports %d blocks, want 2", got)
+	}
+	wantBlocks := [2][2]Value{{1100, 1200}, {1300, 1400}}
+	for i, want := range wantBlocks {
+		start, end := view.Block(i)
+		if start != want[0] || end != want[1] {
+			t.Errorf("block %d = [%d,%d), want [%d,%d)", i, start, end, want[0], want[1])
+		}
+	}
+
+	allocs := testing.AllocsPerRun(100, func() {
+		n := view.Len()
+		for i := range n {
+			_, _ = view.Block(i)
+		}
+	})
+	if allocs != 0 {
+		t.Errorf("reading the view allocated %v times per run, want 0", allocs)
+	}
+}
+
+// sackWatcher is a LossRecovery that records the out-of-order blocks offered to
+// it while a segment's options are written.
+type sackWatcher struct {
+	nopLoss
+	blocks [][2]Value
+}
+
+func (w *sackWatcher) WriteOptions(plan TxPlan, _ []byte) uint8 {
+	if n := plan.Reassembly.Len(); n > 0 {
+		w.blocks = w.blocks[:0]
+		for i := range n {
+			start, end := plan.Reassembly.Block(i)
+			w.blocks = append(w.blocks, [2]Value{start, end})
+		}
+	}
+	return 0
+}
+
+// TestHandlerOffersHeldBlocksToWriteOptions verifies the blocks a receiver holds
+// out of order reach a policy while it writes the options of an outgoing segment.
+// That is where selective acknowledgements go on the wire, so a policy that never
+// sees them there could not generate one.
+func TestHandlerOffersHeldBlocksToWriteOptions(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	rng := rand.New(rand.NewSource(99))
+	client, server := newHandler(t, mtu, 4), newHandler(t, mtu, 4)
+	watcher := new(sackWatcher)
+	server.SetLossRecovery(watcher, func() int64 { return 1 })
+	setupClientServer(t, rng, client, server)
+	var buf [mtu]byte
+	establish(t, client, server, buf[:])
+
+	pkt1 := emitClientData(t, client, buf[:], "AAAA") // seq S, covers S..S+4.
+	pkt2 := emitClientData(t, client, buf[:], "BBBB") // seq S+4, covers S+4..S+8.
+	wantStart := mustSegment(t, pkt2, len(pkt2)-sizeHeaderTCP).SEQ
+
+	// Deliver only the second segment, leaving a gap the server holds behind.
+	if err := server.Recv(pkt2); err != nil {
+		t.Fatalf("out-of-order segment must be accepted, got: %v", err)
+	}
+	// The ACK the server now emits is the segment a SACK block would ride on.
+	var out [mtu]byte
+	if n, err := server.Send(out[:]); err != nil {
+		t.Fatal("server send:", err)
+	} else if n == 0 {
+		t.Fatal("server sent no acknowledgement to carry a SACK block")
+	}
+
+	if len(watcher.blocks) != 1 {
+		t.Fatalf("policy was offered %d blocks, want 1", len(watcher.blocks))
+	}
+	if got := watcher.blocks[0]; got[0] != wantStart || got[1] != Add(wantStart, 4) {
+		t.Errorf("block = [%d,%d), want [%d,%d)", got[0], got[1], wantStart, Add(wantStart, 4))
+	}
+	_ = pkt1
 }
