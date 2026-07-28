@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -100,17 +101,43 @@ type RouterConfig struct {
 	Logger *slog.Logger
 }
 
+const (
+	// minRequestHeaderBuffer is the smallest request buffer [httpraw.Header]
+	// accepts with buffer growth disabled, which is how exchanges are configured.
+	minRequestHeaderBuffer = 32
+	// minResponseHeaderBuffer is the room [Exchange.FlushHeader] needs for the
+	// CRLF closing the header block, written even when no field was staged.
+	minResponseHeaderBuffer = len("\r\n")
+	// maxExchangeBuffer bounds an exchange's whole buffer: [Exchange] indexes it
+	// with uint16 offsets, so a larger one would be addressed truncated.
+	maxExchangeBuffer = math.MaxUint16
+)
+
 // Validate returns a non-nil error if the configuration cannot be used to
 // configure a [Router].
 func (cfg RouterConfig) Validate() error {
 	workerMode := cfg.workerMode()
-	if workerMode && cfg.MaxAwaitingConns == 0 ||
-		cfg.Mux == nil ||
-		cfg.RequestNumHeaderKVCap <= 0 ||
-		!workerMode && cfg.FixedNumGoroutines != -1 {
+	switch {
+	case cfg.Mux == nil,
+		!workerMode && cfg.FixedNumGoroutines != -1,
+		workerMode && cfg.MaxAwaitingConns <= 0,
+		cfg.RequestNumHeaderKVCap <= 0,
+		cfg.RequestHeaderBufferSize < minRequestHeaderBuffer,
+		cfg.ResponseHeaderMinBufferSize < minResponseHeaderBuffer,
+		cfg.ResponseHeaderMinBufferSize > maxExchangeBuffer,
+		cfg.RequestHeaderBufferSize > maxExchangeBuffer-cfg.ResponseHeaderMinBufferSize:
 		return lneto.ErrInvalidConfig
-	} else if cfg.Backoff == nil {
+	case cfg.Backoff == nil:
 		return lneto.ErrMissingHALConfig
+	}
+	if workerMode {
+		// Buffer sizes are bounded by maxExchangeBuffer above so the sum cannot
+		// overflow; the products below allocate and can.
+		exchBuf := cfg.RequestHeaderBufferSize + cfg.ResponseHeaderMinBufferSize
+		if cfg.FixedNumGoroutines > math.MaxInt/exchBuf ||
+			cfg.FixedNumGoroutines > math.MaxInt/cfg.RequestNumHeaderKVCap {
+			return lneto.ErrInvalidConfig
+		}
 	}
 	return nil
 }
@@ -215,7 +242,7 @@ func (r *Router) awaitIdleExchangesLocked(maxWait time.Duration) error {
 	for waited := time.Duration(0); ; waited += pollInterval {
 		busy := false
 		for i := range r.exchs {
-			if r.exchs[i].used.Load() {
+			if r.exchs[i].acquired.Load() {
 				busy = true
 				break
 			}
@@ -269,7 +296,7 @@ func (r *Router) Handle(conn io.ReadWriteCloser) error {
 		enqueued = true
 	default:
 		// pendingConns cannot store another Conn, we drop and return error.
-		exch.used.Store(false) // release.
+		exch.acquired.Store(false) // release.
 	}
 	r.mu.Unlock()
 	if enqueued {

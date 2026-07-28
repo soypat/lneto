@@ -200,11 +200,14 @@ func TestHeaderContentLength(t *testing.T) {
 		if err := h.ParseBytes(false, []byte(raw+"\r\n")); err != nil {
 			t.Fatal(err)
 		}
-		got, err := h.ContentLength()
+		got, present, err := h.ContentLength()
 		if err != test.wantErr {
 			t.Errorf("%q: want error %v, got %v", test.field, test.wantErr, err)
 		} else if err == nil && got != test.want {
 			t.Errorf("%q: want %d, got %d", test.field, test.want, got)
+		}
+		if strings.EqualFold(test.field, headerContentLength) != present {
+			t.Error("unexpected 'present'", test.field)
 		}
 	}
 }

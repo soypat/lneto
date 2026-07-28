@@ -335,7 +335,7 @@ func (h *Header) takeReusableSlot(key string) *argsKV {
 	return useKv
 }
 
-// Get gets the first value of a key found in the headers. Use [Header.ForEach] to find multiple values corresponding to same key.
+// Get gets the first exact-match value of a key found in the headers. Use [Header.ForEach] to find multiple values corresponding to same key.
 func (h *Header) Get(key string) []byte {
 	debuglog("http:get:start")
 	kv := h.peekHeader(key)
@@ -347,26 +347,70 @@ func (h *Header) Get(key string) []byte {
 	return nil
 }
 
+// GetFold gets the first value whose key matches key under ASCII case-insensitive
+// comparison, i.e: "content-length" matches "Content-Length".
+// Use [Header.Get] for exact match and [Header.ForEach] to find multiple values
+// corresponding to same key.
+func (h *Header) GetFold(key string) []byte {
+	hb := &h.hbuf
+	for i := 0; i < len(hb.headers); i++ {
+		kv := hb.headers[i]
+		if kv.isValid() && asciiEqualFold(b2s(hb.musttoken(kv.key)), key) {
+			return hb.musttoken(kv.value)
+		}
+	}
+	return nil
+}
+
+// asciiEqualFold reports whether a and b are equal under ASCII case folding.
+// Unlike strings.EqualFold it does not fold non-ASCII runes, so no multi-byte
+// rune such as U+212A KELVIN SIGN can alias a header key.
+func asciiEqualFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	const asciiCapDiff = 'a' - 'A'
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if ca >= 'A' && ca <= 'Z' {
+			ca += asciiCapDiff
+		}
+		if cb >= 'A' && cb <= 'Z' {
+			cb += asciiCapDiff
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
+}
+
+// NormalizeKeys normalizes all header keys. i.e: CONTENT-type -> Content-Type
+func (h *Header) NormalizeKeys() {
+	for _, kv := range h.hbuf.headers {
+		if kv.isValid() {
+			NormalizeHeaderKey(h.hbuf.musttoken(kv.key))
+		}
+	}
+}
+
 // ContentLength returns the body length declared by the Content-Length field.
 // Fails with an error if the field is absent, which for a request means the
 // message has no body at all unless a transfer coding applies, RFC 9112 6.3.
 // The value must be digits only, so a negative or list-valued field is rejected
 // rather than guessed at.
-func (h *Header) ContentLength() (int64, error) {
-	kv := h.peekHeader(headerContentLength)
-	if !kv.isValid() {
-		return 0, errNoContentLength
+func (h *Header) ContentLength() (int64, bool, error) {
+	value := h.GetFold(headerContentLength)
+	if value == nil {
+		return 0, false, nil
 	}
-	value := trimOWS(h.hbuf.musttoken(kv.value))
-	if len(value) == 0 {
-		return 0, errBadContentLength
-	}
+	value = trimOWS(value)
 	// Unsigned parse of 63 bits rejects a sign and anything past int64's range.
-	n, err := strconv.ParseUint(b2s(value), 10, 63)
-	if err != nil {
-		return 0, errBadContentLength // strconv's error allocates and is not comparable.
+	n, err := strconv.ParseInt(b2s(value), 10, 64)
+	if err != nil || n < 0 {
+		return n, true, errBadContentLength // strconv's error allocates and is not comparable.
 	}
-	return int64(n), nil
+	return n, true, nil
 }
 
 // Add adds a new key-value pair to the HTTP header. Calling Add mangles the buffer.

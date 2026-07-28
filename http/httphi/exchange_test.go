@@ -707,7 +707,7 @@ func TestExchangeRequestParseForm(t *testing.T) {
 			name:    "body larger than buffer",
 			request: "POST /f HTTP/1.1\r\nHost: h\r\n" + formType + "Content-Length: 11\r\n\r\na=1&b=2&c=3",
 			bufSize: 4,
-			wantErr: lneto.ErrBufferFull,
+			wantErr: lneto.ErrShortBuffer,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

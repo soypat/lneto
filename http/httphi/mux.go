@@ -13,6 +13,9 @@ import (
 // Requires exchange to be acquired and configured. Will panic if any argument is nil.
 // Handle does not close the connection on any outcome: the caller owns it.
 func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
+	if !exch.acquired.Load() {
+		return lneto.ErrBadState
+	}
 	reqhdr := &exch.reqHdr
 	reqhdr.Reset(nil, 0) // Assume exchange has been configured and reuse memory.
 	var consecutiveBackoffs uint
@@ -56,11 +59,12 @@ func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
 	if handler != nil {
 		exch.matchedPattern = matchedPattern
 		handler(exch)
-		exch.FlushHeader()
+		if !exch.hijacked {
+			exch.FlushHeader()
+		}
 	} else {
 		exch.WriteHeader(404)
 	}
-	// TODO write response from exchange here.
 	return nil
 }
 

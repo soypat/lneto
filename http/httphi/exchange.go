@@ -25,7 +25,7 @@ const maxStatusLine = len("HTTP/1.1 ") + 3 + 1 + len("Network Authentication Req
 // the bytes that follow the parsed request header. Read the request body with
 // [Exchange.ReadBody] before setting response headers.
 type Exchange struct {
-	used           atomic.Bool
+	acquired       atomic.Bool
 	gen            atomic.Uint32
 	respTopBuf     [maxStatusLine]byte
 	respTopWritten uint8
@@ -105,7 +105,7 @@ func (exch *Exchange) Configure(cfg ExchangeConfig) {
 // reusing the buffer set by [Exchange.Configure]. Returns false if the exchange
 // is already serving, in which case conn is untouched.
 func (exch *Exchange) Acquire(conn conn) bool {
-	if !exch.used.CompareAndSwap(false, true) {
+	if !exch.acquired.CompareAndSwap(false, true) {
 		return false
 	}
 	exch.matchedPattern = ""
@@ -133,7 +133,7 @@ func (exch *Exchange) Release() {
 	}
 	exch.rw = nil
 	exch.gen.Add(1)
-	exch.used.Store(false)
+	exch.acquired.Store(false)
 }
 
 // UnsafeRawBuffer returns the contiguous buffer owned by [Exchange] being used for the request and response.
@@ -278,9 +278,9 @@ type ExchangeRW struct {
 }
 
 // IsValid returns true while the handle still refers to the request it was
-// taken from, i.e: false once the exchange was released or hijacked away.
+// taken from, i.e: false once the exchange was released.
 func (rw *ExchangeRW) IsValid() bool {
-	return rw.gen == rw.exch.gen.Load() && rw.exch.used.Load()
+	return rw.gen == rw.exch.gen.Load() && rw.exch.acquired.Load()
 }
 
 func (rw *ExchangeRW) validate() error {
@@ -407,7 +407,7 @@ func (exch *Exchange) RequestContentType() []byte {
 // Content-Length field. An absent field is not a client error: such a request
 // has no body at all, RFC 9112 6.3. Check for the error to answer 411 instead.
 // See [httpraw.Header.ContentLength].
-func (exch *Exchange) RequestContentLength() (int64, error) {
+func (exch *Exchange) RequestContentLength() (int64, bool, error) {
 	return exch.RequestHeaderRaw().ContentLength()
 }
 
@@ -432,12 +432,13 @@ func (exch *Exchange) RequestParseForm(dst *httpraw.Form, buf []byte) error {
 		// wire would parse chunk sizes as form data. httpraw does not decode them.
 		return errUnsupportedTransferCoding
 	}
-	length, err := exch.RequestContentLength()
-	if err != nil {
-		dst.Reset(buf[:0])
-		return dst.Parse() // No length is no body, RFC 9112 6.3.
+	length, present, err := exch.RequestContentLength()
+	if !present {
+		return nil // No length is no body, RFC 9112 6.3.
+	} else if err != nil {
+		return err
 	} else if length > int64(len(buf)) {
-		return lneto.ErrBufferFull // Refuse before reading, caller may answer 413.
+		return lneto.ErrShortBuffer // Refuse before reading, caller may answer 413.
 	}
 	buf = buf[:length]
 	for read := 0; read < len(buf); {
