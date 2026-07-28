@@ -340,8 +340,13 @@ func TestTimestamps_NoRoomDoesNotNegotiate(t *testing.T) {
 	if n := ts.WriteOptions(tcp.TxPlan{Kind: tcp.TxKindSYNACK, Now: nanosPerMilli}, room[:]); n != optLen {
 		t.Fatalf("wrote %d octets, want %d", n, optLen)
 	}
+	if ts.Enabled() {
+		t.Error("writing the option is not yet an agreement; the segment may never be sent")
+	}
+	// Reporting the SYN-ACK as transmitted is what completes the negotiation.
+	ts.PostTx(tcp.Segment{Flags: tcp.FlagSYN | tcp.FlagACK}, nanosPerMilli)
 	if !ts.Enabled() {
-		t.Error("answering a peer's offer should complete negotiation")
+		t.Error("answering a peer's offer should complete negotiation once sent")
 	}
 }
 
@@ -400,5 +405,55 @@ func TestTimestamps_SampleBypassesKarn(t *testing.T) {
 
 	if got, want := ts.SmoothedRTT(), int64(rttMillis)*nanosPerMilli; got != want {
 		t.Errorf("smoothed RTT = %d, want %d from the echo alone", got, want)
+	}
+}
+
+// TestTimestamps_UnsentSynAckDoesNotNegotiate verifies the option is not treated as
+// agreed because of a SYN-ACK that was built but never transmitted.
+//
+// WriteOptions runs before the segment is sized, so the transmit path can still fail
+// after the policy has written its option: a buffer with room for the option but not
+// for the padded header fails once the data offset is computed. Recording "in use" at
+// the point the bytes are written therefore records an agreement the peer never saw.
+// That is not a cosmetic error. Once enabled, RFC 7323 §3.2 makes this side drop every
+// segment arriving without the option, so a peer that never agreed to send one is cut
+// off entirely.
+func TestTimestamps_UnsentSynAckDoesNotNegotiate(t *testing.T) {
+	serverTS := new(Timestamps)
+	client, server := new(tcp.Handler), new(tcp.Handler)
+	for _, h := range []*tcp.Handler{client, server} {
+		if err := h.SetBuffers(make([]byte, bufSize), make([]byte, bufSize), 4); err != nil {
+			t.Fatal(err)
+		}
+	}
+	client.SetPolicy(new(Timestamps), tsClock())
+	server.SetPolicy(serverTS, tsClock())
+	if err := server.OpenListen(80, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.OpenActive(1234, 80, 0); err != nil {
+		t.Fatal(err)
+	}
+	packet := make([]byte, mtu)
+	move(t, client, server, packet) // SYN carrying the peer's offer.
+
+	// Reply into a buffer that holds the option but not the padded header. The
+	// option area starts at octet 27 (header plus the core's MSS and window scale)
+	// and the option needs ten octets, so the write succeeds and the data offset
+	// computation then does not fit.
+	const tooSmall = 38
+	_, err := server.Send(make([]byte, tooSmall))
+	if err == nil {
+		t.Fatal("expected the undersized buffer to be refused")
+	}
+	if serverTS.Enabled() {
+		t.Error("timestamps recorded as negotiated by a SYN-ACK that was never sent")
+	}
+
+	// The consequence: a peer that never agreed to send timestamps must still be
+	// heard. A segment without the option has to survive PreRx.
+	seg := tcp.Segment{SEQ: 1, ACK: 1, WND: 1024, Flags: tcp.FlagACK}
+	if !serverTS.PreRx(tcp.RxMeta{Now: nanosPerMilli, Segment: seg, State: tcp.StateSynRcvd}).Keep {
+		t.Error("a segment without the option was dropped, cutting off a peer that never negotiated")
 	}
 }
