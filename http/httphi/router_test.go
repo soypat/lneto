@@ -309,6 +309,36 @@ func staticPage(t *testing.T, page string) HandlerFunc {
 	}
 }
 
+// An exchange freed by the outgoing generation carries that generation's
+// buffers. Recycling it under a new configuration serves the request with
+// buffer limits the new [RouterConfig] never asked for.
+func TestRouterReconfigureDropsStaleExchanges(t *testing.T) {
+	const smallBuf, largeBuf = 256, 1024
+	var (
+		sm     MuxSlice
+		router Router
+	)
+	bufsize := make(chan int, 2)
+	sm.Handle("GET /", func(ex *Exchange) { bufsize <- len(ex.UnsafeRawBuffer()) })
+	serve := func(want int) {
+		t.Helper()
+		conn := newConn("GET / HTTP/1.1\r\nHost: h\r\n\r\n")
+		conn.Hangup()
+		if err := router.Handle(conn); err != nil {
+			t.Fatal(err)
+		}
+		if got := <-bufsize; got != want {
+			t.Errorf("want exchange buffer %d, got %d", want, got)
+		}
+		conn.AwaitClose(t, time.Second) // Exchange hits the freelist on close.
+	}
+
+	configSynchronousRouter(t, &router, smallBuf, &sm)
+	serve(2 * smallBuf)
+	configSynchronousRouter(t, &router, largeBuf, &sm)
+	serve(2 * largeBuf)
+}
+
 // Configure writes the fields Handle reads; concurrent use must not race.
 func TestRouterConfigureHandleRace(t *testing.T) {
 	const bufferSize = 1024
@@ -365,6 +395,59 @@ func TestRouterHandleAfterTeardown(t *testing.T) {
 	}
 	if conn.IsClosed() {
 		t.Error("refused connection must be left for the caller to dispose of")
+	}
+}
+
+// Tearing down a generation abandons the connections queued for it. They were
+// taken ownership of by Handle, so they must be closed and their exchanges
+// released: an exchange left claimed by a torn down generation is a buffer the
+// router can never reconfigure again.
+func TestRouterTeardownReleasesQueuedConns(t *testing.T) {
+	var (
+		sm     MuxSlice
+		router Router
+	)
+	const numGoro = 2
+	sm.Handle("GET /", staticPage(t, "ok"))
+	cfg := RouterConfig{
+		FixedNumGoroutines:          numGoro,
+		MaxAwaitingConns:            4,
+		Mux:                         &sm,
+		RequestHeaderBufferSize:     512,
+		RequestNumHeaderKVCap:       16,
+		ResponseHeaderMinBufferSize: 512,
+		Backoff:                     nopBackoff,
+	}
+	// Handing connections over and tearing down immediately leaves them queued
+	// for workers that will never serve them. Rounds bound the scheduling luck
+	// needed; a single leaked exchange also fails every later Configure.
+	var conns [numGoro]*rwconn
+	for range 30 {
+		// errBusyExchanges is legitimate backpressure while the previous
+		// generation drops its connections, but it must not outlive it.
+		var err error
+		for range 100 {
+			if err = router.Configure(cfg); err == nil {
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+		if err != nil {
+			t.Fatal("reconfigure after teardown:", err)
+		}
+		for i := range conns {
+			conns[i] = newConn("GET / HTTP/1.1\r\nHost: h\r\n\r\n")
+			conns[i].Hangup()
+			if err := router.Handle(conns[i]); err != nil {
+				t.Fatal(err)
+			}
+		}
+		router.TeardownGoroutines()
+		for i := range conns {
+			// Handle took ownership of the connection: served or dropped, the
+			// router closes it.
+			conns[i].AwaitClose(t, time.Second)
+		}
 	}
 }
 

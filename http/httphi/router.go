@@ -164,6 +164,9 @@ func (r *Router) Configure(cfg RouterConfig) error {
 	r.mux = cfg.Mux
 	r.log = cfg.Logger
 	r.normalizeKeys = cfg.NormalizeOutgoingKeys
+	// Freelist entries were sized by the outgoing configuration: recycling one
+	// would serve a request with buffer limits cfg never asked for.
+	r.freeList = nil
 	if !workerMode {
 		r.backoff = cfg.Backoff
 		r.numGoro = 0
@@ -180,7 +183,6 @@ func (r *Router) Configure(cfg RouterConfig) error {
 				return err
 			}
 		}
-		r.freeList = nil // Freelist entries point into the buffers reused below.
 		internal.SliceReuse(&r.exchs, numgoro)
 		r.exchs = r.exchs[:numgoro]
 		rawBuflen := cfg.RequestHeaderBufferSize + cfg.ResponseHeaderMinBufferSize
@@ -243,6 +245,7 @@ func (r *Router) Handle(conn io.ReadWriteCloser) error {
 	// under the same lock: [Router.Configure] may run concurrently.
 	r.mu.Lock()
 	numGoro, backoff, mux := r.numGoro, r.backoff, r.mux
+	gen := r.gen.Load() // Generation whose buffers the exchange below is sized by.
 	if numGoro > 0 && r.pendingConns == nil {
 		// Goroutines torn down: refuse before claiming an exchange.
 		r.mu.Unlock()
@@ -254,7 +257,7 @@ func (r *Router) Handle(conn io.ReadWriteCloser) error {
 		return lneto.ErrExhausted
 	} else if numGoro == 0 {
 		r.mu.Unlock()
-		go r.goroHandle(exch, backoff, mux)
+		go r.goroHandle(gen, exch, backoff, mux)
 		return nil
 	}
 	// Enqueue under the lock: [Router.Configure] closes pendingConns while
@@ -278,17 +281,20 @@ func (r *Router) Handle(conn io.ReadWriteCloser) error {
 func (r *Router) goroWorker(gen uint32, queue chan job, backoff lneto.BackoffStrategy, mux Mux) {
 	for job := range queue {
 		exch := job.exch
-		if gen != r.gen.Load() {
-			return
-		} else if exch == nil {
+		if exch == nil {
 			panic("httplo: unreachable nil job")
+		} else if gen != r.gen.Load() {
+			// Not released with freeExch since generation torn down,
+			// new buffer may have been allocated for Exchanges.
+			exch.Release()
+			continue
 		}
-		r.goroHandle(exch, backoff, mux)
+		r.goroHandle(gen, exch, backoff, mux)
 	}
 }
 
-func (r *Router) goroHandle(exch *Exchange, backoff lneto.BackoffStrategy, mux Mux) {
-	defer r.freeExch(exch)
+func (r *Router) goroHandle(gen uint32, exch *Exchange, backoff lneto.BackoffStrategy, mux Mux) {
+	defer r.freeExch(gen, exch)
 	err := Handle(exch, mux, backoff)
 	if err != nil {
 		if exch.readErr != nil {
@@ -299,9 +305,18 @@ func (r *Router) goroHandle(exch *Exchange, backoff lneto.BackoffStrategy, mux M
 	}
 }
 
-func (r *Router) freeExch(exch *Exchange) {
+// freeExch releases exch and offers it to the freelist for reuse. gen is the
+// generation exch was acquired under: an exchange outliving its generation is
+// dropped, its buffers being sized by a configuration the router no longer
+// serves and possibly carved out of a globbuf it no longer owns.
+func (r *Router) freeExch(gen uint32, exch *Exchange) {
 	const freelistMaxDepth = 5
 	r.mu.Lock()
+	if gen != r.gen.Load() {
+		exch.Release()
+		r.mu.Unlock()
+		return
+	}
 	depth := 0
 	for node := r.freeList; node != nil && depth < freelistMaxDepth; node = node.nextFree {
 		depth++
@@ -330,15 +345,16 @@ func (r *Router) getExchLocked(conn conn) (exch *Exchange) {
 			return exch
 		}
 	}
-	for i := range r.exchs {
-		if r.exchs[i].Acquire(conn) {
-			return &r.exchs[i]
+	// Unbounded mode is stored as zero, see [Router.Configure].
+	workerMode := r.numGoro > 0
+	if workerMode {
+		for i := range r.exchs {
+			if r.exchs[i].Acquire(conn) {
+				return &r.exchs[i]
+			}
 		}
-	}
-
-	// Unbounded mode is stored as zero, see [Router.Configure]: a router that
-	// spawns a goroutine per connection allocates the exchange to go with it.
-	if r.numGoro == 0 {
+	} else {
+		// Unbounded growth mode when r.numGoro==0.
 		exch := new(Exchange)
 		exch.Configure(ExchangeConfig{
 			RawBuf:                make([]byte, r.respBuf+r.reqBuf),
