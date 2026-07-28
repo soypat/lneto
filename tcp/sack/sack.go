@@ -120,7 +120,9 @@ func (s *SACK) WriteOptions(plan tcp.TxPlan, opts []byte) uint8 {
 			return 0 // Only answer a peer that offered.
 		}
 	default:
-		return 0 // Blocks are written by a later slice of this work.
+		// Post-handshake: report the ranges held out of order, so the peer learns
+		// which of its segments arrived. RFC 2018 §3 forbids the option on a SYN.
+		return s.writeBlocks(plan, opts)
 	}
 	if len(opts) < sizeOptionPermitted {
 		return 0
@@ -131,6 +133,83 @@ func (s *SACK) WriteOptions(plan tcp.TxPlan, opts []byte) uint8 {
 	}
 	s.wrotePermitted = true
 	return uint8(n)
+}
+
+// writeBlocks advertises the out-of-order data the connection is holding.
+//
+// The blocks are read here, while the outgoing segment is being built, rather than
+// when the data arrived: what matters is what is still held at the moment the peer
+// is told about it. A block recorded on receipt could have been delivered in the
+// meantime, and reporting it would tell the peer a hole had been filled when the
+// receiver has already moved past it.
+func (s *SACK) writeBlocks(plan tcp.TxPlan, opts []byte) uint8 {
+	if !s.enabled {
+		return 0
+	}
+	held := plan.Reassembly.Len()
+	if held == 0 {
+		return 0 // Nothing out of order: the cumulative acknowledgement says it all.
+	}
+	// Fit as many blocks as the option area allows, highest sequence first, so the
+	// blocks most likely to be dropped for want of room are the oldest.
+	//
+	// RFC 2018 §4 asks for the first block to be the one containing the segment that
+	// triggered this acknowledgement. Highest-sequence-first is that block whenever
+	// the arriving segment extended the furthest range, which is the ordinary case
+	// of a single hole with data accumulating past it. It can differ when a segment
+	// fills a lower gap while higher data is also held; the blocks reported are the
+	// same, only their order differs, and no sender depends on that order for
+	// correctness — it decides which range to report first when they do not all fit.
+	room := blocksThatFit(len(opts))
+	if room == 0 {
+		return 0
+	}
+	// Walk the held ranges from the highest sequence down, merging ones that touch.
+	// The receive path holds a range per arriving segment, so data accumulating
+	// behind a hole is many adjacent ranges describing one gap-free region. Reported
+	// separately they would spend the whole option area restating that region and
+	// crowd out the genuinely separate holes a sender needs to know about.
+	var blocks [maxBlocks]Block
+	n := 0
+	for i := held - 1; i >= 0 && n < room; i-- {
+		left, right := plan.Reassembly.Block(i)
+		if n > 0 && blocks[n-1].Left == right {
+			blocks[n-1].Left = left // Contiguous with the block already recorded.
+			continue
+		}
+		blocks[n] = Block{Left: left, Right: right}
+		n++
+	}
+	return s.putBlocks(opts, blocks[:n])
+}
+
+// blocksThatFit reports how many blocks the option area can hold, capped at the
+// number a TCP header has room for.
+func blocksThatFit(space int) int {
+	n := (space - 2) / blockLen // Less the option's own kind and length octets.
+	if n < 0 {
+		return 0
+	}
+	return min(n, maxBlocks)
+}
+
+// putBlocks serializes blocks into the option area, writing nothing if they do not
+// fit. It is separate from collecting them so the space arithmetic can be exercised
+// without a connection holding real out-of-order data.
+func (s *SACK) putBlocks(opts []byte, blocks []Block) uint8 {
+	if len(blocks) == 0 || len(blocks) > blocksThatFit(len(opts)) {
+		return 0
+	}
+	var data [maxBlocks * blockLen]byte
+	for i, b := range blocks {
+		put32(data[i*blockLen:], uint32(b.Left))
+		put32(data[i*blockLen+4:], uint32(b.Right))
+	}
+	written, err := s.codec.PutOption(opts, tcp.OptSACK, data[:len(blocks)*blockLen]...)
+	if err != nil || written < 0 {
+		return 0
+	}
+	return uint8(written)
 }
 
 // PostTx commits the negotiation for an option that has actually been transmitted.
@@ -168,4 +247,12 @@ func (s *SACK) hasPermitted(opts []byte) (found bool) {
 		return nil
 	})
 	return found
+}
+
+func put32(b []byte, v uint32) {
+	b[0], b[1], b[2], b[3] = byte(v>>24), byte(v>>16), byte(v>>8), byte(v)
+}
+
+func get32(b []byte) uint32 {
+	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
 }
