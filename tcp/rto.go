@@ -157,7 +157,7 @@ func (r *RTO) PreTx(intent TxIntent) TxDirective {
 	}
 	r.running = true
 	r.deadline = now + int64(r.CurrentRTO())
-	return TxDirective{RetransmitAll: true}
+	return TxDirective{Retransmit: true, RetransmitFrom: intent.UNA}
 }
 
 // PostTx records an emitted segment: it advances the shadow send sequence,

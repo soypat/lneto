@@ -109,11 +109,14 @@ func TestCUBIC_DuplicateACKsReduceWindow(t *testing.T) {
 	if got := c.SlowStartThresh(); math.Abs(got-want) > 1e-9 {
 		t.Errorf("ssthresh=%v after loss, want %v", got, want)
 	}
-	dir := c.PreTx(tcp.TxIntent{Now: 11})
-	if !dir.RetransmitAll {
+	dir := c.PreTx(tcp.TxIntent{Now: 11, UNA: 1000})
+	if !dir.Retransmit {
 		t.Error("a retransmission must be requested after the duplicate-ACK threshold")
 	}
-	if dir2 := c.PreTx(tcp.TxIntent{Now: 12}); dir2.RetransmitAll {
+	if dir.RetransmitFrom != 1000 {
+		t.Errorf("retransmit from %d, want snd.UNA=1000 (go-back-N without SACK)", dir.RetransmitFrom)
+	}
+	if dir2 := c.PreTx(tcp.TxIntent{Now: 12, UNA: 1000}); dir2.Retransmit {
 		t.Error("the fast retransmission must be requested only once")
 	}
 }
@@ -144,8 +147,8 @@ func TestCUBIC_RTOCollapsesWindow(t *testing.T) {
 	before := c.WindowSegments()
 
 	const wellPastRTO = 10 * int64(nanosPerSecond)
-	dir := c.PreTx(tcp.TxIntent{Now: wellPastRTO})
-	if !dir.RetransmitAll {
+	dir := c.PreTx(tcp.TxIntent{Now: wellPastRTO, UNA: 1000, NXT: 1000 + testMSS})
+	if !dir.Retransmit {
 		t.Fatal("expected the retransmission timer to fire")
 	}
 	if got := c.WindowSegments(); got != 1 {

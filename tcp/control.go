@@ -257,12 +257,19 @@ func (tcb *ControlBlock) HasPendingRetransmit() bool {
 	return tcb._state.TxDataOpen() && tcb.dupack >= retransmitAfterDupacks && tcb.nRetransmit <= tcb.dupack-retransmitAfterDupacks
 }
 
-// RetransmitAll rewinds snd.NXT back to snd.UNA so the next PendingSegment and
-// Send calls retransmit all unacknowledged data from the oldest sequence number
-// (go-back-N). It must be paired with ringTx.RetransmitFromUNA to rewind the
+// RewindNXT moves snd.NXT back to seq so the next PendingSegment and Send calls
+// retransmit unacknowledged data from there. seq is clamped into
+// [snd.UNA, snd.NXT], so rewinding to snd.UNA retransmits everything outstanding
+// (go-back-N) and a sequence outside the outstanding range is a no-op rather
+// than an error. It must be paired with ringTx.RetransmitFrom to rewind the
 // transmit buffer. Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
-func (tcb *ControlBlock) RetransmitAll() {
-	tcb.snd.NXT = tcb.snd.UNA
+func (tcb *ControlBlock) RewindNXT(seq Value) {
+	if seq.LessThan(tcb.snd.UNA) {
+		seq = tcb.snd.UNA
+	} else if tcb.snd.NXT.LessThan(seq) {
+		return // Nothing sent from seq onward.
+	}
+	tcb.snd.NXT = seq
 	tcb.dupack = 0
 	tcb.nRetransmit = 0
 }
@@ -676,12 +683,6 @@ func (tcb *ControlBlock) handleRST(seq Value) error {
 func (tcb *ControlBlock) rstJump() Value {
 	return 100
 }
-
-// Retransmit resets snd.NXT back to snd.UNA, allowing the next PendingSegment
-// and Send calls to retransmit unacknowledged data. Must be paired with
-// ringTx.RetransmitFromUNA to rewind the transmit buffer.
-// Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
-// func (tcb *ControlBlock) Retransmit() { tcb.snd.NXT = tcb.snd.UNA }
 
 // Abort sets ControlBlock state to Closed and resets all sequence numbers and pending flag.
 // No more data can be sent nor received after the connection is aborted until opened again.

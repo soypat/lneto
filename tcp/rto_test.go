@@ -81,12 +81,15 @@ func TestRTO_RetransmitOnTimeout(t *testing.T) {
 	const iss = uint32(1000)
 	r.PostTx(rtoDataSeg(iss, 100), 0)
 
-	if r.PreTx(txAt(int64(rtoInitial) - 1)).RetransmitAll {
+	if r.PreTx(txAt(int64(rtoInitial) - 1)).Retransmit {
 		t.Fatal("must not retransmit before the deadline")
 	}
-	dir := r.PreTx(txAt(int64(rtoInitial)))
-	if !dir.RetransmitAll {
+	dir := r.PreTx(TxIntent{Now: int64(rtoInitial), UNA: Value(iss), NXT: Value(iss + 100)})
+	if !dir.Retransmit {
 		t.Fatal("RTO must fire at the deadline with data outstanding")
+	}
+	if dir.RetransmitFrom != Value(iss) {
+		t.Errorf("retransmit from %d, want snd.UNA=%d", dir.RetransmitFrom, iss)
 	}
 	if r.CurrentRTO() != 2*rtoInitial {
 		t.Errorf("rto=%v after one backoff, want %v", r.CurrentRTO(), 2*rtoInitial)

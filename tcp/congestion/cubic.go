@@ -193,14 +193,16 @@ func (c *CUBIC) PreTx(intent tcp.TxIntent) tcp.TxDirective {
 		c.mss = intent.MSS
 	}
 	dir := c.rto.PreTx(intent)
-	if dir.RetransmitAll {
+	if dir.Retransmit {
 		// The retransmission timer expired: collapse the window (§4.8).
 		c.onRTO()
 	} else if c.fastRetransmit {
 		c.fastRetransmit = false
-		// Go-back-N stands in for selective retransmission until the transmit
-		// path can express a sequence range.
-		dir.RetransmitAll = true
+		// Resume from the oldest unacknowledged octet: without SACK there is no
+		// information about which later octets arrived, so go-back-N is the only
+		// correct choice.
+		dir.Retransmit = true
+		dir.RetransmitFrom = intent.UNA
 	}
 	if intent.InFlight >= c.CongestionWindow() {
 		dir.HoldNew = true

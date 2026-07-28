@@ -199,10 +199,10 @@ func TestLossRecovery_PreRxDropsSegment(t *testing.T) {
 	}
 }
 
-// TestLossRecovery_PreTxRetransmitAll verifies a PreTx directive of
-// RetransmitAll drives go-back-N: the Handler rewinds and re-emits already-sent,
-// unacknowledged data from snd.UNA on the next transmit.
-func TestLossRecovery_PreTxRetransmitAll(t *testing.T) {
+// TestLossRecovery_PreTxRetransmitFromUNA verifies a PreTx directive to
+// retransmit from snd.UNA drives go-back-N: the Handler rewinds and re-emits
+// already-sent, unacknowledged data from the oldest sequence number.
+func TestLossRecovery_PreTxRetransmitFromUNA(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	rng := rand.New(rand.NewSource(5))
 	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
@@ -229,7 +229,7 @@ func TestLossRecovery_PreTxRetransmitAll(t *testing.T) {
 	firstSeg := mustSegment(t, buf[:n], n-sizeHeaderTCP)
 
 	// Direct go-back-N on the next transmit.
-	loss.tx = TxDirective{RetransmitAll: true}
+	loss.tx = TxDirective{Retransmit: true, RetransmitFrom: firstSeg.SEQ}
 	clear(buf[:])
 	n, err = client.Send(buf[:])
 	if err != nil {
@@ -245,6 +245,60 @@ func TestLossRecovery_PreTxRetransmitAll(t *testing.T) {
 	}
 	if rtSeg.DATALEN != firstSeg.DATALEN {
 		t.Fatalf("retransmit DATALEN=%d, want %d", rtSeg.DATALEN, firstSeg.DATALEN)
+	}
+}
+
+// TestLossRecovery_PreTxRetransmitPartial verifies retransmission resumes at the
+// requested sequence instead of always at snd.UNA: with two unacknowledged
+// segments outstanding, asking to resume at the second one resends only that
+// segment and leaves the first accounted for as sent.
+func TestLossRecovery_PreTxRetransmitPartial(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	rng := rand.New(rand.NewSource(11))
+	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
+
+	loss := newRecordingLoss()
+	client.SetLossRecovery(loss, func() int64 { return 1 })
+	setupClientServer(t, rng, client, server)
+	var buf [mtu]byte
+	establish(t, client, server, buf[:])
+
+	// Emit two data segments; the server never ACKs so both stay outstanding.
+	var segs [2]Segment
+	for i := range segs {
+		if _, err := client.Write([]byte{byte('a' + i), byte('b' + i)}); err != nil {
+			t.Fatal("client write:", err)
+		}
+		clear(buf[:])
+		n, err := client.Send(buf[:])
+		if err != nil {
+			t.Fatal("client send data:", err)
+		}
+		if n <= sizeHeaderTCP {
+			t.Fatal("expected data segment")
+		}
+		segs[i] = mustSegment(t, buf[:n], n-sizeHeaderTCP)
+	}
+	if segs[0].SEQ == segs[1].SEQ {
+		t.Fatal("expected two distinct segments")
+	}
+
+	// Resume at the second segment: the first must not be resent.
+	loss.tx = TxDirective{Retransmit: true, RetransmitFrom: segs[1].SEQ}
+	clear(buf[:])
+	n, err := client.Send(buf[:])
+	if err != nil {
+		t.Fatal("client send retransmit:", err)
+	}
+	if n <= sizeHeaderTCP {
+		t.Fatal("expected retransmitted data segment")
+	}
+	rtSeg := mustSegment(t, buf[:n], n-sizeHeaderTCP)
+	if rtSeg.SEQ != segs[1].SEQ {
+		t.Fatalf("retransmit SEQ=%d, want %d (partial, not %d)", rtSeg.SEQ, segs[1].SEQ, segs[0].SEQ)
+	}
+	if rtSeg.DATALEN != segs[1].DATALEN {
+		t.Fatalf("retransmit DATALEN=%d, want %d", rtSeg.DATALEN, segs[1].DATALEN)
 	}
 }
 

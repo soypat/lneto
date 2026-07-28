@@ -262,16 +262,6 @@ func (rtx *ringTx) RetransmitFrom(start Value) (rewound Value, ok bool) {
 	return rewound, true
 }
 
-// RetransmitFromUNA rewinds the transmit queue so that all sent-but-unacked
-// data becomes unsent again, resuming from snd.UNA.
-func (rtx *ringTx) RetransmitFromUNA() {
-	oldest := rtx.slist.Oldest()
-	if oldest == nil {
-		return // Nothing in the retransmission queue.
-	}
-	rtx.RetransmitFrom(oldest.seq)
-}
-
 func (rtx *ringTx) consolidateBufs() {
 	unsentEmpty := rtx.unsentend == 0
 	sentEmpty := rtx.sentend == 0
