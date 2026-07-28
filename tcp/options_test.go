@@ -266,3 +266,45 @@ func TestOptionCodec_PutOption32(t *testing.T) {
 		t.Errorf("PutOption32 wrote %x, want %x", buf, want)
 	}
 }
+
+// TestSendShortBufferPadsWithinBounds verifies a buffer too small for the padded
+// option area is refused rather than written past.
+//
+// The option area is padded to a four-octet boundary, so the padded length exceeds
+// the space the policy was offered. The buffer check for that existed but ran after
+// the loop that writes the padding, which made it dead: the write went out of bounds
+// and panicked before the check could refuse. A caller's undersized buffer, or a
+// policy's option length, must not be able to panic the transmit path.
+func TestSendShortBufferPadsWithinBounds(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	rng := rand.New(rand.NewSource(21))
+	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
+	loss := newRecordingLoss()
+	// Ten octets of options, as the Timestamps option is, which pads 27+10=37 up
+	// to a 40-octet header.
+	loss.writeOpts = []byte{byte(OptNop), byte(OptNop), byte(OptNop), byte(OptNop), byte(OptNop),
+		byte(OptNop), byte(OptNop), byte(OptNop), byte(OptNop), byte(OptNop)}
+	client.SetPolicy(loss, func() int64 { return 1 })
+	setupClientServer(t, rng, client, server)
+
+	// A SYN carries the core's MSS and window scale as well, so the option area
+	// starts at octet 27 and the policy's ten octets still fit in these buffers
+	// while the padded header does not.
+	for size := 37; size < 40; size++ {
+		buf := make([]byte, size)
+		_, err := client.Send(buf) // Must not panic.
+		if err == nil {
+			t.Errorf("Send into %d octets succeeded, want refusal", size)
+		}
+	}
+	// A buffer that does fit the padded header still works, so the check refuses
+	// only what it must.
+	buf := make([]byte, 40)
+	n, err := client.Send(buf)
+	if err != nil {
+		t.Fatalf("Send into 40 octets: %v", err)
+	}
+	if n != 40 {
+		t.Errorf("sent %d octets, want the full 40-octet header", n)
+	}
+}
