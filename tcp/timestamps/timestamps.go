@@ -14,6 +14,8 @@
 package timestamps
 
 import (
+	"time"
+
 	"github.com/soypat/lneto/tcp"
 	"github.com/soypat/lneto/tcp/rto"
 )
@@ -239,6 +241,10 @@ func (ts *Timestamps) sample(tsecr uint32, now int64) {
 		return
 	}
 	ts.lastRTT, ts.haveRTT = int64(elapsed)*nanosPerMilli, true
+	// Hand the sample to the retransmission timer. This is the point of the option
+	// for a sender: the echo dates the acknowledgement even when it arrives for a
+	// retransmitted segment, which the timer's own sampling must discard.
+	ts.timer.ObserveRTT(time.Duration(ts.lastRTT))
 }
 
 // parse walks the option area looking for the Timestamps option.
