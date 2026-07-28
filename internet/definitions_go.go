@@ -23,6 +23,10 @@ func (s cbnode) Demux(carrierData []byte, frameOffset int) error {
 	return s._s.Demux(carrierData, frameOffset)
 }
 
+func (s cbnode) NextDeadline() int64 {
+	return s._s.NextDeadline()
+}
+
 func (s cbnode) IsZeroed() bool {
 	return s._s == nil
 }

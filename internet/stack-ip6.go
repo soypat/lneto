@@ -59,6 +59,10 @@ type stackip6 struct {
 	acceptBroadcast bool
 }
 
+// NextDeadline returns the earliest deadline of the registered protocol
+// handlers, or 0 when none has one. It implements [lneto.StackNode].
+func (si6 *stackip6) NextDeadline() int64 { return si6.handlers.nextDeadline() }
+
 func (si6 *stackip6) Register6(h lneto.StackNode) error {
 	proto := h.Protocol()
 	if proto > 255 {

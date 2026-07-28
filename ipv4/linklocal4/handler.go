@@ -107,6 +107,11 @@ func (h *Handler) Protocol() uint64 { return uint64(ethernet.TypeARP) }
 // ConnectionID implements [lneto.StackNode].
 func (h *Handler) ConnectionID() *uint64 { return &h.connID }
 
+// NextDeadline reports no deadline: address probing and announcement are driven
+// by the caller rather than by a clock this handler holds. It implements
+// [lneto.StackNode].
+func (h *Handler) NextDeadline() int64 { return 0 }
+
 // State returns the current autoconfiguration state.
 func (h *Handler) State() State { return h.state }
 

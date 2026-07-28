@@ -616,6 +616,10 @@ func (c *Client) NumNTPServerNames() int { return len(c.ntpNames) }
 // Implements [lneto.StackNode].
 func (c *Client) ConnectionID() *uint64 { return &c.connID }
 
+// NextDeadline reports no deadline: this node holds no clock and its timing is
+// driven by the caller. It implements [lneto.StackNode].
+func (c *Client) NextDeadline() int64 { return 0 }
+
 // LocalPort returns the DHCPv6 client port (546).
 // Implements [lneto.StackNode].
 func (c *Client) LocalPort() uint16 { return ClientPort }
