@@ -71,12 +71,28 @@ type SACK struct {
 	// built. Negotiation is committed in PostTx, because a segment that is built is
 	// not yet a segment the peer has seen.
 	wrotePermitted bool
+
+	// acked is the scoreboard: the ranges the peer has reported holding, above the
+	// cumulative acknowledgement. RFC 6675 §2 calls this the scoreboard and derives
+	// what to retransmit from it. It is a fixed array so the sender allocates
+	// nothing, holding as many ranges as a peer can report in one segment.
+	acked  [maxBlocks]Block
+	nAcked int
+	// una is the cumulative acknowledgement the scoreboard is relative to. Ranges
+	// below it are acknowledged outright and are dropped.
+	una     tcp.Value
+	haveUNA bool
+	// resendFrom names the hole to ask for on the next transmit, valid while
+	// resendPending. One hole is requested per transmit, because a segment carries
+	// one range; the next transmit asks for the next.
+	resendFrom    tcp.Value
+	resendPending bool
 }
 
 var _ tcp.Policy = (*SACK)(nil)
 
-// Reset returns the policy to its initial per-connection state. It implements
-// [tcp.Policy].
+// Reset returns the policy to its initial per-connection state, including the
+// scoreboard. It implements [tcp.Policy].
 func (s *SACK) Reset() { *s = SACK{} }
 
 // Enabled reports whether the option was successfully negotiated with the peer.
@@ -229,11 +245,116 @@ func (s *SACK) PostTx(outgoing tcp.Segment, now int64) {
 	}
 }
 
-// PostRx does nothing yet. It implements [tcp.Policy].
-func (s *SACK) PostRx(event tcp.RxEvent) {}
+// PostRx records the ranges the peer reports holding and works out which hole to ask
+// for. It implements [tcp.Policy].
+//
+// Blocks are read here rather than in PreRx because a block describes this side's send
+// sequence, and a segment the connection refused carries no claim about it worth
+// acting on: retransmitting on the strength of a rejected segment's option is doing
+// work an attacker or a stale duplicate asked for.
+func (s *SACK) PostRx(event tcp.RxEvent) {
+	if !s.enabled || !event.Accepted || !event.Segment.Flags.HasAny(tcp.FlagACK) {
+		return
+	}
+	ack := event.Segment.ACK
+	if s.haveUNA && ack.LessThan(s.una) {
+		return // Older than what is already known acknowledged.
+	}
+	s.una, s.haveUNA = ack, true
+	s.parseBlocks(event.Options, ack)
+	s.planResend()
+}
 
-// PreTx requests nothing yet. It implements [tcp.Policy].
-func (s *SACK) PreTx(intent tcp.TxIntent) tcp.TxDirective { return tcp.TxDirective{} }
+// PreTx asks for the hole the scoreboard has identified. It implements [tcp.Policy].
+//
+// One hole is requested per transmit. A segment carries one range, so there is nothing
+// to gain from naming more, and asking again on the next transmit keeps the request
+// answering the newest scoreboard rather than a plan made before the last
+// acknowledgement arrived.
+func (s *SACK) PreTx(intent tcp.TxIntent) tcp.TxDirective {
+	if !s.enabled || !s.resendPending {
+		return tcp.TxDirective{}
+	}
+	from := s.resendFrom
+	if from.LessThan(intent.UNA) {
+		// The hole has been acknowledged since it was identified.
+		s.resendPending = false
+		return tcp.TxDirective{}
+	}
+	if !from.LessThan(intent.NXT) {
+		s.resendPending = false
+		return tcp.TxDirective{} // Nothing sent from there to resend.
+	}
+	s.resendPending = false
+	return tcp.TxDirective{Retransmit: true, RetransmitFrom: from}
+}
+
+// parseBlocks refreshes the scoreboard from a segment's option area, discarding
+// ranges the cumulative acknowledgement has overtaken.
+func (s *SACK) parseBlocks(opts []byte, ack tcp.Value) {
+	s.nAcked = 0
+	if len(opts) == 0 {
+		return
+	}
+	s.codec.ForEachOption(opts, func(kind tcp.OptionKind, data []byte) error {
+		if kind != tcp.OptSACK || len(data)%blockLen != 0 {
+			return nil
+		}
+		for off := 0; off+blockLen <= len(data) && s.nAcked < len(s.acked); off += blockLen {
+			b := Block{
+				Left:  tcp.Value(get32(data[off:])),
+				Right: tcp.Value(get32(data[off+4:])),
+			}
+			if !b.Left.LessThan(b.Right) || b.Right.LessThanEq(ack) {
+				// Empty, reversed, or already covered by the cumulative
+				// acknowledgement. A peer is not trusted to report either.
+				continue
+			}
+			if b.Left.LessThan(ack) {
+				b.Left = ack // Clamp to the part still outstanding.
+			}
+			s.acked[s.nAcked] = b
+			s.nAcked++
+		}
+		return nil
+	})
+}
+
+// planResend picks the first hole below the reported ranges: the octet at the
+// cumulative acknowledgement, when the peer has reported holding anything above it.
+//
+// That the peer holds data above the acknowledgement is itself the loss signal, and a
+// stronger one than a duplicate acknowledgement: it says not merely that something is
+// missing but that later data arrived, so what is missing is the range starting where
+// the stream stalled.
+func (s *SACK) planResend() {
+	if s.nAcked == 0 {
+		s.resendPending = false
+		return
+	}
+	// Only ask for the hole if there is one, meaning a reported range starts above
+	// the cumulative acknowledgement rather than at it.
+	lowest := s.acked[0]
+	for _, b := range s.acked[1:s.nAcked] {
+		if b.Left.LessThan(lowest.Left) {
+			lowest = b
+		}
+	}
+	if !s.una.LessThan(lowest.Left) {
+		s.resendPending = false // The peer's ranges start at the acknowledgement.
+		return
+	}
+	s.resendFrom, s.resendPending = s.una, true
+}
+
+// Acked returns the ranges the peer has reported holding above the cumulative
+// acknowledgement, in the order reported. The slice is only valid until the next
+// received segment and must not be retained.
+func (s *SACK) Acked() []Block { return s.acked[:s.nAcked] }
+
+// Holes reports whether the peer has told us something is missing: it holds data
+// above the cumulative acknowledgement, so the range starting there was lost.
+func (s *SACK) Holes() bool { return s.resendPending }
 
 // hasPermitted reports whether the option area carries SACK-Permitted.
 func (s *SACK) hasPermitted(opts []byte) (found bool) {
