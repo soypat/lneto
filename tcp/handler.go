@@ -461,23 +461,18 @@ func (h *Handler) Send(b []byte) (int, error) {
 		dir := h.policy.PreTx(h.txIntent(now, buffered))
 		holdNew = dir.HoldNew
 		if dir.Retransmit {
-			// Retransmission directed by loss recovery: rewind the transmit
-			// buffer and the send sequence so unacknowledged data is resent from
-			// the requested point. Done before the early short-circuit below so
-			// an expired RTO retransmits even with no new data queued.
+			// Retransmission directed by the policy: point the send sequence's
+			// retransmission pointer at the requested octet so the next segments
+			// resend from there. Done before the early short-circuit below so an
+			// expired RTO retransmits even with no new data queued.
 			//
-			// The buffer decides the effective sequence, since it can only resume
-			// at a segment boundary, and rejects sequences it holds no data for.
-			// Only then is the send sequence moved, so a directive the buffer
-			// cannot honour leaves the two consistent instead of rewinding the
-			// connection past data it can no longer produce. Retransmission of a
-			// control segment is not reachable from here; see
-			// [Handler.RequeueControl].
-			if rewound, ok := h.bufTx.RetransmitFrom(dir.RetransmitFrom); ok {
-				h.scb.RewindNXT(rewound)
-				// The rewind turns already-sent data back into unsent data.
-				buffered = h.bufTx.BufferedUnsent()
-			}
+			// The pointer leaves the transmit queue's sent/unsent split alone, so
+			// data after the resent range stays sent and the connection does not
+			// forget how far it has got. A range the queue no longer holds is
+			// rejected when the segment is built rather than corrupting the send
+			// sequence. Retransmission of a control segment is not reachable from
+			// here; see [Handler.RequeueControl].
+			h.scb.RetransmitAt(dir.RetransmitFrom)
 		}
 	}
 	awaitingSyn := h.AwaitingSynSend()

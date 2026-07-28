@@ -342,7 +342,10 @@ func (tcb *ControlBlock) prepareToHandshake(iss Value, wnd Size, newState State)
 
 // HasPending returns true if there is a pending control segment to send. Calls to Send will advance the pending queue.
 func (tcb *ControlBlock) HasPending() bool {
-	return tcb.pending[0] != 0 || tcb.pendingChallengeAck() || tcb.HasPendingRetransmit()
+	// A retransmission in progress is pending work even when the application has
+	// queued nothing: the data to resend has already been sent once, so it is not
+	// counted as unsent and nothing else would prompt the transmit path.
+	return tcb.pending[0] != 0 || tcb.pendingChallengeAck() || tcb.HasPendingRetransmit() || tcb.rtxActive
 }
 
 // HasPending returns true if the control block is pending a retransmit according to simple optmist
