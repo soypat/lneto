@@ -76,8 +76,8 @@ type Timer struct {
 
 	// expirations counts timeouts since Reset. It exists so a policy sharing this
 	// timer can notice a timeout it did not itself drive: a congestion controller
-	// must collapse its window on one, and a policy that composes the timer as a
-	// peer never sees the timer's own directive.
+	// must collapse its window on one, and when the timer is a peer in a
+	// [tcp.Composite] the controller never sees the timer's directive.
 	expirations uint32
 }
 
@@ -106,6 +106,13 @@ func (r *Timer) CurrentRTO() time.Duration {
 
 // Running reports whether the retransmission timer is currently armed.
 func (r *Timer) Running() bool { return r.running }
+
+// Expirations returns how many times the retransmission timer has expired since
+// [Timer.Reset]. A policy that shares this timer rather than driving it watches
+// this for a change to learn that a timeout happened, since it never sees the
+// timer's own directive. It is concrete-type introspection and is intentionally
+// not part of [tcp.Policy].
+func (r *Timer) Expirations() uint32 { return r.expirations }
 
 // NextDeadline returns the monotonic-nanosecond instant at which the timer
 // expires, or 0 when it is not armed. It implements [tcp.Policy].

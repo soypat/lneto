@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/soypat/lneto/tcp"
+	"github.com/soypat/lneto/tcp/rto"
 )
 
 const (
@@ -455,5 +456,43 @@ func TestTimestamps_UnsentSynAckDoesNotNegotiate(t *testing.T) {
 	seg := tcp.Segment{SEQ: 1, ACK: 1, WND: 1024, Flags: tcp.FlagACK}
 	if !serverTS.PreRx(tcp.RxMeta{Now: nanosPerMilli, Segment: seg, State: tcp.StateSynRcvd}).Keep {
 		t.Error("a segment without the option was dropped, cutting off a peer that never negotiated")
+	}
+}
+
+// TestTimestamps_SampleReachesSharedTimer verifies a sample lands in the shared
+// timer rather than in the private one the policy no longer uses.
+//
+// The shared timer here is driven by nothing else, so its estimate can only have
+// come from this policy. That is the point: a policy sharing a timer whose samples
+// went to its own unused timer would look correct in any test where the shared
+// timer also samples acknowledgements for itself.
+func TestTimestamps_SampleReachesSharedTimer(t *testing.T) {
+	shared := new(rto.Timer)
+	shared.Reset()
+	ts := new(Timestamps)
+	ts.SetTimer(shared)
+	ts.enabled = true
+	ts.offered = true
+	ts.haveEpoch = true
+	ts.epoch = 0
+
+	if got := shared.SmoothedRTT(); got != 0 {
+		t.Fatalf("shared timer has RTT %v before any sample, want 0", got)
+	}
+	const rttMillis = 40
+	ev := acceptedWithTimestamp(10, 1, 100, 100)
+	ev.Now = (rttMillis + 1) * nanosPerMilli
+	ts.PostRx(ev)
+
+	sample, ok := ts.LastRTT()
+	if !ok {
+		t.Fatal("expected an RTT sample from the echo")
+	}
+	if got := int64(shared.SmoothedRTT()); got != sample {
+		t.Errorf("shared timer RTT = %d, want the sample %d: it went to the private timer", got, sample)
+	}
+	// The private timer must be untouched, so nothing is reading a stale estimate.
+	if got := ts.timer.SmoothedRTT(); got != 0 {
+		t.Errorf("private timer RTT = %v, want 0 while a shared timer is in use", got)
 	}
 }
