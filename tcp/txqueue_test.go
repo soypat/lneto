@@ -198,6 +198,121 @@ func TestSentlist_simple(t *testing.T) {
 	}
 }
 
+func TestRingTx_RetransmitFrom(t *testing.T) {
+	const bufsize = 16
+	const maxpkts = 4
+	const iss = Value(1000)
+	const npkt, pktlen = 3, 4
+	const datalen = npkt * pktlen
+	for _, test := range []struct {
+		name string
+		// rotate is a number of octets pushed through and acked before the test
+		// data is queued, to move the ring offsets and force a wraparound.
+		rotate int
+		// start is the retransmission point relative to the first test octet.
+		start int
+		// want is the expected rewind point relative to the first test octet,
+		// only meaningful when ok is true.
+		want int
+		ok   bool
+	}{
+		{name: "at UNA", start: 0, want: 0, ok: true},
+		{name: "second packet", start: pktlen, want: pktlen, ok: true},
+		{name: "last packet", start: 2 * pktlen, want: 2 * pktlen, ok: true},
+		{name: "mid packet clamps down", start: pktlen + 2, want: pktlen, ok: true},
+		{name: "last octet clamps down", start: datalen - 1, want: 2 * pktlen, ok: true},
+		{name: "before UNA", start: -1},
+		{name: "at NXT", start: datalen},
+		{name: "past NXT", start: datalen + 1},
+		{name: "wrapped at UNA", rotate: bufsize - 6, start: 0, want: 0, ok: true},
+		{name: "wrapped mid packet", rotate: bufsize - 6, start: pktlen + 2, want: pktlen, ok: true},
+		{name: "wrapped last packet", rotate: bufsize - 6, start: 2 * pktlen, want: 2 * pktlen, ok: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var rtx ringTx
+			var scratch [bufsize]byte
+			err := rtx.Reset(make([]byte, bufsize), maxpkts, iss)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Rotate the ring so the test data does not start at offset zero.
+			base := iss
+			for range test.rotate {
+				if _, err = rtx.Write([]byte{0}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err = rtx.MakePacket(scratch[:1], base); err != nil {
+					t.Fatal(err)
+				}
+				base = Add(base, 1)
+				if err = rtx.RecvACK(base); err != nil {
+					t.Fatal(err)
+				}
+			}
+			data := make([]byte, datalen)
+			for i := range data {
+				data[i] = byte(i + 1)
+			}
+			if _, err = rtx.Write(data); err != nil {
+				t.Fatal(err)
+			}
+			for i := range npkt {
+				seq := Add(base, Size(i*pktlen))
+				if _, err = rtx.MakePacket(scratch[:pktlen], seq); err != nil {
+					t.Fatal(err)
+				}
+			}
+			testQueueSanity(t, &rtx)
+			if rtx.BufferedSent() != datalen {
+				t.Fatalf("want %d sent, got %d", datalen, rtx.BufferedSent())
+			}
+
+			rewound, ok := rtx.RetransmitFrom(base + Value(test.start))
+			if ok != test.ok {
+				t.Fatalf("want ok=%v, got %v", test.ok, ok)
+			}
+			testQueueSanity(t, &rtx)
+			if !ok {
+				// A rejected retransmission must leave the queue untouched.
+				if rtx.BufferedSent() != datalen || rtx.BufferedUnsent() != 0 {
+					t.Fatalf("queue modified on failed rewind: sent=%d unsent=%d",
+						rtx.BufferedSent(), rtx.BufferedUnsent())
+				}
+				return
+			}
+			if want := base + Value(test.want); rewound != want {
+				t.Fatalf("want rewind to %d, got %d", want, rewound)
+			}
+			if rtx.BufferedSent() != test.want {
+				t.Errorf("want %d still sent, got %d", test.want, rtx.BufferedSent())
+			}
+			if want := datalen - test.want; rtx.BufferedUnsent() != want {
+				t.Errorf("want %d unsent, got %d", want, rtx.BufferedUnsent())
+			}
+			if test.want > 0 {
+				// Packets before the rewind point stay in the retransmission
+				// queue, so a late ACK covering them must still be accounted for.
+				if err = rtx.RecvACK(base + Value(test.want)); err != nil {
+					t.Fatalf("ack of data left sent: %s", err)
+				}
+				testQueueSanity(t, &rtx)
+				if rtx.BufferedSent() != 0 {
+					t.Errorf("want acked data freed, got %d sent", rtx.BufferedSent())
+				}
+			}
+			// Rewound data must be re-readable, identical, and from the right offset.
+			n, err := rtx.MakePacket(scratch[:], rewound)
+			if err != nil {
+				t.Fatal(err)
+			}
+			testQueueSanity(t, &rtx)
+			if want := data[test.want:]; !bytes.Equal(scratch[:n], want) {
+				t.Fatalf("want resent data %v, got %v", want, scratch[:n])
+			}
+		})
+	}
+}
+
 func TestTxQueue_multipacket(t *testing.T) {
 	const mtu = 32
 	const iss = 1
