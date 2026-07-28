@@ -557,11 +557,14 @@ func (h *Handler) Send(b []byte) (int, error) {
 	// the tail of the last option outside the header where no peer would parse it.
 	paddedOptLen := (optLen + 3) &^ 3
 	if paddedOptLen > 0 {
-		for i := sizeHeaderTCP + optLen; i < sizeHeaderTCP+paddedOptLen; i++ {
-			b[i] = 0
-		}
+		// Checked before the padding is written, not after: the padded length is
+		// larger than what was offered to the policy, so a buffer that had room for
+		// the options need not have room for the boundary they are padded to.
 		if sizeHeaderTCP+paddedOptLen > len(b) {
 			return 0, lneto.ErrShortBuffer
+		}
+		for i := sizeHeaderTCP + optLen; i < sizeHeaderTCP+paddedOptLen; i++ {
+			b[i] = 0
 		}
 	}
 	payloadAt := sizeHeaderTCP + paddedOptLen
