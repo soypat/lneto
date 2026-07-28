@@ -193,16 +193,22 @@ type TxPlan struct {
 // The zero value directs the connection to proceed normally (send new data if
 // available, no retransmission).
 type TxDirective struct {
-	// RewindNXT is the number of sequence-space octets to rewind snd.NXT by
-	// before transmitting, for partial (e.g. selective) retransmission. Zero
-	// means no rewind. It is independent of Retransmit, which rewinds fully to
-	// snd.UNA.
-	// RewindNXT uint32
-
-	// RetransmitAll requests go-back-N retransmission: the connection rewinds
-	// snd.NXT to snd.UNA and resends unacknowledged data from the oldest
-	// sequence number.
-	RetransmitAll bool
+	// Retransmit requests retransmission of unacknowledged data, resuming at
+	// RetransmitFrom. The connection rewinds snd.NXT and its transmit queue to
+	// that sequence number, so everything already sent from there onward is sent
+	// again; there is no way to skip a range that the peer has selectively
+	// acknowledged. Setting RetransmitFrom to [TxIntent.UNA] therefore requests
+	// plain go-back-N.
+	Retransmit bool
+	// RetransmitFrom is the sequence number at which retransmission resumes. It
+	// is ignored unless Retransmit is set, and is clamped into
+	// [[TxIntent.UNA], [TxIntent.NXT]] so a stale or bogus value cannot corrupt
+	// the connection.
+	//
+	// The transmit queue tracks whole segments, so a sequence inside a queued
+	// segment resumes from that segment's first octet: retransmission may start
+	// before the requested sequence but never after it.
+	RetransmitFrom Value
 	// HoldNew pauses transmission of new (not yet sent) data, for example when a
 	// congestion controller's window is exhausted. Retransmissions directed by
 	// this same directive, pending control segments and ACKs still proceed; only
