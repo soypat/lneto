@@ -46,6 +46,19 @@ type StackNode interface {
 	// SetFlagPending(flagPending func(numPendingEncapsulations int))
 }
 
+// NoDeadline is embedded by [StackNode] implementations that have no
+// time-driven work, supplying [StackNode.NextDeadline] with a value reporting
+// no deadline. A node whose timing depends on a clock it was not given embeds
+// this too: reporting no deadline is always safe, meaning the node asks for
+// nothing and is serviced whenever egress next runs.
+//
+// It is a zero-size field, so embedding it costs no memory and the promoted
+// method folds to a constant, leaving deadline aggregation free for such nodes.
+type NoDeadline struct{}
+
+// NextDeadline reports no deadline. See [NoDeadline].
+func (NoDeadline) NextDeadline() int64 { return 0 }
+
 // IPProto represents the IP protocol number.
 type IPProto uint8
 

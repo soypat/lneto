@@ -38,6 +38,8 @@ const (
 // Clients are attached to MDNS ports and function until manual detachment
 // due to their dual design: they double as a querier and service discovery.
 type Client struct {
+	lneto.NoDeadline // no time-driven work
+
 	connID uint64
 	closed bool
 	lport  uint16
@@ -84,10 +86,6 @@ func (c *Client) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
 func (c *Client) LocalPort() uint16 { return c.lport }
 
 func (c *Client) ConnectionID() *uint64 { return &c.connID }
-
-// NextDeadline reports no deadline: this node holds no clock and its timing is
-// driven by the caller. It implements [lneto.StackNode].
-func (c *Client) NextDeadline() int64 { return 0 }
 
 type ResolveConfig struct {
 	Questions          []dns.Question

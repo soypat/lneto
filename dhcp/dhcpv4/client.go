@@ -15,6 +15,8 @@ import (
 )
 
 type Client struct {
+	lneto.NoDeadline // no time-driven work
+
 	connID      uint64
 	reqHostname string
 	clientID    []byte
@@ -103,10 +105,6 @@ func (c *Client) BeginRequest(xid uint32, cfg RequestConfig) error {
 func (c *Client) Protocol() uint64      { return uint64(lneto.IPProtoUDP) }
 func (c *Client) LocalPort() uint16     { return DefaultClientPort }
 func (c *Client) ConnectionID() *uint64 { return &c.connID }
-
-// NextDeadline reports no deadline: this node holds no clock and its timing is
-// driven by the caller. It implements [lneto.StackNode].
-func (c *Client) NextDeadline() int64 { return 0 }
 
 func (c *Client) setIP(carrierFrame []byte, offsetToIP int) {
 	if offsetToIP < 0 {

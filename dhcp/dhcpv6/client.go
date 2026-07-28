@@ -88,6 +88,8 @@ type DelegatedPrefix struct {
 //	cl.BeginRequest(xid, RequestConfig{ClientHardwareAddr: mac})
 //	// drive Encapsulate / Demux calls via the network stack
 type Client struct {
+	lneto.NoDeadline // no time-driven work
+
 	connID uint64
 	state  ClientState
 	xid    uint32 // lower 24 bits used
@@ -615,10 +617,6 @@ func (c *Client) NumNTPServerNames() int { return len(c.ntpNames) }
 // The value increments on each reset; callers should discard registrations when it changes.
 // Implements [lneto.StackNode].
 func (c *Client) ConnectionID() *uint64 { return &c.connID }
-
-// NextDeadline reports no deadline: this node holds no clock and its timing is
-// driven by the caller. It implements [lneto.StackNode].
-func (c *Client) NextDeadline() int64 { return 0 }
 
 // LocalPort returns the DHCPv6 client port (546).
 // Implements [lneto.StackNode].

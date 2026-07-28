@@ -30,6 +30,8 @@ var (
 // PacketConn is the UDP equivalent of [net.PacketConn] and implements
 // [lnetopacketconn] and [lneto.StackNode]. It is thread safe.
 type PacketConn struct {
+	lneto.NoDeadline // no time-driven work
+
 	mu        sync.Mutex
 	m         muxHandler
 	localAddr netip.AddrPort
@@ -129,10 +131,6 @@ func (pc *PacketConn) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
 
 // ConnectionID implements [lneto.StackNode].
 func (pc *PacketConn) ConnectionID() *uint64 { return &pc.m.connid }
-
-// NextDeadline reports no deadline: UDP is datagram oriented and retains no
-// timers. It implements [lneto.StackNode].
-func (pc *PacketConn) NextDeadline() int64 { return 0 }
 
 // Demux implements [lneto.StackNode].
 func (pc *PacketConn) Demux(carrierData []byte, frameOffset int) error {
