@@ -507,7 +507,12 @@ func (h *Handler) Send(b []byte) (int, error) {
 		optEnd := min(sizeHeaderTCP+maxTCPOptionBytes, len(b))
 		optStart := sizeHeaderTCP + coreOptLen
 		if optStart < optEnd {
-			n := h.loss.WriteOptions(TxPlan{Now: now, State: state, Kind: kind}, b[optStart:optEnd])
+			n := h.loss.WriteOptions(TxPlan{
+				Now:        now,
+				State:      state,
+				Kind:       kind,
+				Reassembly: ReassemblyView{r: &h.reasm},
+			}, b[optStart:optEnd])
 			if int(n) > optEnd-optStart {
 				// The policy overran the buffer it was lent. Refuse to build a
 				// segment from a header of unknown layout.
