@@ -117,23 +117,26 @@ func (rtx *ringTx) Write(b []byte) (n int, err error) {
 // MakePacket reads from the unsent data ring buffer and generates a new packet segment.
 // It fails if the sent packet queue is full.
 func (rtx *ringTx) MakePacket(b []byte, currentSeq Value) (int, error) {
-	free := rtx.slist.Free()
-	if free == 0 {
-		return 0, lneto.ErrBufferFull
-	}
 	endSeq, ok := rtx.sentEndSeq()
 	if ok && currentSeq.LessThan(endSeq) {
 		// maybe retransmit. Look for exact match.
 		for i := range rtx.slist.pkts {
 			pkt := &rtx.slist.pkts[i]
 			if pkt.seq == currentSeq {
-				// This packet to be retransmit.
+				// This packet to be retransmit. Resending a packet the queue already
+				// tracks needs no new entry, so it is not subject to the queue being
+				// full — which is exactly the state a stalled connection is in when it
+				// most needs to retransmit.
 				data := rtx.ring(pkt.off, pkt.end)
 				return data.Read(b)
 			}
 		}
 		internal.LogAttrs(nil, slog.LevelError, "txqueue:seq<endseq", slog.Uint64("seq", uint64(currentSeq)), slog.Uint64("endseq", uint64(endSeq)))
 		return 0, lneto.ErrBug
+	}
+	if rtx.slist.Free() == 0 {
+		// New data needs an entry to track it by.
+		return 0, lneto.ErrBufferFull
 	}
 	// Reading unsent ring consumes unsent and converts it to "sent".
 	unsent, _ := rtx.unsentRing()
