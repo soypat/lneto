@@ -1,5 +1,5 @@
 // Package congestion implements TCP congestion-control algorithms as
-// [tcp.LossRecovery] policies living outside the core tcp package.
+// [tcp.Policy] policies living outside the core tcp package.
 //
 // A controller here observes the segment stream through the loss-recovery
 // hooks and throttles the connection by withholding new data once the octets
@@ -66,7 +66,7 @@ type CUBICConfig struct {
 }
 
 // CUBIC implements the CUBIC congestion-control algorithm ([RFC9438]) as a
-// [tcp.LossRecovery]. It grows its congestion window as a cubic function of the
+// [tcp.Policy]. It grows its congestion window as a cubic function of the
 // time since the last congestion event, giving a concave approach toward the
 // window that last caused loss followed by a convex probe for more bandwidth.
 //
@@ -128,10 +128,10 @@ type cubicConfig struct {
 	fastConvergence bool
 }
 
-var _ tcp.LossRecovery = (*CUBIC)(nil)
+var _ tcp.Policy = (*CUBIC)(nil)
 
 // Configure validates and stores cfg and resets the controller. It is the
-// static configuration step and is not part of [tcp.LossRecovery]; call it
+// static configuration step and is not part of [tcp.Policy]; call it
 // before installing the controller on a connection.
 func (c *CUBIC) Configure(cfg CUBICConfig) error {
 	if cfg.SlowStartThresh < 0 {
@@ -157,7 +157,7 @@ func (c *CUBIC) Configure(cfg CUBICConfig) error {
 
 // Reset returns the controller and its retransmission timer to the initial
 // per-connection state, retaining the configuration. It implements
-// [tcp.LossRecovery].
+// [tcp.Policy].
 func (c *CUBIC) Reset() {
 	cfg := c.cfg
 	*c = CUBIC{
@@ -171,17 +171,17 @@ func (c *CUBIC) Reset() {
 }
 
 // NextDeadline returns the retransmission deadline of the embedded timer. It
-// implements [tcp.LossRecovery].
+// implements [tcp.Policy].
 func (c *CUBIC) NextDeadline() int64 { return c.timer.NextDeadline() }
 
 // PreRx keeps every segment: a congestion controller drops nothing and records
 // nothing before the connection has judged the segment. It implements
-// [tcp.LossRecovery].
+// [tcp.Policy].
 func (c *CUBIC) PreRx(rx tcp.RxMeta) tcp.RxDirective { return c.timer.PreRx(rx) }
 
 // PostRx forwards an accepted segment to the retransmission timer and updates the
 // congestion window from the acknowledgement it carries. It implements
-// [tcp.LossRecovery].
+// [tcp.Policy].
 //
 // A refused segment is ignored, which is the difference between counting real
 // feedback and counting whatever arrives: an acknowledgement the state machine
@@ -197,7 +197,7 @@ func (c *CUBIC) PostRx(event tcp.RxEvent) {
 // PreTx applies the retransmission timer's directive, adds a duplicate-ACK
 // triggered retransmission if one is pending, and withholds new data when the
 // octets in flight have reached the congestion window. It implements
-// [tcp.LossRecovery].
+// [tcp.Policy].
 func (c *CUBIC) PreTx(intent tcp.TxIntent) tcp.TxDirective {
 	if intent.MSS != 0 {
 		c.mss = intent.MSS
@@ -222,11 +222,11 @@ func (c *CUBIC) PreTx(intent tcp.TxIntent) tcp.TxDirective {
 
 // WriteOptions adds no TCP options. Congestion control needs none; a policy
 // composing timestamps or SACK would write them here. It implements
-// [tcp.LossRecovery].
+// [tcp.Policy].
 func (c *CUBIC) WriteOptions(plan tcp.TxPlan, opts []byte) uint8 { return 0 }
 
 // PostTx forwards the emitted segment to the retransmission timer. It
-// implements [tcp.LossRecovery].
+// implements [tcp.Policy].
 func (c *CUBIC) PostTx(outgoing tcp.Segment, now int64) { c.timer.PostTx(outgoing, now) }
 
 // CongestionWindow returns the congestion window in bytes: the maximum number

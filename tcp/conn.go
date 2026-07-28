@@ -76,16 +76,26 @@ type ConnConfig struct {
 	// Logger sets the [Conn] logger.
 	// Lower level logging available at [Handler.SetLoggers] via [Conn.InternalHandler].
 	Logger *slog.Logger
-	// Policy is the optional transmit-steering algorithm (RTO, congestion
-	// control, ...) for the connection. nil disables it. A Policy needing time
-	// carries its own clock. See [Policy].
+	// Policy is the optional packet-loss recovery algorithm (RTO,
+	// congestion control, ...) for the connection. If set, Nanotime must also be
+	// set (else Configure returns an error). Leaving it nil disables loss
+	// recovery. See [Policy].
 	Policy Policy
+	// Nanotime is the monotonic time source in nanoseconds (the func() int64
+	// convention used across lneto) that drives Policy. It is required when
+	// Policy is set and unused otherwise. The tcp package reads it only to
+	// stamp the loss-recovery hooks; it holds no clock itself.
+	Nanotime func() int64
 }
 
 // Configure should be called on any newly created connection before usage. See [ConnConfig].
 func (conn *Conn) Configure(config ConnConfig) (err error) {
 	if config.RWBackoff == nil {
 		return lneto.ErrMissingHALConfig
+	}
+	if config.Policy != nil && config.Nanotime == nil {
+		// The tcp package holds no clock: a loss-recovery algorithm cannot run without it.
+		return lneto.ErrInvalidConfig
 	}
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
@@ -95,7 +105,7 @@ func (conn *Conn) Configure(config ConnConfig) (err error) {
 	}
 	conn._backoff = config.RWBackoff
 	conn.logger.log = config.Logger
-	conn.h.SetPolicy(config.Policy)
+	conn.h.SetPolicy(config.Policy, config.Nanotime)
 	return nil
 }
 

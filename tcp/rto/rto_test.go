@@ -203,10 +203,10 @@ func TestRTO_UpdateRTTFirstSample(t *testing.T) {
 	}
 }
 
-// TestRTO_ImplementsLossRecovery exercises Timer through the [tcp.LossRecovery]
+// TestRTO_ImplementsPolicy exercises Timer through the [tcp.Policy]
 // interface: sending data arms a deadline and a full ACK disarms it.
-func TestRTO_ImplementsLossRecovery(t *testing.T) {
-	var lr tcp.LossRecovery = newRTO()
+func TestRTO_ImplementsPolicy(t *testing.T) {
+	var lr tcp.Policy = newRTO()
 	lr.Reset()
 	lr.PostTx(dataSeg(1000, 100), 0)
 	if lr.NextDeadline() == 0 {

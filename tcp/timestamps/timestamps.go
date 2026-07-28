@@ -1,5 +1,5 @@
 // Package timestamps implements the RFC 7323 TCP Timestamps option as a
-// [tcp.LossRecovery] policy living outside the core tcp package.
+// [tcp.Policy] policy living outside the core tcp package.
 //
 // It negotiates the option during the handshake, echoes the peer's TSval per
 // RFC 7323 §4.3, measures the round-trip time from the echo it gets back, and
@@ -10,7 +10,7 @@
 // tcp/congestion for the option-bearing half of the seam: where a congestion
 // controller only needs send-state metadata, an option-negotiating extension
 // needs to read incoming options and write outgoing ones, which the seam
-// provides through [tcp.RxMeta.Options] and [tcp.LossRecovery.WriteOptions].
+// provides through [tcp.RxMeta.Options] and [tcp.Policy.WriteOptions].
 package timestamps
 
 import (
@@ -36,7 +36,7 @@ const (
 )
 
 // Timestamps implements RFC 7323 timestamp negotiation, echoing and RTT
-// measurement as a [tcp.LossRecovery].
+// measurement as a [tcp.Policy].
 //
 // It composes a [rto.Timer] so that installing it also installs RFC 6298
 // retransmission timing; round-trip samples taken from echoed timestamps are
@@ -78,7 +78,7 @@ type Timestamps struct {
 	haveRTT bool
 }
 
-var _ tcp.LossRecovery = (*Timestamps)(nil)
+var _ tcp.Policy = (*Timestamps)(nil)
 
 // Config configures a [Timestamps] policy.
 type Config struct {
@@ -96,7 +96,7 @@ func (ts *Timestamps) Configure(cfg Config) {
 }
 
 // Reset returns the policy and its retransmission timer to the initial
-// per-connection state. It implements [tcp.LossRecovery].
+// per-connection state. It implements [tcp.Policy].
 func (ts *Timestamps) Reset() {
 	paws := ts.paws
 	*ts = Timestamps{paws: paws}
@@ -118,15 +118,15 @@ func (ts *Timestamps) LastRTT() (int64, bool) { return ts.lastRTT, ts.haveRTT }
 func (ts *Timestamps) SmoothedRTT() int64 { return int64(ts.timer.SmoothedRTT()) }
 
 // NextDeadline returns the retransmission deadline of the embedded timer. It
-// implements [tcp.LossRecovery].
+// implements [tcp.Policy].
 func (ts *Timestamps) NextDeadline() int64 { return ts.timer.NextDeadline() }
 
 // PostTx forwards the emitted segment to the retransmission timer. It
-// implements [tcp.LossRecovery].
+// implements [tcp.Policy].
 func (ts *Timestamps) PostTx(outgoing tcp.Segment, now int64) { ts.timer.PostTx(outgoing, now) }
 
 // PreTx forwards to the retransmission timer. It implements
-// [tcp.LossRecovery].
+// [tcp.Policy].
 func (ts *Timestamps) PreTx(intent tcp.TxIntent) tcp.TxDirective { return ts.timer.PreTx(intent) }
 
 // tsval returns the timestamp clock value to place in an outgoing segment.
@@ -140,7 +140,7 @@ func (ts *Timestamps) tsval(now int64) uint32 {
 
 // WriteOptions offers the Timestamps option during the handshake and, once
 // negotiated, stamps every outgoing segment with the current TSval and the
-// peer's TS.Recent. It implements [tcp.LossRecovery].
+// peer's TS.Recent. It implements [tcp.Policy].
 func (ts *Timestamps) WriteOptions(plan tcp.TxPlan, opts []byte) uint8 {
 	switch plan.Kind {
 	case tcp.TxKindSYN:
@@ -182,7 +182,7 @@ func (ts *Timestamps) WriteOptions(plan tcp.TxPlan, opts []byte) uint8 {
 // PreRx parses the peer's Timestamps option, completes negotiation, maintains
 // TS.Recent, measures the round-trip time from the echo and, with PAWS enabled,
 // drops segments whose timestamp has gone backwards. It implements
-// [tcp.LossRecovery].
+// [tcp.Policy].
 func (ts *Timestamps) PreRx(rx tcp.RxMeta) tcp.RxDirective {
 	tsval, _, present := ts.parse(rx.Options)
 	isSyn := rx.Segment.Flags.HasAny(tcp.FlagSYN)
@@ -218,7 +218,7 @@ func (ts *Timestamps) PreRx(rx tcp.RxMeta) tcp.RxDirective {
 
 // PostRx records the peer's timestamp and takes a round-trip sample from a segment
 // the connection accepted, then forwards the event to the retransmission timer. It
-// implements [tcp.LossRecovery].
+// implements [tcp.Policy].
 //
 // RFC 7323 §4.3 advances TS.Recent only for an acceptable segment, so a refused one
 // must not move it. Letting it would echo a timestamp from a segment that never

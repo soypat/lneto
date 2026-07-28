@@ -174,9 +174,9 @@ func (en *emuNet) now() time.Time { return en.clock }
 func (en *emuNet) nanotime() int64 { return en.clock.UnixNano() }
 
 // install attaches a policy to a handler on the shared simulated clock.
-func (en *emuNet) install(h *tcp.Handler, policy tcp.LossRecovery) {
+func (en *emuNet) install(h *tcp.Handler, policy tcp.Policy) {
 	en.t.Helper()
-	h.SetLossRecovery(policy, en.nanotime)
+	h.SetPolicy(policy, en.nanotime)
 }
 
 // drain repeatedly pulls segments out of h and offers them to link until h has

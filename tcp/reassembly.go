@@ -141,7 +141,7 @@ func (r *reassembly) reassemble(rx *internal.Ring, nxt Value) Size {
 //
 // The view borrows the connection's state for the duration of the call it was
 // handed to and must not be retained, like the option area lent to
-// [LossRecovery.WriteOptions]. Reading it allocates nothing, which is why blocks
+// [Policy.WriteOptions]. Reading it allocates nothing, which is why blocks
 // are reached by index rather than through a range-over-function iterator: the
 // closure that would take would allocate on a path walked for every segment.
 //

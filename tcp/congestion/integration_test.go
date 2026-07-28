@@ -19,7 +19,7 @@ const (
 
 // connPair returns two established handlers with the given policy installed on
 // the client, plus a scratch packet buffer.
-func connPair(t *testing.T, policy tcp.LossRecovery, nanotime func() int64) (client, server *tcp.Handler, packet []byte) {
+func connPair(t *testing.T, policy tcp.Policy, nanotime func() int64) (client, server *tcp.Handler, packet []byte) {
 	t.Helper()
 	client, server = new(tcp.Handler), new(tcp.Handler)
 	for _, h := range []*tcp.Handler{client, server} {
@@ -28,7 +28,7 @@ func connPair(t *testing.T, policy tcp.LossRecovery, nanotime func() int64) (cli
 		}
 	}
 	if policy != nil {
-		client.SetLossRecovery(policy, nanotime)
+		client.SetPolicy(policy, nanotime)
 	}
 	if err := server.OpenListen(80, 0); err != nil {
 		t.Fatal(err)

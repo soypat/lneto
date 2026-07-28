@@ -24,7 +24,7 @@ func TestStackAsyncNextDeadline(t *testing.T) {
 	// Give the client a retransmission timer before it opens, so the node the
 	// stack registers is one that answers with a real deadline.
 	const nanotime = int64(1)
-	clConn.InternalHandler().SetLossRecovery(new(rto.Timer), func() int64 { return nanotime })
+	clConn.InternalHandler().SetPolicy(new(rto.Timer), func() int64 { return nanotime })
 	tst.TestTCPSetupAndEstablish(svStack, clStack, svConn, clConn, svPort, clPort)
 
 	// Emit data without delivering it, so it stays unacknowledged and the

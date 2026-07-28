@@ -23,7 +23,7 @@ func tsClock() func() int64 {
 
 // pair returns two established handlers with the given policies installed and a
 // scratch packet buffer.
-func pair(t *testing.T, clientPolicy, serverPolicy tcp.LossRecovery) (client, server *tcp.Handler, packet []byte) {
+func pair(t *testing.T, clientPolicy, serverPolicy tcp.Policy) (client, server *tcp.Handler, packet []byte) {
 	t.Helper()
 	client, server = new(tcp.Handler), new(tcp.Handler)
 	for _, h := range []*tcp.Handler{client, server} {
@@ -32,10 +32,10 @@ func pair(t *testing.T, clientPolicy, serverPolicy tcp.LossRecovery) (client, se
 		}
 	}
 	if clientPolicy != nil {
-		client.SetLossRecovery(clientPolicy, tsClock())
+		client.SetPolicy(clientPolicy, tsClock())
 	}
 	if serverPolicy != nil {
-		server.SetLossRecovery(serverPolicy, tsClock())
+		server.SetPolicy(serverPolicy, tsClock())
 	}
 	if err := server.OpenListen(80, 0); err != nil {
 		t.Fatal(err)

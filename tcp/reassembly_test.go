@@ -307,7 +307,7 @@ func TestReassemblyViewReportsHeldBlocks(t *testing.T) {
 	}
 }
 
-// sackWatcher is a LossRecovery that records the out-of-order blocks offered to
+// sackWatcher is a Policy that records the out-of-order blocks offered to
 // it while a segment's options are written.
 type sackWatcher struct {
 	nopLoss
@@ -334,7 +334,7 @@ func TestHandlerOffersHeldBlocksToWriteOptions(t *testing.T) {
 	rng := rand.New(rand.NewSource(99))
 	client, server := newHandler(t, mtu, 4), newHandler(t, mtu, 4)
 	watcher := new(sackWatcher)
-	server.SetLossRecovery(watcher, func() int64 { return 1 })
+	server.SetPolicy(watcher, func() int64 { return 1 })
 	setupClientServer(t, rng, client, server)
 	var buf [mtu]byte
 	establish(t, client, server, buf[:])
