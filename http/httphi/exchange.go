@@ -404,10 +404,9 @@ func (exch *Exchange) RequestContentType() []byte {
 }
 
 // RequestContentLength returns the body length declared by the request's
-// Content-Length field. An absent field is not a client error: such a request
-// has no body at all, RFC 9112 6.3. Check for the error to answer 411 instead.
+// Content-Length field. An absent field is signalled with present=false and no error.
 // See [httpraw.Header.ContentLength].
-func (exch *Exchange) RequestContentLength() (int64, bool, error) {
+func (exch *Exchange) RequestContentLength() (_ int64, present bool, _ error) {
 	return exch.RequestHeaderRaw().ContentLength()
 }
 
@@ -432,8 +431,10 @@ func (exch *Exchange) RequestParseForm(dst *httpraw.Form, buf []byte) error {
 		// wire would parse chunk sizes as form data. httpraw does not decode them.
 		return errUnsupportedTransferCoding
 	}
+
 	length, present, err := exch.RequestContentLength()
 	if !present {
+		dst.Reset(nil)
 		return nil // No length is no body, RFC 9112 6.3.
 	} else if err != nil {
 		return err

@@ -395,11 +395,8 @@ func (h *Header) NormalizeKeys() {
 }
 
 // ContentLength returns the body length declared by the Content-Length field.
-// Fails with an error if the field is absent, which for a request means the
-// message has no body at all unless a transfer coding applies, RFC 9112 6.3.
-// The value must be digits only, so a negative or list-valued field is rejected
-// rather than guessed at.
-func (h *Header) ContentLength() (int64, bool, error) {
+// If the field is not present then the returned bool is false. Will return error for invalid or non-integer value.
+func (h *Header) ContentLength() (_ int64, present bool, _ error) {
 	value := h.GetFold(headerContentLength)
 	if value == nil {
 		return 0, false, nil
