@@ -73,6 +73,12 @@ type Timer struct {
 	running  bool
 	deadline int64 // time (monotonic ns) at which the timer expires.
 	backoff  uint8 // consecutive timeouts, for exponential backoff.
+
+	// expirations counts timeouts since Reset. It exists so a policy sharing this
+	// timer can notice a timeout it did not itself drive: a congestion controller
+	// must collapse its window on one, and when the timer is a peer in a
+	// [tcp.Composite] the controller never sees the timer's directive.
+	expirations uint32
 }
 
 var _ tcp.Policy = (*Timer)(nil)
@@ -100,6 +106,13 @@ func (r *Timer) CurrentRTO() time.Duration {
 
 // Running reports whether the retransmission timer is currently armed.
 func (r *Timer) Running() bool { return r.running }
+
+// Expirations returns how many times the retransmission timer has expired since
+// [Timer.Reset]. A policy that shares this timer rather than driving it watches
+// this for a change to learn that a timeout happened, since it never sees the
+// timer's own directive. It is concrete-type introspection and is intentionally
+// not part of [tcp.Policy].
+func (r *Timer) Expirations() uint32 { return r.expirations }
 
 // NextDeadline returns the monotonic-nanosecond instant at which the timer
 // expires, or 0 when it is not armed. It implements [tcp.Policy].
@@ -163,6 +176,7 @@ func (r *Timer) PreTx(intent tcp.TxIntent) tcp.TxDirective {
 	if !r.running || now < r.deadline || r.sndUNA == r.sndNXT {
 		return tcp.TxDirective{}
 	}
+	r.expirations++
 	r.timing = false // §5.4: do not sample a retransmitted segment.
 	if r.backoff < backoffMax {
 		r.backoff++

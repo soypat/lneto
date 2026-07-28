@@ -45,8 +45,13 @@ const (
 // The zero value is ready to use and offers the option on the next handshake.
 type Timestamps struct {
 	// timer provides retransmission timing. Timestamp-derived samples are fed to
-	// it in addition to the samples it takes from acknowledgments.
+	// it in addition to the samples it takes from acknowledgments. Used only when
+	// no shared timer is set.
 	timer rto.Timer
+	// shared is a timer owned and driven by someone else, set by
+	// [Timestamps.SetTimer]. When set this policy feeds samples to it and reads it
+	// but does not drive it, since a timer driven twice observes every segment twice.
+	shared *rto.Timer
 	// codec serializes and walks the option area.
 	codec tcp.OptionCodec
 
@@ -105,9 +110,36 @@ func (ts *Timestamps) Configure(cfg Config) {
 // Reset returns the policy and its retransmission timer to the initial
 // per-connection state. It implements [tcp.Policy].
 func (ts *Timestamps) Reset() {
-	paws := ts.paws
-	*ts = Timestamps{paws: paws}
-	ts.timer.Reset()
+	paws, shared := ts.paws, ts.shared
+	*ts = Timestamps{paws: paws, shared: shared} // Installed configuration, not per-connection state.
+	if shared == nil {
+		ts.timer.Reset() // A shared timer is reset by whoever drives it.
+	}
+}
+
+// SetTimer makes this policy feed its round-trip samples to t and read timing from
+// it, instead of from a timer of its own, without driving it. It is how the
+// timestamp extension is combined with a congestion controller: both need the same
+// retransmission timer, and two timers would retransmit on whichever estimate is
+// more pessimistic while each took the result as its own.
+//
+// Sharing is the point of the option here rather than an optimisation. A timestamp
+// echo dates an acknowledgement even when it acknowledges a retransmission, which
+// the timer's own sampling has to discard (Karn), so the samples this policy
+// contributes are ones the timer cannot take for itself — and they are only worth
+// contributing to the timer that actually decides when to retransmit.
+//
+// The shared timer must itself be driven, which means adding it to the same
+// [tcp.Composite] as a policy in its own right. Passing nil returns the policy to
+// using its own timer. Call before the connection is opened.
+func (ts *Timestamps) SetTimer(t *rto.Timer) { ts.shared = t }
+
+// tmr returns the timer in effect, shared or own.
+func (ts *Timestamps) tmr() *rto.Timer {
+	if ts.shared != nil {
+		return ts.shared
+	}
+	return &ts.timer
 }
 
 // Enabled reports whether the option was successfully negotiated with the peer.
@@ -120,13 +152,18 @@ func (ts *Timestamps) Recent() (uint32, bool) { return ts.recent, ts.haveRecent 
 // timestamp, in nanoseconds, and whether one has been taken.
 func (ts *Timestamps) LastRTT() (int64, bool) { return ts.lastRTT, ts.haveRTT }
 
-// SmoothedRTT returns the smoothed round-trip time of the embedded timer in
+// SmoothedRTT returns the smoothed round-trip time of the timer in effect, in
 // nanoseconds.
-func (ts *Timestamps) SmoothedRTT() int64 { return int64(ts.timer.SmoothedRTT()) }
+func (ts *Timestamps) SmoothedRTT() int64 { return int64(ts.tmr().SmoothedRTT()) }
 
-// NextDeadline returns the retransmission deadline of the embedded timer. It
-// implements [tcp.Policy].
-func (ts *Timestamps) NextDeadline() int64 { return ts.timer.NextDeadline() }
+// NextDeadline returns the retransmission deadline of the timer this policy drives,
+// or 0 when the timer is shared and reports its own. It implements [tcp.Policy].
+func (ts *Timestamps) NextDeadline() int64 {
+	if ts.shared != nil {
+		return 0
+	}
+	return ts.timer.NextDeadline()
+}
 
 // PostTx commits the negotiation state for an option that has actually been
 // transmitted and forwards the emitted segment to the retransmission timer. It
@@ -149,12 +186,19 @@ func (ts *Timestamps) PostTx(outgoing tcp.Segment, now int64) {
 			ts.offered = true
 		}
 	}
-	ts.timer.PostTx(outgoing, now)
+	if ts.shared == nil {
+		ts.timer.PostTx(outgoing, now)
+	}
 }
 
-// PreTx forwards to the retransmission timer. It implements
-// [tcp.Policy].
-func (ts *Timestamps) PreTx(intent tcp.TxIntent) tcp.TxDirective { return ts.timer.PreTx(intent) }
+// PreTx forwards to the retransmission timer, or returns no directive when the
+// timer is shared and reports its own. It implements [tcp.Policy].
+func (ts *Timestamps) PreTx(intent tcp.TxIntent) tcp.TxDirective {
+	if ts.shared != nil {
+		return tcp.TxDirective{}
+	}
+	return ts.timer.PreTx(intent)
+}
 
 // tsval returns the timestamp clock value to place in an outgoing segment.
 func (ts *Timestamps) tsval(now int64) uint32 {
@@ -240,6 +284,9 @@ func (ts *Timestamps) PreRx(rx tcp.RxMeta) tcp.RxDirective {
 		// Recording the timestamp and taking the sample wait for PostRx: §4.3 ties
 		// both to a segment being acceptable, which is not known yet.
 	}
+	if ts.shared != nil {
+		return tcp.RxDirective{Keep: true}
+	}
 	// Let the retransmission timer see every segment the state machine will.
 	return ts.timer.PreRx(rx)
 }
@@ -252,7 +299,9 @@ func (ts *Timestamps) PreRx(rx tcp.RxMeta) tcp.RxDirective {
 // must not move it. Letting it would echo a timestamp from a segment that never
 // counted and corrupt the peer's round-trip estimate.
 func (ts *Timestamps) PostRx(event tcp.RxEvent) {
-	defer ts.timer.PostRx(event)
+	if ts.shared == nil {
+		defer ts.timer.PostRx(event)
+	}
 	if !event.Accepted || !ts.enabled || event.Segment.Flags.HasAny(tcp.FlagSYN) {
 		return
 	}
@@ -292,7 +341,7 @@ func (ts *Timestamps) sample(tsecr uint32, now int64) {
 	// Hand the sample to the retransmission timer. This is the point of the option
 	// for a sender: the echo dates the acknowledgement even when it arrives for a
 	// retransmitted segment, which the timer's own sampling must discard.
-	ts.timer.ObserveRTT(time.Duration(ts.lastRTT))
+	ts.tmr().ObserveRTT(time.Duration(ts.lastRTT))
 }
 
 // parse walks the option area looking for the Timestamps option.

@@ -73,18 +73,29 @@ type CUBICConfig struct {
 // The window is tracked in MSS-sized segments; [CUBIC.CongestionWindow] reports
 // it in bytes. Slow start uses the Reno algorithm, which §4.10 permits.
 //
-// CUBIC embeds an [rto.Timer] and forwards the loss-recovery hooks to it, so
-// installing a CUBIC also installs RFC 6298 retransmission timing. Loss is
-// detected from that timer and from duplicate ACKs.
+// CUBIC embeds an [rto.Timer] and forwards the policy hooks to it, so installing a
+// CUBIC alone also installs RFC 6298 retransmission timing. Loss is detected from
+// that timer and from duplicate ACKs.
+//
+// To run alongside another policy that needs the same timing, point it at a shared
+// timer with [CUBIC.SetTimer] instead; see that method for why two timers on one
+// connection cannot be reconciled.
 //
 // The zero value is not usable; call [CUBIC.Configure] before installing it.
 //
 // [RFC9438]: https://www.rfc-editor.org/rfc/rfc9438
 type CUBIC struct {
 	// timer provides retransmission timing and the smoothed RTT the cubic curve
-	// is evaluated against.
+	// is evaluated against. It is used only when no shared timer is set.
 	timer rto.Timer
-	cfg   cubicConfig
+	// shared is a timer owned and driven by someone else, set by
+	// [CUBIC.SetTimer]. When it is set this controller reads the timer but does
+	// not drive it, because a timer driven twice would observe every segment twice.
+	shared *rto.Timer
+	// lastExpirations is the timer's timeout count as of the last transmit, so a
+	// timeout is noticed whether or not this controller drove the timer.
+	lastExpirations uint32
+	cfg             cubicConfig
 
 	cwnd     float64 // congestion window, segments.
 	ssthresh float64 // slow-start threshold, segments.
@@ -159,25 +170,64 @@ func (c *CUBIC) Configure(cfg CUBICConfig) error {
 // per-connection state, retaining the configuration. It implements
 // [tcp.Policy].
 func (c *CUBIC) Reset() {
-	cfg := c.cfg
+	cfg, shared := c.cfg, c.shared
 	*c = CUBIC{
 		cfg:      cfg,
+		shared:   shared, // Installed configuration, not per-connection state.
 		cwnd:     cfg.initCwnd,
 		ssthresh: cfg.ssthresh,
 		wEst:     cfg.initCwnd,
 		mss:      cfg.mss,
 	}
-	c.timer.Reset()
+	if shared == nil {
+		c.timer.Reset() // A shared timer is reset by whoever drives it.
+	}
 }
 
-// NextDeadline returns the retransmission deadline of the embedded timer. It
-// implements [tcp.Policy].
-func (c *CUBIC) NextDeadline() int64 { return c.timer.NextDeadline() }
+// SetTimer makes this controller read timing from t instead of from a timer of its
+// own, without driving it. It is how CUBIC is combined with another policy that
+// needs the same retransmission timer, such as the RFC 7323 timestamp extension:
+// two policies each driving their own timer would retransmit on whichever estimate
+// is more pessimistic and both take credit for the result.
+//
+// The shared timer must itself be driven, which means adding it to the same
+// [tcp.Composite] as a policy in its own right. Add it before this controller, so a
+// timeout is seen on the transmit it happens on rather than the next one.
+//
+// Passing nil returns the controller to using its own timer. Call before the
+// connection is opened.
+func (c *CUBIC) SetTimer(t *rto.Timer) {
+	c.shared = t
+	c.lastExpirations = c.tmr().Expirations()
+}
+
+// tmr returns the timer in effect, shared or own.
+func (c *CUBIC) tmr() *rto.Timer {
+	if c.shared != nil {
+		return c.shared
+	}
+	return &c.timer
+}
+
+// NextDeadline returns the retransmission deadline of the timer this controller
+// drives, or 0 when the timer is shared and reports its own. It implements
+// [tcp.Policy].
+func (c *CUBIC) NextDeadline() int64 {
+	if c.shared != nil {
+		return 0
+	}
+	return c.timer.NextDeadline()
+}
 
 // PreRx keeps every segment: a congestion controller drops nothing and records
 // nothing before the connection has judged the segment. It implements
 // [tcp.Policy].
-func (c *CUBIC) PreRx(rx tcp.RxMeta) tcp.RxDirective { return c.timer.PreRx(rx) }
+func (c *CUBIC) PreRx(rx tcp.RxMeta) tcp.RxDirective {
+	if c.shared == nil {
+		return c.timer.PreRx(rx)
+	}
+	return tcp.RxDirective{Keep: true}
+}
 
 // PostRx forwards an accepted segment to the retransmission timer and updates the
 // congestion window from the acknowledgement it carries. It implements
@@ -188,7 +238,9 @@ func (c *CUBIC) PreRx(rx tcp.RxMeta) tcp.RxDirective { return c.timer.PreRx(rx) 
 // rejected would otherwise grow the window for data that was never delivered, and
 // a rejected duplicate would count toward fast retransmit.
 func (c *CUBIC) PostRx(event tcp.RxEvent) {
-	c.timer.PostRx(event)
+	if c.shared == nil {
+		c.timer.PostRx(event)
+	}
 	if event.Accepted && event.Segment.Flags.HasAny(tcp.FlagACK) {
 		c.observeACK(event.Segment, event.Now)
 	}
@@ -202,8 +254,15 @@ func (c *CUBIC) PreTx(intent tcp.TxIntent) tcp.TxDirective {
 	if intent.MSS != 0 {
 		c.mss = intent.MSS
 	}
-	dir := c.timer.PreTx(intent)
-	if dir.Retransmit {
+	var dir tcp.TxDirective
+	if c.shared == nil {
+		dir = c.timer.PreTx(intent)
+	}
+	// A timeout is detected from the timer's own count rather than from the
+	// directive, so it is noticed whether this controller drove the timer or merely
+	// reads one driven beside it.
+	if n := c.tmr().Expirations(); n != c.lastExpirations {
+		c.lastExpirations = n
 		// The retransmission timer expired: collapse the window (§4.8).
 		c.onRTO()
 	} else if c.fastRetransmit {
@@ -227,7 +286,11 @@ func (c *CUBIC) WriteOptions(plan tcp.TxPlan, opts []byte) uint8 { return 0 }
 
 // PostTx forwards the emitted segment to the retransmission timer. It
 // implements [tcp.Policy].
-func (c *CUBIC) PostTx(outgoing tcp.Segment, now int64) { c.timer.PostTx(outgoing, now) }
+func (c *CUBIC) PostTx(outgoing tcp.Segment, now int64) {
+	if c.shared == nil {
+		c.timer.PostTx(outgoing, now)
+	}
+}
 
 // CongestionWindow returns the congestion window in bytes: the maximum number
 // of unacknowledged octets the sender should allow in flight. It never reports
@@ -251,7 +314,7 @@ func (c *CUBIC) SlowStartThresh() float64 { return c.ssthresh }
 func (c *CUBIC) InSlowStart() bool { return c.cwnd < c.ssthresh }
 
 // SmoothedRTT returns the smoothed round-trip time of the embedded timer.
-func (c *CUBIC) SmoothedRTT() int64 { return int64(c.timer.SmoothedRTT()) }
+func (c *CUBIC) SmoothedRTT() int64 { return int64(c.tmr().SmoothedRTT()) }
 
 func (c *CUBIC) segMSS() tcp.Size {
 	if c.mss == 0 {
@@ -327,7 +390,7 @@ func (c *CUBIC) congestionAvoidance(ackSeg float64, now int64) {
 
 	// target = W_cubic(t+RTT) clamped to [cwnd, 1.5*cwnd] so the increase rate
 	// is non-decreasing yet below slow start's (§4.2).
-	rtt := float64(c.timer.SmoothedRTT()) / nanosPerSecond
+	rtt := float64(c.tmr().SmoothedRTT()) / nanosPerSecond
 	t := float64(now-c.epoch)/nanosPerSecond + rtt
 	target := c.cubicTarget(t)
 	if target < c.cwnd {
