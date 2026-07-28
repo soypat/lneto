@@ -146,6 +146,20 @@ func (s *StackAsync) EgressEthernet(dstEthernetFrame []byte) (int, error) {
 	return n, err
 }
 
+// NextDeadline returns the monotonic-nanosecond instant at which some node in
+// the stack must next be given a chance to transmit, or 0 when nothing in the
+// stack is waiting on time. It is the earliest deadline reported by the
+// registered nodes; see [lneto.StackNode].
+//
+// lneto drives no egress of its own, so this is how a caller learns when to call
+// [StackAsync.EgressEthernet] again rather than polling. A retransmission is
+// otherwise only sent when egress next happens to run.
+func (s *StackAsync) NextDeadline() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.link.NextDeadline()
+}
+
 // IngressIP processes an incoming IP frame through the stack and omits ethernet header processing.
 func (s *StackAsync) IngressIP(ipFrame []byte) error {
 	if len(ipFrame) < 1 {

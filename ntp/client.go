@@ -53,8 +53,12 @@ func (c *Client) Reset(sysprec int8, now func() time.Time) {
 // Pass nil to disable logging (the default).
 func (c *Client) SetLogger(l *slog.Logger) { c.logger.log = l }
 
-func (c *Client) Protocol() uint64  { return 0 }
-func (c *Client) LocalPort() uint16 { return ClientPort }
+func (c *Client) Protocol() uint64 { return 0 }
+
+// NextDeadline reports no deadline: this client holds no clock and its requests
+// are driven by the caller. It implements [lneto.StackNode].
+func (c *Client) NextDeadline() int64 { return 0 }
+func (c *Client) LocalPort() uint16   { return ClientPort }
 func (c *Client) ConnectionID() *uint64 {
 	return &c.connID
 }

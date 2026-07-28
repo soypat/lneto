@@ -99,8 +99,12 @@ func (sv *Server) Configure(cfg ServerConfig) error {
 }
 
 func (sv *Server) ConnectionID() *uint64 { return &sv.connID }
-func (sv *Server) Protocol() uint64      { return uint64(lneto.IPProtoUDP) }
-func (sv *Server) LocalPort() uint16     { return sv.port }
+
+// NextDeadline reports no deadline: this node holds no clock and its timing is
+// driven by the caller. It implements [lneto.StackNode].
+func (sv *Server) NextDeadline() int64 { return 0 }
+func (sv *Server) Protocol() uint64    { return uint64(lneto.IPProtoUDP) }
+func (sv *Server) LocalPort() uint16   { return sv.port }
 
 func (sv *Server) Demux(carrierData []byte, frameOffset int) error {
 	isIPLayer := frameOffset >= 28

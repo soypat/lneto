@@ -129,6 +129,10 @@ func (mh *muxHandler) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
 // ConnectionID implements [lneto.StackNode].
 func (mh *muxHandler) ConnectionID() *uint64 { return &mh.connid }
 
+// NextDeadline reports no deadline: UDP is datagram oriented and retains no
+// timers. It implements [lneto.StackNode].
+func (mh *muxHandler) NextDeadline() int64 { return 0 }
+
 // LocalPort implements [lneto.StackNode] but not applicable to mux. Mux is a multi Rx/Tx port abstraction.
 func (mh *muxHandler) LocalPort() uint16 { return 0 }
 

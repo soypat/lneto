@@ -124,6 +124,10 @@ func (conn *Conn) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
 // previous registration is no longer valid.
 func (conn *Conn) ConnectionID() *uint64 { return &conn.h.connid }
 
+// NextDeadline reports no deadline: UDP is datagram oriented and retains no
+// timers. It implements [lneto.StackNode].
+func (conn *Conn) NextDeadline() int64 { return 0 }
+
 // Write enqueues a single datagram to be sent. The entire payload is queued atomically.
 func (conn *Conn) Write(b []byte) (int, error) {
 	if len(b) == 0 {

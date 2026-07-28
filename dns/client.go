@@ -32,6 +32,10 @@ func (sudp *Client) LocalPort() uint16 { return sudp.lport }
 
 func (sudp *Client) ConnectionID() *uint64 { return &sudp.connID }
 
+// NextDeadline reports no deadline: this node holds no clock and its timing is
+// driven by the caller. It implements [lneto.StackNode].
+func (sudp *Client) NextDeadline() int64 { return 0 }
+
 func (c *Client) StartResolve(localPort, txid uint16, cfg ResolveConfig) error {
 	nd := len(cfg.Questions)
 	if nd > math.MaxUint16 {
