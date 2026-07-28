@@ -1,37 +1,39 @@
-package tcp
+package rto
 
 import (
 	"testing"
 	"time"
+
+	"github.com/soypat/lneto/tcp"
 )
 
 const rtoMs = int64(time.Millisecond)
 
-// rtoDataSeg builds a data segment of datalen octets starting at seq.
-func rtoDataSeg(seq uint32, datalen int) Segment {
-	return Segment{SEQ: Value(seq), DATALEN: Size(datalen), Flags: FlagPSH | FlagACK}
+// dataSeg builds a data segment of datalen octets starting at seq.
+func dataSeg(seq uint32, datalen int) tcp.Segment {
+	return tcp.Segment{SEQ: tcp.Value(seq), DATALEN: tcp.Size(datalen), Flags: tcp.FlagPSH | tcp.FlagACK}
 }
 
-// rtoAckSeg builds a bare ACK acknowledging up to ack.
-func rtoAckSeg(ack uint32) Segment {
-	return Segment{ACK: Value(ack), Flags: FlagACK}
+// ackSeg builds a bare ACK acknowledging up to ack.
+func ackSeg(ack uint32) tcp.Segment {
+	return tcp.Segment{ACK: tcp.Value(ack), Flags: tcp.FlagACK}
 }
 
-func newRTO() *RTO {
-	var r RTO
+func newRTO() *Timer {
+	var r Timer
 	r.Reset()
 	return &r
 }
 
-// rxAt builds the minimal RxMeta for driving PreRx directly.
-func rxAt(seg Segment, now int64) RxMeta { return RxMeta{Segment: seg, Now: now} }
+// rxAt builds the minimal tcp.RxMeta for driving PreRx directly.
+func rxAt(seg tcp.Segment, now int64) tcp.RxMeta { return tcp.RxMeta{Segment: seg, Now: now} }
 
-// txAt builds the minimal TxIntent for driving RTO.PreTx directly: the RTO
+// txAt builds the minimal tcp.TxIntent for driving Timer.PreTx directly: the timer
 // tracks the send sequence itself via PostTx and only reads the clock.
-func txAt(now int64) TxIntent { return TxIntent{Now: now} }
+func txAt(now int64) tcp.TxIntent { return tcp.TxIntent{Now: now} }
 
 func TestRTO_Reset(t *testing.T) {
-	var r RTO
+	var r Timer
 	r.Reset()
 	if r.rto != rtoInitial {
 		t.Errorf("initial rto=%v, want %v", r.rto, rtoInitial)
@@ -53,7 +55,7 @@ func TestRTO_ArmOnSendSampleOnAck(t *testing.T) {
 	r := newRTO()
 	const iss = uint32(1000)
 
-	r.PostTx(rtoDataSeg(iss, 100), 0)
+	r.PostTx(dataSeg(iss, 100), 0)
 	if !r.Running() {
 		t.Fatal("timer must arm after sending data")
 	}
@@ -62,7 +64,7 @@ func TestRTO_ArmOnSendSampleOnAck(t *testing.T) {
 	}
 
 	// ACK arrives one RTT (40ms) later covering all sent data.
-	dir := r.PreRx(rxAt(rtoAckSeg(iss+100), 40*rtoMs))
+	dir := r.PreRx(rxAt(ackSeg(iss+100), 40*rtoMs))
 	if !dir.Keep {
 		t.Error("PreRx must keep the segment")
 	}
@@ -79,23 +81,23 @@ func TestRTO_ArmOnSendSampleOnAck(t *testing.T) {
 func TestRTO_RetransmitOnTimeout(t *testing.T) {
 	r := newRTO()
 	const iss = uint32(1000)
-	r.PostTx(rtoDataSeg(iss, 100), 0)
+	r.PostTx(dataSeg(iss, 100), 0)
 
 	if r.PreTx(txAt(int64(rtoInitial) - 1)).Retransmit {
 		t.Fatal("must not retransmit before the deadline")
 	}
-	dir := r.PreTx(TxIntent{Now: int64(rtoInitial), UNA: Value(iss), NXT: Value(iss + 100)})
+	dir := r.PreTx(tcp.TxIntent{Now: int64(rtoInitial), UNA: tcp.Value(iss), NXT: tcp.Value(iss + 100)})
 	if !dir.Retransmit {
 		t.Fatal("RTO must fire at the deadline with data outstanding")
 	}
-	if dir.RetransmitFrom != Value(iss) {
+	if dir.RetransmitFrom != tcp.Value(iss) {
 		t.Errorf("retransmit from %d, want snd.UNA=%d", dir.RetransmitFrom, iss)
 	}
 	if r.CurrentRTO() != 2*rtoInitial {
 		t.Errorf("rto=%v after one backoff, want %v", r.CurrentRTO(), 2*rtoInitial)
 	}
 	// The connection resends from snd.UNA; PostTx sees a retransmission.
-	r.PostTx(rtoDataSeg(iss, 100), int64(rtoInitial))
+	r.PostTx(dataSeg(iss, 100), int64(rtoInitial))
 	if r.timing {
 		t.Error("retransmitted segment must not be RTT-sampled (Karn)")
 	}
@@ -106,12 +108,12 @@ func TestRTO_RetransmitOnTimeout(t *testing.T) {
 func TestRTO_KarnNoSampleOnRetransmittedAck(t *testing.T) {
 	r := newRTO()
 	const iss = uint32(1000)
-	r.PostTx(rtoDataSeg(iss, 100), 0)
+	r.PostTx(dataSeg(iss, 100), 0)
 	// Timeout and retransmit.
 	r.PreTx(txAt(int64(rtoInitial)))
-	r.PostTx(rtoDataSeg(iss, 100), int64(rtoInitial))
+	r.PostTx(dataSeg(iss, 100), int64(rtoInitial))
 	// ACK now arrives; no sample should be taken since timing was discarded.
-	r.PreRx(rxAt(rtoAckSeg(iss+100), int64(rtoInitial)+10*rtoMs))
+	r.PreRx(rxAt(ackSeg(iss+100), int64(rtoInitial)+10*rtoMs))
 	if r.haveRTT {
 		t.Error("no RTT sample should exist after a retransmission (Karn)")
 	}
@@ -122,10 +124,10 @@ func TestRTO_KarnNoSampleOnRetransmittedAck(t *testing.T) {
 func TestRTO_TimerRestartsWhilePartiallyAcked(t *testing.T) {
 	r := newRTO()
 	const iss = uint32(1000)
-	r.PostTx(rtoDataSeg(iss, 100), 0)
-	r.PostTx(rtoDataSeg(iss+100, 100), 0) // 200 octets outstanding, iss..iss+200.
+	r.PostTx(dataSeg(iss, 100), 0)
+	r.PostTx(dataSeg(iss+100, 100), 0) // 200 octets outstanding, iss..iss+200.
 
-	dir := r.PreRx(rxAt(rtoAckSeg(iss+100), 40*rtoMs)) // acks first 100 only.
+	dir := r.PreRx(rxAt(ackSeg(iss+100), 40*rtoMs)) // acks first 100 only.
 	if !r.Running() {
 		t.Fatal("timer must remain armed while data is still in flight")
 	}
@@ -141,7 +143,7 @@ func TestRTO_TimerRestartsWhilePartiallyAcked(t *testing.T) {
 // nor start an RTT sample.
 func TestRTO_NoArmWithoutData(t *testing.T) {
 	r := newRTO()
-	r.PostTx(Segment{SEQ: 1000, Flags: FlagACK}, 0) // pure ACK, DATALEN==0.
+	r.PostTx(tcp.Segment{SEQ: 1000, Flags: tcp.FlagACK}, 0) // pure ACK, DATALEN==0.
 	if r.Running() || r.timing {
 		t.Error("pure control segment must not arm the timer or start a sample")
 	}
@@ -152,15 +154,15 @@ func TestRTO_NoArmWithoutData(t *testing.T) {
 func TestRTO_BackoffCollapsesOnValidSample(t *testing.T) {
 	r := newRTO()
 	const iss = uint32(1000)
-	r.PostTx(rtoDataSeg(iss, 100), 0)
-	r.PreTx(txAt(int64(rtoInitial)))                  // one timeout: backoff=1.
-	r.PostTx(rtoDataSeg(iss, 100), int64(rtoInitial)) // retransmit (no sample).
+	r.PostTx(dataSeg(iss, 100), 0)
+	r.PreTx(txAt(int64(rtoInitial)))               // one timeout: backoff=1.
+	r.PostTx(dataSeg(iss, 100), int64(rtoInitial)) // retransmit (no sample).
 	if r.backoff != 1 {
 		t.Fatalf("backoff=%d, want 1 after a timeout", r.backoff)
 	}
 	// New data sent and freshly sampled, then acked.
-	r.PostTx(rtoDataSeg(iss+100, 100), int64(rtoInitial)+rtoMs)
-	r.PreRx(rxAt(rtoAckSeg(iss+200), int64(rtoInitial)+30*rtoMs))
+	r.PostTx(dataSeg(iss+100, 100), int64(rtoInitial)+rtoMs)
+	r.PreRx(rxAt(ackSeg(iss+200), int64(rtoInitial)+30*rtoMs))
 	if r.backoff != 0 {
 		t.Errorf("backoff=%d, want 0 after a valid RTT sample", r.backoff)
 	}
@@ -168,7 +170,7 @@ func TestRTO_BackoffCollapsesOnValidSample(t *testing.T) {
 
 // TestRTO_Clamped verifies CurrentRTO is clamped to [rtoMin, rtoMax].
 func TestRTO_Clamped(t *testing.T) {
-	var r RTO
+	var r Timer
 	r.Reset()
 	r.rto = time.Nanosecond
 	if got := r.CurrentRTO(); got != rtoMin {
@@ -183,7 +185,7 @@ func TestRTO_Clamped(t *testing.T) {
 // TestRTO_UpdateRTTFirstSample verifies the first-measurement initialization of
 // SRTT/RTTVAR (RFC 6298 §2.2).
 func TestRTO_UpdateRTTFirstSample(t *testing.T) {
-	var r RTO
+	var r Timer
 	r.Reset()
 	r.updateRTT(100 * time.Millisecond)
 	if r.srtt != 100*time.Millisecond {
@@ -198,16 +200,16 @@ func TestRTO_UpdateRTTFirstSample(t *testing.T) {
 	}
 }
 
-// TestRTO_ImplementsLossRecovery exercises RTO through the [LossRecovery]
+// TestRTO_ImplementsLossRecovery exercises Timer through the [tcp.LossRecovery]
 // interface: sending data arms a deadline and a full ACK disarms it.
 func TestRTO_ImplementsLossRecovery(t *testing.T) {
-	var lr LossRecovery = newRTO()
+	var lr tcp.LossRecovery = newRTO()
 	lr.Reset()
-	lr.PostTx(rtoDataSeg(1000, 100), 0)
+	lr.PostTx(dataSeg(1000, 100), 0)
 	if lr.NextDeadline() == 0 {
 		t.Error("expected an armed deadline after sending data")
 	}
-	if !lr.PreRx(rxAt(rtoAckSeg(1100), 10*rtoMs)).Keep {
+	if !lr.PreRx(rxAt(ackSeg(1100), 10*rtoMs)).Keep {
 		t.Error("PreRx must keep")
 	}
 	if lr.NextDeadline() != 0 {
