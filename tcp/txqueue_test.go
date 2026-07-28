@@ -313,6 +313,71 @@ func TestRingTx_RetransmitFrom(t *testing.T) {
 	}
 }
 
+// TestRingTx_RetransmitByExactSeqIsNonDestructive pins the property selective
+// retransmission depends on: an already-sent segment can be resent by its exact
+// sequence number without disturbing the sent/unsent split, so ranges the peer has
+// acknowledged selectively can be skipped rather than resent.
+//
+// This is what makes SACK cheap here. The alternative, rewinding the queue with
+// [ringTx.RetransmitFrom], turns everything from the rewind point back into unsent
+// data and so can only ever express go-back-N.
+func TestRingTx_RetransmitByExactSeqIsNonDestructive(t *testing.T) {
+	const bufsize, maxpkts = 32, 4
+	const iss = Value(500)
+	const npkt, pktlen = 3, 4
+	var rtx ringTx
+	if err := rtx.Reset(make([]byte, bufsize), maxpkts, iss); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rtx.Write([]byte("AAAABBBBCCCC")); err != nil {
+		t.Fatal(err)
+	}
+	var scratch [bufsize]byte
+	for i := range npkt {
+		if _, err := rtx.MakePacket(scratch[:pktlen], Add(iss, Size(i*pktlen))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	testQueueSanity(t, &rtx)
+	wantUO, wantUE, wantSO, wantSE := rtx.lims()
+
+	// Resend only the middle segment, as a receiver reporting a single hole would
+	// have the sender do.
+	n, err := rtx.MakePacket(scratch[:], Add(iss, pktlen))
+	if err != nil {
+		t.Fatal("retransmit middle segment:", err)
+	}
+	if got := string(scratch[:n]); got != "BBBB" {
+		t.Fatalf("retransmitted %q, want BBBB", got)
+	}
+	testQueueSanity(t, &rtx)
+	if uo, ue, so, se := rtx.lims(); uo != wantUO || ue != wantUE || so != wantSO || se != wantSE {
+		t.Fatalf("queue moved: unsent=[%d,%d) sent=[%d,%d), want unsent=[%d,%d) sent=[%d,%d)",
+			uo, ue, so, se, wantUO, wantUE, wantSO, wantSE)
+	}
+	if rtx.BufferedSent() != npkt*pktlen || rtx.BufferedUnsent() != 0 {
+		t.Errorf("accounting changed: sent=%d unsent=%d, want %d and 0",
+			rtx.BufferedSent(), rtx.BufferedUnsent(), npkt*pktlen)
+	}
+
+	// A later segment must still be resendable, and new data must still flow, so
+	// the retransmission left no dent in the queue.
+	if n, err = rtx.MakePacket(scratch[:], Add(iss, 2*pktlen)); err != nil {
+		t.Fatal("retransmit last segment:", err)
+	} else if got := string(scratch[:n]); got != "CCCC" {
+		t.Errorf("retransmitted %q, want CCCC", got)
+	}
+	if _, err = rtx.Write([]byte("DDDD")); err != nil {
+		t.Fatal("write after retransmit:", err)
+	}
+	if n, err = rtx.MakePacket(scratch[:], Add(iss, 3*pktlen)); err != nil {
+		t.Fatal("send new data after retransmit:", err)
+	} else if got := string(scratch[:n]); got != "DDDD" {
+		t.Errorf("sent %q after retransmit, want DDDD", got)
+	}
+	testQueueSanity(t, &rtx)
+}
+
 func TestTxQueue_multipacket(t *testing.T) {
 	const mtu = 32
 	const iss = 1
