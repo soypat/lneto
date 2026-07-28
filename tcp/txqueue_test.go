@@ -863,3 +863,76 @@ func (rtx *ringTx) zones() []internal.BufferZone {
 		},
 	}
 }
+
+// TestMakePacketRetransmitWithFullQueue verifies a packet the queue already tracks
+// can be resent when the queue is full.
+//
+// The free-entry check ran before the retransmission path, so a full queue refused
+// to resend anything. Resending a tracked packet needs no new entry — it is the same
+// packet — and a full queue is exactly the state a stalled connection is in: nothing
+// is being acknowledged, which is why entries are not being freed, which is why a
+// retransmission is due. Refusing there means the one action that could recover the
+// connection is the one action unavailable.
+func TestMakePacketRetransmitWithFullQueue(t *testing.T) {
+	const (
+		bufsize = 64
+		maxpkts = 3
+		pktlen  = 4
+		iss     = Value(1000)
+	)
+	var rtx ringTx
+	if err := rtx.Reset(make([]byte, bufsize), maxpkts, iss); err != nil {
+		t.Fatal(err)
+	}
+	data := make([]byte, maxpkts*pktlen)
+	for i := range data {
+		data[i] = byte(i + 1)
+	}
+	if _, err := rtx.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	var scratch [bufsize]byte
+	for i := 0; i < maxpkts; i++ {
+		if _, err := rtx.MakePacket(scratch[:pktlen], Add(iss, Size(i*pktlen))); err != nil {
+			t.Fatalf("packet %d: %v", i, err)
+		}
+	}
+	if rtx.slist.Free() != 0 {
+		t.Fatalf("queue has %d free entries, want a full queue for this test", rtx.slist.Free())
+	}
+
+	// Every packet in the full queue must still be resendable, with its data intact.
+	for i := 0; i < maxpkts; i++ {
+		seq := Add(iss, Size(i*pktlen))
+		clear(scratch[:])
+		n, err := rtx.MakePacket(scratch[:pktlen], seq)
+		if err != nil {
+			t.Fatalf("retransmit of packet %d at seq %d: %v", i, seq, err)
+		}
+		if n != pktlen {
+			t.Errorf("retransmit of packet %d read %d octets, want %d", i, n, pktlen)
+		}
+		want := data[i*pktlen : (i+1)*pktlen]
+		if string(scratch[:n]) != string(want) {
+			t.Errorf("retransmit of packet %d = %v, want %v", i, scratch[:n], want)
+		}
+	}
+	testQueueSanity(t, &rtx)
+	// The queue is unchanged: resending is not a new packet.
+	if rtx.slist.Free() != 0 {
+		t.Errorf("queue has %d free entries after retransmitting, want 0", rtx.slist.Free())
+	}
+	if rtx.BufferedSent() != len(data) {
+		t.Errorf("sent octets = %d after retransmitting, want %d", rtx.BufferedSent(), len(data))
+	}
+	if rtx.BufferedUnsent() != 0 {
+		t.Errorf("unsent octets = %d after retransmitting, want 0", rtx.BufferedUnsent())
+	}
+	// New data still needs an entry, so a full queue still refuses it.
+	if _, err := rtx.Write([]byte{99}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rtx.MakePacket(scratch[:1], Add(iss, Size(len(data)))); err == nil {
+		t.Error("new data on a full queue was accepted, want a refusal")
+	}
+}
