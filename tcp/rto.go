@@ -109,7 +109,8 @@ func (r *RTO) NextDeadline() int64 {
 // PreRx samples the RTT and manages the retransmission timer from a received
 // segment (RFC 6298 §5.2/§5.3). It implements [LossRecovery] and always keeps
 // the segment (the estimator never drops traffic).
-func (r *RTO) PreRx(incoming Segment, now int64) RxDirective {
+func (r *RTO) PreRx(rx RxMeta) RxDirective {
+	incoming, now := rx.Segment, rx.Now
 	if !r.haveSeq || !incoming.Flags.HasAny(FlagACK) {
 		return RxDirective{Keep: true}
 	}
