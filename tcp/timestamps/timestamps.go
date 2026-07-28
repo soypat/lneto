@@ -53,9 +53,16 @@ type Timestamps struct {
 	// enabled reports whether both sides agreed to use timestamps. It is only
 	// set once the handshake exchanged the option in both directions.
 	enabled bool
-	// offered reports whether this side put the option in its SYN or SYN-ACK, so
-	// a peer echo can be interpreted.
+	// offered reports whether this side put the option in a SYN or SYN-ACK that
+	// was actually transmitted, so a peer echo can be interpreted.
 	offered bool
+	// wrote reports that the option was written into the segment currently being
+	// built. It is staging for PostTx, not negotiation state: WriteOptions may be
+	// called for a segment that is never sent, so what it wrote is only known to
+	// have reached the peer once the transmit path reports the segment. Cleared at
+	// the start of every WriteOptions so an abandoned attempt cannot be committed
+	// by a later one.
+	wrote bool
 
 	// recent is TS.Recent: the most recent timestamp value received that is
 	// eligible to be echoed back (§4.3).
@@ -121,9 +128,29 @@ func (ts *Timestamps) SmoothedRTT() int64 { return int64(ts.timer.SmoothedRTT())
 // implements [tcp.Policy].
 func (ts *Timestamps) NextDeadline() int64 { return ts.timer.NextDeadline() }
 
-// PostTx forwards the emitted segment to the retransmission timer. It
+// PostTx commits the negotiation state for an option that has actually been
+// transmitted and forwards the emitted segment to the retransmission timer. It
 // implements [tcp.Policy].
-func (ts *Timestamps) PostTx(outgoing tcp.Segment, now int64) { ts.timer.PostTx(outgoing, now) }
+//
+// This is where an offer becomes real, rather than in WriteOptions: the outgoing
+// segment is reported here only once the transmit path has committed to it, so a
+// segment that was built and then abandoned cannot leave this side believing an
+// agreement the peer never received.
+func (ts *Timestamps) PostTx(outgoing tcp.Segment, now int64) {
+	if ts.wrote {
+		ts.wrote = false
+		isSyn := outgoing.Flags.HasAny(tcp.FlagSYN)
+		switch {
+		case isSyn && outgoing.Flags.HasAny(tcp.FlagACK):
+			// A SYN-ACK carrying the option answers a peer that offered it, so the
+			// option has now been both received and sent and is in use.
+			ts.offered, ts.enabled = true, true
+		case isSyn:
+			ts.offered = true
+		}
+	}
+	ts.timer.PostTx(outgoing, now)
+}
 
 // PreTx forwards to the retransmission timer. It implements
 // [tcp.Policy].
@@ -141,7 +168,14 @@ func (ts *Timestamps) tsval(now int64) uint32 {
 // WriteOptions offers the Timestamps option during the handshake and, once
 // negotiated, stamps every outgoing segment with the current TSval and the
 // peer's TS.Recent. It implements [tcp.Policy].
+//
+// It records nothing about the negotiation itself. The segment it is writing into
+// may never be transmitted, and treating the option as agreed on the strength of
+// having written it would make this side drop every subsequent segment from a peer
+// that never saw the offer (RFC 7323 §3.2). The agreement is committed in
+// [Timestamps.PostTx], once the segment is known to have gone out.
 func (ts *Timestamps) WriteOptions(plan tcp.TxPlan, opts []byte) uint8 {
+	ts.wrote = false // Discard an earlier attempt that was abandoned unsent.
 	switch plan.Kind {
 	case tcp.TxKindSYN:
 		// §2: offer the option; nothing has been received to echo yet.
@@ -169,13 +203,7 @@ func (ts *Timestamps) WriteOptions(plan tcp.TxPlan, opts []byte) uint8 {
 	if err != nil || n < 0 {
 		return 0
 	}
-	switch plan.Kind {
-	case tcp.TxKindSYN:
-		ts.offered = true
-	case tcp.TxKindSYNACK:
-		// The option has now been both received and sent, so it is in use.
-		ts.offered, ts.enabled = true, true
-	}
+	ts.wrote = true
 	return uint8(n)
 }
 

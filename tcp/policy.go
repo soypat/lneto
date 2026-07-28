@@ -110,6 +110,16 @@ type Policy interface {
 	// not be retained beyond the call and must not be written past its length.
 	// The core validates the resulting option stream, pads the header to a
 	// four-octet boundary and sets the data offset.
+	//
+	// The segment may never be sent. WriteOptions runs before the segment is
+	// sized, and the transmit path can still find there is nothing to send or fail
+	// to build what it planned, in which case no [Policy.PostTx] follows for it. An
+	// implementation must therefore not treat having written an option as the
+	// option having been exchanged: commit anything that changes how later segments
+	// are interpreted in PostTx, which reports what actually went out. Getting this
+	// wrong is not cosmetic — a policy that considers an extension negotiated
+	// because it wrote the option, on a segment the peer never received, will
+	// enforce that extension against a peer that never agreed to it.
 	WriteOptions(plan TxPlan, opts []byte) uint8
 
 	// PostTx is called on leaving the transmit path with the segment that was
