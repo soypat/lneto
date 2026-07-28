@@ -274,6 +274,17 @@ func (tcb *ControlBlock) RewindNXT(seq Value) {
 	tcb.nRetransmit = 0
 }
 
+// TriggerWindowUpdate queues a bare ACK so that a peer whose segment could not
+// be accepted learns the current receive window. RFC 9293 §3.10.7.4 requires an
+// acknowledgement in reply to a segment that is not acceptable; dropping it in
+// silence leaves the peer unable to tell a lost segment from a closed window,
+// and leaves a zero-window probe unanswered.
+func (tcb *ControlBlock) TriggerWindowUpdate() {
+	if tcb._state.RxDataOpen() {
+		tcb.pending[0] |= FlagACK // |= preserves any pending FIN.
+	}
+}
+
 // PendingSegment calculates a suitable next segment to send from a payload length.
 // It does not modify the ControlBlock state or pending segment queue.
 func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {

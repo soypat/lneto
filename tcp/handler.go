@@ -257,6 +257,10 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		return nil
 	}
 	if !h.shutdownRx && len(payload) > h.bufRx.Free() {
+		// The segment is in window but there is nowhere to put it. Acknowledge it
+		// anyway so the peer learns our window rather than being left to guess
+		// whether its segment was lost; this is what answers a zero-window probe.
+		h.scb.TriggerWindowUpdate()
 		return lneto.ErrBufferFull
 	}
 
