@@ -17,6 +17,8 @@ var _ lneto.StackNode = (*Conn)(nil)
 // Conn implements a UDP datagram socket with SOCK_DGRAM semantics.
 // Each [Conn.Write] enqueues one datagram and each [Conn.Read] dequeues one complete datagram.
 type Conn struct {
+	lneto.NoDeadline // no time-driven work
+
 	mu sync.Mutex
 	h  Handler
 
@@ -123,10 +125,6 @@ func (conn *Conn) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
 // each [Conn.Configure] or [Conn.Abort] call, signaling to the stack that the
 // previous registration is no longer valid.
 func (conn *Conn) ConnectionID() *uint64 { return &conn.h.connid }
-
-// NextDeadline reports no deadline: UDP is datagram oriented and retains no
-// timers. It implements [lneto.StackNode].
-func (conn *Conn) NextDeadline() int64 { return 0 }
 
 // Write enqueues a single datagram to be sent. The entire payload is queued atomically.
 func (conn *Conn) Write(b []byte) (int, error) {

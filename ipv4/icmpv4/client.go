@@ -16,6 +16,8 @@ const (
 )
 
 type Client struct {
+	lneto.NoDeadline // no time-driven work
+
 	connid uint64
 	magic  uint32
 	_seq   uint16
@@ -70,10 +72,6 @@ func (client *Client) Protocol() uint64 { return uint64(lneto.IPProtoICMP) }
 func (client *Client) LocalPort() uint16 { return 0 }
 
 func (client *Client) ConnectionID() *uint64 { return &client.connid }
-
-// NextDeadline reports no deadline: this client holds no clock and its requests
-// are driven by the caller. It implements [lneto.StackNode].
-func (client *Client) NextDeadline() int64 { return 0 }
 
 func (client *Client) Abort() {
 	client.Reset()

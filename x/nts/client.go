@@ -41,6 +41,8 @@ type ClientConfig struct {
 //
 // Client is not safe for concurrent use.
 type Client struct {
+	lneto.NoDeadline // no time-driven work
+
 	connID     uint64
 	cfg        ClientConfig
 	ntpState   ntp.Client
@@ -87,10 +89,6 @@ func (c *Client) Reset(cfg ClientConfig) error {
 
 // ConnectionID implements [lneto.StackNode].
 func (c *Client) ConnectionID() *uint64 { return &c.connID }
-
-// NextDeadline reports no deadline: this node holds no clock and its timing is
-// driven by the caller. It implements [lneto.StackNode].
-func (c *Client) NextDeadline() int64 { return 0 }
 
 // Protocol implements [lneto.StackNode].
 func (c *Client) Protocol() uint64 { return uint64(ntp.ServerPort) }

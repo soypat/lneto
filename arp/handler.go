@@ -7,6 +7,8 @@ import (
 )
 
 type Handler struct {
+	lneto.NoDeadline // no time-driven work
+
 	connID       uint64
 	cache        cache
 	vld          lneto.Validator
@@ -32,10 +34,6 @@ func (h *Handler) LocalPort() uint16 { return 0 }
 func (h *Handler) Protocol() uint64 { return uint64(ethernet.TypeARP) }
 
 func (h *Handler) ConnectionID() *uint64 { return &h.connID }
-
-// NextDeadline reports no deadline: this node holds no clock and its timing is
-// driven by the caller. It implements [lneto.StackNode].
-func (h *Handler) NextDeadline() int64 { return 0 }
 
 func (h *Handler) UpdateProtoAddr(protoAddr []byte) error {
 	if len(protoAddr) != len(h.ourProtoAddr) {

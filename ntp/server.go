@@ -21,6 +21,8 @@ type ServerConfig struct {
 //
 // Server is not safe for concurrent use.
 type Server struct {
+	lneto.NoDeadline // no time-driven work
+
 	connID  uint64
 	_now    func() time.Time
 	stratum Stratum
@@ -58,10 +60,6 @@ func (h *Server) Reset(cfg ServerConfig) error {
 
 // ConnectionID implements [lneto.StackNode].
 func (h *Server) ConnectionID() *uint64 { return &h.connID }
-
-// NextDeadline reports no deadline: this node holds no clock and its timing is
-// driven by the caller. It implements [lneto.StackNode].
-func (h *Server) NextDeadline() int64 { return 0 }
 
 // Protocol implements [lneto.StackNode].
 func (h *Server) Protocol() uint64 { return 0 }
