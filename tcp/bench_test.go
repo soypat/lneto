@@ -140,6 +140,7 @@ func (nopLoss) PreRx(RxMeta) RxDirective          { return RxDirective{Keep: tru
 func (nopLoss) PreTx(TxIntent) TxDirective        { return TxDirective{} }
 func (nopLoss) WriteOptions(TxPlan, []byte) uint8 { return 0 }
 func (nopLoss) PostTx(Segment, int64)             {}
+func (nopLoss) PostRx(RxEvent)                    {}
 
 // BenchmarkHandlerDatapathLossRecovery measures the same exchange as
 // BenchmarkHandlerDatapath with a do-nothing LossRecovery installed. The delta

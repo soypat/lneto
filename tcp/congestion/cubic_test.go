@@ -53,12 +53,12 @@ func TestCUBIC_ConfigureDefaults(t *testing.T) {
 // acknowledged segment while below the threshold (RFC 9438 §4.10).
 func TestCUBIC_SlowStartGrowth(t *testing.T) {
 	c := newCUBIC(t, CUBICConfig{InitialCwnd: 4})
-	c.PreRx(tcp.RxMeta{Segment: ackSeg(1000), Now: 0}) // Establishes the acknowledgment baseline.
+	c.PostRx(tcp.RxEvent{Segment: ackSeg(1000), Now: 0, Accepted: true}) // Establishes the acknowledgment baseline.
 	if got := c.WindowSegments(); got != 4 {
 		t.Fatalf("cwnd=%v after baseline ACK, want 4", got)
 	}
 	for i := 1; i <= 3; i++ {
-		c.PreRx(tcp.RxMeta{Segment: ackSeg(tcp.Value(1000 + i*testMSS)), Now: int64(i)})
+		c.PostRx(tcp.RxEvent{Segment: ackSeg(tcp.Value(1000 + i*testMSS)), Now: int64(i), Accepted: true})
 		want := float64(4 + i)
 		if got := c.WindowSegments(); got != want {
 			t.Fatalf("after %d acked segments cwnd=%v, want %v", i, got, want)
@@ -76,8 +76,8 @@ func TestCUBIC_SlowStartGrowth(t *testing.T) {
 // hands over to congestion avoidance.
 func TestCUBIC_SlowStartCapsAtThreshold(t *testing.T) {
 	c := newCUBIC(t, CUBICConfig{InitialCwnd: 4, SlowStartThresh: 6})
-	c.PreRx(tcp.RxMeta{Segment: ackSeg(1000), Now: 0})
-	c.PreRx(tcp.RxMeta{Segment: ackSeg(1000 + 10*testMSS), Now: 1}) // Acknowledge far more than the gap.
+	c.PostRx(tcp.RxEvent{Segment: ackSeg(1000), Now: 0, Accepted: true})
+	c.PostRx(tcp.RxEvent{Segment: ackSeg(1000 + 10*testMSS), Now: 1, Accepted: true}) // Acknowledge far more than the gap.
 	if got := c.WindowSegments(); got != 6 {
 		t.Fatalf("cwnd=%v, want it capped at ssthresh 6", got)
 	}
@@ -91,16 +91,16 @@ func TestCUBIC_SlowStartCapsAtThreshold(t *testing.T) {
 // requested on the next transmit (RFC 5681 §3.2, RFC 9438 §4.6).
 func TestCUBIC_DuplicateACKsReduceWindow(t *testing.T) {
 	c := newCUBIC(t, CUBICConfig{InitialCwnd: 10})
-	c.PreRx(tcp.RxMeta{Segment: ackSeg(1000), Now: 0})
+	c.PostRx(tcp.RxEvent{Segment: ackSeg(1000), Now: 0, Accepted: true})
 	before := c.WindowSegments()
 
 	for i := range dupACKThreshold - 1 {
-		c.PreRx(tcp.RxMeta{Segment: ackSeg(1000), Now: int64(i + 1)})
+		c.PostRx(tcp.RxEvent{Segment: ackSeg(1000), Now: int64(i + 1), Accepted: true})
 		if c.WindowSegments() != before {
 			t.Fatalf("window changed after %d duplicate ACKs, want a reduction only at %d", i+1, dupACKThreshold)
 		}
 	}
-	c.PreRx(tcp.RxMeta{Segment: ackSeg(1000), Now: 10}) // Third duplicate: congestion event.
+	c.PostRx(tcp.RxEvent{Segment: ackSeg(1000), Now: 10, Accepted: true}) // Third duplicate: congestion event.
 
 	want := before * cubicBeta
 	if got := c.WindowSegments(); math.Abs(got-want) > 1e-9 {
@@ -125,13 +125,13 @@ func TestCUBIC_DuplicateACKsReduceWindow(t *testing.T) {
 // congestion event do not reduce the window again (RFC 9438 §4.6).
 func TestCUBIC_LossEpochCoalesces(t *testing.T) {
 	c := newCUBIC(t, CUBICConfig{InitialCwnd: 10})
-	c.PreRx(tcp.RxMeta{Segment: ackSeg(1000), Now: 0})
+	c.PostRx(tcp.RxEvent{Segment: ackSeg(1000), Now: 0, Accepted: true})
 	for i := range dupACKThreshold {
-		c.PreRx(tcp.RxMeta{Segment: ackSeg(1000), Now: int64(i + 1)})
+		c.PostRx(tcp.RxEvent{Segment: ackSeg(1000), Now: int64(i + 1), Accepted: true})
 	}
 	reduced := c.WindowSegments()
 	for i := range 5 {
-		c.PreRx(tcp.RxMeta{Segment: ackSeg(1000), Now: int64(10 + i)})
+		c.PostRx(tcp.RxEvent{Segment: ackSeg(1000), Now: int64(10 + i), Accepted: true})
 	}
 	if got := c.WindowSegments(); got != reduced {
 		t.Errorf("cwnd=%v after further duplicates, want it unchanged at %v", got, reduced)
@@ -167,11 +167,11 @@ func TestCUBIC_RTOCollapsesWindow(t *testing.T) {
 // that last caused loss as time since the epoch increases.
 func TestCUBIC_CongestionAvoidanceGrowsOverTime(t *testing.T) {
 	c := newCUBIC(t, CUBICConfig{InitialCwnd: 20})
-	c.PreRx(tcp.RxMeta{Segment: ackSeg(1000), Now: 0})
+	c.PostRx(tcp.RxEvent{Segment: ackSeg(1000), Now: 0, Accepted: true})
 	// Force a congestion event so W_max is set and the controller leaves slow
 	// start.
 	for i := range dupACKThreshold {
-		c.PreRx(tcp.RxMeta{Segment: ackSeg(1000), Now: int64(i + 1)})
+		c.PostRx(tcp.RxEvent{Segment: ackSeg(1000), Now: int64(i + 1), Accepted: true})
 	}
 	afterLoss := c.WindowSegments()
 	if c.InSlowStart() {
@@ -184,7 +184,7 @@ func TestCUBIC_CongestionAvoidanceGrowsOverTime(t *testing.T) {
 	const second = int64(nanosPerSecond)
 	for i := 1; i <= 20; i++ {
 		seq += testMSS
-		c.PreRx(tcp.RxMeta{Segment: ackSeg(seq), Now: int64(i) * second / 4})
+		c.PostRx(tcp.RxEvent{Segment: ackSeg(seq), Now: int64(i) * second / 4, Accepted: true})
 	}
 	grown := c.WindowSegments()
 	if grown <= afterLoss {
@@ -232,9 +232,9 @@ func TestCUBIC_AdoptsPeerMSS(t *testing.T) {
 // its configured initial state so one value can be reused across connections.
 func TestCUBIC_ResetRestoresConfiguration(t *testing.T) {
 	c := newCUBIC(t, CUBICConfig{InitialCwnd: 8})
-	c.PreRx(tcp.RxMeta{Segment: ackSeg(1000), Now: 0})
+	c.PostRx(tcp.RxEvent{Segment: ackSeg(1000), Now: 0, Accepted: true})
 	for i := range dupACKThreshold {
-		c.PreRx(tcp.RxMeta{Segment: ackSeg(1000), Now: int64(i + 1)})
+		c.PostRx(tcp.RxEvent{Segment: ackSeg(1000), Now: int64(i + 1), Accepted: true})
 	}
 	if c.WindowSegments() == 8 {
 		t.Fatal("test needs a modified window before Reset")

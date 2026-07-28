@@ -24,6 +24,10 @@ type windowPolicy struct {
 	sackBlocks int
 	firstBlock [2]tcp.Value
 
+	postRx   int
+	acked    tcp.Size
+	rejected int
+
 	window   tcp.Size
 	resets   int
 	preTx    int
@@ -40,6 +44,18 @@ func (p *windowPolicy) NextDeadline() int64 { return 0 }
 func (p *windowPolicy) PreRx(rx tcp.RxMeta) tcp.RxDirective {
 	p.preRx++
 	return tcp.RxDirective{Keep: true}
+}
+
+// PostRx records the acknowledgement accounting the connection did, which is the
+// information a controller needs and would otherwise have to reconstruct from the
+// raw segment.
+func (p *windowPolicy) PostRx(event tcp.RxEvent) {
+	p.postRx++
+	if event.Accepted {
+		p.acked += event.BytesAcked
+	} else {
+		p.rejected++
+	}
 }
 
 func (p *windowPolicy) PreTx(intent tcp.TxIntent) tcp.TxDirective {

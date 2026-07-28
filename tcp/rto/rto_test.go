@@ -28,6 +28,12 @@ func newRTO() *Timer {
 // rxAt builds the minimal tcp.RxMeta for driving PreRx directly.
 func rxAt(seg tcp.Segment, now int64) tcp.RxMeta { return tcp.RxMeta{Segment: seg, Now: now} }
 
+// acceptedAt builds the event for a segment the connection accepted, which is what
+// drives the estimator. Timing state is only allowed to move for those.
+func acceptedAt(seg tcp.Segment, now int64) tcp.RxEvent {
+	return tcp.RxEvent{Segment: seg, Now: now, Accepted: true}
+}
+
 // txAt builds the minimal tcp.TxIntent for driving Timer.PreTx directly: the timer
 // tracks the send sequence itself via PostTx and only reads the clock.
 func txAt(now int64) tcp.TxIntent { return tcp.TxIntent{Now: now} }
@@ -64,10 +70,10 @@ func TestRTO_ArmOnSendSampleOnAck(t *testing.T) {
 	}
 
 	// ACK arrives one RTT (40ms) later covering all sent data.
-	dir := r.PreRx(rxAt(ackSeg(iss+100), 40*rtoMs))
-	if !dir.Keep {
+	if !r.PreRx(rxAt(ackSeg(iss+100), 40*rtoMs)).Keep {
 		t.Error("PreRx must keep the segment")
 	}
+	r.PostRx(acceptedAt(ackSeg(iss+100), 40*rtoMs))
 	if r.Running() {
 		t.Error("timer must stop once all data is acknowledged")
 	}
@@ -113,7 +119,7 @@ func TestRTO_KarnNoSampleOnRetransmittedAck(t *testing.T) {
 	r.PreTx(txAt(int64(rtoInitial)))
 	r.PostTx(dataSeg(iss, 100), int64(rtoInitial))
 	// ACK now arrives; no sample should be taken since timing was discarded.
-	r.PreRx(rxAt(ackSeg(iss+100), int64(rtoInitial)+10*rtoMs))
+	r.PostRx(acceptedAt(ackSeg(iss+100), int64(rtoInitial)+10*rtoMs))
 	if r.haveRTT {
 		t.Error("no RTT sample should exist after a retransmission (Karn)")
 	}
@@ -127,15 +133,12 @@ func TestRTO_TimerRestartsWhilePartiallyAcked(t *testing.T) {
 	r.PostTx(dataSeg(iss, 100), 0)
 	r.PostTx(dataSeg(iss+100, 100), 0) // 200 octets outstanding, iss..iss+200.
 
-	dir := r.PreRx(rxAt(ackSeg(iss+100), 40*rtoMs)) // acks first 100 only.
+	r.PostRx(acceptedAt(ackSeg(iss+100), 40*rtoMs)) // acks first 100 only.
 	if !r.Running() {
 		t.Fatal("timer must remain armed while data is still in flight")
 	}
 	if r.NextDeadline() != 40*rtoMs+int64(r.CurrentRTO()) {
 		t.Errorf("deadline=%d, want %d", r.NextDeadline(), 40*rtoMs+int64(r.CurrentRTO()))
-	}
-	if !dir.Keep {
-		t.Error("PreRx must keep the segment")
 	}
 }
 
@@ -162,7 +165,7 @@ func TestRTO_BackoffCollapsesOnValidSample(t *testing.T) {
 	}
 	// New data sent and freshly sampled, then acked.
 	r.PostTx(dataSeg(iss+100, 100), int64(rtoInitial)+rtoMs)
-	r.PreRx(rxAt(ackSeg(iss+200), int64(rtoInitial)+30*rtoMs))
+	r.PostRx(acceptedAt(ackSeg(iss+200), int64(rtoInitial)+30*rtoMs))
 	if r.backoff != 0 {
 		t.Errorf("backoff=%d, want 0 after a valid RTT sample", r.backoff)
 	}
@@ -212,8 +215,41 @@ func TestRTO_ImplementsLossRecovery(t *testing.T) {
 	if !lr.PreRx(rxAt(ackSeg(1100), 10*rtoMs)).Keep {
 		t.Error("PreRx must keep")
 	}
+	lr.PostRx(acceptedAt(ackSeg(1100), 10*rtoMs))
 	if lr.NextDeadline() != 0 {
 		t.Error("expected disarmed timer after full ack")
+	}
+}
+
+// TestRTO_IgnoresRejectedSegment verifies the estimator does not act on a segment
+// the connection refused. PreRx runs before the state machine has judged the
+// segment, so an acknowledgement for data never sent would otherwise collapse the
+// backoff and take a bogus round-trip sample.
+func TestRTO_IgnoresRejectedSegment(t *testing.T) {
+	r := newRTO()
+	const iss = uint32(1000)
+	r.PostTx(dataSeg(iss, 100), 0)
+	armed := r.NextDeadline()
+	if armed == 0 {
+		t.Fatal("timer must be armed after sending data")
+	}
+
+	// An acknowledgement far beyond anything sent, refused by the connection.
+	bogus := ackSeg(iss + 100000)
+	if !r.PreRx(rxAt(bogus, 40*rtoMs)).Keep {
+		t.Error("PreRx must keep: dropping is not the estimator's business")
+	}
+	r.PostRx(tcp.RxEvent{Segment: bogus, Now: 40 * rtoMs, Accepted: false})
+
+	if r.NextDeadline() != armed {
+		t.Errorf("deadline moved to %d on a refused segment, want it left at %d",
+			r.NextDeadline(), armed)
+	}
+	if r.SmoothedRTT() != 0 {
+		t.Errorf("took an RTT sample of %v from a refused segment", r.SmoothedRTT())
+	}
+	if !r.Running() {
+		t.Error("timer disarmed by a refused acknowledgement")
 	}
 }
 

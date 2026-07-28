@@ -184,7 +184,7 @@ func (ts *Timestamps) WriteOptions(plan tcp.TxPlan, opts []byte) uint8 {
 // drops segments whose timestamp has gone backwards. It implements
 // [tcp.LossRecovery].
 func (ts *Timestamps) PreRx(rx tcp.RxMeta) tcp.RxDirective {
-	tsval, tsecr, present := ts.parse(rx.Options)
+	tsval, _, present := ts.parse(rx.Options)
 	isSyn := rx.Segment.Flags.HasAny(tcp.FlagSYN)
 	switch {
 	case isSyn:
@@ -209,22 +209,42 @@ func (ts *Timestamps) PreRx(rx tcp.RxMeta) tcp.RxDirective {
 			// wrapped. Drop the segment before it is processed.
 			return tcp.RxDirective{Keep: false}
 		}
-		ts.updateRecent(tsval, rx)
-		ts.sample(tsecr, rx.Now)
+		// Recording the timestamp and taking the sample wait for PostRx: §4.3 ties
+		// both to a segment being acceptable, which is not known yet.
 	}
 	// Let the retransmission timer see every segment the state machine will.
 	return ts.timer.PreRx(rx)
+}
+
+// PostRx records the peer's timestamp and takes a round-trip sample from a segment
+// the connection accepted, then forwards the event to the retransmission timer. It
+// implements [tcp.LossRecovery].
+//
+// RFC 7323 §4.3 advances TS.Recent only for an acceptable segment, so a refused one
+// must not move it. Letting it would echo a timestamp from a segment that never
+// counted and corrupt the peer's round-trip estimate.
+func (ts *Timestamps) PostRx(event tcp.RxEvent) {
+	defer ts.timer.PostRx(event)
+	if !event.Accepted || !ts.enabled || event.Segment.Flags.HasAny(tcp.FlagSYN) {
+		return
+	}
+	tsval, tsecr, present := ts.parse(event.Options)
+	if !present {
+		return
+	}
+	ts.updateRecent(tsval, event.Segment.SEQ, event.RcvNXT)
+	ts.sample(tsecr, event.Now)
 }
 
 // updateRecent applies the RFC 7323 §4.3 rule for advancing TS.Recent: the
 // segment's timestamp must not be older than the stored one and the segment must
 // be at or below the left edge of what has been acknowledged, so a reordered
 // segment cannot pull the echo backwards.
-func (ts *Timestamps) updateRecent(tsval uint32, rx tcp.RxMeta) {
+func (ts *Timestamps) updateRecent(tsval uint32, seq, rcvNXT tcp.Value) {
 	if ts.haveRecent && lessThan32(tsval, ts.recent) {
 		return
 	}
-	if !rx.Segment.SEQ.LessThanEq(rx.RcvNXT) {
+	if !seq.LessThanEq(rcvNXT) {
 		return // Ahead of what has been acknowledged: not eligible.
 	}
 	ts.recent, ts.haveRecent = tsval, true

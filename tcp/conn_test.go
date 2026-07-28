@@ -206,3 +206,4 @@ func (fixedDeadlineLoss) PreRx(RxMeta) RxDirective          { return RxDirective
 func (fixedDeadlineLoss) PreTx(TxIntent) TxDirective        { return TxDirective{} }
 func (fixedDeadlineLoss) WriteOptions(TxPlan, []byte) uint8 { return 0 }
 func (fixedDeadlineLoss) PostTx(Segment, int64)             {}
+func (fixedDeadlineLoss) PostRx(RxEvent)                    {}
