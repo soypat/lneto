@@ -293,7 +293,7 @@ func TestSACK_AdvertisesHeldBlocks(t *testing.T) {
 	// Send three segments but drop the first, so the server holds the last two out
 	// of order behind a hole.
 	var dropped []byte
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if _, err := client.Write(payload); err != nil {
 			t.Fatal("write:", err)
 		}
@@ -392,7 +392,7 @@ func TestSACK_NoBlocksWithoutNegotiation(t *testing.T) {
 
 	// Give the server data out of order, so it is holding blocks it could report.
 	var dropped []byte
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if _, err := client.Write(payload); err != nil {
 			t.Fatal("write:", err)
 		}
@@ -473,7 +473,7 @@ func TestSACK_MergesAdjacentBlocks(t *testing.T) {
 	payload := make([]byte, seglen)
 
 	firstSeq := tcp.Value(0)
-	for i := 0; i < held+1; i++ {
+	for i := range held + 1 {
 		if _, err := client.Write(payload); err != nil {
 			t.Fatal("write:", err)
 		}
@@ -625,7 +625,7 @@ func TestSACK_ResendsOnlyTheLostSegment(t *testing.T) {
 	// Send four segments, withholding the first so the server holds three behind a
 	// hole and reports them.
 	var sent []segInfo
-	for i := 0; i < nseg; i++ {
+	for i := range nseg {
 		for j := range payload {
 			payload[j] = byte(i*seglen + j)
 		}
@@ -707,8 +707,8 @@ func TestSACK_ResendsOnlyTheLostSegment(t *testing.T) {
 	if read != nseg*seglen {
 		t.Fatalf("server delivered %d octets, want %d", read, nseg*seglen)
 	}
-	for i := 0; i < nseg; i++ {
-		for j := 0; j < seglen; j++ {
+	for i := range nseg {
+		for j := range seglen {
 			if want := byte(i*seglen + j); got[i*seglen+j] != want {
 				t.Fatalf("octet %d of segment %d = %d, want %d", j, i, got[i*seglen+j], want)
 			}
@@ -866,7 +866,7 @@ func TestSACK_ScoreboardRejectsUntrustworthyBlocks(t *testing.T) {
 func TestSACK_ScoreboardBoundedByHeaderCapacity(t *testing.T) {
 	s := enabledSACK()
 	var blocks []Block
-	for i := 0; i < maxBlocks+3; i++ {
+	for i := range maxBlocks + 3 {
 		base := tcp.Value(2000 + i*200)
 		blocks = append(blocks, Block{Left: base, Right: base + 100})
 	}

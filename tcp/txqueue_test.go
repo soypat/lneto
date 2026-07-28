@@ -877,7 +877,7 @@ func TestMakePacketRetransmitWithFullQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 	var scratch [bufsize]byte
-	for i := 0; i < maxpkts; i++ {
+	for i := range maxpkts {
 		if _, err := rtx.MakePacket(scratch[:pktlen], Add(iss, Size(i*pktlen))); err != nil {
 			t.Fatalf("packet %d: %v", i, err)
 		}
@@ -887,7 +887,7 @@ func TestMakePacketRetransmitWithFullQueue(t *testing.T) {
 	}
 
 	// Every packet in the full queue must still be resendable, with its data intact.
-	for i := 0; i < maxpkts; i++ {
+	for i := range maxpkts {
 		seq := Add(iss, Size(i*pktlen))
 		clear(scratch[:])
 		n, err := rtx.MakePacket(scratch[:pktlen], seq)
