@@ -586,3 +586,334 @@ func TestSACK_PutBlocksRefusesMoreThanFit(t *testing.T) {
 		t.Errorf("wrote %d octets for %d blocks, want a refusal", n, len(tooMany))
 	}
 }
+
+// segInfo describes a serialized segment for a test that inspects the wire.
+type segInfo struct {
+	seq  tcp.Value
+	n    int
+	data []byte
+}
+
+func inspect(t *testing.T, packet []byte) segInfo {
+	t.Helper()
+	frame, err := tcp.NewFrame(packet)
+	if err != nil {
+		t.Fatal("parse:", err)
+	}
+	payload := frame.Payload()
+	return segInfo{seq: frame.Seq(), n: len(payload), data: append([]byte(nil), payload...)}
+}
+
+// TestSACK_ResendsOnlyTheLostSegment is the point of the whole exercise: a sender told
+// which of its segments arrived resends the one that did not, and not the ones that
+// did.
+//
+// Without selective acknowledgement a single loss costs everything sent after it,
+// because a cumulative acknowledgement cannot distinguish "nothing else arrived" from
+// "only this one is missing". The property asserted here is that distinction: the
+// retransmission covers the hole and stops.
+func TestSACK_ResendsOnlyTheLostSegment(t *testing.T) {
+	clientSACK, serverSACK := new(SACK), new(SACK)
+	client, server, packet := pair(t, clientSACK, serverSACK)
+	if !clientSACK.Enabled() || !serverSACK.Enabled() {
+		t.Fatal("negotiation failed")
+	}
+	const seglen = 100
+	const nseg = 4
+	payload := make([]byte, seglen)
+
+	// Send four segments, withholding the first so the server holds three behind a
+	// hole and reports them.
+	var sent []segInfo
+	for i := 0; i < nseg; i++ {
+		for j := range payload {
+			payload[j] = byte(i*seglen + j)
+		}
+		if _, err := client.Write(payload); err != nil {
+			t.Fatal("write:", err)
+		}
+		clear(packet)
+		n, err := client.Send(packet)
+		if err != nil {
+			t.Fatal("send:", err)
+		}
+		if n == 0 {
+			t.Fatalf("segment %d not sent", i)
+		}
+		info := inspect(t, packet[:n])
+		sent = append(sent, info)
+		if i == 0 {
+			continue // Lost in transit.
+		}
+		if err = server.Recv(packet[:n]); err != nil {
+			t.Fatal("server recv:", err)
+		}
+	}
+	lost := sent[0]
+
+	// The server's acknowledgement reports what it holds; the client reads it.
+	clear(packet)
+	n, err := server.Send(packet)
+	if err != nil {
+		t.Fatal("server ack:", err)
+	}
+	if _, present := sackBlocks(t, packet[:n]); !present {
+		t.Fatal("the acknowledgement carries no blocks")
+	}
+	if err = client.Recv(packet[:n]); err != nil {
+		t.Fatal("client recv ack:", err)
+	}
+	if !clientSACK.Holes() {
+		t.Fatal("the sender did not conclude anything was missing from the peer's report")
+	}
+	if got := len(clientSACK.Acked()); got == 0 {
+		t.Fatal("the scoreboard is empty after a report of held data")
+	}
+
+	// The next segment must be the lost one, resent.
+	clear(packet)
+	n, err = client.Send(packet)
+	if err != nil {
+		t.Fatal("client retransmit:", err)
+	}
+	if n == 0 {
+		t.Fatal("the sender transmitted nothing after being told of the hole")
+	}
+	resent := inspect(t, packet[:n])
+	if resent.seq != lost.seq {
+		t.Fatalf("resent segment starts at %d, want the lost segment's %d", resent.seq, lost.seq)
+	}
+	if resent.n != lost.n {
+		t.Errorf("resent %d octets, want the lost segment's %d", resent.n, lost.n)
+	}
+	if string(resent.data) != string(lost.data) {
+		t.Error("the resent payload differs from the lost segment's")
+	}
+	if err = server.Recv(packet[:n]); err != nil {
+		t.Fatal("server recv retransmission:", err)
+	}
+
+	// The hole is filled, so everything is deliverable in order and nothing else was
+	// resent along the way.
+	got := make([]byte, nseg*seglen)
+	read := 0
+	for read < len(got) {
+		nr, err := server.Read(got[read:])
+		if err != nil || nr == 0 {
+			break
+		}
+		read += nr
+	}
+	if read != nseg*seglen {
+		t.Fatalf("server delivered %d octets, want %d", read, nseg*seglen)
+	}
+	for i := 0; i < nseg; i++ {
+		for j := 0; j < seglen; j++ {
+			if want := byte(i*seglen + j); got[i*seglen+j] != want {
+				t.Fatalf("octet %d of segment %d = %d, want %d", j, i, got[i*seglen+j], want)
+			}
+		}
+	}
+
+	// Nothing after the hole is resent: the peer acknowledges everything, and the
+	// sender has no further retransmission to make.
+	clear(packet)
+	n, err = server.Send(packet)
+	if err != nil {
+		t.Fatal("server final ack:", err)
+	}
+	if err = client.Recv(packet[:n]); err != nil {
+		t.Fatal("client recv final ack:", err)
+	}
+	if clientSACK.Holes() {
+		t.Error("the sender still believes something is missing after everything was acknowledged")
+	}
+	clear(packet)
+	if n, err = client.Send(packet); err != nil {
+		t.Fatal("client send after recovery:", err)
+	}
+	if n != 0 {
+		extra := inspect(t, packet[:n])
+		t.Errorf("sender resent %d octets at %d after full acknowledgement", extra.n, extra.seq)
+	}
+}
+
+// blockOption builds an option area carrying the given SACK blocks.
+func blockOption(blocks ...Block) []byte {
+	opts := make([]byte, 2+len(blocks)*blockLen)
+	opts[0], opts[1] = byte(tcp.OptSACK), byte(len(opts))
+	for i, b := range blocks {
+		put32(opts[2+i*blockLen:], uint32(b.Left))
+		put32(opts[2+i*blockLen+4:], uint32(b.Right))
+	}
+	return opts
+}
+
+// enabledSACK returns a policy as if the handshake had negotiated the option.
+func enabledSACK() *SACK {
+	s := new(SACK)
+	s.enabled, s.offered, s.peerPermitted = true, true, true
+	return s
+}
+
+func ackEvent(ack tcp.Value, opts []byte, accepted bool) tcp.RxEvent {
+	return tcp.RxEvent{
+		Segment:  tcp.Segment{SEQ: 5000, ACK: ack, WND: 4096, Flags: tcp.FlagACK},
+		Options:  opts,
+		Accepted: accepted,
+		Now:      1,
+	}
+}
+
+// TestSACK_IgnoresRefusedSegment verifies blocks from a segment the connection refused
+// are not acted on. A block describes this side's send sequence, so a refused segment
+// carries no claim about it worth retransmitting for: a stale duplicate or a forged
+// segment would otherwise direct the sender's retransmissions.
+func TestSACK_IgnoresRefusedSegment(t *testing.T) {
+	s := enabledSACK()
+	opts := blockOption(Block{Left: 1200, Right: 1300})
+	s.PostRx(ackEvent(1000, opts, false))
+	if s.Holes() {
+		t.Error("a refused segment's blocks were acted on")
+	}
+	if got := len(s.Acked()); got != 0 {
+		t.Errorf("scoreboard holds %d ranges from a refused segment, want 0", got)
+	}
+	// The same segment accepted does populate the scoreboard, so the test is not
+	// passing merely because nothing works.
+	s.PostRx(ackEvent(1000, opts, true))
+	if !s.Holes() {
+		t.Error("an accepted report of held data did not identify a hole")
+	}
+	if got := len(s.Acked()); got != 1 {
+		t.Errorf("scoreboard holds %d ranges, want 1", got)
+	}
+}
+
+// TestSACK_ScoreboardRejectsUntrustworthyBlocks verifies a peer's blocks are validated
+// before they steer retransmission. The blocks are attacker-controlled input in the
+// general case, and every one of these shapes would otherwise turn into a resend
+// request or a corrupt scoreboard.
+func TestSACK_ScoreboardRejectsUntrustworthyBlocks(t *testing.T) {
+	const ack tcp.Value = 1000
+	for _, test := range []struct {
+		name      string
+		blocks    []Block
+		wantAcked int
+		wantHole  bool
+	}{
+		{
+			name:   "reversed edges",
+			blocks: []Block{{Left: 1300, Right: 1200}},
+		},
+		{
+			name:   "empty range",
+			blocks: []Block{{Left: 1200, Right: 1200}},
+		},
+		{
+			name:   "entirely below the cumulative acknowledgement",
+			blocks: []Block{{Left: 500, Right: 900}},
+		},
+		{
+			name:   "ending exactly at the acknowledgement",
+			blocks: []Block{{Left: 500, Right: ack}},
+		},
+		{
+			name:      "straddling the acknowledgement is clamped",
+			blocks:    []Block{{Left: 500, Right: 1200}},
+			wantAcked: 1,
+			// Clamped to start at the acknowledgement, so it reports no hole below
+			// itself: the peer has everything from there.
+			wantHole: false,
+		},
+		{
+			name:      "a genuine hole",
+			blocks:    []Block{{Left: 1200, Right: 1300}},
+			wantAcked: 1,
+			wantHole:  true,
+		},
+		{
+			name:      "good and bad mixed",
+			blocks:    []Block{{Left: 1300, Right: 1200}, {Left: 1400, Right: 1500}},
+			wantAcked: 1,
+			wantHole:  true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s := enabledSACK()
+			s.PostRx(ackEvent(ack, blockOption(test.blocks...), true))
+			if got := len(s.Acked()); got != test.wantAcked {
+				t.Errorf("scoreboard holds %d ranges, want %d: %v", got, test.wantAcked, s.Acked())
+			}
+			for _, b := range s.Acked() {
+				if !b.Left.LessThan(b.Right) {
+					t.Errorf("scoreboard holds an empty or reversed range %v", b)
+				}
+				if b.Left.LessThan(ack) {
+					t.Errorf("scoreboard holds %v, which starts below the acknowledgement %d", b, ack)
+				}
+			}
+			if got := s.Holes(); got != test.wantHole {
+				t.Errorf("Holes() = %v, want %v", got, test.wantHole)
+			}
+		})
+	}
+}
+
+// TestSACK_ScoreboardBoundedByHeaderCapacity verifies more blocks than the fixed
+// scoreboard holds are dropped rather than overrunning it. The count comes from the
+// peer, and a peer may report an option area full of them.
+func TestSACK_ScoreboardBoundedByHeaderCapacity(t *testing.T) {
+	s := enabledSACK()
+	var blocks []Block
+	for i := 0; i < maxBlocks+3; i++ {
+		base := tcp.Value(2000 + i*200)
+		blocks = append(blocks, Block{Left: base, Right: base + 100})
+	}
+	s.PostRx(ackEvent(1000, blockOption(blocks...), true))
+	if got := len(s.Acked()); got > maxBlocks {
+		t.Errorf("scoreboard holds %d ranges, want at most %d", got, maxBlocks)
+	}
+	if !s.Holes() {
+		t.Error("a report of held data above the acknowledgement identified no hole")
+	}
+}
+
+// TestSACK_StaleAcknowledgementDoesNotRewind verifies an acknowledgement older than one
+// already seen is ignored, so a delayed duplicate cannot drag the scoreboard back and
+// ask for data already known to have arrived.
+func TestSACK_StaleAcknowledgementDoesNotRewind(t *testing.T) {
+	s := enabledSACK()
+	s.PostRx(ackEvent(2000, blockOption(Block{Left: 2200, Right: 2300}), true))
+	if !s.Holes() {
+		t.Fatal("no hole identified from the first report")
+	}
+	before := s.Acked()[0]
+	// A stale acknowledgement arriving late, reporting an older view.
+	s.PostRx(ackEvent(1000, blockOption(Block{Left: 1200, Right: 1300}), true))
+	if got := len(s.Acked()); got != 1 || s.Acked()[0] != before {
+		t.Errorf("scoreboard = %v, want it unchanged at %v by a stale acknowledgement", s.Acked(), before)
+	}
+}
+
+// TestSACK_ResendRequestYieldsToAnAdvancedSendSequence verifies a hole that has since
+// been acknowledged is not asked for. The scoreboard is refreshed on receive, so a
+// plan made then can be stale by the time the transmit path asks.
+func TestSACK_ResendRequestYieldsToAnAdvancedSendSequence(t *testing.T) {
+	s := enabledSACK()
+	s.PostRx(ackEvent(1000, blockOption(Block{Left: 1200, Right: 1300}), true))
+	if !s.Holes() {
+		t.Fatal("no hole identified")
+	}
+	// The send sequence has moved past the hole by the time the transmit runs.
+	dir := s.PreTx(tcp.TxIntent{UNA: 1400, NXT: 2000})
+	if dir.Retransmit {
+		t.Errorf("asked to resend from %d, which is already acknowledged", dir.RetransmitFrom)
+	}
+	// And a hole with nothing sent past it is not asked for either.
+	s.PostRx(ackEvent(1000, blockOption(Block{Left: 1200, Right: 1300}), true))
+	dir = s.PreTx(tcp.TxIntent{UNA: 1000, NXT: 1000})
+	if dir.Retransmit {
+		t.Errorf("asked to resend from %d with nothing sent", dir.RetransmitFrom)
+	}
+}
