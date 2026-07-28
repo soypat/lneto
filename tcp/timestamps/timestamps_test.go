@@ -333,3 +333,61 @@ func TestTimestamps_NoRoomDoesNotNegotiate(t *testing.T) {
 		t.Error("answering a peer's offer should complete negotiation")
 	}
 }
+
+// TestTimestamps_SampleReachesEstimator verifies a round-trip sample taken from an
+// echoed timestamp is folded into the retransmission timer, which is the point of
+// the option for a sender. The documentation claimed this before the estimator had
+// any entry point for an externally measured sample, so the timer was running on
+// acknowledgement timing alone.
+func TestTimestamps_SampleReachesEstimator(t *testing.T) {
+	ts := new(Timestamps)
+	ts.enabled = true
+	ts.offered = true
+	ts.haveEpoch = true
+	ts.epoch = 0
+
+	if got := ts.SmoothedRTT(); got != 0 {
+		t.Fatalf("smoothed RTT is %d before any sample, want 0", got)
+	}
+	// An echo of the TSval we stamped one tick after our epoch, arriving 40ms of
+	// our clock after that tick.
+	const rttMillis = 40
+	rx := rxWithTimestamp(10, 1, 100, 100)
+	rx.Now = (rttMillis + 1) * nanosPerMilli
+	ts.PreRx(rx)
+
+	sample, ok := ts.LastRTT()
+	if !ok {
+		t.Fatal("expected an RTT sample from the echo")
+	}
+	if want := int64(rttMillis) * nanosPerMilli; sample != want {
+		t.Errorf("sample = %d ns, want %d", sample, want)
+	}
+	if got := ts.SmoothedRTT(); got != sample {
+		t.Errorf("smoothed RTT = %d, want the first sample %d to have reached the estimator",
+			got, sample)
+	}
+}
+
+// TestTimestamps_SampleBypassesKarn verifies a timestamp-derived sample is applied
+// even though the timer's own sampling would have discarded it. An echo dates the
+// acknowledgement unambiguously, so unlike acknowledgement timing it stays valid
+// across a retransmission (RFC 7323 §4.1).
+func TestTimestamps_SampleBypassesKarn(t *testing.T) {
+	ts := new(Timestamps)
+	ts.enabled = true
+	ts.offered = true
+	ts.haveEpoch = true
+	ts.epoch = 0
+
+	// No segment was ever handed to PostTx, so the timer has taken no sample of its
+	// own and is not timing anything.
+	const rttMillis = 25
+	rx := rxWithTimestamp(10, 1, 100, 100)
+	rx.Now = (rttMillis + 1) * nanosPerMilli
+	ts.PreRx(rx)
+
+	if got, want := ts.SmoothedRTT(), int64(rttMillis)*nanosPerMilli; got != want {
+		t.Errorf("smoothed RTT = %d, want %d from the echo alone", got, want)
+	}
+}

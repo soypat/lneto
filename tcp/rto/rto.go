@@ -199,6 +199,17 @@ func (r *Timer) PostTx(outgoing tcp.Segment, now int64) {
 	}
 }
 
+// ObserveRTT folds a round-trip measurement taken by other means into the
+// estimator, for a policy that composes this timer and can measure the round trip
+// more accurately than acknowledgement timing allows. The RFC 7323 timestamp echo
+// is the case this exists for.
+//
+// Unlike the timer's own sampling this does not apply Karn's algorithm, because a
+// sample derived from an echoed timestamp is unambiguous even when the segment
+// carrying it was a retransmission (RFC 7323 §4.1). Non-positive samples are
+// ignored.
+func (r *Timer) ObserveRTT(rtt time.Duration) { r.updateRTT(rtt) }
+
 // updateRTT folds a round-trip measurement into SRTT/RTTVAR/RTO using the
 // integer-shift form of RFC 6298 §2.2/§2.3.
 func (r *Timer) updateRTT(sample time.Duration) {
