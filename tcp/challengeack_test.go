@@ -34,7 +34,7 @@ func TestChallengeAckOutOfOrderDoesNotAbort(t *testing.T) {
 	if window < 200 {
 		t.Fatalf("receive window is %d octets, too small to place in-window gaps", window)
 	}
-	for i := 0; i < 3*maxChallengeRejects; i++ {
+	for i := range 3 * maxChallengeRejects {
 		// A gap ahead of rcv.NXT but comfortably inside the receive window, so these
 		// are ordinary reordered segments and not evidence of diverged state.
 		seg := Segment{
@@ -85,7 +85,7 @@ func TestChallengeAckZeroWindowProbesDoNotAbort(t *testing.T) {
 	tcb.rcv.WND = 0 // Our receive window is closed: the application has not read.
 	tcb.snd.UNA, tcb.snd.NXT = 1000, 1000
 
-	for i := 0; i < 3*maxChallengeRejects; i++ {
+	for i := range 3 * maxChallengeRejects {
 		probe := Segment{SEQ: tcb.rcv.NXT, ACK: tcb.snd.NXT, WND: 4096, DATALEN: 1, Flags: FlagACK}
 		err := tcb.Recv(probe)
 		if err == nil {
@@ -125,7 +125,7 @@ func TestChallengeAckOutOfWindowStillAborts(t *testing.T) {
 	tcb.snd.UNA, tcb.snd.NXT = 1000, 1000
 
 	aborted := false
-	for i := 0; i < 4*maxChallengeRejects; i++ {
+	for i := range 4 * maxChallengeRejects {
 		// Far outside the receive window in both directions of the sequence space.
 		seg := Segment{SEQ: tcb.rcv.NXT + 1_000_000, ACK: tcb.snd.NXT, WND: 4096, DATALEN: 50, Flags: FlagACK}
 		if err := tcb.Recv(seg); err == nil {
