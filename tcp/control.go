@@ -67,6 +67,14 @@ type ControlBlock struct {
 	rcv recvSpace
 	// When FlagRST is set in pending flags rstPtr will contain the sequence number of the RST segment to make it "believable" (See RFC9293)
 	rstPtr Value
+	// rtxPtr is where retransmission resumes, held separately from snd.NXT so that
+	// resending does not forget how far the stream has been sent. snd.NXT is the
+	// high-water mark of data given to the network, which is what bounds a
+	// retransmission and what new data continues from; a scheme that rewinds it to
+	// resend loses both. RFC 6675 keeps the same two pointers apart for the same
+	// reason. Only meaningful while rtxActive.
+	rtxPtr    Value
+	rtxActive bool
 	logger
 
 	// pending is the queue of pending flags to be sent in the next 2 segments.
@@ -359,7 +367,49 @@ func (tcb *ControlBlock) RewindNXT(seq Value) {
 	tcb.snd.NXT = seq
 	tcb.dupack = 0
 	tcb.nRetransmit = 0
+	// A rewind resends everything from seq onward, which subsumes any selective
+	// retransmission and would otherwise leave its pointer stranded at or past the
+	// new high-water mark.
+	tcb.rtxPtr, tcb.rtxActive = 0, false
 }
+
+// RetransmitAt directs the next segments to resend already-sent data starting at
+// seq, without disturbing how far the stream has been sent. It returns the
+// sequence retransmission will actually resume at and whether anything will be
+// retransmitted at all.
+//
+// This is the selective counterpart to [ControlBlock.RewindNXT]. Rewinding snd.NXT
+// resends everything from a point onward and cannot skip a range the peer has
+// already acknowledged selectively, because snd.NXT is simultaneously the resume
+// point and the record of how far the stream has gone. Holding the resume point
+// separately means a single missing range can be resent while the data after it
+// stays sent, which is what a selective acknowledgement asks for (RFC 6675 §2).
+//
+// seq is clamped into [snd.UNA, snd.NXT): retransmitting before snd.UNA would
+// resend acknowledged data, and there is nothing at or past snd.NXT to resend. A
+// request outside that range reports ok false and changes nothing rather than
+// being an error, since a policy's view of the send space can lag the connection's.
+//
+// The retransmission is cleared once it reaches snd.NXT, after which new data
+// continues from there as usual. It must be paired with ringTx.MakePacket at the
+// same sequence to read the data back out of the transmit queue.
+func (tcb *ControlBlock) RetransmitAt(seq Value) (resumeAt Value, ok bool) {
+	if !tcb._state.TxDataOpen() {
+		return 0, false
+	}
+	if seq.LessThan(tcb.snd.UNA) {
+		seq = tcb.snd.UNA
+	}
+	if !seq.LessThan(tcb.snd.NXT) {
+		return 0, false // Nothing sent from seq onward to resend.
+	}
+	tcb.rtxPtr, tcb.rtxActive = seq, true
+	return seq, true
+}
+
+// RetransmitPointer reports where retransmission will resume and whether one is in
+// progress. It is the read side of [ControlBlock.RetransmitAt].
+func (tcb *ControlBlock) RetransmitPointer() (Value, bool) { return tcb.rtxPtr, tcb.rtxActive }
 
 // ZeroWindowProbe returns a zero-length probe segment to elicit a window update
 // from a peer that has closed its receive window, or ok=false when it is not yet
@@ -417,6 +467,22 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 		// Do not clear challengeAck here: PendingSegment is documented as read-only.
 		// The flag is consumed in Send when the ACK segment is actually transmitted.
 		return tcb.MakeChallengeACK(), true
+	} else if !pending.HasAny(flagctl) && tcb.rtxActive {
+		// A retransmission is in progress at rtxPtr. It is bounded by snd.NXT: only
+		// data already given to the network is resent, never new data, so the
+		// high-water mark is untouched and the peer's window needs no consulting —
+		// this data was inside it when it first went out.
+		remaining := Sizeof(tcb.rtxPtr, tcb.snd.NXT)
+		if payloadLen > int(remaining) {
+			payloadLen = int(remaining)
+		}
+		if tcb.snd.MSS > 0 && payloadLen > int(tcb.snd.MSS) {
+			payloadLen = int(tcb.snd.MSS)
+		}
+		if payloadLen == 0 {
+			return Segment{}, false // No room offered for the resend; try again later.
+		}
+		return Segment{SEQ: tcb.rtxPtr, DATALEN: Size(payloadLen), ACK: tcb.rcv.NXT, WND: tcb.advertisedWindow(tcb.rcv.WND), Flags: FlagACK}, true
 	} else if !pending.HasAny(flagctl) && tcb.HasPendingRetransmit() {
 		// Optimist Strategy: retransmit oldest data once.
 		return Segment{SEQ: tcb.snd.UNA, DATALEN: Size(payloadLen), ACK: tcb.rcv.NXT, WND: tcb.advertisedWindow(tcb.rcv.WND), Flags: FlagACK}, true
@@ -563,6 +629,13 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 			tcb.snd.UNA = seg.ACK
 			tcb.dupack = 0
 			tcb.nRetransmit = 0
+			if tcb.rtxActive && tcb.rtxPtr.LessThan(tcb.snd.UNA) {
+				// The peer acknowledged past where the resend was going to resume, so
+				// what it was going to resend has arrived. Continuing would resend
+				// acknowledged data.
+				tcb.rtxPtr = tcb.snd.UNA
+				tcb.rtxActive = tcb.rtxPtr.LessThan(tcb.snd.NXT)
+			}
 		}
 	}
 
@@ -630,6 +703,15 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 	if retransmit {
 		if tcb.nRetransmit < 255-retransmitMaxQueued-retransmitAfterDupacks {
 			tcb.nRetransmit++
+		}
+		if tcb.rtxActive && seg.SEQ == tcb.rtxPtr {
+			// Advance past what was just resent. Cleared on reaching the high-water
+			// mark, since everything asked for has then gone out again and new data
+			// continues from snd.NXT as usual.
+			tcb.rtxPtr.UpdateForward(seglen)
+			if !tcb.rtxPtr.LessThan(tcb.snd.NXT) {
+				tcb.rtxActive = false
+			}
 		}
 	} else {
 		tcb.snd.NXT.UpdateForward(seglen)
