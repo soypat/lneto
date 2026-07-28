@@ -7,7 +7,7 @@ import (
 	"github.com/soypat/lneto/ethernet"
 )
 
-// recordingLoss is a test LossRecovery that records every hook invocation and
+// recordingLoss is a test Policy that records every hook invocation and
 // lets the test steer the directives returned to the Handler. It is the
 // interface counterpart driven by the Handler under test.
 type recordingLoss struct {
@@ -38,7 +38,7 @@ type hookCall struct {
 
 func newRecordingLoss() *recordingLoss { return &recordingLoss{keep: true} }
 
-var _ LossRecovery = (*recordingLoss)(nil)
+var _ Policy = (*recordingLoss)(nil)
 
 func (l *recordingLoss) Reset()              { l.resets++ }
 func (l *recordingLoss) NextDeadline() int64 { return l.deadline }
@@ -70,10 +70,10 @@ func (l *recordingLoss) PostRx(event RxEvent) {
 	l.postRx = append(l.postRx, event)
 }
 
-// TestLossRecovery_DisabledByDefault verifies the Handler runs normally with no
+// TestPolicy_DisabledByDefault verifies the Handler runs normally with no
 // loss recovery installed: NextDeadline reports no deadline and the transmit/
-// receive paths never touch a nil LossRecovery.
-func TestLossRecovery_DisabledByDefault(t *testing.T) {
+// receive paths never touch a nil Policy.
+func TestPolicy_DisabledByDefault(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	rng := rand.New(rand.NewSource(1))
 	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
@@ -86,17 +86,17 @@ func TestLossRecovery_DisabledByDefault(t *testing.T) {
 	establish(t, client, server, buf[:]) // must not panic on nil loss recovery.
 }
 
-// TestLossRecovery_HooksInvoked verifies the Handler drives the full hook
+// TestPolicy_HooksInvoked verifies the Handler drives the full hook
 // contract across a handshake: Reset on open, PreTx+PostTx on every transmit,
 // PreRx on every receive, each stamped with the configured monotonic clock.
-func TestLossRecovery_HooksInvoked(t *testing.T) {
+func TestPolicy_HooksInvoked(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	rng := rand.New(rand.NewSource(2))
 	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
 
 	loss := newRecordingLoss()
 	const clockNow = 1_000_000
-	client.SetLossRecovery(loss, func() int64 { return clockNow })
+	client.SetPolicy(loss, func() int64 { return clockNow })
 
 	setupClientServer(t, rng, client, server) // OpenActive → reset → Reset().
 	if loss.resets == 0 {
@@ -145,16 +145,16 @@ func TestLossRecovery_HooksInvoked(t *testing.T) {
 	}
 }
 
-// TestLossRecovery_NextDeadlineDelegates verifies NextDeadline is forwarded to
-// the installed LossRecovery unchanged.
-func TestLossRecovery_NextDeadlineDelegates(t *testing.T) {
+// TestPolicy_NextDeadlineDelegates verifies NextDeadline is forwarded to
+// the installed Policy unchanged.
+func TestPolicy_NextDeadlineDelegates(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	rng := rand.New(rand.NewSource(3))
 	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
 
 	loss := newRecordingLoss()
 	loss.deadline = 4242
-	client.SetLossRecovery(loss, func() int64 { return 1 })
+	client.SetPolicy(loss, func() int64 { return 1 })
 	setupClientServer(t, rng, client, server)
 
 	if d := client.NextDeadline(); d != 4242 {
@@ -162,16 +162,16 @@ func TestLossRecovery_NextDeadlineDelegates(t *testing.T) {
 	}
 }
 
-// TestLossRecovery_PreRxDropsSegment verifies a PreRx directive of Keep=false
+// TestPolicy_PreRxDropsSegment verifies a PreRx directive of Keep=false
 // drops the segment before the state machine sees it: the payload is not
 // buffered and connection state is untouched.
-func TestLossRecovery_PreRxDropsSegment(t *testing.T) {
+func TestPolicy_PreRxDropsSegment(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	rng := rand.New(rand.NewSource(4))
 	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
 
 	loss := newRecordingLoss()
-	server.SetLossRecovery(loss, func() int64 { return 1 })
+	server.SetPolicy(loss, func() int64 { return 1 })
 	setupClientServer(t, rng, client, server)
 	var buf [mtu]byte
 	establish(t, client, server, buf[:]) // keep=true so handshake completes.
@@ -204,16 +204,16 @@ func TestLossRecovery_PreRxDropsSegment(t *testing.T) {
 	}
 }
 
-// TestLossRecovery_PreTxRetransmitFromUNA verifies a PreTx directive to
+// TestPolicy_PreTxRetransmitFromUNA verifies a PreTx directive to
 // retransmit from snd.UNA drives go-back-N: the Handler rewinds and re-emits
 // already-sent, unacknowledged data from the oldest sequence number.
-func TestLossRecovery_PreTxRetransmitFromUNA(t *testing.T) {
+func TestPolicy_PreTxRetransmitFromUNA(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	rng := rand.New(rand.NewSource(5))
 	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
 
 	loss := newRecordingLoss()
-	client.SetLossRecovery(loss, func() int64 { return 1 })
+	client.SetPolicy(loss, func() int64 { return 1 })
 	setupClientServer(t, rng, client, server)
 	var buf [mtu]byte
 	establish(t, client, server, buf[:])
@@ -253,17 +253,17 @@ func TestLossRecovery_PreTxRetransmitFromUNA(t *testing.T) {
 	}
 }
 
-// TestLossRecovery_PreTxRetransmitPartial verifies retransmission resumes at the
+// TestPolicy_PreTxRetransmitPartial verifies retransmission resumes at the
 // requested sequence instead of always at snd.UNA: with two unacknowledged
 // segments outstanding, asking to resume at the second one resends only that
 // segment and leaves the first accounted for as sent.
-func TestLossRecovery_PreTxRetransmitPartial(t *testing.T) {
+func TestPolicy_PreTxRetransmitPartial(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	rng := rand.New(rand.NewSource(11))
 	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
 
 	loss := newRecordingLoss()
-	client.SetLossRecovery(loss, func() int64 { return 1 })
+	client.SetPolicy(loss, func() int64 { return 1 })
 	setupClientServer(t, rng, client, server)
 	var buf [mtu]byte
 	establish(t, client, server, buf[:])
@@ -307,17 +307,17 @@ func TestLossRecovery_PreTxRetransmitPartial(t *testing.T) {
 	}
 }
 
-// TestLossRecovery_PreTxIntent verifies the send-state snapshot handed to PreTx
+// TestPolicy_PreTxIntent verifies the send-state snapshot handed to PreTx
 // tracks the connection: queued-but-unsent data appears as BufferedUnsent
 // before transmission and as InFlight once sent and still unacknowledged. These
 // are the quantities congestion control needs to gate new data.
-func TestLossRecovery_PreTxIntent(t *testing.T) {
+func TestPolicy_PreTxIntent(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	rng := rand.New(rand.NewSource(7))
 	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
 
 	loss := newRecordingLoss()
-	client.SetLossRecovery(loss, func() int64 { return 1 })
+	client.SetPolicy(loss, func() int64 { return 1 })
 	setupClientServer(t, rng, client, server)
 	var buf [mtu]byte
 	establish(t, client, server, buf[:])
@@ -376,13 +376,13 @@ func TestLossRecovery_PreTxIntent(t *testing.T) {
 	}
 }
 
-// TestLossRecovery_ResetOnReopen verifies Reset fires on every (re)open and on
-// Abort, so a single LossRecovery value can be reused across connection reuse.
-func TestLossRecovery_ResetOnReopen(t *testing.T) {
+// TestPolicy_ResetOnReopen verifies Reset fires on every (re)open and on
+// Abort, so a single Policy value can be reused across connection reuse.
+func TestPolicy_ResetOnReopen(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	client := newHandler(t, mtu, 3)
 	loss := newRecordingLoss()
-	client.SetLossRecovery(loss, func() int64 { return 1 })
+	client.SetPolicy(loss, func() int64 { return 1 })
 
 	if err := client.OpenActive(1234, 5678, 0); err != nil {
 		t.Fatal("open 1:", err)
@@ -406,16 +406,16 @@ func TestLossRecovery_ResetOnReopen(t *testing.T) {
 	}
 }
 
-// TestLossRecovery_PostRxReportsRejection verifies the connection tells the policy
+// TestPolicy_PostRxReportsRejection verifies the connection tells the policy
 // what it did with a segment, rather than leaving the policy to infer it. PreRx runs
 // before the state machine has judged anything, so a policy accounting for
 // acknowledgements there would count one for data that was never sent.
-func TestLossRecovery_PostRxReportsRejection(t *testing.T) {
+func TestPolicy_PostRxReportsRejection(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	rng := rand.New(rand.NewSource(17))
 	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
 	loss := newRecordingLoss()
-	client.SetLossRecovery(loss, func() int64 { return 1 })
+	client.SetPolicy(loss, func() int64 { return 1 })
 	setupClientServer(t, rng, client, server)
 	var buf [mtu]byte
 	establish(t, client, server, buf[:])

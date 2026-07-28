@@ -1,7 +1,7 @@
 package tcp_test
 
 // This file is deliberately in the external test package: it can only reach
-// exported API, so it fails to compile if [tcp.LossRecovery] ever stops being
+// exported API, so it fails to compile if [tcp.Policy] ever stops being
 // implementable from outside package tcp. Loss recovery, congestion control and
 // similar policy are meant to be factorable into their own packages, and that
 // property is easy to break by accident with an unexported type in a hook
@@ -14,7 +14,7 @@ import (
 	"github.com/soypat/lneto/tcp"
 )
 
-// windowPolicy is a minimal congestion-control-shaped [tcp.LossRecovery]
+// windowPolicy is a minimal congestion-control-shaped [tcp.Policy]
 // written against exported API only: it withholds new data once the octets in
 // flight reach a fixed window, which is the core of any window-based
 // controller.
@@ -36,7 +36,7 @@ type windowPolicy struct {
 	lastHeld bool
 }
 
-var _ tcp.LossRecovery = (*windowPolicy)(nil)
+var _ tcp.Policy = (*windowPolicy)(nil)
 
 func (p *windowPolicy) Reset()              { p.resets++ }
 func (p *windowPolicy) NextDeadline() int64 { return 0 }
@@ -78,10 +78,10 @@ func (p *windowPolicy) WriteOptions(plan tcp.TxPlan, _ []byte) uint8 {
 	return 0
 }
 
-// TestLossRecovery_ExternallyImplementable drives a connection with a policy
+// TestPolicy_ExternallyImplementable drives a connection with a policy
 // defined outside package tcp, proving the hooks carry enough exported state to
 // implement window-based congestion control there.
-func TestLossRecovery_ExternallyImplementable(t *testing.T) {
+func TestPolicy_ExternallyImplementable(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	client, server := new(tcp.Handler), new(tcp.Handler)
 	for _, h := range []*tcp.Handler{client, server} {
@@ -90,7 +90,7 @@ func TestLossRecovery_ExternallyImplementable(t *testing.T) {
 		}
 	}
 	policy := &windowPolicy{window: 4} // Tiny window: hold after 4 octets in flight.
-	client.SetLossRecovery(policy, func() int64 { return 1 })
+	client.SetPolicy(policy, func() int64 { return 1 })
 
 	if err := server.OpenListen(80, 0); err != nil {
 		t.Fatal(err)

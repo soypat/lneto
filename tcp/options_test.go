@@ -12,15 +12,15 @@ import (
 // whatever a real policy would emit.
 var tsOption = []byte{byte(OptTimestamps), 10, 0, 0, 0, 1, 0, 0, 0, 2}
 
-// TestLossRecovery_WriteOptionsPlan verifies the policy is told which kind of
+// TestPolicy_WriteOptionsPlan verifies the policy is told which kind of
 // segment it is writing options for, so it can distinguish handshake
 // negotiation from ordinary traffic without tracking the state machine.
-func TestLossRecovery_WriteOptionsPlan(t *testing.T) {
+func TestPolicy_WriteOptionsPlan(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	rng := rand.New(rand.NewSource(11))
 	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
 	loss := newRecordingLoss()
-	client.SetLossRecovery(loss, func() int64 { return 1 })
+	client.SetPolicy(loss, func() int64 { return 1 })
 	setupClientServer(t, rng, client, server)
 	var buf [mtu]byte
 
@@ -44,14 +44,14 @@ func TestLossRecovery_WriteOptionsPlan(t *testing.T) {
 	}
 }
 
-// TestLossRecovery_WriteOptionsServerSeesSYNACK verifies the responding side is
+// TestPolicy_WriteOptionsServerSeesSYNACK verifies the responding side is
 // told it is writing options for a SYN-ACK.
-func TestLossRecovery_WriteOptionsServerSeesSYNACK(t *testing.T) {
+func TestPolicy_WriteOptionsServerSeesSYNACK(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	rng := rand.New(rand.NewSource(12))
 	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
 	loss := newRecordingLoss()
-	server.SetLossRecovery(loss, func() int64 { return 1 })
+	server.SetPolicy(loss, func() int64 { return 1 })
 	setupClientServer(t, rng, client, server)
 	var buf [mtu]byte
 	establish(t, client, server, buf[:])
@@ -67,17 +67,17 @@ func TestLossRecovery_WriteOptionsServerSeesSYNACK(t *testing.T) {
 	}
 }
 
-// TestLossRecovery_WriteOptionsOnWire verifies injected options reach the wire
+// TestPolicy_WriteOptionsOnWire verifies injected options reach the wire
 // intact, the data offset accounts for them, and the payload still arrives
 // correctly at the peer. The last part is the real check: a mistake in payload
 // placement corrupts the stream rather than the header.
-func TestLossRecovery_WriteOptionsOnWire(t *testing.T) {
+func TestPolicy_WriteOptionsOnWire(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	rng := rand.New(rand.NewSource(13))
 	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
 	loss := newRecordingLoss()
 	loss.writeOpts = tsOption
-	client.SetLossRecovery(loss, func() int64 { return 1 })
+	client.SetPolicy(loss, func() int64 { return 1 })
 	setupClientServer(t, rng, client, server)
 	var buf [mtu]byte
 	establish(t, client, server, buf[:])
@@ -121,10 +121,10 @@ func TestLossRecovery_WriteOptionsOnWire(t *testing.T) {
 	}
 }
 
-// TestLossRecovery_WriteOptionsReducePayload verifies the option length is
+// TestPolicy_WriteOptionsReducePayload verifies the option length is
 // subtracted from the space available for data, so a full-buffer send cannot
 // overflow the frame.
-func TestLossRecovery_WriteOptionsReducePayload(t *testing.T) {
+func TestPolicy_WriteOptionsReducePayload(t *testing.T) {
 	const mtu = 400
 	rng := rand.New(rand.NewSource(14))
 	newBig := func() *Handler {
@@ -138,7 +138,7 @@ func TestLossRecovery_WriteOptionsReducePayload(t *testing.T) {
 	client, server := newBig(), newBig()
 	loss := newRecordingLoss()
 	loss.writeOpts = tsOption
-	client.SetLossRecovery(loss, func() int64 { return 1 })
+	client.SetPolicy(loss, func() int64 { return 1 })
 	setupClientServer(t, rng, client, server)
 	buf := make([]byte, mtu)
 	establish(t, client, server, buf)
@@ -181,18 +181,18 @@ func TestLossRecovery_WriteOptionsReducePayload(t *testing.T) {
 	}
 }
 
-// TestLossRecovery_PreRxSeesOptions verifies the receive hook can read the
+// TestPolicy_PreRxSeesOptions verifies the receive hook can read the
 // option area of incoming segments, which is what an external RFC 7323 or SACK
 // implementation needs in order to parse the peer's options itself.
-func TestLossRecovery_PreRxSeesOptions(t *testing.T) {
+func TestPolicy_PreRxSeesOptions(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	rng := rand.New(rand.NewSource(16))
 	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
 	// The client injects options; the server's policy must observe them.
 	clientLoss, serverLoss := newRecordingLoss(), newRecordingLoss()
 	clientLoss.writeOpts = tsOption
-	client.SetLossRecovery(clientLoss, func() int64 { return 1 })
-	server.SetLossRecovery(serverLoss, func() int64 { return 2 })
+	client.SetPolicy(clientLoss, func() int64 { return 1 })
+	server.SetPolicy(serverLoss, func() int64 { return 2 })
 	setupClientServer(t, rng, client, server)
 	var buf [mtu]byte
 	establish(t, client, server, buf[:])
@@ -224,15 +224,15 @@ func TestLossRecovery_PreRxSeesOptions(t *testing.T) {
 	}
 }
 
-// TestLossRecovery_WriteOptionsOverrunRejected verifies a policy claiming to
+// TestPolicy_WriteOptionsOverrunRejected verifies a policy claiming to
 // have written more options than the space it was lent cannot produce a
 // segment with an unknown header layout.
-func TestLossRecovery_WriteOptionsOverrunRejected(t *testing.T) {
+func TestPolicy_WriteOptionsOverrunRejected(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	rng := rand.New(rand.NewSource(15))
 	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
 	loss := newRecordingLoss()
-	client.SetLossRecovery(loss, func() int64 { return 1 })
+	client.SetPolicy(loss, func() int64 { return 1 })
 	setupClientServer(t, rng, client, server)
 	var buf [mtu]byte
 	establish(t, client, server, buf[:])

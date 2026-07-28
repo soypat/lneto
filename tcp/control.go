@@ -377,7 +377,7 @@ func (tcb *ControlBlock) RewindNXT(seq Value) {
 // is what lets this work in a package that holds no clock. The probe leaves an
 // octet unacknowledged, so the stall is no longer unprobeable: from then on the
 // retransmission timer resends that octet with real exponential backoff, which
-// is the periodic probing RFC 9293 §3.8.6.1 asks for. Without a [LossRecovery]
+// is the periodic probing RFC 9293 §3.8.6.1 asks for. Without a [Policy]
 // installed there is no such timer and the single probe is all that is sent.
 //
 // Like PendingSegment this does not modify the ControlBlock.

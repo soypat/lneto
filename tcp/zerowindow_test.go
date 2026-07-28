@@ -79,7 +79,7 @@ func TestZeroWindowProbeRecoversLostUpdate(t *testing.T) {
 	// Probing requires loss recovery: the probe octet is unacceptable to the peer
 	// and must be retransmitted until it is not. A nop policy is enough to enable
 	// probing here; resending it is exercised where the timer itself lives.
-	client.SetLossRecovery(nopLoss{}, func() int64 { return 1 })
+	client.SetPolicy(nopLoss{}, func() int64 { return 1 })
 	setupClientServer(t, rng, client, server)
 	var buf [mtu]byte
 	establish(t, client, server, buf[:])
@@ -166,7 +166,7 @@ func TestZeroWindowProbeHandsOffToRetransmission(t *testing.T) {
 	// Probing requires loss recovery: the probe octet is unacceptable to the peer
 	// and must be retransmitted until it is not. A nop policy is enough to enable
 	// probing here; resending it is exercised where the timer itself lives.
-	client.SetLossRecovery(nopLoss{}, func() int64 { return 1 })
+	client.SetPolicy(nopLoss{}, func() int64 { return 1 })
 	setupClientServer(t, rng, client, server)
 	var buf [mtu]byte
 	establish(t, client, server, buf[:])

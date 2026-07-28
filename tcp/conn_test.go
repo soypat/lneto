@@ -186,7 +186,7 @@ func TestConn_NextDeadline(t *testing.T) {
 		TxBuf:             make([]byte, 512),
 		TxPacketQueueSize: 4,
 		RWBackoff:         backoffYield,
-		LossRecovery:      fixedDeadlineLoss(deadline),
+		Policy:            fixedDeadlineLoss(deadline),
 		Nanotime:          func() int64 { return 1 },
 	})
 	if err != nil {
@@ -197,7 +197,7 @@ func TestConn_NextDeadline(t *testing.T) {
 	}
 }
 
-// fixedDeadlineLoss is a LossRecovery that only ever reports one deadline.
+// fixedDeadlineLoss is a Policy that only ever reports one deadline.
 type fixedDeadlineLoss int64
 
 func (fixedDeadlineLoss) Reset()                            {}

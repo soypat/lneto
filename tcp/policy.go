@@ -1,10 +1,22 @@
 package tcp
 
-// LossRecovery abstracts TCP packet-loss recovery: RTO, congestion control and
-// any similar algorithm that observes segment traffic and steers the
-// connection's transmit behaviour. As far as the tcp package is concerned these
-// are all the same thing — packet-loss recovery algorithms — so they share one
-// interface (see discussion #157).
+// Policy abstracts the algorithms that observe a connection's segment traffic
+// and steer what it transmits: the retransmission timer, congestion control, and
+// the TCP extensions that negotiate an option and act on it. As far as the tcp
+// package is concerned these are all the same thing — they watch segments go by
+// and influence the next one — so they share one interface (see discussion #157).
+//
+// The name is deliberately broader than the loss recovery this began as. An
+// implementation that samples round-trip times from the timestamp option, or that
+// advertises selective acknowledgements, is not recovering from loss at all, yet
+// it needs exactly the same hooks at exactly the same points. Naming the seam
+// after one of its clients invited the assumption that the others did not belong.
+//
+// The core deliberately owns none of these. What stays in this package is the
+// RFC 9293 state machine, the sequence space and the buffers; what a policy adds
+// is timing, windows and options, none of which the state machine needs in order
+// to be correct. A connection with no policy at all still completes a handshake,
+// carries data and closes; it simply never retransmits.
 //
 // The tcp package stays free of any time source: the current monotonic time in
 // nanoseconds (the func() int64 convention used across lneto) is passed in at
@@ -23,7 +35,7 @@ package tcp
 // # Why a runtime interface and not a type parameter
 //
 // A compile-time alternative was considered, parameterizing the connection on
-// the policy (Endpoint[P LossRecovery]) with a zero-sized no-op default, on the
+// the policy (Endpoint[P Policy]) with a zero-sized no-op default, on the
 // expectation that unused hooks would specialize away and leave the plain path
 // call-free. Measurement does not support that on this project's primary
 // toolchain:
@@ -42,12 +54,12 @@ package tcp
 // up at demultiplexing.
 //
 // The cost of this seam is measured by BenchmarkHandlerDatapath versus
-// BenchmarkHandlerDatapathLossRecovery. Revisit the decision with those numbers
+// BenchmarkHandlerDatapathPolicy. Revisit the decision with those numbers
 // rather than by assertion.
-type LossRecovery interface {
+type Policy interface {
 	// Reset returns the implementation to its initial, pre-connection state. It
 	// is invoked whenever the connection is (re)opened or aborted so a single
-	// LossRecovery value can be reused across the lifetime of connection reuse
+	// Policy value can be reused across the lifetime of connection reuse
 	// (see discussion #115).
 	Reset()
 
@@ -85,7 +97,7 @@ type LossRecovery interface {
 	//
 	// It runs before the segment is planned because its directives change what
 	// gets planned; consequently the outgoing segment's flags and payload are
-	// not yet known here. Observe those in [LossRecovery.PostTx].
+	// not yet known here. Observe those in [Policy.PostTx].
 	PreTx(intent TxIntent) TxDirective
 
 	// WriteOptions is called once the kind of the outgoing segment is known but
@@ -106,7 +118,7 @@ type LossRecovery interface {
 	PostTx(outgoing Segment, now int64)
 }
 
-// TxIntent is the snapshot of send state handed to [LossRecovery.PreTx] before
+// TxIntent is the snapshot of send state handed to [Policy.PreTx] before
 // a segment is planned. It is passed by value and must not be retained.
 //
 // It carries what a loss-recovery or congestion-control algorithm needs to
@@ -145,7 +157,7 @@ type TxIntent struct {
 	BufferedUnsent Size
 }
 
-// RxMeta describes a received segment handed to [LossRecovery.PreRx]. It is
+// RxMeta describes a received segment handed to [Policy.PreRx]. It is
 // passed by value and must not be retained.
 //
 // Where [TxIntent] describes a segment not yet built, RxMeta describes one that
@@ -192,11 +204,11 @@ const (
 	TxKindSYNACK
 )
 
-// TxPlan describes the segment about to be built when [LossRecovery.WriteOptions]
+// TxPlan describes the segment about to be built when [Policy.WriteOptions]
 // is called. It is passed by value and must not be retained.
 type TxPlan struct {
 	// Now is the current monotonic time in nanoseconds, the same instant
-	// reported to [LossRecovery.PreTx] for this transmit.
+	// reported to [Policy.PreTx] for this transmit.
 	Now int64
 	// State is the connection state.
 	State State
@@ -212,7 +224,7 @@ type TxPlan struct {
 	Reassembly ReassemblyView
 }
 
-// TxDirective is returned by [LossRecovery.PreTx] to steer the transmit path.
+// TxDirective is returned by [Policy.PreTx] to steer the transmit path.
 // The zero value directs the connection to proceed normally (send new data if
 // available, no retransmission).
 type TxDirective struct {
@@ -240,7 +252,7 @@ type TxDirective struct {
 }
 
 // RxEvent reports what a connection did with a received segment. It is passed by
-// value to [LossRecovery.PostRx] and must not be retained.
+// value to [Policy.PostRx] and must not be retained.
 //
 // It exists so that a policy does not have to reconstruct the state machine's
 // decisions from the raw segment. Reconstructing them means duplicating the
@@ -248,7 +260,7 @@ type TxDirective struct {
 // connection never accepted.
 type RxEvent struct {
 	// Now is the current monotonic time in nanoseconds, the same instant reported
-	// to [LossRecovery.PreRx] for this segment.
+	// to [Policy.PreRx] for this segment.
 	Now int64
 	// Segment is the segment as received.
 	Segment Segment
@@ -278,7 +290,7 @@ type RxEvent struct {
 	StateAfter  State
 }
 
-// RxDirective is returned by [LossRecovery.PreRx].
+// RxDirective is returned by [Policy.PreRx].
 //
 // NOTE: its shape is the minimum viable contract — it mirrors the original
 // PreRx "keep" boolean from discussion #157 — and is the one element of the

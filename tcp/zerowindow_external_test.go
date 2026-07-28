@@ -26,7 +26,7 @@ func zwPair(t *testing.T, bufSize int, nanotime func() int64) (client, server *t
 			t.Fatal(err)
 		}
 	}
-	client.SetLossRecovery(new(rto.Timer), nanotime)
+	client.SetPolicy(new(rto.Timer), nanotime)
 	if err := server.OpenListen(80, 0); err != nil {
 		t.Fatal(err)
 	}

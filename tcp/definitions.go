@@ -173,7 +173,7 @@ const (
 // signal rather than only as loss.
 //
 // This needs a decision on the extension seam, deferred until selective
-// retransmission settles: reducing the window belongs to a [LossRecovery]
+// retransmission settles: reducing the window belongs to a [Policy]
 // policy, but echoing ECE and setting CWR means influencing the flags of an
 // outgoing segment, which no directive currently allows. Adding flag control to
 // [TxDirective] would be hard to walk back, so the alternative of keeping ECN

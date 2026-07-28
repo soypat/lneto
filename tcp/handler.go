@@ -33,12 +33,12 @@ type Handler struct {
 	// reasm tracks out-of-order segments staged in bufRx's free region. Always
 	// enabled once buffers are set (see [Handler.SetBuffers]).
 	reasm reassembly
-	// loss is the optional packet-loss recovery algorithm (RTO, congestion
-	// control, ...) driven from the rx/tx hooks. nil disables loss recovery, in
-	// which case the connection behaves as if no timing existed. nanotime is the
-	// monotonic time source (nanoseconds) passed to those hooks; it is non-nil
-	// whenever loss is non-nil (enforced by [Conn.Configure]). See [LossRecovery].
-	loss     LossRecovery
+	// policy is the optional transmit policy (RTO, congestion control, TCP
+	// extensions, ...) driven from the rx/tx hooks. nil disables it, in which case
+	// the connection behaves as if no timing existed. nanotime is the monotonic
+	// time source (nanoseconds) passed to those hooks; it is non-nil whenever
+	// policy is non-nil (enforced by [Conn.Configure]). See [Policy].
+	policy   Policy
 	nanotime func() int64
 
 	closing    bool
@@ -80,19 +80,19 @@ func (h *Handler) SetBuffers(txbuf, rxbuf []byte, packets int) error {
 	return h.bufTx.ResetOrReuse(txbuf, packets, 0)
 }
 
-// SetLossRecovery installs the packet-loss recovery algorithm and the monotonic
-// time source (nanoseconds, the func() int64 convention used across lneto) that
-// drives it. The tcp package keeps no clock of its own; nanotime is read only to
-// stamp the rx/tx hooks (see [LossRecovery]). Passing loss == nil disables loss
-// recovery. It should be set before the connection is opened.
-func (h *Handler) SetLossRecovery(loss LossRecovery, nanotime func() int64) {
-	h.loss = loss
+// SetPolicy installs the transmit policy and the monotonic time source
+// (nanoseconds, the func() int64 convention used across lneto) that drives it.
+// The tcp package keeps no clock of its own; nanotime is read only to stamp the
+// rx/tx hooks (see [Policy]). Passing policy == nil leaves the connection with no
+// policy at all. It should be set before the connection is opened.
+func (h *Handler) SetPolicy(policy Policy, nanotime func() int64) {
+	h.policy = policy
 	h.nanotime = nanotime
 }
 
-func (h *Handler) lossEnabled() bool { return h.loss != nil }
+func (h *Handler) hasPolicy() bool { return h.policy != nil }
 
-// txIntent snapshots the send state handed to [LossRecovery.PreTx]. It is only
+// txIntent snapshots the send state handed to [Policy.PreTx]. It is only
 // called when loss recovery is installed. buffered is passed in because the
 // transmit path already has it.
 func (h *Handler) txIntent(now int64, buffered int) TxIntent {
@@ -111,7 +111,7 @@ func (h *Handler) txIntent(now int64, buffered int) TxIntent {
 
 // NextDeadline returns the monotonic-nanosecond instant at which the connection
 // must next be serviced by a transmit attempt (e.g. an RTO expiry), or 0 when
-// there is no deadline or no loss recovery is configured. See [LossRecovery].
+// there is no deadline or no loss recovery is configured. See [Policy].
 //
 // TODO(connection timers): only the installed policy feeds this deadline. The
 // 2MSL TIME-WAIT timer and the keepalive interval are also time-driven, but this
@@ -123,10 +123,10 @@ func (h *Handler) txIntent(now int64, buffered int) TxIntent {
 // counting stalled transmit attempts rather than time, precisely so that it
 // works on a connection with no clock at all. See [ControlBlock.ZeroWindowProbe].
 func (h *Handler) NextDeadline() int64 {
-	if h.loss == nil {
+	if h.policy == nil {
 		return 0
 	}
-	return h.loss.NextDeadline()
+	return h.policy.NextDeadline()
 }
 
 // LocalPort returns the local port of the connection. Returns 0 if the connection is closed and uninitialized.
@@ -193,7 +193,7 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 		shutdownRx: false,
 		// Persist configuration across reopen:
 		validator: h.validator,
-		loss:      h.loss,
+		policy:    h.policy,
 		nanotime:  h.nanotime,
 		logger:    h.logger,
 		// persist memory across repoen:
@@ -201,8 +201,8 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 		bufRx: h.bufRx,
 		reasm: h.reasm,
 	}
-	if h.lossEnabled() {
-		h.loss.Reset()
+	if h.hasPolicy() {
+		h.policy.Reset()
 	}
 	h.reasm.clear() // preserve metadata capacity across reopen, drop held segments.
 	h.bufTx.ResetOrReuse(nil, 0, iss)
@@ -245,9 +245,9 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 	// that counted belongs in PostRx below, since nothing here knows yet whether
 	// the state machine will accept it.
 	var event RxEvent
-	if h.lossEnabled() {
+	if h.hasPolicy() {
 		now := h.nanotime()
-		if !h.loss.PreRx(RxMeta{
+		if !h.policy.PreRx(RxMeta{
 			Now:     now,
 			Segment: segIncoming,
 			Options: tfrm.Options(),
@@ -275,7 +275,7 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 				event.DupACK = event.BytesAcked == 0 &&
 					segIncoming.Flags.HasAny(FlagACK) && segIncoming.ACK == una
 			}
-			h.loss.PostRx(event)
+			h.policy.PostRx(event)
 		}()
 	}
 
@@ -456,9 +456,9 @@ func (h *Handler) Send(b []byte) (int, error) {
 	var now int64
 	var holdNew bool
 	buffered := h.bufTx.BufferedUnsent()
-	if h.lossEnabled() {
+	if h.hasPolicy() {
 		now = h.nanotime()
-		dir := h.loss.PreTx(h.txIntent(now, buffered))
+		dir := h.policy.PreTx(h.txIntent(now, buffered))
 		holdNew = dir.HoldNew
 		if dir.Retransmit {
 			// Retransmission directed by loss recovery: rewind the transmit
@@ -533,11 +533,11 @@ func (h *Handler) Send(b []byte) (int, error) {
 		kind, coreOptLen = TxKindSYNACK, sizeOptionMSS+sizeOptionWindowScale
 	}
 	optLen := coreOptLen
-	if h.lossEnabled() {
+	if h.hasPolicy() {
 		optEnd := min(sizeHeaderTCP+maxTCPOptionBytes, len(b))
 		optStart := sizeHeaderTCP + coreOptLen
 		if optStart < optEnd {
-			n := h.loss.WriteOptions(TxPlan{
+			n := h.policy.WriteOptions(TxPlan{
 				Now:        now,
 				State:      state,
 				Kind:       kind,
@@ -601,7 +601,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 			maxPayload = 0
 		}
 		segment, ok = h.scb.PendingSegment(maxPayload)
-		if !ok && buffered > 0 && !holdNew && h.lossEnabled() {
+		if !ok && buffered > 0 && !holdNew && h.hasPolicy() {
 			// Data is queued but nothing can be sent. If the peer's window is
 			// closed this is the persist-timer case and a probe must go out, else a
 			// lost window update stalls the connection forever.
@@ -653,8 +653,8 @@ func (h *Handler) Send(b []byte) (int, error) {
 		// resets the control block, which would discard the offer.
 		h.scb.sentWindowScale(synShift)
 	}
-	if h.lossEnabled() {
-		h.loss.PostTx(segment, now)
+	if h.hasPolicy() {
+		h.policy.PostTx(segment, now)
 	}
 	h.requeueControl = false
 	tfrm.SetSourcePort(h.localPort)

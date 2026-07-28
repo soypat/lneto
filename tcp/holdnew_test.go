@@ -7,17 +7,17 @@ import (
 	"github.com/soypat/lneto/ethernet"
 )
 
-// TestLossRecovery_HoldNewWithholdsData verifies that a PreTx directive with
+// TestPolicy_HoldNewWithholdsData verifies that a PreTx directive with
 // HoldNew set withholds new (unsent) data — the payload stays buffered — while
 // leaving retransmissions and control segments unaffected, and that clearing
 // HoldNew lets the data flow.
-func TestLossRecovery_HoldNewWithholdsData(t *testing.T) {
+func TestPolicy_HoldNewWithholdsData(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	rng := rand.New(rand.NewSource(1))
 	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
 
 	loss := newRecordingLoss()
-	client.SetLossRecovery(loss, func() int64 { return 1 })
+	client.SetPolicy(loss, func() int64 { return 1 })
 	setupClientServer(t, rng, client, server)
 	var buf [mtu]byte
 	establish(t, client, server, buf[:]) // loss.tx is the zero value during handshake.

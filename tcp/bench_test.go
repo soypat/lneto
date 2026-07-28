@@ -130,7 +130,7 @@ func BenchmarkHandlerDatapath(b *testing.B) {
 	}
 }
 
-// nopLoss is a LossRecovery that does nothing. It measures the cost of the
+// nopLoss is a Policy that does nothing. It measures the cost of the
 // hook dispatch itself, with no policy work attributed to it.
 type nopLoss struct{}
 
@@ -142,16 +142,16 @@ func (nopLoss) WriteOptions(TxPlan, []byte) uint8 { return 0 }
 func (nopLoss) PostTx(Segment, int64)             {}
 func (nopLoss) PostRx(RxEvent)                    {}
 
-// BenchmarkHandlerDatapathLossRecovery measures the same exchange as
-// BenchmarkHandlerDatapath with a do-nothing LossRecovery installed. The delta
+// BenchmarkHandlerDatapathPolicy measures the same exchange as
+// BenchmarkHandlerDatapath with a do-nothing Policy installed. The delta
 // between the two is the per-exchange cost of the optional policy seam:
 // interface dispatch plus the clock reads the hooks require.
-func BenchmarkHandlerDatapathLossRecovery(b *testing.B) {
+func BenchmarkHandlerDatapathPolicy(b *testing.B) {
 	client, server, packetBuf := benchEstablished(b)
 	var now int64
 	nanotime := func() int64 { now += 1000; return now }
-	client.SetLossRecovery(nopLoss{}, nanotime)
-	server.SetLossRecovery(nopLoss{}, nanotime)
+	client.SetPolicy(nopLoss{}, nanotime)
+	server.SetPolicy(nopLoss{}, nanotime)
 
 	data := make([]byte, benchPayload)
 	readBuf := make([]byte, benchPayload)
