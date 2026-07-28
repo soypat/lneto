@@ -59,9 +59,9 @@ type LossRecovery interface {
 	NextDeadline() int64
 
 	// PreRx is called for every segment received on the TCP port before the
-	// state machine processes it, with the monotonic time the segment arrived. It
-	// returns whether the segment should be kept (processed) or dropped.
-	PreRx(incoming Segment, now int64) RxDirective
+	// state machine processes it. It returns whether the segment should be kept
+	// (processed) or dropped.
+	PreRx(rx RxMeta) RxDirective
 
 	// PreTx is called on entering the transmit path (Encapsulate), before a
 	// segment is built, with a snapshot of the send state. Its directive tells
@@ -128,6 +128,36 @@ type TxIntent struct {
 	// have not been sent yet. Zero means holding back new data has no effect
 	// because there is none to send.
 	BufferedUnsent Size
+}
+
+// RxMeta describes a received segment handed to [LossRecovery.PreRx]. It is
+// passed by value and must not be retained.
+//
+// Where [TxIntent] describes a segment not yet built, RxMeta describes one that
+// has arrived and been structurally validated but not yet processed by the
+// state machine, so the receive state it reports is the state before the
+// segment is applied.
+type RxMeta struct {
+	// Now is the monotonic time in nanoseconds at which the segment arrived.
+	Now int64
+	// Segment is the parsed header of the received segment.
+	Segment Segment
+	// Options is a borrowed view of the segment's TCP option area, empty if it
+	// carries none. It is valid only for the duration of the call and must not
+	// be retained. The core parses the options it needs itself; a policy is free
+	// to parse the same bytes for its own extensions.
+	Options []byte
+	// State is the connection state before the segment is processed.
+	State State
+	// SndUNA and SndNXT bound the outstanding send sequence space, which is what
+	// classifies the segment's acknowledgment as advancing, duplicate or
+	// invalid.
+	SndUNA Value
+	SndNXT Value
+	// RcvNXT is the next sequence number expected from the peer, before this
+	// segment is applied. It is what decides whether the segment is the one that
+	// may update receive-side extension state.
+	RcvNXT Value
 }
 
 // TxKind classifies the segment the transmit path is about to build. It is

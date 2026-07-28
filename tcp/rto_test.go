@@ -23,6 +23,9 @@ func newRTO() *RTO {
 	return &r
 }
 
+// rxAt builds the minimal RxMeta for driving PreRx directly.
+func rxAt(seg Segment, now int64) RxMeta { return RxMeta{Segment: seg, Now: now} }
+
 // txAt builds the minimal TxIntent for driving RTO.PreTx directly: the RTO
 // tracks the send sequence itself via PostTx and only reads the clock.
 func txAt(now int64) TxIntent { return TxIntent{Now: now} }
@@ -59,7 +62,7 @@ func TestRTO_ArmOnSendSampleOnAck(t *testing.T) {
 	}
 
 	// ACK arrives one RTT (40ms) later covering all sent data.
-	dir := r.PreRx(rtoAckSeg(iss+100), 40*rtoMs)
+	dir := r.PreRx(rxAt(rtoAckSeg(iss+100), 40*rtoMs))
 	if !dir.Keep {
 		t.Error("PreRx must keep the segment")
 	}
@@ -105,7 +108,7 @@ func TestRTO_KarnNoSampleOnRetransmittedAck(t *testing.T) {
 	r.PreTx(txAt(int64(rtoInitial)))
 	r.PostTx(rtoDataSeg(iss, 100), int64(rtoInitial))
 	// ACK now arrives; no sample should be taken since timing was discarded.
-	r.PreRx(rtoAckSeg(iss+100), int64(rtoInitial)+10*rtoMs)
+	r.PreRx(rxAt(rtoAckSeg(iss+100), int64(rtoInitial)+10*rtoMs))
 	if r.haveRTT {
 		t.Error("no RTT sample should exist after a retransmission (Karn)")
 	}
@@ -119,7 +122,7 @@ func TestRTO_TimerRestartsWhilePartiallyAcked(t *testing.T) {
 	r.PostTx(rtoDataSeg(iss, 100), 0)
 	r.PostTx(rtoDataSeg(iss+100, 100), 0) // 200 octets outstanding, iss..iss+200.
 
-	dir := r.PreRx(rtoAckSeg(iss+100), 40*rtoMs) // acks first 100 only.
+	dir := r.PreRx(rxAt(rtoAckSeg(iss+100), 40*rtoMs)) // acks first 100 only.
 	if !r.Running() {
 		t.Fatal("timer must remain armed while data is still in flight")
 	}
@@ -154,7 +157,7 @@ func TestRTO_BackoffCollapsesOnValidSample(t *testing.T) {
 	}
 	// New data sent and freshly sampled, then acked.
 	r.PostTx(rtoDataSeg(iss+100, 100), int64(rtoInitial)+rtoMs)
-	r.PreRx(rtoAckSeg(iss+200), int64(rtoInitial)+30*rtoMs)
+	r.PreRx(rxAt(rtoAckSeg(iss+200), int64(rtoInitial)+30*rtoMs))
 	if r.backoff != 0 {
 		t.Errorf("backoff=%d, want 0 after a valid RTT sample", r.backoff)
 	}
@@ -201,7 +204,7 @@ func TestRTO_ImplementsLossRecovery(t *testing.T) {
 	if lr.NextDeadline() == 0 {
 		t.Error("expected an armed deadline after sending data")
 	}
-	if !lr.PreRx(rtoAckSeg(1100), 10*rtoMs).Keep {
+	if !lr.PreRx(rxAt(rtoAckSeg(1100), 10*rtoMs)).Keep {
 		t.Error("PreRx must keep")
 	}
 	if lr.NextDeadline() != 0 {

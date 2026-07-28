@@ -139,26 +139,13 @@ func (r *Timer) NextDeadline() int64 {
 	return r.deadline
 }
 
-// PreRx keeps every segment: the estimator never drops traffic and records
-// nothing before the connection has decided whether the segment counts. It
-// implements [tcp.Policy].
-func (r *Timer) PreRx(h *tcp.Handler, incoming tcp.Frame) bool {
-	return true
-}
-
-// PostRx samples the RTT and manages the retransmission timer from a segment the
-// connection accepted (RFC 6298 §5.2/§5.3). It implements [tcp.Policy].
-//
-// Only accepted segments reach here. Acting on a refused one would let an
-// acknowledgement the state machine rejected, for data never sent, collapse the
-// backoff and take a bogus RTT sample.
-func (r *Timer) PostRx(h *tcp.Handler, prevState tcp.State, accepted tcp.Frame) {
-	r.postRx(accepted.Segment(len(accepted.Payload())), r.nanotime())
-}
-
-func (r *Timer) postRx(incoming tcp.Segment, now int64) {
-	if !r.haveSeq || !incoming.Flags.HasAny(tcp.FlagACK) {
-		return
+// PreRx samples the RTT and manages the retransmission timer from a received
+// segment (RFC 6298 §5.2/§5.3). It implements [LossRecovery] and always keeps
+// the segment (the estimator never drops traffic).
+func (r *RTO) PreRx(rx RxMeta) RxDirective {
+	incoming, now := rx.Segment, rx.Now
+	if !r.haveSeq || !incoming.Flags.HasAny(FlagACK) {
+		return RxDirective{Keep: true}
 	}
 	ack := incoming.ACK
 	if r.timing && !ack.LessThan(r.timedSeq) {

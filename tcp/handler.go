@@ -235,7 +235,17 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		return nil
 	}
 
-	if h.policyEnabled() && !h.policy.PreRx(h, tfrm) {
+	// Notify loss recovery of the received segment (RTT sampling, timer
+	// management) and let it drop the segment before processing if it asks to.
+	if h.lossEnabled() && !h.loss.PreRx(RxMeta{
+		Now:     h.nanotime(),
+		Segment: segIncoming,
+		Options: tfrm.Options(),
+		State:   h.scb.State(),
+		SndUNA:  h.scb.snd.UNA,
+		SndNXT:  h.scb.snd.NXT,
+		RcvNXT:  h.scb.rcv.NXT,
+	}).Keep {
 		return nil
 	}
 

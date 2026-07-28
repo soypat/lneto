@@ -181,6 +181,49 @@ func TestLossRecovery_WriteOptionsReducePayload(t *testing.T) {
 	}
 }
 
+// TestLossRecovery_PreRxSeesOptions verifies the receive hook can read the
+// option area of incoming segments, which is what an external RFC 7323 or SACK
+// implementation needs in order to parse the peer's options itself.
+func TestLossRecovery_PreRxSeesOptions(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	rng := rand.New(rand.NewSource(16))
+	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
+	// The client injects options; the server's policy must observe them.
+	clientLoss, serverLoss := newRecordingLoss(), newRecordingLoss()
+	clientLoss.writeOpts = tsOption
+	client.SetLossRecovery(clientLoss, func() int64 { return 1 })
+	server.SetLossRecovery(serverLoss, func() int64 { return 2 })
+	setupClientServer(t, rng, client, server)
+	var buf [mtu]byte
+	establish(t, client, server, buf[:])
+
+	var sawOption bool
+	for _, rx := range serverLoss.rxMeta {
+		if bytes.Contains(rx.Options, tsOption) {
+			sawOption = true
+		}
+	}
+	if !sawOption {
+		t.Fatal("the peer's injected option was never visible to PreRx")
+	}
+
+	// The metadata must describe the connection as it stands before the segment
+	// is applied, so a policy can decide whether this segment may update its
+	// receive-side state.
+	last := serverLoss.rxMeta[len(serverLoss.rxMeta)-1]
+	if last.Now != 2 {
+		t.Errorf("RxMeta.Now=%d, want the connection clock value 2", last.Now)
+	}
+	if last.RcvNXT != last.Segment.SEQ {
+		t.Errorf("RcvNXT=%d but segment SEQ=%d: metadata should predate processing", last.RcvNXT, last.Segment.SEQ)
+	}
+	// The send space reported must bracket the incoming acknowledgment, which is
+	// what lets a policy classify it as advancing, duplicate or invalid.
+	if !last.SndUNA.LessThanEq(last.Segment.ACK) || !last.Segment.ACK.LessThanEq(last.SndNXT) {
+		t.Errorf("segment ACK=%d outside the send space [%d,%d]", last.Segment.ACK, last.SndUNA, last.SndNXT)
+	}
+}
+
 // TestLossRecovery_WriteOptionsOverrunRejected verifies a policy claiming to
 // have written more options than the space it was lent cannot produce a
 // segment with an unknown header layout.

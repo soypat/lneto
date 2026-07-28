@@ -32,7 +32,7 @@ var _ tcp.LossRecovery = (*windowPolicy)(nil)
 func (p *windowPolicy) Reset()              { p.resets++ }
 func (p *windowPolicy) NextDeadline() int64 { return 0 }
 
-func (p *windowPolicy) PreRx(incoming tcp.Segment, now int64) tcp.RxDirective {
+func (p *windowPolicy) PreRx(rx tcp.RxMeta) tcp.RxDirective {
 	p.preRx++
 	return tcp.RxDirective{Keep: true}
 }

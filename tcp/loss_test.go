@@ -25,6 +25,7 @@ type recordingLoss struct {
 	// copied into the option area offered, and overrun makes the fake claim it
 	// wrote more than it did so the Handler's validation can be exercised.
 	plans     []TxPlan
+	rxMeta    []RxMeta
 	writeOpts []byte
 	overrun   bool
 }
@@ -41,8 +42,9 @@ var _ LossRecovery = (*recordingLoss)(nil)
 func (l *recordingLoss) Reset()              { l.resets++ }
 func (l *recordingLoss) NextDeadline() int64 { return l.deadline }
 
-func (l *recordingLoss) PreRx(incoming Segment, now int64) RxDirective {
-	l.preRx = append(l.preRx, hookCall{seg: incoming, now: now})
+func (l *recordingLoss) PreRx(rx RxMeta) RxDirective {
+	l.preRx = append(l.preRx, hookCall{seg: rx.Segment, now: rx.Now})
+	l.rxMeta = append(l.rxMeta, rx)
 	return RxDirective{Keep: l.keep}
 }
 

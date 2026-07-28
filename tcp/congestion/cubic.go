@@ -176,10 +176,10 @@ func (c *CUBIC) NextDeadline() int64 { return c.rto.NextDeadline() }
 // PreRx forwards the segment to the retransmission timer for RTT sampling and
 // then updates the congestion window from the acknowledgment it carries. It
 // implements [tcp.LossRecovery].
-func (c *CUBIC) PreRx(incoming tcp.Segment, now int64) tcp.RxDirective {
-	dir := c.rto.PreRx(incoming, now)
-	if dir.Keep && incoming.Flags.HasAny(tcp.FlagACK) {
-		c.observeACK(incoming, now)
+func (c *CUBIC) PreRx(rx tcp.RxMeta) tcp.RxDirective {
+	dir := c.rto.PreRx(rx)
+	if dir.Keep && rx.Segment.Flags.HasAny(tcp.FlagACK) {
+		c.observeACK(rx.Segment, rx.Now)
 	}
 	return dir
 }

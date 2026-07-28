@@ -136,7 +136,7 @@ type nopLoss struct{}
 
 func (nopLoss) Reset()                            {}
 func (nopLoss) NextDeadline() int64               { return 0 }
-func (nopLoss) PreRx(Segment, int64) RxDirective  { return RxDirective{Keep: true} }
+func (nopLoss) PreRx(RxMeta) RxDirective          { return RxDirective{Keep: true} }
 func (nopLoss) PreTx(TxIntent) TxDirective        { return TxDirective{} }
 func (nopLoss) WriteOptions(TxPlan, []byte) uint8 { return 0 }
 func (nopLoss) PostTx(Segment, int64)             {}
