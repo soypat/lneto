@@ -497,3 +497,67 @@ func openPair(t *testing.T, client, server *tcp.Handler) {
 		t.Fatal(err)
 	}
 }
+
+// TestEmuBBRBandwidthEstimate drives BBR across the emulated bottleneck and checks
+// it recovers the two quantities it models: the link's delivery rate and its
+// propagation round trip. Ported from the pre-rework branch, where the controller
+// was handed a clock and a single Control call; it now measures the same things from
+// the segment stream through the policy hooks, with no clock of its own.
+//
+// The estimates are what BBR sizes its window from, so getting them right on a path
+// whose true values are known is the test that matters: a controller that models the
+// path wrongly still moves data, just at the wrong rate.
+func TestEmuBBRBandwidthEstimate(t *testing.T) {
+	const (
+		rate    = 1_000_000.0
+		delay   = 10 * time.Millisecond
+		propRTT = 2 * delay
+		bufSize = 60_000
+	)
+	en := newEmuNet(t, emuParams{
+		rate:    rate,
+		delay:   delay,
+		bufSize: bufSize,
+		packets: 64,
+	})
+
+	// A retransmission timer beside it, since BBR carries none: it models the path
+	// and holds new data back, but recovering a lost segment is not its job.
+	timer := new(rto.Timer)
+	var bbr congestion.BBR
+	if err := bbr.Configure(congestion.BBRConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	bbr.SetTimer(timer)
+	var policy tcp.Composite
+	for _, p := range []tcp.Policy{timer, &bbr} {
+		if err := policy.Add(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	en.install(en.client, &policy)
+	en.probe = bbr.CongestionWindow
+
+	openPair(t, en.client, en.server)
+
+	payload := patternPayload(256 * 1024)
+	received := en.transfer(payload)
+
+	verifyStream(t, payload, received)
+
+	bw := float64(bbr.BandwidthEstimate())
+	if bw < rate*0.5 || bw > rate*1.2 {
+		t.Errorf("BBR bandwidth estimate %.0f B/s not within [0.5,1.2]x link rate %.0f B/s", bw, rate)
+	}
+	if rtt := bbr.MinRTT(); rtt < propRTT || rtt > 2*propRTT+5*time.Millisecond {
+		t.Errorf("BBR min_rtt %v not near propagation RTT %v", rtt, propRTT)
+	}
+	// The transfer is long enough to fill the pipe, so the controller must have
+	// concluded as much and left Startup. Which steady-state phase it ends in
+	// depends on where the gain cycle happens to be, so only the exit is asserted.
+	if bbr.State() == "STARTUP" {
+		t.Errorf("BBR never left STARTUP over a %d octet transfer that filled the link", len(payload))
+	}
+	t.Logf("BBR: bw=%.0f B/s (%.0f%% of link) min_rtt=%v (prop RTT %v) cwnd=%d B state=%s",
+		bw, 100*bw/rate, bbr.MinRTT(), propRTT, bbr.CongestionWindow(), bbr.State())
+}
