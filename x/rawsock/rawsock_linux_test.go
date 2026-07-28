@@ -28,7 +28,7 @@ func TestAcceptConnDoesNotAllocate(t *testing.T) {
 			c.Close()
 		}
 	}()
-	for i := 0; i < n; i++ {
+	for range n {
 		c, err := net.Dial("tcp", addr)
 		if err != nil {
 			t.Fatal(err)
