@@ -53,10 +53,15 @@ func TestRetransmitAtKeepsHighWaterMark(t *testing.T) {
 	}
 }
 
-// TestRetransmitAtResendsOnlyTheHole verifies a single missing range is resent while
-// the data after it stays sent, and that new data then continues from the high-water
-// mark. This is what a selective acknowledgement asks for and what rewinding snd.NXT
-// cannot express.
+// TestRetransmitAtResendsOnlyTheHole verifies a request resends the range asked for
+// and stops, leaving the data after it sent and new data continuing from the
+// high-water mark.
+//
+// One request, one segment. Holding the request open until it reached snd.NXT would
+// resend everything after the range asked for, which is the go-back-N this pointer
+// exists to avoid; RFC 6298 §5.4 also asks for the earliest unacknowledged segment on
+// a timeout rather than all of them. Anything further is asked for by the next
+// directive, derived from what the peer has reported by then.
 func TestRetransmitAtResendsOnlyTheHole(t *testing.T) {
 	const iss Value = 1000
 	const mss = 500
@@ -77,11 +82,21 @@ func TestRetransmitAtResendsOnlyTheHole(t *testing.T) {
 	if err := tcb.Send(seg); err != nil {
 		t.Fatal(err)
 	}
-	// The pointer has reached the third segment, which was also sent, so the resend
-	// continues rather than stopping: only snd.NXT bounds it.
-	ptr, active := tcb.RetransmitPointer()
-	if !active || ptr != iss+1000 {
-		t.Fatalf("pointer = %d active=%v, want %d active", ptr, active, iss+1000)
+	// The request is satisfied: the third segment is not resent even though it too
+	// lies below the high-water mark.
+	if ptr, active := tcb.RetransmitPointer(); active {
+		t.Errorf("retransmission still pending at %d after the range asked for was sent", ptr)
+	}
+	seg, ok = tcb.PendingSegment(mss)
+	if !ok {
+		t.Fatal("no segment offered after the retransmission")
+	}
+	if seg.SEQ != iss+1500 {
+		t.Errorf("next segment at %d, want new data at the high-water mark %d: the data after the hole was resent", seg.SEQ, iss+1500)
+	}
+	// Asking again resends the next range, so nothing is unreachable.
+	if _, ok = tcb.RetransmitAt(iss + 1000); !ok {
+		t.Fatal("second RetransmitAt refused")
 	}
 	seg, ok = tcb.PendingSegment(mss)
 	if !ok {
@@ -89,21 +104,6 @@ func TestRetransmitAtResendsOnlyTheHole(t *testing.T) {
 	}
 	if seg.SEQ != iss+1000 {
 		t.Errorf("second resend at %d, want %d", seg.SEQ, iss+1000)
-	}
-	if err := tcb.Send(seg); err != nil {
-		t.Fatal(err)
-	}
-	// Everything sent has now been resent, so the retransmission is over and new
-	// data continues from the high-water mark.
-	if _, active = tcb.RetransmitPointer(); active {
-		t.Error("retransmission still active after reaching the high-water mark")
-	}
-	seg, ok = tcb.PendingSegment(mss)
-	if !ok {
-		t.Fatal("no new-data segment offered after the retransmission finished")
-	}
-	if seg.SEQ != iss+1500 {
-		t.Errorf("new data at %d, want the high-water mark %d", seg.SEQ, iss+1500)
 	}
 }
 

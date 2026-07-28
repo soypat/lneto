@@ -11,6 +11,8 @@ import (
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/tcp"
 	"github.com/soypat/lneto/tcp/congestion"
+	"github.com/soypat/lneto/tcp/rto"
+	"github.com/soypat/lneto/tcp/sack"
 )
 
 // Notes(MDr164):
@@ -243,7 +245,8 @@ func (en *emuNet) transfer(payload []byte) (received []byte) {
 			en.clock = next
 		}
 		if en.clock.After(deadline) {
-			en.t.Fatal("transfer exceeded simulated-time deadline")
+			en.t.Fatalf("transfer exceeded simulated-time deadline: delivered %d octets, %d still unwritten, client=%s server=%s, deadlines client=%d server=%d",
+				len(received), len(remaining), en.client.State(), en.server.State(), en.client.NextDeadline(), en.server.NextDeadline())
 		}
 
 		// Expired timers need no explicit poke: the transmit path consults the
@@ -394,28 +397,17 @@ func TestEmuCUBICFillsBottleneck(t *testing.T) {
 }
 
 // TestEmuRTORecoversLoss drives CUBIC across a link that drops a single early
-// segment in a small window. With no out-of-order buffering yet, the receiver
-// discards everything past the gap; recovery therefore relies on the RFC 6298
-// retransmission timer (and/or fast retransmit) rewinding to snd.UNA. The test
-// proves the loss is recovered end-to-end (full stream delivered intact), that
-// exactly one drop occurred, and that the controller reacted to the loss.
+// segment in a small window and proves the loss is recovered end to end: the full
+// stream arrives intact, exactly one drop occurred, and the controller reacted to it.
+//
+// This was the acceptance criterion for selective retransmission and was skipped
+// until it existed. The receiver holds the segments past the gap and reports them,
+// the sender resends the one that was dropped, and recovery costs a round trip
+// instead of a timeout. Two bugs had to be fixed for it to pass, both found here
+// rather than by unit test: a retransmission request that kept resending to the
+// high-water mark, and a congestion window that withheld the retransmission which
+// would have opened it.
 func TestEmuRTORecoversLoss(t *testing.T) {
-	t.Skip(`a single early forward-path loss is not recovered yet.
-
-Observed: the receiver aborts partway through, after which the transfer is dead
-(client=ESTABLISHED server=CLOSED, 14800 of 32768 octets delivered, and the
-sender has no armed deadline because nothing is outstanding to retransmit).
-
-The abort is the challenge-ACK limit: the gap left by the drop puts more
-out-of-order segments in front of the receiver than it will hold, it challenge-ACKs
-the rest, and maxChallengeRejects consecutive rejects abort the connection. The
-sender is left with a full transmit buffer and no peer.
-
-Recovering this properly is what selective retransmission is for, so this test is
-kept, and skipped, as the acceptance criterion for that work rather than tuned
-until it passes. Note also that Abort leaves a handler ready to open actively, so
-a harness that keeps pumping Send turns the corpse into a fresh SYN; emuNet.drain
-guards the CLOSED case for that reason.`)
 	const (
 		rate    = 1_000_000.0
 		delay   = 10 * time.Millisecond
@@ -436,7 +428,21 @@ guards the CLOSED case for that reason.`)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	en.install(en.client, &cubic)
+	// Selective acknowledgement on both sides: the receiver reports what it holds
+	// past the gap and the sender resends only the dropped segment. Without it the
+	// gap is only recovered by a timeout that resends everything after it, which is
+	// what left this test failing.
+	timer := new(rto.Timer)
+	clientSACK, serverSACK := new(sack.SACK), new(sack.SACK)
+	cubic.SetTimer(timer)
+	var clientPolicy tcp.Composite
+	for _, p := range []tcp.Policy{timer, &cubic, clientSACK} {
+		if err := clientPolicy.Add(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	en.install(en.client, &clientPolicy)
+	en.install(en.server, serverSACK)
 	en.probe = cubic.CongestionWindow
 
 	openPair(t, en.client, en.server)
@@ -445,6 +451,9 @@ guards the CLOSED case for that reason.`)
 	received := en.transfer(payload)
 
 	verifyStream(t, payload, received)
+	if !clientSACK.Enabled() || !serverSACK.Enabled() {
+		t.Error("selective acknowledgement was not negotiated")
+	}
 	if en.fwd.dropped != 1 {
 		t.Errorf("expected exactly 1 injected drop, got %d", en.fwd.dropped)
 	}
