@@ -515,6 +515,11 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	case hasAck && seg.ACK != tcb.rcv.NXT:
 		err = errAckNotNext
 
+	// TODO(RFC 9293 §3.8.6.1 persist timer): a zero send window is reported as an
+	// error and the sender simply stops. There is no persist timer to send
+	// zero-window probes, so if the ACK that reopens the peer's window is lost the
+	// connection can deadlock. A persist timer should probe periodically and, like
+	// the RTO, surface its next fire time through Handler.NextDeadline.
 	case outOfWindow && !isRetransmit:
 		if tcb.snd.WND == 0 {
 			err = errZeroWindow

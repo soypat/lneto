@@ -166,6 +166,20 @@ const (
 	FlagNS                    // FlagNS  - Nonce Sum flag (see RFC 3540).
 )
 
+// TODO(RFC 3168 ECN): Explicit Congestion Notification is not implemented. The
+// ECE/CWR flags above are defined but never negotiated (ECN-setup SYN/SYN-ACK)
+// nor acted upon: a CE-marked segment should make the receiver echo ECE and the
+// sender reduce its congestion window and set CWR, treating congestion as a
+// signal rather than only as loss.
+//
+// This needs a decision on the extension seam, deferred until selective
+// retransmission settles: reducing the window belongs to a [LossRecovery]
+// policy, but echoing ECE and setting CWR means influencing the flags of an
+// outgoing segment, which no directive currently allows. Adding flag control to
+// [TxDirective] would be hard to walk back, so the alternative of keeping ECN
+// wholly in the core and consulting the policy only for the window reduction
+// should be weighed first.
+
 const flagMask = 0x01ff
 
 // The union of SYN|FIN|PSH and ACK flags is commonly found throughout the specification, so we define unexported shorthands.

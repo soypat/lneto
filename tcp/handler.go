@@ -111,6 +111,13 @@ func (h *Handler) txIntent(now int64, buffered int) TxIntent {
 // NextDeadline returns the monotonic-nanosecond instant at which the connection
 // must next be serviced by a transmit attempt (e.g. an RTO expiry), or 0 when
 // there is no deadline or no loss recovery is configured. See [LossRecovery].
+//
+// TODO(connection timers): only the installed policy feeds this deadline. The
+// 2MSL TIME-WAIT timer, the keepalive interval and a future persist timer are
+// also time-driven, but this package holds no clock, so they remain the caller's
+// responsibility. They should be folded in here as the earliest of all pending
+// deadlines once the Conn.SetDeadline family is reconciled with
+// ConnConfig.Nanotime.
 func (h *Handler) NextDeadline() int64 {
 	if h.loss == nil {
 		return 0
@@ -435,6 +442,11 @@ func (h *Handler) Send(b []byte) (int, error) {
 		// Early nop short circuit.
 		return 0, nil
 	}
+	// TODO(RFC 896 Nagle / RFC 1122 delayed ACK): whatever is available is sent
+	// immediately and every segment is acknowledged. Nagle would coalesce small
+	// writes until outstanding data is acknowledged, and a delayed-ACK timer would
+	// piggyback ACKs. Both reduce overhead and smooth the ACK clock that
+	// congestion control depends on. Deliberately omitted for now.
 	tfrm, err := NewFrame(b)
 	if err != nil {
 		return 0, err

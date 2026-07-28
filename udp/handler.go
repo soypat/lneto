@@ -77,6 +77,10 @@ func (h *Handler) Recv(buf []byte) error {
 	}
 	// Header size validation.
 	// No CRC validation at this level.
+	// TODO(RFC 768 / RFC 8200 §8.1 checksum): the UDP checksum is neither verified
+	// here nor computed on transmit; Frame only exposes CRC get/set. It is optional
+	// over IPv4 but mandatory over IPv6, where the pseudo-header checksum must be
+	// computed and a zero result sent as 0xFFFF.
 	ul := ufrm.Length()
 	if ul < sizeHeader {
 		return lneto.ErrInvalidLengthField
