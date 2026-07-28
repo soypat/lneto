@@ -125,7 +125,7 @@ func BenchmarkRequestParseForm(b *testing.B) {
 	b.ReportAllocs()
 	b.SetBytes(int64(len(request)))
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		conn.rewind()
 		exch.Release()
 		exch.Acquire(conn)
