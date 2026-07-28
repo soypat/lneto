@@ -129,6 +129,18 @@ type CUBIC struct {
 	// fastRetransmit requests a retransmission on the next transmit after the
 	// duplicate-ACK threshold is reached.
 	fastRetransmit bool
+
+	// ecnReactedAt is when the window was last reduced for a congestion mark.
+	// RFC 3168 §6.1.2 allows reacting at most once per window of data, or more
+	// loosely once per round trip, and the difference matters: several marked packets
+	// in one window are one congestion event reported many times, and halving the
+	// window for each would collapse it far below what the path can carry.
+	//
+	// The loss epoch cannot serve here as it does for duplicate acknowledgements,
+	// because it ends at the next acknowledgement that advances — which for a marked
+	// window is the very next segment.
+	ecnReactedAt    int64
+	haveECNReaction bool
 }
 
 // cubicConfig is the normalized [CUBICConfig] retained across [CUBIC.Reset].
@@ -241,9 +253,20 @@ func (c *CUBIC) PostRx(event tcp.RxEvent) {
 	if c.shared == nil {
 		c.timer.PostRx(event)
 	}
-	if event.Accepted && event.Segment.Flags.HasAny(tcp.FlagACK) {
-		c.observeACK(event.Segment, event.Now)
+	if !event.Accepted || !event.Segment.Flags.HasAny(tcp.FlagACK) {
+		return
 	}
+	if event.Segment.Flags.HasAny(tcp.FlagECE) && c.ecnMayReact(event.Now) {
+		// The peer is reporting that the path marked our data as congested (RFC 3168
+		// §6.1.2). Treat it as the loss it stands in for, which is what makes the mark
+		// worth asking for: a signal acted on identically to a drop, but arriving a
+		// round trip earlier and costing no retransmission.
+		//
+		// The core answers it with CWR; nothing is needed here for that.
+		c.onLoss()
+		c.ecnReactedAt, c.haveECNReaction = event.Now, true
+	}
+	c.observeACK(event.Segment, event.Now)
 }
 
 // PreTx applies the retransmission timer's directive, adds a duplicate-ACK
@@ -315,6 +338,23 @@ func (c *CUBIC) InSlowStart() bool { return c.cwnd < c.ssthresh }
 
 // SmoothedRTT returns the smoothed round-trip time of the embedded timer.
 func (c *CUBIC) SmoothedRTT() int64 { return int64(c.tmr().SmoothedRTT()) }
+
+// ecnMayReact reports whether enough time has passed since the last reduction for a
+// congestion mark to count as a new event rather than another report of the last one.
+//
+// A round trip is the interval RFC 3168 §6.1.2 permits, measured by the timer in
+// effect. Before any round-trip estimate exists there is nothing to measure against,
+// so a first mark is acted on and a second waits for an estimate to appear.
+func (c *CUBIC) ecnMayReact(now int64) bool {
+	if !c.haveECNReaction {
+		return true
+	}
+	srtt := int64(c.tmr().SmoothedRTT())
+	if srtt <= 0 {
+		return false
+	}
+	return now-c.ecnReactedAt >= srtt
+}
 
 func (c *CUBIC) segMSS() tcp.Size {
 	if c.mss == 0 {

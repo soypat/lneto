@@ -250,3 +250,111 @@ func TestCUBIC_ResetRestoresConfiguration(t *testing.T) {
 		t.Error("Reset must clear the retransmission deadline")
 	}
 }
+
+// TestCUBIC_ReactsToECN verifies a congestion mark echoed by the peer reduces the
+// window as a loss would.
+//
+// This is the whole point of asking the path to mark instead of drop: the signal is
+// acted on identically, but it arrives a round trip earlier and costs no
+// retransmission. A controller that negotiated ECN and ignored ECE would have
+// congestion reported to it and respond to none of it, which is worse than never
+// asking — the router marked the packet instead of dropping it, so the drop that would
+// have forced a reaction never happened.
+func TestCUBIC_ReactsToECN(t *testing.T) {
+	c := newCUBIC(t, CUBICConfig{})
+	// Grow the window so a reduction is visible.
+	c.PostRx(tcp.RxEvent{Segment: ackSeg(1000), Now: 0, Accepted: true})
+	for i := 1; i <= 8; i++ {
+		c.PostRx(tcp.RxEvent{Segment: ackSeg(tcp.Value(1000 + i*testMSS)), Now: int64(i), Accepted: true})
+	}
+	before := c.WindowSegments()
+	if before <= cubicMinCwnd {
+		t.Fatalf("window is %v segments, too small for a reduction to be visible", before)
+	}
+
+	// An acknowledgement echoing congestion.
+	ece := ackSeg(tcp.Value(1000 + 9*testMSS))
+	ece.Flags |= tcp.FlagECE
+	c.PostRx(tcp.RxEvent{Segment: ece, Now: 9, Accepted: true})
+	after := c.WindowSegments()
+	if after >= before {
+		t.Errorf("window is %v segments after a congestion mark, was %v: the mark was ignored", after, before)
+	}
+	if !c.InSlowStart() && c.SlowStartThresh() >= before {
+		t.Errorf("slow-start threshold %v was not lowered below the previous window %v", c.SlowStartThresh(), before)
+	}
+
+	// Coalesced per event, like a burst of duplicate acknowledgements: a second mark
+	// in the same epoch must not collapse the window again.
+	reduced := c.WindowSegments()
+	ece2 := ackSeg(tcp.Value(1000 + 10*testMSS))
+	ece2.Flags |= tcp.FlagECE
+	c.PostRx(tcp.RxEvent{Segment: ece2, Now: 10, Accepted: true})
+	if got := c.WindowSegments(); got < reduced {
+		t.Errorf("window fell again to %v on a second mark in the same event, was %v", got, reduced)
+	}
+}
+
+// TestCUBIC_IgnoresECNOnRefusedSegment verifies a congestion mark on a segment the
+// connection refused does not reduce the window, so a forged or stale segment cannot
+// throttle the connection.
+func TestCUBIC_IgnoresECNOnRefusedSegment(t *testing.T) {
+	c := newCUBIC(t, CUBICConfig{})
+	c.PostRx(tcp.RxEvent{Segment: ackSeg(1000), Now: 0, Accepted: true})
+	for i := 1; i <= 6; i++ {
+		c.PostRx(tcp.RxEvent{Segment: ackSeg(tcp.Value(1000 + i*testMSS)), Now: int64(i), Accepted: true})
+	}
+	before := c.WindowSegments()
+	ece := ackSeg(tcp.Value(1000 + 7*testMSS))
+	ece.Flags |= tcp.FlagECE
+	c.PostRx(tcp.RxEvent{Segment: ece, Now: 7, Accepted: false})
+	if got := c.WindowSegments(); got != before {
+		t.Errorf("window moved to %v on a refused segment's congestion mark, was %v", got, before)
+	}
+}
+
+// TestCUBIC_ECNReactionRateLimited verifies several congestion marks within one round
+// trip reduce the window once, and that a mark a round trip later reduces it again.
+//
+// A marked window produces a mark on every acknowledgement in it, all reporting the
+// same congestion event. Reacting to each would halve the window repeatedly and drive
+// it far below what the path carries — worse than the drop the mark replaced. RFC 3168
+// §6.1.2 permits one reaction per window, or more loosely per round trip.
+func TestCUBIC_ECNReactionRateLimited(t *testing.T) {
+	c := newCUBIC(t, CUBICConfig{})
+	// Establish a round-trip estimate and a window worth reducing.
+	const rtt = int64(50 * 1e6) // 50ms in nanoseconds.
+	c.PostTx(dataSeg(1000, testMSS), 0)
+	c.PostRx(tcp.RxEvent{Segment: ackSeg(1000 + testMSS), Now: rtt, Accepted: true})
+	for i := 2; i <= 9; i++ {
+		c.PostRx(tcp.RxEvent{Segment: ackSeg(tcp.Value(1000 + i*testMSS)), Now: rtt, Accepted: true})
+	}
+	if c.SmoothedRTT() <= 0 {
+		t.Fatal("no round-trip estimate to rate-limit against")
+	}
+	before := c.WindowSegments()
+
+	// Three marks arriving inside one round trip: one congestion event.
+	mark := func(seq int, now int64) {
+		seg := ackSeg(tcp.Value(1000 + seq*testMSS))
+		seg.Flags |= tcp.FlagECE
+		c.PostRx(tcp.RxEvent{Segment: seg, Now: now, Accepted: true})
+	}
+	mark(10, rtt)
+	afterFirst := c.WindowSegments()
+	if afterFirst >= before {
+		t.Fatalf("window %v not reduced by a congestion mark, was %v", afterFirst, before)
+	}
+	mark(11, rtt+c.SmoothedRTT()/4)
+	mark(12, rtt+c.SmoothedRTT()/2)
+	if got := c.WindowSegments(); got < afterFirst {
+		t.Errorf("window fell to %v on further marks in the same round trip, want no lower than %v", got, afterFirst)
+	}
+
+	// A mark a full round trip later is a new event and is acted on.
+	settled := c.WindowSegments()
+	mark(13, rtt+2*c.SmoothedRTT())
+	if got := c.WindowSegments(); got >= settled {
+		t.Errorf("window %v not reduced by a mark a round trip later, was %v", got, settled)
+	}
+}
