@@ -600,10 +600,17 @@ func (h *Handler) Send(b []byte) (int, error) {
 	} else {
 		var ok bool
 		maxPayload := len(b) - payloadAt
-		if holdNew {
-			// Loss recovery is holding new data (e.g. congestion window full):
-			// emit only a pending control segment/ACK, no fresh payload. Already
-			// directed retransmissions ran above and are unaffected.
+		_, retransmitting := h.scb.RetransmitPointer()
+		if holdNew && !retransmitting {
+			// The policy is holding new data (e.g. congestion window full): emit only
+			// a pending control segment/ACK, no fresh payload.
+			//
+			// A retransmission is exempt, and must be: the octets it carries are
+			// already counted as in flight, which is what filled the window, so
+			// withholding it deadlocks the connection. The window cannot open until
+			// the missing range is acknowledged, and the range cannot be resent while
+			// the window is closed. RFC 5681 §3.2 sends the retransmission
+			// regardless for the same reason.
 			maxPayload = 0
 		}
 		segment, ok = h.scb.PendingSegment(maxPayload)

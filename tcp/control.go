@@ -371,9 +371,11 @@ func (tcb *ControlBlock) HasPendingRetransmit() bool {
 // request outside that range reports ok false and changes nothing rather than
 // being an error, since a policy's view of the send space can lag the connection's.
 //
-// The retransmission is cleared once it reaches snd.NXT, after which new data
-// continues from there as usual. It must be paired with ringTx.MakePacket at the
-// same sequence to read the data back out of the transmit queue.
+// One request resends one segment: the pointer is cleared once a segment has gone out
+// at it, so the data after the range asked for stays sent and new data continues from
+// snd.NXT. Resending more is a matter for the next request, which a policy derives
+// from what the peer has reported by then. It must be paired with ringTx.MakePacket at
+// the same sequence to read the data back out of the transmit queue.
 func (tcb *ControlBlock) RetransmitAt(seq Value) (resumeAt Value, ok bool) {
 	if !tcb._state.TxDataOpen() {
 		return 0, false
@@ -686,13 +688,14 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 			tcb.nRetransmit++
 		}
 		if tcb.rtxActive && seg.SEQ == tcb.rtxPtr {
-			// Advance past what was just resent. Cleared on reaching the high-water
-			// mark, since everything asked for has then gone out again and new data
-			// continues from snd.NXT as usual.
-			tcb.rtxPtr.UpdateForward(seglen)
-			if !tcb.rtxPtr.LessThan(tcb.snd.NXT) {
-				tcb.rtxActive = false
-			}
+			// One request, one segment. Holding the request open until it reached
+			// snd.NXT would resend everything after the range asked for, which is the
+			// go-back-N this pointer exists to avoid; and RFC 6298 §5.4 asks for the
+			// earliest unacknowledged segment on a timeout, not for all of them.
+			// Anything more is requested by the next directive, which is derived from
+			// what the peer has reported by then rather than from what was true when
+			// this request was made.
+			tcb.rtxPtr, tcb.rtxActive = 0, false
 		}
 	} else {
 		tcb.snd.NXT.UpdateForward(seglen)
