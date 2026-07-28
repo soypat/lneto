@@ -247,3 +247,22 @@ func TestLossRecovery_WriteOptionsOverrunRejected(t *testing.T) {
 		t.Fatalf("Send error = %v, want errOptionOverflow", err)
 	}
 }
+
+// TestOptionCodec_PutOption32 verifies a 32-bit option value is serialized big
+// endian. The third octet used to be shifted by 7 instead of 8, corrupting both
+// it and the low octet for any value with bit 7 set.
+func TestOptionCodec_PutOption32(t *testing.T) {
+	var op OptionCodec
+	var buf [6]byte
+	n, err := op.PutOption32(buf[:], OptTimestamps, 0x01020384)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 6 {
+		t.Fatalf("wrote %d octets, want 6", n)
+	}
+	want := [6]byte{byte(OptTimestamps), 6, 0x01, 0x02, 0x03, 0x84}
+	if buf != want {
+		t.Errorf("PutOption32 wrote %x, want %x", buf, want)
+	}
+}
