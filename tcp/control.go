@@ -18,6 +18,11 @@ const (
 	// a successful Recv before aborting. Prevents infinite ACK ping-pong when both
 	// sides have diverged state (e.g. after packet mutation).
 	maxChallengeRejects = 8
+	// maxWindShift is the largest window scale shift RFC 7323 §2.3 permits, giving
+	// a maximum window just under 1 GiB.
+	maxWindShift = 14
+	// sizeOptionWindowScale is the wire size of the Window Scale option.
+	sizeOptionWindowScale = 3
 )
 
 // ControlBlock is a partial Transmission Control Block (TCB) implementation as
@@ -79,6 +84,23 @@ type ControlBlock struct {
 	dupack uint8
 	// nRetransmit counts number of retransmits sent since last UNA update.
 	nRetransmit uint8
+
+	// Window scale state, RFC 7323 §2. sndWindShift is applied to windows the peer
+	// advertises and rcvWindShift to the window advertised back. rcv.WND and
+	// snd.WND always hold true octet counts; the shifts are applied only where a
+	// window crosses the wire, so a scaled window may exceed the 16-bit header
+	// field while the field itself never does.
+	//
+	// Both shifts stay zero unless each side saw the option in the other's SYN,
+	// because scaling is only permitted when both offered it. The offer and what
+	// the peer offered are tracked separately since a passive open sees the peer's
+	// SYN before it sends its own option, and an active open the reverse.
+	sndWindShift   uint8
+	rcvWindShift   uint8
+	windShiftOffer uint8
+	windScaleSent  bool
+	peerWindShift  uint8
+	peerWindScale  bool
 }
 
 // State returns the current state of the TCP connection. See [State].
@@ -114,6 +136,71 @@ func (tcb *ControlBlock) SetRecvWindow(wnd Size) {
 	tcb.rcv.WND = wnd
 }
 
+// advertisedWindow converts a true receive-window octet count into the value that
+// goes in the 16-bit header field, applying the negotiated window scale
+// (RFC 7323 §2). Windows are held in true octets everywhere inside the connection
+// and shifted only here and where an incoming window is read, so a scaled window
+// may exceed 65535 while the field carrying it never does.
+//
+// A window that does not divide evenly by the shift is rounded down, never up:
+// advertising more space than exists would invite an overrun.
+func (tcb *ControlBlock) advertisedWindow(wnd Size) Size {
+	wnd >>= tcb.rcvWindShift
+	if wnd > math.MaxUint16 {
+		// Only reachable if the scale is too small for the buffer, which
+		// resetWindowScale prevents; clamp rather than truncate into a tiny window.
+		wnd = math.MaxUint16
+	}
+	return wnd
+}
+
+// sentWindowScale records that this side put a Window Scale option carrying shift
+// in its SYN or SYN-ACK.
+func (tcb *ControlBlock) sentWindowScale(shift uint8) {
+	tcb.windShiftOffer = shift
+	tcb.windScaleSent = true
+	tcb.enableWindowScale()
+}
+
+// recvWindowScale records the shift the peer offered in its SYN. Shifts above the
+// RFC 7323 §2.3 maximum are clamped rather than rejected, which is what the RFC
+// asks of a receiver seeing an oversized value.
+func (tcb *ControlBlock) recvWindowScale(shift uint8) {
+	if shift > maxWindShift {
+		shift = maxWindShift
+	}
+	tcb.peerWindShift = shift
+	tcb.peerWindScale = true
+	tcb.enableWindowScale()
+}
+
+// enableWindowScale activates scaling once both sides have offered it. Until then
+// windows are exchanged unscaled, which is also the permanent state when talking
+// to a peer that does not implement the option.
+func (tcb *ControlBlock) enableWindowScale() {
+	if !tcb.windScaleSent || !tcb.peerWindScale {
+		return
+	}
+	tcb.sndWindShift = tcb.peerWindShift
+	tcb.rcvWindShift = tcb.windShiftOffer
+}
+
+// windowScaleFor returns the smallest shift that lets wnd be advertised in the
+// 16-bit window field, or zero when it already fits.
+func windowScaleFor(wnd Size) (shift uint8) {
+	for wnd>>shift > math.MaxUint16 && shift < maxWindShift {
+		shift++
+	}
+	return shift
+}
+
+// WindowScales reports the shifts negotiated for the peer's advertised window and
+// for this side's, per RFC 7323 §2. Both are zero when the option was not
+// negotiated, in which case windows are exchanged unscaled.
+func (tcb *ControlBlock) WindowScales() (send, recv uint8) {
+	return tcb.sndWindShift, tcb.rcvWindShift
+}
+
 // SetLogger sets the logger to be used by the ControlBlock.
 func (tcb *ControlBlock) SetLogger(log *slog.Logger) {
 	tcb.logger = logger{log: log}
@@ -141,7 +228,7 @@ func (tcb *ControlBlock) MakeKeepalive() Segment {
 		SEQ:     tcb.snd.NXT - 1,
 		ACK:     tcb.rcv.NXT,
 		Flags:   FlagACK,
-		WND:     tcb.rcv.WND,
+		WND:     tcb.advertisedWindow(tcb.rcv.WND),
 		DATALEN: 0,
 	}
 }
@@ -165,7 +252,7 @@ func (tcb *ControlBlock) MakeDupACK() Segment {
 		SEQ:     tcb.snd.UNA,
 		ACK:     tcb.rcv.NXT,
 		Flags:   FlagACK,
-		WND:     tcb.rcv.WND,
+		WND:     tcb.advertisedWindow(tcb.rcv.WND),
 		DATALEN: 0,
 	}
 }
@@ -176,11 +263,11 @@ func (tcb *ControlBlock) MakeDupACK() Segment {
 // consume sequence space, or carry a payload.
 func (tcb *ControlBlock) MakeChallengeACK() Segment {
 	return Segment{
-		SEQ:     tcb.snd.NXT, // Current sequence number (no data)
-		ACK:     tcb.rcv.NXT, // Acknowledging expected next byte
-		Flags:   FlagACK,     // Pure ACK, no SYN/FIN/RST
-		WND:     tcb.rcv.WND, // Current receive window size
-		DATALEN: 0,           // No payload
+		SEQ:     tcb.snd.NXT,                       // Current sequence number (no data)
+		ACK:     tcb.rcv.NXT,                       // Acknowledging expected next byte
+		Flags:   FlagACK,                           // Pure ACK, no SYN/FIN/RST
+		WND:     tcb.advertisedWindow(tcb.rcv.WND), // Current receive window size
+		DATALEN: 0,                                 // No payload
 	}
 }
 
@@ -224,7 +311,7 @@ func (tcb *ControlBlock) Open(iss Value, wnd Size) (err error) {
 	switch {
 	case tcb._state != StateClosed && tcb._state != StateTimeWait:
 		err = errNeedClosedTCBToOpen
-	case wnd > math.MaxUint16:
+	case wnd > math.MaxUint16<<maxWindShift:
 		err = errWindowTooLarge
 	}
 	if err != nil {
@@ -308,7 +395,7 @@ func (tcb *ControlBlock) ZeroWindowProbe() (_ Segment, ok bool) {
 	// acknowledgement needs no acknowledgement, so the peer would process it and
 	// stay silent. One octet the peer cannot accept forces it to respond with an
 	// ACK reporting its current window (RFC 9293 §3.10.7.4).
-	return Segment{SEQ: tcb.snd.NXT, DATALEN: 1, ACK: tcb.rcv.NXT, WND: tcb.rcv.WND, Flags: FlagACK}, true
+	return Segment{SEQ: tcb.snd.NXT, DATALEN: 1, ACK: tcb.rcv.NXT, WND: tcb.advertisedWindow(tcb.rcv.WND), Flags: FlagACK}, true
 }
 
 // TriggerWindowUpdate queues a bare ACK so that a peer whose segment could not
@@ -332,7 +419,7 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 		return tcb.MakeChallengeACK(), true
 	} else if !pending.HasAny(flagctl) && tcb.HasPendingRetransmit() {
 		// Optimist Strategy: retransmit oldest data once.
-		return Segment{SEQ: tcb.snd.UNA, DATALEN: Size(payloadLen), ACK: tcb.rcv.NXT, WND: tcb.rcv.WND, Flags: FlagACK}, true
+		return Segment{SEQ: tcb.snd.UNA, DATALEN: Size(payloadLen), ACK: tcb.rcv.NXT, WND: tcb.advertisedWindow(tcb.rcv.WND), Flags: FlagACK}, true
 	}
 	established := tcb._state == StateEstablished
 	canSendData := established || tcb._state == StateCloseWait
@@ -379,7 +466,7 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	seg := Segment{
 		SEQ:     seq,
 		ACK:     ack,
-		WND:     tcb.rcv.WND,
+		WND:     tcb.advertisedWindow(tcb.rcv.WND),
 		Flags:   pending,
 		DATALEN: Size(payloadLen),
 	}
@@ -455,8 +542,13 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	// Within that, duplicate ACKs (non-advancing) may only open the window, never shrink it.
 	wlUnset := tcb.snd.WL1 == 0 && tcb.snd.WL2 == 0
 	if wlUnset || tcb.snd.WL1.LessThan(seg.SEQ) || (tcb.snd.WL1 == seg.SEQ && tcb.snd.WL2.LessThanEq(seg.ACK)) {
-		if tcb.snd.UNA.LessThan(seg.ACK) || seg.WND > tcb.snd.WND {
-			tcb.snd.WND = seg.WND
+		// The window arrives as a 16-bit wire field and is scaled up to the true
+		// octet count. A SYN's window is never scaled (RFC 7323 §2.2), and the
+		// shift is recorded from that same SYN's options after this call, so its
+		// window is correctly taken unscaled here.
+		wnd := seg.WND << tcb.sndWindShift
+		if tcb.snd.UNA.LessThan(seg.ACK) || wnd > tcb.snd.WND {
+			tcb.snd.WND = wnd
 		}
 		tcb.snd.WL1 = seg.SEQ
 		tcb.snd.WL2 = seg.ACK
@@ -543,7 +635,9 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 		tcb.snd.NXT.UpdateForward(seglen)
 	}
 
-	tcb.rcv.WND = seg.WND
+	// seg.WND is the 16-bit value that goes on the wire; record the true window it
+	// stands for. See [ControlBlock.advertisedWindow].
+	tcb.rcv.WND = seg.WND << tcb.rcvWindShift
 	if tcb.logenabled(internal.LevelTrace) {
 		tcb.traceSnd("tcb:snd")
 		tcb.traceSeg("tcb:snd", seg)

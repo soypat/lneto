@@ -2,6 +2,7 @@ package tcp
 
 import (
 	"io"
+	"math"
 	"net"
 
 	"log/slog"
@@ -314,13 +315,18 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		}
 	}
 	if segIncoming.Flags.HasAny(FlagSYN) {
-		// Parse remote MSS from TCP options.
+		// Parse the options only a SYN carries: the peer's maximum segment size and
+		// its window scale. The window of this very SYN was recorded unscaled just
+		// above, which is correct, since scaling starts with the next segment.
 		h.optcodec.ForEachOption(tfrm.Options(), func(kind OptionKind, data []byte) error {
-			if kind == OptMaxSegmentSize && len(data) == 2 {
+			switch {
+			case kind == OptMaxSegmentSize && len(data) == 2:
 				mss := uint16(data[0])<<8 | uint16(data[1])
 				if mss > 0 {
 					h.scb.snd.MSS = Size(mss)
 				}
+			case kind == OptWindowScale && len(data) == 1:
+				h.scb.recvWindowScale(data[0])
 			}
 			return nil
 		})
@@ -494,16 +500,12 @@ func (h *Handler) Send(b []byte) (int, error) {
 	kind := TxKindSegment
 	coreOptLen := 0
 	if isSyn {
-		kind, coreOptLen = TxKindSYN, sizeOptionMSS
+		kind, coreOptLen = TxKindSYN, sizeOptionMSS+sizeOptionWindowScale
 	} else if isSynAck {
-		kind, coreOptLen = TxKindSYNACK, sizeOptionMSS
+		kind, coreOptLen = TxKindSYNACK, sizeOptionMSS+sizeOptionWindowScale
 	}
-	// Without a policy the core's own options are the entire option area and are
-	// already four-octet aligned, so the layout needs no further work. Only an
-	// installed policy can give the option area an arbitrary length.
-	paddedOptLen := coreOptLen
+	optLen := coreOptLen
 	if h.lossEnabled() {
-		optLen := coreOptLen
 		optEnd := min(sizeHeaderTCP+maxTCPOptionBytes, len(b))
 		optStart := sizeHeaderTCP + coreOptLen
 		if optStart < optEnd {
@@ -520,8 +522,13 @@ func (h *Handler) Send(b []byte) (int, error) {
 			}
 			optLen += int(n)
 		}
-		// Pad the option area to a four-octet boundary with End Of Option List.
-		paddedOptLen = (optLen + 3) &^ 3
+	}
+	// The data offset counts four-octet words, so the option area is padded to that
+	// boundary with End Of Option List. The core's own options need this too: MSS
+	// and Window Scale together are seven octets, and a short offset would leave
+	// the tail of the last option outside the header where no peer would parse it.
+	paddedOptLen := (optLen + 3) &^ 3
+	if paddedOptLen > 0 {
 		for i := sizeHeaderTCP + optLen; i < sizeHeaderTCP+paddedOptLen; i++ {
 			b[i] = 0
 		}
@@ -536,11 +543,14 @@ func (h *Handler) Send(b []byte) (int, error) {
 	// the options carried in this particular segment, which say nothing about
 	// the capacity of the receive path.
 	mss := uint16(len(b) - sizeHeaderTCP)
+	// Window scale offered on this segment, recorded only once it is sent.
+	var synShift uint8
+	var sentSynOpts bool
 	var segment Segment
 	if isSyn {
 		// Handling init syn segment.
-		segment = ClientSynSegment(h.bufTx.iss, Size(h.bufRx.Size()))
-		h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
+		segment = ClientSynSegment(h.bufTx.iss, h.synWindow())
+		synShift, sentSynOpts = h.putSynOptions(b[sizeHeaderTCP:], mss)
 		if requeueControl {
 			h.info("tcp.Handler:requeue-syn", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("rport", uint64(h.remotePort)))
 		}
@@ -548,10 +558,10 @@ func (h *Handler) Send(b []byte) (int, error) {
 		segment = Segment{
 			SEQ:   h.scb.snd.UNA,
 			ACK:   h.scb.rcv.NXT,
-			WND:   Size(h.bufRx.Free()),
+			WND:   h.synWindow(),
 			Flags: synack,
 		}
-		h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
+		synShift, sentSynOpts = h.putSynOptions(b[sizeHeaderTCP:], mss)
 		h.info("tcp.Handler:requeue-synack", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("rport", uint64(h.remotePort)))
 	} else {
 		var ok bool
@@ -574,12 +584,16 @@ func (h *Handler) Send(b []byte) (int, error) {
 			// which is a worse failure than the stall it set out to cure.
 			segment, ok = h.scb.ZeroWindowProbe()
 		}
-		segment.WND = h.recvWindow()
+		// Advertise the space free right now, scaled for the wire, rather than
+		// whatever the control block last recorded.
+		segment.WND = h.scb.advertisedWindow(h.recvWindow())
 		if !ok {
 			// No pending control segment or data to send. Yield.
 			return 0, nil
 		} else if segment.Flags == synack {
-			h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
+			// A SYN-ACK's window is never scaled (RFC 7323 §2.2).
+			segment.WND = h.synWindow()
+			synShift, sentSynOpts = h.putSynOptions(b[sizeHeaderTCP:], mss)
 		} else if segment.DATALEN > 0 {
 			if coreOptLen > 0 {
 				// Space was reserved for an MSS option that this segment does
@@ -605,6 +619,11 @@ func (h *Handler) Send(b []byte) (int, error) {
 		return 0, err
 	} else if prevState != h.scb.State() && h.logenabled(slog.LevelInfo) {
 		h.info("tcp.Handler:tx-statechange", slog.Uint64("port", uint64(h.localPort)), slog.String("oldState", prevState.String()), slog.String("newState", h.scb.State().String()), slog.String("txflags", segment.Flags.String()))
+	}
+	if sentSynOpts {
+		// Recorded here, not where the option was written: accepting a first SYN
+		// resets the control block, which would discard the offer.
+		h.scb.sentWindowScale(synShift)
 	}
 	if h.lossEnabled() {
 		h.loss.PostTx(segment, now)
@@ -772,4 +791,35 @@ func errstr(err error) string {
 		return "<nil>"
 	}
 	return err.Error()
+}
+
+// synWindow returns the receive window to advertise in a SYN or SYN-ACK. Those
+// segments carry the window unscaled (RFC 7323 §2.2), so it is clamped to what the
+// 16-bit field holds; the scaled window takes effect from the next segment on.
+func (h *Handler) synWindow() Size {
+	wnd := Size(h.bufRx.Size())
+	if wnd > math.MaxUint16 {
+		wnd = math.MaxUint16
+	}
+	return wnd
+}
+
+// putSynOptions writes the options the core owns on a SYN or SYN-ACK: the maximum
+// segment size, and the window scale shift this side needs to advertise its whole
+// receive buffer. Offering the scale is what allows the peer to scale too; it takes
+// effect only if the peer offers one back. See RFC 7323 §2.
+//
+// The offer is returned rather than recorded here, because a first SYN resets the
+// control block as it is accepted and would wipe it. The caller records it once
+// the segment has actually been sent.
+func (h *Handler) putSynOptions(opts []byte, mss uint16) (shift uint8, ok bool) {
+	n, err := h.optcodec.PutOption16(opts, OptMaxSegmentSize, mss)
+	if err != nil {
+		return 0, false
+	}
+	shift = windowScaleFor(Size(h.bufRx.Size()))
+	if _, err = h.optcodec.PutOption(opts[n:], OptWindowScale, shift); err != nil {
+		return 0, false
+	}
+	return shift, true
 }
