@@ -3,7 +3,6 @@ package httpraw
 import (
 	"bytes"
 	"errors"
-	"unsafe"
 
 	"github.com/soypat/lneto/internal"
 )
@@ -164,7 +163,7 @@ func (hb *headerBuf) scanUntilByte(c byte) []byte {
 	return buf
 }
 
-func (hb *headerBuf) parseFirstLineRequest(initFlags Flags) (method, uri, proto headerSlice, flags Flags, err error) {
+func (hb *headerBuf) parseFirstLineRequest(initFlags Flags) (method, uri, proto view, flags Flags, err error) {
 	debuglog("http:req:scan")
 	hb.off = 0 // Parsing first line resets offset.
 	hb.skipLeadingCRLF()
@@ -182,8 +181,8 @@ func (hb *headerBuf) parseFirstLineRequest(initFlags Flags) (method, uri, proto 
 	reqURIEnd := bytes.IndexByte(b[methodEnd+1:], ' ')
 	if reqURIEnd > 0 {
 		reqURIEnd += methodEnd + 1
-		uri = hb.kv.slice(b[methodEnd+1 : reqURIEnd])
-		proto = hb.kv.slice(b[reqURIEnd+1:]) // Skip space before protocol.
+		uri = hb.kv.view(b[methodEnd+1 : reqURIEnd])
+		proto = hb.kv.view(b[reqURIEnd+1:]) // Skip space before protocol.
 		if b2s(b[reqURIEnd+1:]) != strHTTP11 {
 			flags |= flagNoHTTP11
 		}
@@ -192,13 +191,13 @@ func (hb *headerBuf) parseFirstLineRequest(initFlags Flags) (method, uri, proto 
 	} else {
 		// No version provided.
 		flags |= flagNoHTTP11
-		uri = hb.kv.slice(b[methodEnd+1:])
+		uri = hb.kv.view(b[methodEnd+1:])
 	}
-	method = hb.kv.slice(b[:methodEnd])
+	method = hb.kv.view(b[:methodEnd])
 	return method, uri, proto, flags, nil
 }
 
-func (hb *headerBuf) parseFirstLineResponse(initFlags Flags) (statusCode, statusText headerSlice, flags Flags, err error) {
+func (hb *headerBuf) parseFirstLineResponse(initFlags Flags) (statusCode, statusText view, flags Flags, err error) {
 	debuglog("http:resp:scan")
 	hb.off = 0 // Parsing first line resets offset.
 	hb.skipLeadingCRLF()
@@ -236,17 +235,15 @@ func (hb *headerBuf) parseFirstLineResponse(initFlags Flags) (statusCode, status
 			return statusCode, statusText, flags, errBadStatusCode
 		}
 	}
-	statusCode = hb.kv.slice(code)
+	statusCode = hb.kv.view(code)
 	if codeEnd < len(b) {
-		statusText = hb.kv.slice(b[codeEnd+1:]) // Skip space before text.
+		statusText = hb.kv.view(b[codeEnd+1:]) // Skip space before text.
 	}
 	debuglog("http:resp:done")
 	return statusCode, statusText, flags, nil
 }
 
-func (kv argsKV) HasValue() bool { return kv.value.start > 0 }
-
-func (hb *headerBuf) next(ss *scannerState) argsKV {
+func (hb *headerBuf) next(ss *scannerState) pairKV {
 	if !ss.initialized {
 		ss.nextColon = -1
 		ss.nextNewLine = -1
@@ -297,8 +294,8 @@ func (hb *headerBuf) next(ss *scannerState) argsKV {
 	}
 
 	// Ready to store key..
-	var resultKV argsKV
-	resultKV.key = hb.kv.slice(buf[:n])
+	var resultKV pairKV
+	resultKV.key = hb.kv.view(buf[:n])
 	n++ // consume colon.
 	for len(buf) > n && buf[n] == ' ' {
 		n++ // Trim leading spaces.
@@ -325,7 +322,7 @@ func (hb *headerBuf) next(ss *scannerState) argsKV {
 	if valueEnd > valueStart && buf[valueEnd-1] == '\r' {
 		valueEnd-- // Trim \r character if present before value.
 	}
-	resultKV.value = hb.kv.slice(buf[valueStart:valueEnd])
+	resultKV.value = hb.kv.view(buf[valueStart:valueEnd])
 	hb.off += n
 	return resultKV
 }
@@ -340,28 +337,6 @@ func (h *Header) ConnectionClose() bool {
 		h.hbuf.kv.flags |= flagConnClose
 	}
 	return closed
-}
-
-// b2s converts byte slice to a string without memory allocation.
-// See https://groups.google.com/forum/#!msg/Golang-Nuts/ENgbUzYvCuU/90yGx7GUAgAJ .
-func b2s(b []byte) string {
-	return unsafe.String(unsafe.SliceData(b), len(b))
-}
-
-func tok2bytes(buf []byte, slice headerSlice) []byte {
-	return buf[slice.start : slice.start+slice.len]
-}
-
-func bytes2tok(buf, value []byte) headerSlice {
-	base := uintptr(unsafe.Pointer(unsafe.SliceData(buf)))
-	off := uintptr(unsafe.Pointer(unsafe.SliceData(value)))
-	if off < base || off > base+uintptr(len(buf)) {
-		panic("httpx: argument buffer does not alias header buffer")
-	}
-	return headerSlice{
-		start: tokint(off - base),
-		len:   tokint(len(value)),
-	}
 }
 
 const enableDebug = internal.HeapAllocDebugging

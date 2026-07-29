@@ -50,13 +50,13 @@ type Header struct {
 	hbuf headerBuf
 
 	// Request fields.
-	method        headerSlice
-	requestTarget headerSlice
-	proto         headerSlice
+	method        view
+	requestTarget view
+	proto         view
 
 	// Response fields.
-	statusCode headerSlice
-	statusText headerSlice
+	statusCode view
+	statusText view
 	_          noCopy
 }
 
@@ -253,36 +253,7 @@ func (h *Header) Get(key string) []byte {
 // Use [Header.Get] for exact match and [Header.ForEach] to find multiple values
 // corresponding to same key.
 func (h *Header) GetFold(key string) []byte {
-	nh := h.hbuf.kv.Len()
-	for i := range nh {
-		if asciiEqualFold(key, b2s(h.hbuf.kv.AtKey(i))) {
-			return h.hbuf.kv.AtValue(i)
-		}
-	}
-	return nil
-}
-
-// asciiEqualFold reports whether a and b are equal under ASCII case folding.
-// Unlike strings.EqualFold it does not fold non-ASCII runes, so no multi-byte
-// rune such as U+212A KELVIN SIGN can alias a header key.
-func asciiEqualFold(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	const asciiCapDiff = 'a' - 'A'
-	for i := 0; i < len(a); i++ {
-		ca, cb := a[i], b[i]
-		if ca >= 'A' && ca <= 'Z' {
-			ca += asciiCapDiff
-		}
-		if cb >= 'A' && cb <= 'Z' {
-			cb += asciiCapDiff
-		}
-		if ca != cb {
-			return false
-		}
-	}
-	return true
+	return h.hbuf.kv.GetFold(key)
 }
 
 // NormalizeKeys normalizes all header keys. i.e: CONTENT-type -> Content-Type
@@ -359,39 +330,6 @@ func (h *Header) RequestQuery() []byte {
 	return after
 }
 
-// NextQueryPair splits the leading key-value pair off a query string and returns
-// what remains of it. Loop until rawkey is nil:
-//
-//	rawkey, rawval, rest := httpraw.NextQueryPair(h.RequestQuery())
-//	for rawkey != nil {
-//		// use rawkey, rawval.
-//		rawkey, rawval, rest = httpraw.NextQueryPair(rest)
-//	}
-//
-// A pair with no '=' yields a nil rawval, i.e: "debug" in "?debug&q=go", which
-// distinguishes it from "?debug=" where the value is present and empty. Empty
-// sequences are skipped, so "?&&q=go&" yields a single pair. Only '&' separates
-// pairs and only the first '=' splits a pair.
-func NextQueryPair(query []byte) (rawkey, rawval, rest []byte) {
-	for len(query) > 0 {
-		pair := query
-		amp := bytes.IndexByte(query, '&')
-		if amp >= 0 {
-			pair, query = query[:amp], query[amp+1:]
-		} else {
-			query = nil
-		}
-		if len(pair) == 0 {
-			continue // Empty sequence, see WHATWG URL urlencoded parsing.
-		}
-		if before, after, ok := bytes.Cut(pair, []byte{'='}); ok {
-			return before, after, query
-		}
-		return pair, nil, query
-	}
-	return nil, nil, nil
-}
-
 // Protocol returns the request header's HTTP protocol. Usually "HTTP/1.1".
 func (h *Header) Protocol() []byte {
 	return h.getNonEmptyValue(h.proto)
@@ -424,7 +362,7 @@ func (h *Header) SetStatusInt(code int64, statusText string) {
 	h.statusText = h.hbuf.kv.reuseOrAppend(h.statusText, statusText)
 }
 
-func (h *Header) getNonEmptyValue(s headerSlice) []byte {
+func (h *Header) getNonEmptyValue(s view) []byte {
 	if s.len == 0 {
 		return nil // If empty then value is invalid, return nil.
 	}

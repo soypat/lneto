@@ -1,5 +1,7 @@
 package httpraw
 
+import "bytes"
+
 // Form holds "application/x-www-form-urlencoded" key-value pairs, the encoding
 // HTML forms use for POST bodies and query strings alike. Methods function
 // similarly to eponymous [Cookie] methods.
@@ -107,4 +109,37 @@ func (f *Form) AppendKeyValues(dst []byte) []byte {
 		}
 	}
 	return dst
+}
+
+// NextQueryPair splits the leading key-value pair off a query string and returns
+// what remains of it. Loop until rawkey is nil:
+//
+//	rawkey, rawval, rest := httpraw.NextQueryPair(h.RequestQuery())
+//	for rawkey != nil {
+//		// use rawkey, rawval.
+//		rawkey, rawval, rest = httpraw.NextQueryPair(rest)
+//	}
+//
+// A pair with no '=' yields a nil rawval, i.e: "debug" in "?debug&q=go", which
+// distinguishes it from "?debug=" where the value is present and empty. Empty
+// sequences are skipped, so "?&&q=go&" yields a single pair. Only '&' separates
+// pairs and only the first '=' splits a pair.
+func NextQueryPair(query []byte) (rawkey, rawval, rest []byte) {
+	for len(query) > 0 {
+		pair := query
+		amp := bytes.IndexByte(query, '&')
+		if amp >= 0 {
+			pair, query = query[:amp], query[amp+1:]
+		} else {
+			query = nil
+		}
+		if len(pair) == 0 {
+			continue // Empty sequence, see WHATWG URL urlencoded parsing.
+		}
+		if before, after, ok := bytes.Cut(pair, []byte{'='}); ok {
+			return before, after, query
+		}
+		return pair, nil, query
+	}
+	return nil, nil, nil
 }
