@@ -59,8 +59,7 @@ type Router struct {
 	exchs    []Exchange
 	freeList *Exchange
 
-	backoff lneto.BackoffStrategy
-	log     *slog.Logger
+	log *slog.Logger
 }
 
 // job is a connection waiting on an exchange for a worker goroutine to serve it.
@@ -92,9 +91,6 @@ type RouterConfig struct {
 	// must be non-zero when running a fixed number of goroutines, unused otherwise.
 	MaxAwaitingConns int
 
-	// Backoff is consulted when a read off a connection yields no data, letting
-	// the caller decide whether to sleep, yield or spin. Required.
-	Backoff lneto.BackoffStrategy
 	// Mux resolves each request's method and path to the handler serving it. Required.
 	Mux Mux
 	// Logger receives failed exchanges. Optional, nil disables logging.
@@ -127,8 +123,6 @@ func (cfg RouterConfig) Validate() error {
 		cfg.ResponseHeaderMinBufferSize > maxExchangeBuffer,
 		cfg.RequestHeaderBufferSize > maxExchangeBuffer-cfg.ResponseHeaderMinBufferSize:
 		return lneto.ErrInvalidConfig
-	case cfg.Backoff == nil:
-		return lneto.ErrMissingHALConfig
 	}
 	if workerMode {
 		// Buffer sizes are bounded by maxExchangeBuffer above so the sum cannot
@@ -195,7 +189,6 @@ func (r *Router) Configure(cfg RouterConfig) error {
 	// would serve a request with buffer limits cfg never asked for.
 	r.freeList = nil
 	if !workerMode {
-		r.backoff = cfg.Backoff
 		r.numGoro = 0
 		r.pendingConns = nil
 		return nil
@@ -225,7 +218,7 @@ func (r *Router) Configure(cfg RouterConfig) error {
 				NormalizeOutgoingKeys: cfg.NormalizeOutgoingKeys,
 				NoRequestBufferGrowth: true, // Hard memory limit.
 			})
-			go r.goroWorker(gen, jobqueue, cfg.Backoff, cfg.Mux)
+			go r.goroWorker(gen, jobqueue, cfg.Mux)
 		}
 		r.pendingConns = jobqueue
 		r.numGoro = numgoro
@@ -271,7 +264,7 @@ func (r *Router) Handle(conn io.ReadWriteCloser) error {
 	// Exchange acquisition and the configuration it is served with must be read
 	// under the same lock: [Router.Configure] may run concurrently.
 	r.mu.Lock()
-	numGoro, backoff, mux := r.numGoro, r.backoff, r.mux
+	numGoro, mux := r.numGoro, r.mux
 	gen := r.gen.Load() // Generation whose buffers the exchange below is sized by.
 	if numGoro > 0 && r.pendingConns == nil {
 		// Goroutines torn down: refuse before claiming an exchange.
@@ -284,7 +277,7 @@ func (r *Router) Handle(conn io.ReadWriteCloser) error {
 		return lneto.ErrExhausted
 	} else if numGoro == 0 {
 		r.mu.Unlock()
-		go r.goroHandle(gen, exch, backoff, mux)
+		go r.goroHandle(gen, exch, mux)
 		return nil
 	}
 	// Enqueue under the lock: [Router.Configure] closes pendingConns while
@@ -305,7 +298,7 @@ func (r *Router) Handle(conn io.ReadWriteCloser) error {
 	return lneto.ErrPacketDrop
 }
 
-func (r *Router) goroWorker(gen uint32, queue chan job, backoff lneto.BackoffStrategy, mux Mux) {
+func (r *Router) goroWorker(gen uint32, queue chan job, mux Mux) {
 	for job := range queue {
 		exch := job.exch
 		if exch == nil {
@@ -316,13 +309,13 @@ func (r *Router) goroWorker(gen uint32, queue chan job, backoff lneto.BackoffStr
 			exch.Release()
 			continue
 		}
-		r.goroHandle(gen, exch, backoff, mux)
+		r.goroHandle(gen, exch, mux)
 	}
 }
 
-func (r *Router) goroHandle(gen uint32, exch *Exchange, backoff lneto.BackoffStrategy, mux Mux) {
+func (r *Router) goroHandle(gen uint32, exch *Exchange, mux Mux) {
 	defer r.freeExch(gen, exch)
-	err := Handle(exch, mux, backoff)
+	err := Handle(exch, mux, nil)
 	if err != nil {
 		if exch.readErr != nil {
 			r.error("goroHandle:ReadFromLimited", slog.String("err", err.Error()))

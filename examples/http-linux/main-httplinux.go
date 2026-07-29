@@ -52,11 +52,8 @@ func run() error {
 		RequestNumHeaderKVCap:       numHeaderFields,
 		ResponseHeaderMinBufferSize: bufferSizes,
 		MaxAwaitingConns:            256,
-		Backoff: func(consecutiveBackoffs uint) (sleepOrFlag time.Duration) {
-			return min(time.Second, time.Millisecond*time.Duration(consecutiveBackoffs))
-		},
-		Mux:    &mux,
-		Logger: slog.Default(),
+		Mux:                         &mux,
+		Logger:                      slog.Default(),
 	})
 	if err != nil {
 		return err

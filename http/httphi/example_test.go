@@ -6,7 +6,6 @@ import (
 	"log"
 	"log/slog"
 	"os"
-	"time"
 
 	"github.com/soypat/lneto/http/httphi"
 	"github.com/soypat/lneto/http/httpraw"
@@ -30,7 +29,6 @@ func ExampleRouter_linux() {
 		ResponseHeaderMinBufferSize: 32, // Shared buffer with Request, not strictly necessary, especially if not sending headers.
 		RequestNumHeaderKVCap:       numHeaderKV,
 		NormalizeOutgoingKeys:       true,
-		Backoff:                     func(uint) time.Duration { return time.Millisecond },
 		Mux:                         &mux,
 		Logger:                      slog.Default(),
 	})

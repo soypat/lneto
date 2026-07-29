@@ -9,8 +9,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/soypat/lneto"
 )
 
 // rwconn is a in-memory conn. The router handles connections on another
@@ -158,9 +156,6 @@ func configSynchronousRouter(t *testing.T, router *Router, bufferSize int, mux M
 		RequestHeaderBufferSize:     bufferSize,
 		RequestNumHeaderKVCap:       16,
 		ResponseHeaderMinBufferSize: bufferSize,
-		Backoff: func(consecutiveBackoffs uint) (sleepOrFlag time.Duration) {
-			return lneto.BackoffFlagNop
-		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -393,7 +388,6 @@ func TestRouterHandleAfterTeardown(t *testing.T) {
 		RequestHeaderBufferSize:     512,
 		RequestNumHeaderKVCap:       16,
 		ResponseHeaderMinBufferSize: 512,
-		Backoff:                     nopBackoff,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -427,7 +421,6 @@ func TestRouterTeardownReleasesQueuedConns(t *testing.T) {
 		RequestHeaderBufferSize:     512,
 		RequestNumHeaderKVCap:       16,
 		ResponseHeaderMinBufferSize: 512,
-		Backoff:                     nopBackoff,
 	}
 	// Handing connections over and tearing down immediately leaves them queued
 	// for workers that will never serve them. Rounds bound the scheduling luck
@@ -475,7 +468,6 @@ func TestRouterConfigureDuringWorkerHandle(t *testing.T) {
 		RequestHeaderBufferSize:     512,
 		RequestNumHeaderKVCap:       16,
 		ResponseHeaderMinBufferSize: 512,
-		Backoff:                     nopBackoff,
 	}
 	if err := router.Configure(cfg); err != nil {
 		t.Fatal(err)

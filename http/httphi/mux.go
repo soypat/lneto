@@ -1,6 +1,7 @@
 package httphi
 
 import (
+	"io"
 	"strings"
 	"unsafe"
 
@@ -12,6 +13,8 @@ import (
 // Handle is a extremely low-level HTTP handling method used internally in [Router].
 // Requires exchange to be acquired and configured. Will panic if any argument is nil.
 // Handle does not close the connection on any outcome: the caller owns it.
+// backoff can be set for dealing with non-blocking connections. If backoff set to nil
+// then a zero-length-read will result in Handle returning [io.ErrNoProgress].
 func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
 	if !exch.acquired.Load() {
 		return lneto.ErrBadState
@@ -26,6 +29,9 @@ func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
 			exch.handleError(err)
 			return err
 		} else if n == 0 {
+			if backoff == nil {
+				return io.ErrNoProgress
+			}
 			backoff.Do(consecutiveBackoffs)
 			consecutiveBackoffs++
 			continue
