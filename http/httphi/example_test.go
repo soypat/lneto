@@ -60,6 +60,11 @@ func ExampleMuxSlice_query_forms_multipart() {
 
 	var mux httphi.MuxSlice
 
+	mux.Handle("/users/{id}", func(ex *httphi.Exchange) {
+		userID := ex.PathValue("id")
+		fmt.Printf("someone requested data for user %s", userID)
+	})
+
 	mux.Handle("/query", func(ex *httphi.Exchange) {
 		// query parameter in URL.
 		const decodeQuery = true
