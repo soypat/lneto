@@ -445,7 +445,12 @@ func (exch *Exchange) RequestParseForm(dst *httpraw.Form, buf []byte) error {
 	for read := 0; read < len(buf); {
 		n, err := exch.ReadBody(buf[read:])
 		read += n
-		if n == 0 && err != nil {
+		if n == 0 {
+			if err == nil {
+				err = io.ErrNoProgress
+			} else if err == io.EOF {
+				break
+			}
 			return err
 		}
 	}

@@ -231,15 +231,16 @@ func TestRouterRequestVisibleToHandler(t *testing.T) {
 func TestRouterMux(t *testing.T) {
 	const bufferSize = 1024
 	for _, test := range []struct {
-		name    string
-		request string
-		want    string // Response body, empty means no handler must run.
+		name          string
+		request       string
+		want          string // Response body the matched handler must have written.
+		wantNoHandler bool   // No registration matches: the router must answer 404 itself.
 	}{
 		{name: "get root", request: "GET / HTTP/1.1\r\nHost: h\r\n\r\n", want: "root"},
 		{name: "get page", request: "GET /page HTTP/1.1\r\nHost: h\r\n\r\n", want: "page"},
 		{name: "any method", request: "DELETE /any HTTP/1.1\r\nHost: h\r\n\r\n", want: "any"},
-		{name: "method mismatch", request: "POST / HTTP/1.1\r\nHost: h\r\n\r\n", want: ""},
-		{name: "unknown uri", request: "GET /nowhere HTTP/1.1\r\nHost: h\r\n\r\n", want: ""},
+		{name: "method mismatch", request: "POST / HTTP/1.1\r\nHost: h\r\n\r\n", wantNoHandler: true},
+		{name: "unknown uri", request: "GET /nowhere HTTP/1.1\r\nHost: h\r\n\r\n", wantNoHandler: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var (
@@ -258,14 +259,24 @@ func TestRouterMux(t *testing.T) {
 			conn.AwaitClose(t, time.Second)
 
 			got := conn.ViewWritten()
-			if test.want == "" {
-				if strings.Contains(got, "root") || strings.Contains(got, "page") || strings.Contains(got, "any") {
-					t.Errorf("no handler must run, got response %q", got)
+			_, body, found := strings.Cut(got, "\r\n\r\n")
+			if !found {
+				t.Fatalf("header block never terminated: %q", got)
+			}
+			if test.wantNoHandler {
+				if !strings.HasPrefix(got, "HTTP/1.1 404 ") {
+					t.Errorf("want a 404 answer, got %q", got)
+				}
+				if body != "" {
+					t.Errorf("no handler must run, got body %q", body)
 				}
 				return
 			}
-			if !strings.HasSuffix(got, test.want) {
-				t.Errorf("want body %q, got response %q", test.want, got)
+			if !strings.HasPrefix(got, "HTTP/1.1 200 OK\r\n") {
+				t.Errorf("want a 200 answer, got %q", got)
+			}
+			if body != test.want {
+				t.Errorf("want body %q, got %q", test.want, body)
 			}
 		})
 	}

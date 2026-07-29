@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
-	"net/http"
 	"strconv"
 	"strings"
-	"unsafe"
 
 	"testing"
 	"time"
@@ -69,12 +67,14 @@ func TestExchangeWriteHeader(t *testing.T) {
 		// Longest status text in status.go: worst case for the status line buffer.
 		{code: 511, want: "HTTP/1.1 511 Network Authentication Required\r\n\r\n"},
 	} {
-		conn := newConn("")
-		exch := newExchange(t, conn, ExchangeConfig{RawBuf: buf[:], RequestBufferLim: 64})
-		exch.WriteHeader(test.code)
-		if got := conn.ViewWritten(); got != test.want {
-			t.Errorf("code %d: want %q, got %q", test.code, test.want, got)
-		}
+		t.Run(strconv.Itoa(test.code), func(t *testing.T) {
+			conn := newConn("")
+			exch := newExchange(t, conn, ExchangeConfig{RawBuf: buf[:], RequestBufferLim: 64})
+			exch.WriteHeader(test.code)
+			if got := conn.ViewWritten(); got != test.want {
+				t.Errorf("want %q, got %q", test.want, got)
+			}
+		})
 	}
 }
 
@@ -365,35 +365,37 @@ func TestExchangeStageOKAndFail(t *testing.T) {
 	const field = len(key) + len(value) + len(":\r\n")
 	const numHeaderCap = 4
 	for _, bufLen := range []int{field + 2, field + 1, field} {
-		conn := newConn("")
-		exch := new(Exchange)
-		exch.Configure(ExchangeConfig{
-			RawBuf:           make([]byte, bufLen),
-			RequestBufferLim: bufLen,
-			NumHeaderKVCap:   numHeaderCap,
-		})
-		if !exch.Acquire(conn) {
-			t.Fatal("fresh exchange failed to acquire connection")
-		}
-		set := exch.StageHeader(key, value)
-		n, err := exch.FlushHeader()
-
-		want := "HTTP/1.1 200 OK\r\n"
-		if set {
-			want += key + ":" + value + "\r\n"
-			want += "\r\n"
-		} else {
-			if err != lneto.ErrBufferFull || n != 0 {
-				t.Fatal("expected buffer full and no data written:", err, n)
+		t.Run("buffer"+strconv.Itoa(bufLen), func(t *testing.T) {
+			conn := newConn("")
+			exch := new(Exchange)
+			exch.Configure(ExchangeConfig{
+				RawBuf:           make([]byte, bufLen),
+				RequestBufferLim: bufLen,
+				NumHeaderKVCap:   numHeaderCap,
+			})
+			if !exch.Acquire(conn) {
+				t.Fatal("fresh exchange failed to acquire connection")
 			}
-			want = ""
-		}
-		if got := conn.ViewWritten(); got != want {
-			t.Errorf("buffer %d: want %q, got %q", bufLen, want, got)
-		}
-		if wantSet := bufLen >= field+2; set != wantSet {
-			t.Errorf("buffer %d: want SetHeader=%v, got %v", bufLen, wantSet, set)
-		}
+			set := exch.StageHeader(key, value)
+			n, err := exch.FlushHeader()
+
+			want := "HTTP/1.1 200 OK\r\n"
+			if set {
+				want += key + ":" + value + "\r\n"
+				want += "\r\n"
+			} else {
+				if err != lneto.ErrBufferFull || n != 0 {
+					t.Fatal("expected buffer full and no data written:", err, n)
+				}
+				want = ""
+			}
+			if got := conn.ViewWritten(); got != want {
+				t.Errorf("want %q, got %q", want, got)
+			}
+			if wantSet := bufLen >= field+2; set != wantSet {
+				t.Errorf("want SetHeader=%v, got %v", wantSet, set)
+			}
+		})
 	}
 }
 
@@ -402,19 +404,24 @@ func TestExchangeStageOKAndFail(t *testing.T) {
 func TestHandleLeavesConnOpen(t *testing.T) {
 	var sm MuxSlice
 	sm.Handle("GET /", staticPage(t, "ok"))
-	for _, request := range []string{
-		"GET / HTTP/1.1\r\nHost: h\r\n\r\n",         // Served.
-		"GET /nowhere HTTP/1.1\r\nHost: h\r\n\r\n",  // 404.
-		"GET /\r\nHost: h\r\n\r\n",                  // Rejected: no HTTP version.
-		"GET / HTTP/1.1\r\nBadFieldNoColon\r\n\r\n", // Rejected: parse error.
+	for _, test := range []struct {
+		name    string
+		request string
+	}{
+		{name: "served", request: "GET / HTTP/1.1\r\nHost: h\r\n\r\n"},
+		{name: "404", request: "GET /nowhere HTTP/1.1\r\nHost: h\r\n\r\n"},
+		{name: "rejected no http version", request: "GET /\r\nHost: h\r\n\r\n"},
+		{name: "rejected parse error", request: "GET / HTTP/1.1\r\nBadFieldNoColon\r\n\r\n"},
 	} {
-		conn := newConn(request)
-		conn.Hangup()
-		exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 2*1024), RequestBufferLim: 1024})
-		Handle(exch, &sm, nopBackoff)
-		if conn.IsClosed() {
-			t.Errorf("Handle closed the connection for %q", request)
-		}
+		t.Run(test.name, func(t *testing.T) {
+			conn := newConn(test.request)
+			conn.Hangup()
+			exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 2*1024), RequestBufferLim: 1024})
+			Handle(exch, &sm, nopBackoff)
+			if conn.IsClosed() {
+				t.Errorf("Handle closed the connection for %q", test.request)
+			}
+		})
 	}
 }
 
@@ -516,14 +523,17 @@ func TestExchangeSetHeaderInt(t *testing.T) {
 		{value: 1, base: 2, want: "\r\n"},  // Below base 10, dropped.
 		{value: 1, base: 37, want: "\r\n"}, // Above base 36, dropped.
 	} {
-		conn := newConn("")
-		exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 2*256), RequestBufferLim: 256})
-		exch.StageHeaderInt("N", test.value, test.base)
-		exch.WriteHeader(200)
-		got, _ := strings.CutPrefix(conn.ViewWritten(), "HTTP/1.1 200 OK\r\n")
-		if got != test.want {
-			t.Errorf("value %d base %d: want %q, got %q", test.value, test.base, test.want, got)
-		}
+		name := strconv.FormatInt(test.value, 10) + "_base" + strconv.Itoa(test.base)
+		t.Run(name, func(t *testing.T) {
+			conn := newConn("")
+			exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 2*256), RequestBufferLim: 256})
+			exch.StageHeaderInt("N", test.value, test.base)
+			exch.WriteHeader(200)
+			got, _ := strings.CutPrefix(conn.ViewWritten(), "HTTP/1.1 200 OK\r\n")
+			if got != test.want {
+				t.Errorf("want %q, got %q", test.want, got)
+			}
+		})
 	}
 }
 
@@ -592,22 +602,34 @@ func TestExchangeAppendQuery(t *testing.T) {
 		{uri: "/x?q=%zz", key: "q", decoded: true, want: "", wantPresent: false},
 		{uri: "/x?q=%zz", key: "q", want: "%zz", wantPresent: true}, // Undecoded, passed through.
 	} {
-		var sm MuxSlice
-		var got string
-		var present bool
-		sm.Handle("/x", func(ex *Exchange) {
-			var value []byte
-			value, present = ex.AppendQuery(nil, test.key, test.decoded)
-			got = string(value)
-		})
-		serve(t, "GET "+test.uri+" HTTP/1.1\r\nHost: h\r\n\r\n", &sm)
+		// The path is the same for every case: name them by what differs, and
+		// keep the '/' out so the name stays a single -run element.
+		name := strings.TrimPrefix(test.uri, "/x")
+		if name == "" {
+			name = "noquery"
+		}
+		name += "_" + test.key
+		if test.decoded {
+			name += "_decoded"
+		}
+		t.Run(name, func(t *testing.T) {
+			var sm MuxSlice
+			var got string
+			var present bool
+			sm.Handle("/x", func(ex *Exchange) {
+				var value []byte
+				value, present = ex.AppendQuery(nil, test.key, test.decoded)
+				got = string(value)
+			})
+			serve(t, "GET "+test.uri+" HTTP/1.1\r\nHost: h\r\n\r\n", &sm)
 
-		if present != test.wantPresent {
-			t.Errorf("%s key %q decoded=%v: want present=%v, got %v", test.uri, test.key, test.decoded, test.wantPresent, present)
-		}
-		if got != test.want {
-			t.Errorf("%s key %q decoded=%v: want %q, got %q", test.uri, test.key, test.decoded, test.want, got)
-		}
+			if present != test.wantPresent {
+				t.Errorf("want present=%v, got %v", test.wantPresent, present)
+			}
+			if got != test.want {
+				t.Errorf("want %q, got %q", test.want, got)
+			}
+		})
 	}
 }
 
@@ -656,78 +678,170 @@ func formString(f *httpraw.Form) string {
 
 const formType = "Content-Type: application/x-www-form-urlencoded\r\n"
 
+// formPair is one key/value pair of a form body. flag sends the key bare, with
+// no '=', which parses back as a nil value: distinct from a present but empty
+// one, unlike http.FormValue.
+type formPair struct {
+	key, value string
+	flag       bool
+}
+
+// appendForm renders pairs as a urlencoded body, joining them with '&'.
+func appendForm(dst []byte, pairs []formPair) []byte {
+	for i, pair := range pairs {
+		if i > 0 {
+			dst = append(dst, '&')
+		}
+		dst = append(dst, pair.key...)
+		if !pair.flag {
+			dst = append(dst, '=')
+			dst = append(dst, pair.value...)
+		}
+	}
+	return dst
+}
+
 func TestExchangeRequestParseForm(t *testing.T) {
 	for _, test := range []struct {
-		name    string
-		request string
-		bufSize int // Defaults to 64.
-		want    string
-		wantErr error
+		name     string
+		formVals []formPair
+		// wantVals defaults to formVals: set it only where what comes back out
+		// differs from what went in, as decoding makes it.
+		wantVals        []formPair
+		target          string // Request target, defaults to "/f".
+		contentType     string // Media type, defaults to application/x-www-form-urlencoded.
+		noContentType   bool   // Send no Content-Type field at all.
+		noContentLength bool   // Send no Content-Length field: no body at all, RFC 9112 6.3.
+		extraHeaders    string // Header fields sent verbatim, each CRLF terminated.
+		callDecode      bool
+		bufsize         int // Defaults to 64.
+		wantErr         error
 	}{
 		{
-			name:    "pairs",
-			request: "POST /f HTTP/1.1\r\nHost: h\r\n" + formType + "Content-Length: 11\r\n\r\na=1&b=2&c=3",
-			want:    "a=1|b=2|c=3",
+			name:     "pairs",
+			formVals: []formPair{{key: "a", value: "1"}, {key: "b", value: "2"}, {key: "c", value: "3"}},
+		}, {
+			name:     "long value",
+			formVals: []formPair{{key: "a", value: ""}, {key: "k", value: strings.Repeat("k", 20)}},
 		}, {
 			// A flag and an empty value stay distinguishable, unlike http.FormValue.
-			name:    "flag and empty",
-			request: "POST /f HTTP/1.1\r\nHost: h\r\n" + formType + "Content-Length: 4\r\n\r\na&b=",
-			want:    "a|b=",
+			name:     "flag and empty",
+			formVals: []formPair{{key: "a", flag: true}, {key: "b", value: ""}},
 		}, {
-			name:    "left encoded",
-			request: "POST /f HTTP/1.1\r\nHost: h\r\n" + formType + "Content-Length: 7\r\n\r\nn=a%20b",
-			want:    "n=a%20b",
+			// Decoding is the caller's call: untouched without it.
+			name:     "left encoded",
+			formVals: []formPair{{key: "n", value: "a%20b"}},
 		}, {
-			name:    "media type parameters",
-			request: "POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: application/x-www-form-urlencoded; charset=utf-8\r\nContent-Length: 3\r\n\r\na=1",
-			want:    "a=1",
+			// Decode reaches both keys and values.
+			name:       "decoded",
+			formVals:   []formPair{{key: "a+b", value: "c%20d"}, {key: "e", value: "f%2B"}},
+			wantVals:   []formPair{{key: "a b", value: "c d"}, {key: "e", value: "f+"}},
+			callDecode: true,
+		}, {
+			name:        "media type parameters",
+			formVals:    []formPair{{key: "a", value: "1"}},
+			contentType: "application/x-www-form-urlencoded; charset=utf-8",
 		}, {
 			// Only the body is parsed: the query string is not folded in.
-			name:    "query not folded",
-			request: "POST /f?q=go HTTP/1.1\r\nHost: h\r\n" + formType + "Content-Length: 3\r\n\r\na=1",
-			want:    "a=1",
+			name:     "query not folded",
+			formVals: []formPair{{key: "a", value: "1"}},
+			target:   "/f?q=go",
 		}, {
-			// No Content-Length means no body at all, RFC 9112 6.3.
-			name:    "no content length",
-			request: "POST /f HTTP/1.1\r\nHost: h\r\n" + formType + "\r\n",
-			want:    "",
+			name:            "no content length",
+			noContentLength: true,
 		}, {
-			name:    "wrong media type",
-			request: "POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: text/plain\r\nContent-Length: 3\r\n\r\na=1",
-			wantErr: errNotFormEncoded,
+			name:        "wrong media type",
+			formVals:    []formPair{{key: "a", value: "1"}},
+			contentType: "text/plain",
+			wantErr:     errNotFormEncoded,
 		}, {
-			name:    "no media type",
-			request: "POST /f HTTP/1.1\r\nHost: h\r\nContent-Length: 3\r\n\r\na=1",
-			wantErr: errNotFormEncoded,
+			name:          "no media type",
+			formVals:      []formPair{{key: "a", value: "1"}},
+			noContentType: true,
+			wantErr:       errNotFormEncoded,
 		}, {
-			name:    "chunked",
-			request: "POST /f HTTP/1.1\r\nHost: h\r\n" + formType + "Transfer-Encoding: chunked\r\n\r\n3\r\na=1\r\n0\r\n\r\n",
-			wantErr: errUnsupportedTransferCoding,
+			// The coding is refused on the field alone, so the body stays off.
+			name:            "chunked",
+			noContentLength: true,
+			extraHeaders:    "Transfer-Encoding: chunked\r\n",
+			wantErr:         errUnsupportedTransferCoding,
 		}, {
-			name:    "body larger than buffer",
-			request: "POST /f HTTP/1.1\r\nHost: h\r\n" + formType + "Content-Length: 11\r\n\r\na=1&b=2&c=3",
-			bufSize: 4,
-			wantErr: lneto.ErrShortBuffer,
+			name:     "body larger than buffer",
+			formVals: []formPair{{key: "a", value: "1"}, {key: "b", value: "2"}, {key: "c", value: "3"}},
+			bufsize:  4,
+			wantErr:  lneto.ErrShortBuffer,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			bufSize := test.bufSize
+			bufSize := test.bufsize
 			if bufSize == 0 {
 				bufSize = 64
 			}
+			target := test.target
+			if target == "" {
+				target = "/f"
+			}
+			contentType := test.contentType
+			if contentType == "" {
+				contentType = "application/x-www-form-urlencoded"
+			}
+			wantVals := test.wantVals
+			if wantVals == nil {
+				wantVals = test.formVals
+			}
+			body := appendForm(nil, test.formVals)
+
+			var builder strings.Builder
+			builder.WriteString("POST ")
+			builder.WriteString(target)
+			builder.WriteString(" HTTP/1.1\r\nHost: h\r\n")
+			if !test.noContentType {
+				builder.WriteString("Content-Type: ")
+				builder.WriteString(contentType)
+				builder.WriteString("\r\n")
+			}
+			builder.WriteString(test.extraHeaders)
+			if !test.noContentLength {
+				builder.WriteString("Content-Length: ")
+				builder.WriteString(strconv.Itoa(len(body)))
+				builder.WriteString("\r\n")
+			}
+			builder.WriteString("\r\n")
+			builder.Write(body)
+
 			var form httpraw.Form
 			var gotErr error
 			var sm MuxSlice
 			sm.Reset(1)
 			sm.Handle("/f", func(exch *Exchange) {
 				gotErr = exch.RequestParseForm(&form, make([]byte, bufSize))
+				if gotErr == nil && test.callDecode {
+					gotErr = form.Decode()
+				}
 			})
-			serve(t, test.request, &sm)
+			serve(t, builder.String(), &sm)
+
 			if gotErr != test.wantErr {
 				t.Fatalf("want error %v, got %v", test.wantErr, gotErr)
+			} else if test.wantErr != nil {
+				return // Nothing is promised about the form on failure.
 			}
-			if got := formString(&form); test.wantErr == nil && got != test.want {
-				t.Errorf("want %q, got %q", test.want, got)
+			if form.Len() != len(wantVals) {
+				t.Fatalf("want %d pairs parsed, got %d: %q", len(wantVals), form.Len(), formString(&form))
+			}
+			for i, want := range wantVals {
+				key, value := form.Pair(i)
+				if b2s(key) != want.key {
+					t.Errorf("pair %d: want key %q, got %q", i, want.key, key)
+				}
+				switch {
+				case want.flag && value != nil:
+					t.Errorf("pair %d: want no value, got %q", i, value)
+				case !want.flag && value == nil:
+					t.Errorf("pair %d: want value %q, got no value", i, want.value)
+				case !want.flag && b2s(value) != want.value:
+					t.Errorf("pair %d: want value %q, got %q", i, want.value, value)
+				}
 			}
 		})
 	}
@@ -792,15 +906,50 @@ func (p *partBuffer) Write(b []byte) (int, error) {
 
 func (p *partBuffer) Close() error { p.closed = true; return nil }
 
+// multipartPart is one part of a multipart/form-data body. discard makes the
+// sink factory refuse it, exercising [Exchange.ReadMultiparts]' discard path.
+type multipartPart struct {
+	name, filename, content string
+	discard                 bool
+}
+
+// appendMultipart renders parts as a multipart/form-data body delimited by
+// boundary, closed off with the terminating delimiter.
+func appendMultipart(dst []byte, boundary string, parts []multipartPart) []byte {
+	for _, part := range parts {
+		dst = append(dst, "--"+boundary+"\r\n"...)
+		dst = append(dst, `Content-Disposition: form-data; name="`+part.name+`"`...)
+		if part.filename != "" {
+			dst = append(dst, `; filename="`+part.filename+`"`...)
+		}
+		dst = append(dst, "\r\n\r\n"...)
+		dst = append(dst, part.content...)
+		dst = append(dst, "\r\n"...)
+	}
+	return append(dst, "--"+boundary+"--\r\n"...)
+}
+
 // serveMultipart serves request to a handler that streams its multipart body
-// with [Exchange.ReadMultiparts] over a buffer of bufSize bytes. segments are
-// delivered on later reads, so the parser must compact and read more to see
-// them. skip names the parts whose sink is refused, exercising discarding.
-func serveMultipart(t *testing.T, request string, bufSize int, skip string, segments ...string) ([]MultipartSink, error) {
+// with [Exchange.ReadMultiparts] over a buffer of bufSize bytes. Bytes past
+// each offset in segmentAt are delivered on later reads, so the parser must
+// compact and read more to see them. discard names the parts whose sink is
+// refused.
+func serveMultipart(t *testing.T, request string, bufSize int, discard []string, segmentAt []int) ([]MultipartSink, error) {
 	t.Helper()
-	conn := newConn(request)
-	for _, segment := range segments {
-		conn.AddSegment(segment)
+	prev := 0
+	for _, off := range segmentAt {
+		if off < prev || off > len(request) {
+			t.Fatalf("segment offset %d out of order or past the %d byte request", off, len(request))
+		}
+		prev = off
+	}
+	conn := newConn(request[:firstOr(segmentAt, len(request))])
+	for i, off := range segmentAt {
+		end := len(request)
+		if i+1 < len(segmentAt) {
+			end = segmentAt[i+1]
+		}
+		conn.AddSegment(request[off:end])
 	}
 	conn.Hangup()
 	var parts []MultipartSink
@@ -809,19 +958,63 @@ func serveMultipart(t *testing.T, request string, bufSize int, skip string, segm
 	sm.Reset(1)
 	sm.Handle("/f", func(exch *Exchange) {
 		newSink := func(hdr *httpraw.MultipartHeader) io.WriteCloser {
-			if skip != "" && string(hdr.Name) == skip {
-				return nil // Discard this part's content.
+			for _, name := range discard {
+				if string(hdr.Name) == name {
+					return nil // Discard this part's content.
+				}
 			}
 			return new(partBuffer)
 		}
 		parts, gotErr = exch.ReadMultiparts(parts, make([]byte, bufSize), newSink)
 	})
-	const x = unsafe.Sizeof(http.Request{})
 	exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 2*1024), RequestBufferLim: 1024})
 	if err := Handle(exch, &sm, nopBackoff); err != nil {
 		t.Fatal(err)
 	}
 	return parts, gotErr
+}
+
+func firstOr(s []int, or int) int {
+	if len(s) == 0 {
+		return or
+	}
+	return s[0]
+}
+
+// checkParts asserts the part header and streamed content of every sink, that a
+// discarded part has no sink at all, and that no sink was left open, which would
+// hide a part that never ended.
+func checkParts(t *testing.T, got []MultipartSink, want []multipartPart) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("want %d parts, got %d: %q", len(want), len(got), partsString(t, got))
+	}
+	for i, want := range want {
+		part := &got[i]
+		if string(part.Header.Name) != want.name {
+			t.Errorf("part %d: want name %q, got %q", i, want.name, part.Header.Name)
+		}
+		if string(part.Header.Filename) != want.filename {
+			t.Errorf("part %d: want filename %q, got %q", i, want.filename, part.Header.Filename)
+		}
+		if want.discard {
+			if part.Sink != nil {
+				t.Errorf("part %d: want no sink for a discarded part, got one", i)
+			}
+			continue
+		}
+		if part.Sink == nil {
+			t.Errorf("part %d: want content %q, got no sink", i, want.content)
+			continue
+		}
+		sink := part.Sink.(*partBuffer)
+		if !sink.closed {
+			t.Errorf("part %d (%q): sink left open", i, want.name)
+		}
+		if string(sink.content) != want.content {
+			t.Errorf("part %d (%q): want content %q, got %q", i, want.name, want.content, sink.content)
+		}
+	}
 }
 
 // partsString renders parts as "name=content" joined by '|', a file part shown
@@ -855,85 +1048,115 @@ func partsString(t *testing.T, parts []MultipartSink) string {
 	return sb.String()
 }
 
-// Names, filenames and content of every part, over a body split so that a part
-// straddles two reads and the parser must compact and read more.
+// mpTeaser is content that teases the parser with delimiter prefixes that never
+// complete, so a compaction that fails to hold the tail back drops part of it.
+var mpTeaser = strings.Repeat("\r\n--xy", 16) + strings.Repeat("A", 100) + "\r\n--xyy"
+
 func TestExchangeReadMultiparts(t *testing.T) {
-	const (
-		head  = "POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: multipart/form-data; boundary=--xyz\r\n\r\n"
-		part1 = "----xyz\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\nhi there\r\n"
-		part2 = "----xyz\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"beach.png\"\r\n\r\n\x89PNG\r\n\x00\r\n"
-		tail  = "----xyz--\r\n"
-	)
-	parts, err := serveMultipart(t, head+part1+part2[:20], 128, "", part2[20:]+tail)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const want = "caption=hi there|photo(beach.png)=\x89PNG\r\n\x00"
-	if got := partsString(t, parts); got != want {
-		t.Errorf("want %q, got %q", want, got)
-	}
-}
+	for _, test := range []struct {
+		name     string
+		boundary string          // Defaults to "xyz".
+		parts    []multipartPart // The body sent.
+		// wantParts defaults to parts: set it only where what comes back out
+		// differs from what went in. A wantErr case reports no parts at all.
+		wantParts []multipartPart
+		// segmentAt are offsets into the body where a later read begins. The
+		// request header always arrives in the first read.
+		segmentAt []int
+		bufsize   int // Defaults to 128.
+		wantErr   error
+	}{
+		{
+			// Names, filenames and content of every part, over a body split so
+			// that a part straddles two reads and the parser must compact and
+			// read more. The boundary opens with dashes of its own, which the
+			// delimiter's leading "--" must not be confused with.
+			name:     "parts and files",
+			boundary: "--xyz",
+			parts: []multipartPart{
+				{name: "caption", content: "hi there"},
+				{name: "photo", filename: "beach.png", content: "\x89PNG\r\n\x00"},
+			},
+			segmentAt: []int{89}, // Inside the second part's header.
+		}, {
+			// A part longer than the buffer must come out whole: every
+			// compaction has to keep the tail NextBody held back, or content
+			// that looks like the start of a delimiter is dropped. The header's
+			// Name must survive those reads too.
+			name:      "part larger than buffer",
+			parts:     []multipartPart{{name: "blob", content: mpTeaser}},
+			segmentAt: []int{0, 30}, // Header alone, then 30 bytes of body.
+			bufsize:   64,
+		}, {
+			// A nil sink discards a part's content without losing its place in
+			// the body: the parts around it must still arrive whole.
+			name: "discards part",
+			parts: []multipartPart{
+				{name: "keep", content: "kept"},
+				{name: "huge", filename: "big.bin", content: strings.Repeat("Z", 200), discard: true},
+				{name: "also", content: "kept too"},
+			},
+			bufsize: 96,
+		}, {
+			// A part header that does not fit the buffer cannot be completed by
+			// reading more, so the caller is told instead of spinning.
+			name:    "header larger than buffer",
+			parts:   []multipartPart{{name: strings.Repeat("n", 64), content: "v"}},
+			bufsize: 32,
+			wantErr: lneto.ErrShortBuffer,
+		}, {
+			// A buffer too small to ever outgrow a delimiter is a caller error,
+			// refused before any of the body is read.
+			name:    "buffer unusable",
+			parts:   []multipartPart{{name: "a", content: "v"}},
+			bufsize: len("\r\n--xyz"),
+			wantErr: lneto.ErrInvalidConfig,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			boundary := test.boundary
+			if boundary == "" {
+				boundary = "xyz"
+			}
+			bufSize := test.bufsize
+			if bufSize == 0 {
+				bufSize = 128
+			}
+			wantParts := test.wantParts
+			if wantParts == nil {
+				wantParts = test.parts
+			}
+			var discard []string
+			for _, part := range test.parts {
+				if part.discard {
+					discard = append(discard, part.name)
+				}
+			}
+			head := "POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: multipart/form-data; boundary=" + boundary + "\r\n\r\n"
+			body := appendMultipart(nil, boundary, test.parts)
+			segmentAt := make([]int, len(test.segmentAt))
+			for i, off := range test.segmentAt {
+				if off < 0 || off >= len(body) {
+					t.Fatalf("segment offset %d is not inside the %d byte body", off, len(body))
+				}
+				segmentAt[i] = len(head) + off
+			}
 
-// A part longer than the buffer must come out whole: every compaction has to
-// keep the tail NextBody held back, or content that looks like the start of a
-// delimiter is dropped. The header's Name must survive those reads too.
-func TestExchangeReadMultipartsPartLargerThanBuffer(t *testing.T) {
-	// Content teases the parser with delimiter prefixes that never complete.
-	content := strings.Repeat("\r\n--xy", 16) + strings.Repeat("A", 100) + "\r\n--xyy"
-	body := "--xyz\r\nContent-Disposition: form-data; name=\"blob\"\r\n\r\n" + content + "\r\n--xyz--\r\n"
-	head := "POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: multipart/form-data; boundary=xyz\r\n\r\n"
-	parts, err := serveMultipart(t, head, 64, "", body[:30], body[30:])
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := "blob=" + content
-	if got := partsString(t, parts); got != want {
-		t.Errorf("want %q, got %q", want, got)
-	}
-}
-
-// A nil sink discards a part's content without losing its place in the body:
-// the parts around it must still arrive whole.
-func TestExchangeReadMultipartsDiscardsPart(t *testing.T) {
-	const (
-		head  = "POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: multipart/form-data; boundary=xyz\r\n\r\n"
-		part1 = "--xyz\r\nContent-Disposition: form-data; name=\"keep\"\r\n\r\nkept\r\n"
-		part2 = "--xyz\r\nContent-Disposition: form-data; name=\"huge\"; filename=\"big.bin\"\r\n\r\n"
-		part3 = "--xyz\r\nContent-Disposition: form-data; name=\"also\"\r\n\r\nkept too\r\n"
-		tail  = "--xyz--\r\n"
-	)
-	discarded := strings.Repeat("Z", 200) + "\r\n"
-	parts, err := serveMultipart(t, head+part1+part2+discarded+part3+tail, 96, "huge")
-	if err != nil {
-		t.Fatal(err)
-	}
-	const want = "keep=kept|huge(big.bin)=<nil>|also=kept too"
-	if got := partsString(t, parts); got != want {
-		t.Errorf("want %q, got %q", want, got)
-	}
-}
-
-// A part header that does not fit the buffer cannot be completed by reading
-// more, so the caller is told instead of spinning.
-func TestExchangeReadMultipartsHeaderLargerThanBuffer(t *testing.T) {
-	head := "POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: multipart/form-data; boundary=xyz\r\n\r\n"
-	body := "--xyz\r\nContent-Disposition: form-data; name=\"" + strings.Repeat("n", 64) + "\"\r\n\r\nv\r\n--xyz--\r\n"
-	parts, err := serveMultipart(t, head+body, 32, "")
-	if err != lneto.ErrShortBuffer {
-		t.Errorf("want %v, got %v", lneto.ErrShortBuffer, err)
-	}
-	if len(parts) != 0 {
-		t.Errorf("want no parts reported for a header that never parsed, got %d", len(parts))
-	}
-}
-
-// A buffer too small to ever outgrow a delimiter is a caller error, refused
-// before any of the body is read.
-func TestExchangeReadMultipartsBufferUnusable(t *testing.T) {
-	head := "POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: multipart/form-data; boundary=xyz\r\n\r\n"
-	body := "--xyz\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nv\r\n--xyz--\r\n"
-	if _, err := serveMultipart(t, head+body, len("\r\n--xyz"), ""); err != lneto.ErrInvalidConfig {
-		t.Errorf("want %v, got %v", lneto.ErrInvalidConfig, err)
+			parts, err := serveMultipart(t, head+string(body), bufSize, discard, segmentAt)
+			if err != test.wantErr {
+				t.Fatalf("want error %v, got %v", test.wantErr, err)
+			}
+			if test.wantErr != nil {
+				// Nothing parsed is promised on failure, and a part reported
+				// for a header that never parsed is a part the caller cannot
+				// act on.
+				if len(parts) != 0 {
+					t.Errorf("want no parts reported, got %d: %q", len(parts), partsString(t, parts))
+				}
+				return
+			}
+			checkParts(t, parts, wantParts)
+		})
 	}
 }
 
@@ -948,20 +1171,26 @@ func TestExchangeRequestParseMultipartRejects(t *testing.T) {
 		{contentType: "multipart/form-data", wantErr: true}, // Boundary is required.
 		{contentType: "", wantErr: true},
 	} {
-		var gotErr error
-		var sm MuxSlice
-		sm.Reset(1)
-		sm.Handle("/f", func(exch *Exchange) {
-			_, gotErr = exch.RequestMultipart()
+		name := test.contentType
+		if name == "" {
+			name = "no content type"
+		}
+		t.Run(name, func(t *testing.T) {
+			var gotErr error
+			var sm MuxSlice
+			sm.Reset(1)
+			sm.Handle("/f", func(exch *Exchange) {
+				_, gotErr = exch.RequestMultipart()
+			})
+			request := "POST /f HTTP/1.1\r\nHost: h\r\n"
+			if test.contentType != "" {
+				request += "Content-Type: " + test.contentType + "\r\n"
+			}
+			serve(t, request+"\r\n", &sm)
+			if (gotErr != nil) != test.wantErr {
+				t.Errorf("want error %v, got %v", test.wantErr, gotErr)
+			}
 		})
-		request := "POST /f HTTP/1.1\r\nHost: h\r\n"
-		if test.contentType != "" {
-			request += "Content-Type: " + test.contentType + "\r\n"
-		}
-		serve(t, request+"\r\n", &sm)
-		if (gotErr != nil) != test.wantErr {
-			t.Errorf("%q: want error %v, got %v", test.contentType, test.wantErr, gotErr)
-		}
 	}
 }
 
