@@ -14,6 +14,7 @@ const (
 	headerConnection    = "Connection"
 	headerContentLength = "Content-Length"
 	strClose            = "close"
+	strKeepAlive        = "keep-alive"
 )
 
 // Flags is a bitset of signals gathered while parsing or building a header,

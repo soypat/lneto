@@ -331,12 +331,31 @@ func (hb *headerBuf) next(ss *scannerState) pairKV {
 func (h *Header) ConnectionClose() bool {
 	flags := h.Flags()
 	closed := flags.HasAny(flagConnClose) ||
-		h.hbuf.kv.HasKeyValue(headerConnection, strClose) ||
-		(flags.HasAny(flagNoHTTP11) && !h.hbuf.kv.HasKeyValue(headerConnection, "keep-alive"))
+		h.hasConnectionToken(strClose) ||
+		(flags.HasAny(flagNoHTTP11) && !h.hasConnectionToken(strKeepAlive))
 	if closed {
 		h.hbuf.kv.flags |= flagConnClose
 	}
 	return closed
+}
+
+// hasConnectionToken reports whether the Connection field lists token, which
+// must be lowercase. The field name, its comma list and each token all compare
+// case insensitively, RFC 9110 5.1 and 7.6.1.
+func (h *Header) hasConnectionToken(token string) bool {
+	value := h.GetFold(headerConnection)
+	for len(value) > 0 {
+		item := value
+		if comma := bytes.IndexByte(value, ','); comma >= 0 {
+			item, value = value[:comma], value[comma+1:]
+		} else {
+			value = nil
+		}
+		if equalFold(trimOWS(item), token) {
+			return true
+		}
+	}
+	return false
 }
 
 const enableDebug = internal.HeapAllocDebugging

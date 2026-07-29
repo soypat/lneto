@@ -537,3 +537,44 @@ func splitInto(s string, n int) []string {
 	}
 	return chunks
 }
+
+// Connection is a case-insensitive list of case-insensitive tokens, RFC 9110
+// 7.6.1, and its field name folds like any other, RFC 9110 5.1. Missing a close
+// token keeps serving a peer that asked to hang up; missing keep-alive hangs up
+// on an HTTP/1.0 peer that asked to stay.
+func TestConnectionCloseFolded(t *testing.T) {
+	for _, test := range []struct {
+		proto     string
+		field     string
+		wantClose bool
+	}{
+		{proto: "HTTP/1.1", field: "Connection: close", wantClose: true},
+		{proto: "HTTP/1.1", field: "connection: close", wantClose: true},
+		{proto: "HTTP/1.1", field: "CONNECTION: close", wantClose: true},
+		{proto: "HTTP/1.1", field: "Connection: Close", wantClose: true},
+		{proto: "HTTP/1.1", field: "Connection: CLOSE", wantClose: true},
+		{proto: "HTTP/1.1", field: "Connection: keep-alive, close", wantClose: true},
+		{proto: "HTTP/1.1", field: "Connection: close, keep-alive", wantClose: true},
+		{proto: "HTTP/1.1", field: "Connection: TE, Close", wantClose: true},
+		// A token that merely contains "close" is not the close token.
+		{proto: "HTTP/1.1", field: "Connection: closed", wantClose: false},
+		{proto: "HTTP/1.1", field: "Connection: keep-alive", wantClose: false},
+		// HTTP/1.0 closes unless the peer asks to keep the connection.
+		{proto: "HTTP/1.0", field: "Connection: keep-alive", wantClose: false},
+		{proto: "HTTP/1.0", field: "connection: keep-alive", wantClose: false},
+		{proto: "HTTP/1.0", field: "Connection: Keep-Alive", wantClose: false},
+		{proto: "HTTP/1.0", field: "Connection: TE, keep-alive", wantClose: false},
+		{proto: "HTTP/1.0", field: "Host: h", wantClose: true},
+	} {
+		t.Run(test.proto+" "+test.field, func(t *testing.T) {
+			var hdr Header
+			full := "GET / " + test.proto + "\r\nHost: h\r\n" + test.field + "\r\n\r\n"
+			if err := hdr.ParseBytes(false, []byte(full)); err != nil {
+				t.Fatal(err)
+			}
+			if got := hdr.ConnectionClose(); got != test.wantClose {
+				t.Errorf("want ConnectionClose=%v, got %v", test.wantClose, got)
+			}
+		})
+	}
+}

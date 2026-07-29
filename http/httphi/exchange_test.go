@@ -1415,3 +1415,58 @@ func (c *blockingConn) Read(b []byte) (int, error) {
 
 func (c *blockingConn) Write(b []byte) (int, error) { return len(b), nil }
 func (c *blockingConn) Close() error                { return nil }
+
+// Field names are case insensitive, RFC 9110 5.1, and HTTP/2 mandates lowercase
+// ones, so an h2-to-h1 proxy sends "content-type". The field must be found
+// whatever the case, or form parsing refuses a body it should accept.
+func TestExchangeRequestContentTypeFolded(t *testing.T) {
+	for _, name := range []string{"Content-Type", "content-type", "CONTENT-TYPE", "cOnTeNt-TyPe"} {
+		t.Run(name, func(t *testing.T) {
+			const formType = "application/x-www-form-urlencoded"
+			var gotType string
+			var gotErr error
+			var form httpraw.Form
+			var sm MuxSlice
+			sm.Reset(1)
+			sm.Handle("/f", func(exch *Exchange) {
+				gotType = string(exch.RequestContentType())
+				gotErr = exch.RequestParseForm(&form, make([]byte, 64))
+			})
+			serve(t, "POST /f HTTP/1.1\r\nHost: h\r\n"+name+": "+formType+"\r\nContent-Length: 3\r\n\r\na=1", &sm)
+
+			if gotType != formType {
+				t.Fatalf("want Content-Type %q, got %q", formType, gotType)
+			}
+			if gotErr != nil {
+				t.Fatalf("want form parsed, got %v", gotErr)
+			}
+			if key, value := form.Pair(0); b2s(key) != "a" || b2s(value) != "1" {
+				t.Errorf("want a=1, got %q=%q", key, value)
+			}
+		})
+	}
+}
+
+// The Transfer-Encoding guard stops chunk framing being read as form data. A
+// lowercase field name must not slip past it: with a Content-Length alongside,
+// the chunk sizes and their CRLFs land inside the parsed pairs.
+func TestExchangeRequestParseFormFoldedTransferEncoding(t *testing.T) {
+	for _, name := range []string{"Transfer-Encoding", "transfer-encoding", "TRANSFER-ENCODING"} {
+		t.Run(name, func(t *testing.T) {
+			const body = "3\r\na=1\r\n0\r\n\r\n"
+			var gotErr error
+			var form httpraw.Form
+			var sm MuxSlice
+			sm.Reset(1)
+			sm.Handle("/f", func(exch *Exchange) {
+				gotErr = exch.RequestParseForm(&form, make([]byte, 64))
+			})
+			serve(t, "POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: application/x-www-form-urlencoded\r\n"+
+				name+": chunked\r\nContent-Length: "+strconv.Itoa(len(body))+"\r\n\r\n"+body, &sm)
+
+			if gotErr != errUnsupportedTransferCoding {
+				t.Fatalf("want %v, got %v with %d pairs %q", errUnsupportedTransferCoding, gotErr, form.Len(), formString(&form))
+			}
+		})
+	}
+}

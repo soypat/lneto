@@ -420,7 +420,9 @@ func (exch *Exchange) RequestParseCookie(dst *httpraw.Cookie, key string) error 
 // appears on the wire, parameters included, nil if absent. Test it with
 // [httpraw.MediaTypeIs] and pick parameters out with [httpraw.ContentParam].
 func (exch *Exchange) RequestContentType() []byte {
-	return exch.RequestHeader("Content-Type")
+	// Folded: field names are case insensitive and HTTP/2 mandates lowercase, so
+	// a proxy translating h2 to h1 sends "content-type", RFC 9110 5.1.
+	return exch.RequestHeaderRaw().GetFold("Content-Type")
 }
 
 // RequestContentLength returns the body length declared by the request's
@@ -446,7 +448,7 @@ func (exch *Exchange) RequestContentLength() (_ int64, present bool, _ error) {
 func (exch *Exchange) RequestParseForm(dst *httpraw.Form, buf []byte) error {
 	if !httpraw.MediaTypeIs(exch.RequestContentType(), "application/x-www-form-urlencoded") {
 		return errNotFormEncoded
-	} else if exch.RequestHeader("Transfer-Encoding") != nil {
+	} else if exch.RequestHeaderRaw().GetFold("Transfer-Encoding") != nil {
 		// Chunked bodies are framed, so reading Content-Length bytes off the
 		// wire would parse chunk sizes as form data. httpraw does not decode them.
 		return errUnsupportedTransferCoding
