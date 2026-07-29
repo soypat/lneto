@@ -144,20 +144,17 @@ func (cfg RouterConfig) workerMode() bool {
 	return cfg.FixedNumGoroutines > 0
 }
 
-// TeardownGoroutines stops the router's fixed goroutines once they finish the
-// exchanges they are serving. [Router.Configure] calls it before installing a
-// new generation. A torn down router refuses connections with a non-nil error
-// until it is configured again.
-func (r *Router) TeardownGoroutines() {
+// Shutdown stops the router once in-flight exchanges finish; until
+// [Router.Configure] is called again, connections are refused with a
+// non-nil error. Configure calls it before installing a new generation.
+func (r *Router) Shutdown() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.teardownGoroutinesLocked()
+	r.shutdownLocked()
 }
 
-// teardownGoroutinesLocked closes the job queue fixed goroutines feed from.
-// Requires r.mu held so that a concurrent [Router.Handle] cannot be enqueueing
-// on the channel being closed.
-func (r *Router) teardownGoroutinesLocked() {
+// shutdownLocked is [Router.Shutdown] but without locking requirement.
+func (r *Router) shutdownLocked() {
 	r.gen.Add(1)
 	if r.pendingConns != nil {
 		close(r.pendingConns)
@@ -179,7 +176,7 @@ func (r *Router) Configure(cfg RouterConfig) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.teardownGoroutinesLocked()
+	r.shutdownLocked()
 	gen := r.gen.Load()
 	numgoro := cfg.FixedNumGoroutines
 	workerMode := cfg.workerMode()

@@ -392,7 +392,7 @@ func TestRouterHandleAfterTeardown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router.TeardownGoroutines()
+	router.Shutdown()
 
 	conn := newConn("GET / HTTP/1.1\r\nHost: h\r\n\r\n")
 	if err = router.Handle(conn); err != errRouterTornDown {
@@ -446,7 +446,7 @@ func TestRouterTeardownReleasesQueuedConns(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		router.TeardownGoroutines()
+		router.Shutdown()
 		for i := range conns {
 			// Handle took ownership of the connection: served or dropped, the
 			// router closes it.
@@ -472,7 +472,7 @@ func TestRouterConfigureDuringWorkerHandle(t *testing.T) {
 	if err := router.Configure(cfg); err != nil {
 		t.Fatal(err)
 	}
-	defer router.TeardownGoroutines()
+	defer router.Shutdown()
 
 	var wg sync.WaitGroup
 	wg.Add(2)

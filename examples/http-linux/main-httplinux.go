@@ -57,7 +57,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer router.TeardownGoroutines()
+	defer router.Shutdown()
 
 	for {
 		conn, err := ln.Accept()
