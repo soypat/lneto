@@ -10,19 +10,16 @@ func TestTryParse_IncrementalRequest(t *testing.T) {
 	// Full HTTP request split across multiple ReadFromBytes calls.
 	full := "GET /index.html HTTP/1.1\r\nHost: example.com\r\nContent-Type: text/html\r\n\r\nbody here"
 	var hdr Header
-	hdr.Reset(make([]byte, 0, 256))
+	hdr.Reset(make([]byte, 0, 256), numHeaderCapacity)
 
 	// Feed data in small chunks to exercise incremental parsing.
 	chunks := splitInto(full, 10)
 	var done bool
 	var doneIdx int
 	for i, chunk := range chunks {
-		n, err := hdr.ReadFromBytes([]byte(chunk))
+		err := hdr.ReadFromBytes([]byte(chunk))
 		if err != nil {
 			t.Fatalf("ReadFromBytes: %v", err)
-		}
-		if n != len(chunk) {
-			t.Fatalf("expected %d bytes read, got %d", len(chunk), n)
 		}
 
 		var needMore bool
@@ -52,19 +49,16 @@ func TestTryParse_IncrementalRequest(t *testing.T) {
 	if string(hdr.Method()) != "GET" {
 		t.Errorf("method = %q; want GET", hdr.Method())
 	}
-	if string(hdr.RequestURI()) != "/index.html" {
-		t.Errorf("URI = %q; want /index.html", hdr.RequestURI())
+	if string(hdr.RequestTarget()) != "/index.html" {
+		t.Errorf("URI = %q; want /index.html", hdr.RequestTarget())
 	}
 
 	// Verify headers via ForEach.
 	headers := make(map[string]string)
-	err := hdr.ForEach(func(key, value []byte) error {
+	hdr.ForEach(func(key, value []byte) bool {
 		headers[string(key)] = string(value)
-		return nil
+		return true
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if headers["Host"] != "example.com" {
 		t.Errorf("Host = %q; want example.com", headers["Host"])
 	}
@@ -85,7 +79,7 @@ func TestTryParse_IncrementalRequest(t *testing.T) {
 func TestTryParse_IncrementalResponse(t *testing.T) {
 	full := "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nServer: lneto\r\n\r\nhello"
 	var hdr Header
-	hdr.Reset(make([]byte, 0, 256))
+	hdr.Reset(make([]byte, 0, 256), numHeaderCapacity)
 
 	chunks := splitInto(full, 8)
 	var done bool
@@ -137,7 +131,7 @@ func TestReadFromLimited(t *testing.T) {
 	r := strings.NewReader(data)
 
 	var hdr Header
-	hdr.Reset(make([]byte, 0, 256))
+	hdr.Reset(make([]byte, 0, 256), numHeaderCapacity)
 
 	// Read in one shot.
 	n, err := hdr.ReadFromLimited(r, 256)
@@ -163,7 +157,7 @@ func TestReadFromLimited(t *testing.T) {
 
 func TestReadFromLimited_MaxBytes(t *testing.T) {
 	var hdr Header
-	hdr.Reset(make([]byte, 0, 256))
+	hdr.Reset(make([]byte, 0, 256), numHeaderCapacity)
 
 	// Zero maxBytesToRead should error.
 	_, err := hdr.ReadFromLimited(strings.NewReader("data"), 0)
@@ -174,9 +168,9 @@ func TestReadFromLimited_MaxBytes(t *testing.T) {
 
 func TestReadFromBytes_Empty(t *testing.T) {
 	var hdr Header
-	hdr.Reset(make([]byte, 0, 256))
+	hdr.Reset(make([]byte, 0, 256), numHeaderCapacity)
 
-	_, err := hdr.ReadFromBytes(nil)
+	err := hdr.ReadFromBytes(nil)
 	if err == nil {
 		t.Fatal("expected error for empty bytes")
 	}
@@ -184,7 +178,7 @@ func TestReadFromBytes_Empty(t *testing.T) {
 
 func TestBufferFreeAndCapacity(t *testing.T) {
 	var hdr Header
-	hdr.Reset(make([]byte, 0, 100))
+	hdr.Reset(make([]byte, 0, 100), numHeaderCapacity)
 
 	if hdr.BufferCapacity() != 100 {
 		t.Errorf("capacity = %d; want 100", hdr.BufferCapacity())
@@ -202,15 +196,14 @@ func TestBufferFreeAndCapacity(t *testing.T) {
 func TestEnableBufferGrowth(t *testing.T) {
 	var hdr Header
 	buf := make([]byte, 0, 64)
-	hdr.Reset(buf)
-	hdr.EnableBufferGrowth(false)
-
+	hdr.Reset(buf, numHeaderCapacity)
+	hdr.ConfigBufferGrowth(false)
 	// With growth disabled, reading more than capacity should fail.
 	big := make([]byte, 128)
 	for i := range big {
 		big[i] = 'A'
 	}
-	_, err := hdr.ReadFromBytes(big)
+	err := hdr.ReadFromBytes(big)
 	if err == nil {
 		t.Fatal("expected error when buffer growth disabled and data exceeds capacity")
 	}
@@ -229,11 +222,11 @@ func TestHeader_Add(t *testing.T) {
 
 	// ForEach should find both.
 	var values []string
-	hdr.ForEach(func(key, value []byte) error {
+	hdr.ForEach(func(key, value []byte) bool {
 		if string(key) == "X-Custom" {
 			values = append(values, string(value))
 		}
-		return nil
+		return true
 	})
 	if len(values) != 2 {
 		t.Fatalf("expected 2 X-Custom headers, got %d", len(values))
@@ -332,6 +325,14 @@ func TestCookie_ParseBytes(t *testing.T) {
 	if string(c.Get("Path")) != "/" {
 		t.Errorf("Path = %q; want /", c.Get("Path"))
 	}
+	// The first pair sits at buffer offset 0, which a presence check keyed on
+	// the offset rather than the length reads as absent.
+	if string(c.Get("session")) != "abc123" {
+		t.Errorf("Get(session) = %q; want abc123", c.Get("session"))
+	}
+	if !c.HasKeyOrSingleValue("session") {
+		t.Error("expected first pair to be present by key")
+	}
 	if !c.HasKeyOrSingleValue("Secure") {
 		t.Error("expected Secure flag")
 	}
@@ -357,13 +358,10 @@ func TestCookie_ForEach(t *testing.T) {
 	c.ParseBytes([]byte("a=1; b=2; c=3"))
 
 	var keys []string
-	err := c.ForEach(func(key, value []byte) error {
+	c.ForEach(func(key, value []byte) bool {
 		keys = append(keys, string(key))
-		return nil
+		return true
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if len(keys) != 3 {
 		t.Fatalf("expected 3 cookie entries, got %d", len(keys))
 	}
@@ -389,7 +387,7 @@ func TestHeader_MultilineValue(t *testing.T) {
 
 func TestHeader_ResponseRoundTrip(t *testing.T) {
 	var hdr Header
-	hdr.Reset(make([]byte, 0, 256))
+	hdr.Reset(make([]byte, 0, 256), numHeaderCapacity)
 	hdr.SetProtocol("HTTP/1.1")
 	hdr.SetStatus("404", "Not Found")
 	hdr.Add("Content-Type", "text/plain")
@@ -429,10 +427,10 @@ func TestHeader_ResponseRoundTrip(t *testing.T) {
 
 func TestHeader_RequestRoundTrip(t *testing.T) {
 	var hdr Header
-	hdr.Reset(make([]byte, 0, 256))
+	hdr.Reset(make([]byte, 0, 256), numHeaderCapacity)
 	hdr.SetProtocol("HTTP/1.1")
 	hdr.SetMethod("POST")
-	hdr.SetRequestURI("/api/data")
+	hdr.SetRequestTarget("/api/data")
 	hdr.Add("Host", "example.com")
 	hdr.Add("Content-Type", "application/json")
 
@@ -454,8 +452,8 @@ func TestHeader_RequestRoundTrip(t *testing.T) {
 	if string(hdr2.Method()) != "POST" {
 		t.Errorf("re-parsed method = %q; want POST", hdr2.Method())
 	}
-	if string(hdr2.RequestURI()) != "/api/data" {
-		t.Errorf("re-parsed URI = %q; want /api/data", hdr2.RequestURI())
+	if string(hdr2.RequestTarget()) != "/api/data" {
+		t.Errorf("re-parsed URI = %q; want /api/data", hdr2.RequestTarget())
 	}
 	if string(hdr2.Get("Host")) != "example.com" {
 		t.Errorf("re-parsed Host = %q; want example.com", hdr2.Get("Host"))
@@ -504,8 +502,8 @@ func TestParseRequest_NoProtocol(t *testing.T) {
 	if string(hdr.Method()) != "GET" {
 		t.Errorf("method = %q; want GET", hdr.Method())
 	}
-	if string(hdr.RequestURI()) != "/simple" {
-		t.Errorf("URI = %q; want /simple", hdr.RequestURI())
+	if string(hdr.RequestTarget()) != "/simple" {
+		t.Errorf("URI = %q; want /simple", hdr.RequestTarget())
 	}
 	if hdr.Protocol() != nil {
 		t.Errorf("protocol should be nil for version-less request, got %q", hdr.Protocol())
@@ -538,4 +536,45 @@ func splitInto(s string, n int) []string {
 		s = s[end:]
 	}
 	return chunks
+}
+
+// Connection is a case-insensitive list of case-insensitive tokens, RFC 9110
+// 7.6.1, and its field name folds like any other, RFC 9110 5.1. Missing a close
+// token keeps serving a peer that asked to hang up; missing keep-alive hangs up
+// on an HTTP/1.0 peer that asked to stay.
+func TestConnectionCloseFolded(t *testing.T) {
+	for _, test := range []struct {
+		proto     string
+		field     string
+		wantClose bool
+	}{
+		{proto: "HTTP/1.1", field: "Connection: close", wantClose: true},
+		{proto: "HTTP/1.1", field: "connection: close", wantClose: true},
+		{proto: "HTTP/1.1", field: "CONNECTION: close", wantClose: true},
+		{proto: "HTTP/1.1", field: "Connection: Close", wantClose: true},
+		{proto: "HTTP/1.1", field: "Connection: CLOSE", wantClose: true},
+		{proto: "HTTP/1.1", field: "Connection: keep-alive, close", wantClose: true},
+		{proto: "HTTP/1.1", field: "Connection: close, keep-alive", wantClose: true},
+		{proto: "HTTP/1.1", field: "Connection: TE, Close", wantClose: true},
+		// A token that merely contains "close" is not the close token.
+		{proto: "HTTP/1.1", field: "Connection: closed", wantClose: false},
+		{proto: "HTTP/1.1", field: "Connection: keep-alive", wantClose: false},
+		// HTTP/1.0 closes unless the peer asks to keep the connection.
+		{proto: "HTTP/1.0", field: "Connection: keep-alive", wantClose: false},
+		{proto: "HTTP/1.0", field: "connection: keep-alive", wantClose: false},
+		{proto: "HTTP/1.0", field: "Connection: Keep-Alive", wantClose: false},
+		{proto: "HTTP/1.0", field: "Connection: TE, keep-alive", wantClose: false},
+		{proto: "HTTP/1.0", field: "Host: h", wantClose: true},
+	} {
+		t.Run(test.proto+" "+test.field, func(t *testing.T) {
+			var hdr Header
+			full := "GET / " + test.proto + "\r\nHost: h\r\n" + test.field + "\r\n\r\n"
+			if err := hdr.ParseBytes(false, []byte(full)); err != nil {
+				t.Fatal(err)
+			}
+			if got := hdr.ConnectionClose(); got != test.wantClose {
+				t.Errorf("want ConnectionClose=%v, got %v", test.wantClose, got)
+			}
+		})
+	}
 }

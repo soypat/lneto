@@ -2,6 +2,7 @@ package httpraw
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -9,6 +10,8 @@ import (
 	"testing"
 	"time"
 )
+
+const numHeaderCapacity = 16
 
 func TestHeaderParseRequest(t *testing.T) {
 	const (
@@ -50,8 +53,8 @@ func TestHeaderParseRequest(t *testing.T) {
 	if string(hdr.Method()) != wantMethod {
 		t.Errorf("want method %s, got %q", wantMethod, hdr.Method())
 	}
-	if !bytes.Equal(hdr.RequestURI(), []byte(wantURI)) {
-		t.Errorf("want request URI %q, got %q", wantURI, hdr.RequestURI())
+	if !bytes.Equal(hdr.RequestTarget(), []byte(wantURI)) {
+		t.Errorf("want request URI %q, got %q", wantURI, hdr.RequestTarget())
 	}
 	contentLength, _ := strconv.Atoi(string(hdr.Get("Content-Length")))
 	if contentLength != len(wantMessage) {
@@ -59,7 +62,7 @@ func TestHeaderParseRequest(t *testing.T) {
 	}
 	var c Cookie
 	cookie := hdr.Get("Cookie")
-	c.Reset(cookie)
+	c.Reset(cookie, 0)
 	err = c.Parse()
 	if err != nil {
 		t.Error(err)
@@ -151,6 +154,125 @@ func strSameSite(mode http.SameSite) string {
 	}
 }
 
+func TestHeaderRequestPath(t *testing.T) {
+	for _, test := range []struct {
+		uri  string
+		want string
+	}{
+		{uri: "/", want: "/"},
+		{uri: "/search?q=go", want: "/search"},
+		{uri: "/search?", want: "/search"},
+		{uri: "/a/b/c?x=1&y=2", want: "/a/b/c"},
+		{uri: "/?q=go", want: "/"},
+	} {
+		var h Header
+		err := h.ParseBytes(false, []byte("GET "+test.uri+" HTTP/1.1\r\nHost: h\r\n\r\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := string(h.RequestPath()); got != test.want {
+			t.Errorf("uri %q: want path %q, got %q", test.uri, test.want, got)
+		}
+	}
+}
+
+func TestHeaderContentLength(t *testing.T) {
+	for _, test := range []struct {
+		field   string // Extra header lines, empty for an absent field.
+		want    int64
+		wantErr error
+	}{
+		{field: "Content-Length: 0", want: 0},
+		{field: "Content-Length: 12", want: 12},
+		{field: "Content-Length:  12 ", want: 12}, // OWS around the value, RFC 9110 5.6.3.
+		{field: "Content-Length: 9223372036854775807", want: 9223372036854775807},
+		{field: ""}, // Absent field is no body and no error, RFC 9112 6.3.
+		{field: "Content-Length:", wantErr: errBadContentLength},     // Present but empty.
+		{field: "Content-Length: -1", wantErr: errBadContentLength},  // Digits only, RFC 9112 6.2.
+		{field: "Content-Length: 1 2", wantErr: errBadContentLength}, // Not a list.
+		{field: "Content-Length: 9223372036854775808", wantErr: errBadContentLength},
+	} {
+		var h Header
+		raw := "POST / HTTP/1.1\r\nHost: h\r\n"
+		if test.field != "" {
+			raw += test.field + "\r\n"
+		}
+		if err := h.ParseBytes(false, []byte(raw+"\r\n")); err != nil {
+			t.Fatal(err)
+		}
+		got, present, err := h.ContentLength()
+		if err != test.wantErr {
+			t.Errorf("%q: want error %v, got %v", test.field, test.wantErr, err)
+		} else if err == nil && got != test.want {
+			t.Errorf("%q: want %d, got %d", test.field, test.want, got)
+		}
+		key, _, _ := strings.Cut(test.field, ":")
+		if strings.EqualFold(key, headerContentLength) != present {
+			t.Error("unexpected 'present'", test.field)
+		}
+	}
+}
+
+func TestNextQueryPair(t *testing.T) {
+	for _, test := range []struct {
+		uri  string
+		want string // "key=value" pairs joined by '|'; nil value shown as "key".
+	}{
+		{uri: "/", want: ""},
+		{uri: "/x?", want: ""},
+		{uri: "/x?q=go", want: "q=go"},
+		{uri: "/x?q=go&n=1", want: "q=go|n=1"},
+		{uri: "/x?debug&q=go", want: "debug|q=go"},   // No '=' yields a nil value.
+		{uri: "/x?q=", want: "q="},                   // Empty but present value.
+		{uri: "/x?&&q=go&", want: "q=go"},            // Empty sequences skipped.
+		{uri: "/x?=v", want: "=v"},                   // Empty name is kept.
+		{uri: "/x?a=1&a=2", want: "a=1|a=2"},         // Duplicates all yielded.
+		{uri: "/x?a%20b=c%20d", want: "a%20b=c%20d"}, // Raw, undecoded.
+		{uri: "/x?a=b=c", want: "a=b=c"},             // Only first '=' splits.
+	} {
+		var h Header
+		err := h.ParseBytes(false, []byte("GET "+test.uri+" HTTP/1.1\r\nHost: h\r\n\r\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []byte
+		rawkey, rawval, rest := NextQueryPair(h.RequestQuery())
+		for rawkey != nil {
+			if len(got) > 0 {
+				got = append(got, '|')
+			}
+			got = append(got, rawkey...)
+			if rawval != nil {
+				got = append(got, '=')
+				got = append(got, rawval...)
+			}
+			rawkey, rawval, rest = NextQueryPair(rest)
+		}
+		if string(got) != test.want {
+			t.Errorf("uri %q: want %q, got %q", test.uri, test.want, got)
+		}
+	}
+}
+
+// A nil key ends iteration, and stopping early is just not looping again.
+func TestNextQueryPairEnd(t *testing.T) {
+	rawkey, rawval, rest := NextQueryPair([]byte("a=1&b=2"))
+	if string(rawkey) != "a" || string(rawval) != "1" || string(rest) != "b=2" {
+		t.Fatalf("want a=1 with rest b=2, got %q=%q rest %q", rawkey, rawval, rest)
+	}
+	rawkey, _, rest = NextQueryPair(rest)
+	if string(rawkey) != "b" || len(rest) != 0 {
+		t.Fatalf("want b with empty rest, got %q rest %q", rawkey, rest)
+	}
+	if rawkey, _, _ = NextQueryPair(rest); rawkey != nil {
+		t.Fatalf("want nil key at end of query, got %q", rawkey)
+	}
+	// Trailing separators yield no pair rather than an empty one.
+	if rawkey, _, _ = NextQueryPair([]byte("&&")); rawkey != nil {
+		t.Fatalf("want nil key for empty sequences, got %q", rawkey)
+	}
+}
+
 func TestHeaderNormalizeKey(t *testing.T) {
 	var tests = []struct {
 		key      string
@@ -209,11 +331,72 @@ func TestCopyNormalizedHeaderValue(t *testing.T) {
 	}
 }
 
+func TestCopyDecodedPercentURL(t *testing.T) {
+	var tests = []struct {
+		value       string
+		plusAsSpace bool
+		want        string
+		wantErr     bool
+	}{
+		{value: "", want: ""},
+		{value: "/plain/path", want: "/plain/path"},
+		{value: "/a%20b", want: "/a b"},
+		{value: "%41%42%43", want: "ABC"},
+		{value: "%2f%2F", want: "//"}, // lower and upper case hex digits.
+		{value: "%25", want: "%"},     // escaped percent must not re-trigger decoding.
+		{value: "%2525", want: "%25"}, // decoded output is not re-scanned.
+		{value: "a+b", want: "a+b"},   // plus is literal in path segments.
+		{value: "a+b", plusAsSpace: true, want: "a b"},
+		{value: "%20+%20", plusAsSpace: true, want: "   "},
+		{value: "/x?q=%E2%82%AC", want: "/x?q=\xe2\x82\xac"}, // multi-byte UTF-8 sequence.
+		// Malformed escapes must error, never pass through silently.
+		{value: "%zz", want: "", wantErr: true},
+		{value: "ok%4", want: "ok", wantErr: true}, // truncated escape at end.
+		{value: "ok%", want: "ok", wantErr: true},  // bare percent at end.
+		{value: "a%2gb", want: "a", wantErr: true}, // second digit not hex.
+		{value: "a%g2b", want: "a", wantErr: true}, // first digit not hex.
+	}
+	dst := make([]byte, 256)
+	for _, test := range tests {
+		value := []byte(test.value)
+		n, err := CopyDecodedPercentURL(dst[:len(value)], value, test.plusAsSpace)
+		if test.wantErr && err == nil {
+			t.Errorf("%q: want error, got nil", test.value)
+		} else if !test.wantErr && err != nil {
+			t.Errorf("%q: unexpected error %s", test.value, err)
+		}
+		if got := string(dst[:n]); got != test.want {
+			t.Errorf("%q: want %q got %q", test.value, test.want, got)
+		}
+		// n<len(value) implies percent-escapes were decoded. The converse does not
+		// hold: '+'->' ' substitution preserves length.
+		if !test.wantErr && n < len(test.value) && test.want == test.value {
+			t.Errorf("%q: n=%d signals decoding but value unchanged", test.value, n)
+		}
+		if !test.wantErr && !test.plusAsSpace && test.want != test.value && n >= len(test.value) {
+			t.Errorf("%q: n=%d does not signal decoding of %q", test.value, n, test.want)
+		}
+	}
+}
+
+// In-place decoding (dst aliasing value at offset 0) must yield the same result.
+func TestCopyDecodedPercentURLInPlace(t *testing.T) {
+	const value, want = "/a%20b%2Fc%25", "/a b/c%"
+	buf := []byte(value)
+	n, err := CopyDecodedPercentURL(buf, buf, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(buf[:n]); got != want {
+		t.Fatalf("want %q got %q", want, got)
+	}
+}
+
 func TestHeaderSetOverwrite(t *testing.T) {
 	var h Header
-	h.Reset(nil)
+	h.Reset(nil, numHeaderCapacity)
 	h.SetMethod("GET")
-	h.SetRequestURI("/")
+	h.SetRequestTarget("/")
 	h.SetProtocol("HTTP/1.1")
 
 	h.Set("Host", "first.example.com")
@@ -234,7 +417,7 @@ func TestHeaderSetOverwrite(t *testing.T) {
 
 func TestHeaderSetBytesEmptyValue(t *testing.T) {
 	var h Header
-	h.Reset(nil)
+	h.Reset(nil, numHeaderCapacity)
 	h.SetBytes("X-Empty", nil)
 	if got := h.Get("X-Empty"); len(got) != 0 {
 		t.Errorf("want empty value, got %q", got)
@@ -268,7 +451,7 @@ func TestHeader_LargeBufferOverflow(t *testing.T) {
 }
 
 // a complete but malformed header line with no colon must be a hard error,
-// not errNeedMore (which makes a streaming parser wait forever).
+// not ErrNeedMoreData (which makes a streaming parser wait forever).
 func TestHeader_ColonlessLineIsHardError(t *testing.T) {
 	raw := "GET / HTTP/1.1\r\nBadHeaderNoColon\r\n\r\n"
 	var h Header
@@ -276,8 +459,8 @@ func TestHeader_ColonlessLineIsHardError(t *testing.T) {
 	if err == nil {
 		t.Fatal("want error on colonless header line, got nil")
 	}
-	if err == errNeedMore {
-		t.Fatalf("colonless line reported as errNeedMore (parser would hang); want a hard error like errInvalidName")
+	if err == ErrNeedMoreData {
+		t.Fatalf("colonless line reported as ErrNeedMoreData (parser would hang); want a hard error like errInvalidName")
 	}
 }
 
@@ -289,19 +472,19 @@ func TestHeader_SplitBeforeColonStillParses(t *testing.T) {
 	const part2 = ": example.com\r\n\r\n"
 
 	var h Header
-	h.Reset(nil)
-	if _, err := h.ReadFromBytes([]byte(part1)); err != nil {
+	h.Reset(nil, numHeaderCapacity)
+	if err := h.ReadFromBytes([]byte(part1)); err != nil {
 		t.Fatal(err)
 	}
 	needMore, err := h.TryParse(false)
-	if err != nil && err != errNeedMore {
-		t.Fatalf("split before colon: want errNeedMore/nil, got %v", err)
+	if err != nil && err != ErrNeedMoreData {
+		t.Fatalf("split before colon: want ErrNeedMoreData/nil, got %v", err)
 	}
 	if !needMore {
 		t.Fatal("want needMoreData=true after partial input")
 	}
 
-	if _, err := h.ReadFromBytes([]byte(part2)); err != nil {
+	if err := h.ReadFromBytes([]byte(part2)); err != nil {
 		t.Fatal(err)
 	}
 	needMore, err = h.TryParse(false)
@@ -322,7 +505,7 @@ func TestHeader_AppendHeaderExactCapNoPanic(t *testing.T) {
 	const key, value = "K", "V"
 	buf := make([]byte, 0, len(key)+len(value)) // exact cap, no slack.
 	var h Header
-	h.Reset(buf)
+	h.Reset(buf, numHeaderCapacity)
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("appendHeader panicked on exact-cap buffer: %v", r)
@@ -339,10 +522,10 @@ func TestHeader_AppendHeaderExactCapNoPanic(t *testing.T) {
 func TestHeader_AddFullBufferNoPanic(t *testing.T) {
 	buf := make([]byte, 0, 40) // Small cap; enough for Reset (len 0) but not the field below.
 	var h Header
-	h.Reset(buf)
-	h.EnableBufferGrowth(false)
+	h.Reset(buf, numHeaderCapacity)
+	h.ConfigBufferGrowth(false)
 	h.SetMethod("GET")
-	h.SetRequestURI("/")
+	h.SetRequestTarget("/")
 	h.SetProtocol("HTTP/1.1")
 
 	defer func() {
@@ -374,7 +557,7 @@ func TestHeader_SetInt(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var h Header
-			h.Reset(nil)
+			h.Reset(nil, numHeaderCapacity)
 			h.SetInt("Content-Length", tc.value, tc.base)
 			if got := string(h.Get("Content-Length")); got != tc.want {
 				t.Fatalf("want %q, got %q", tc.want, got)
@@ -386,9 +569,9 @@ func TestHeader_SetInt(t *testing.T) {
 // SetInt on an existing key must reuse the slot in place (single field, latest value).
 func TestHeader_SetIntOverwrite(t *testing.T) {
 	var h Header
-	h.Reset(nil)
+	h.Reset(nil, numHeaderCapacity)
 	h.SetMethod("GET")
-	h.SetRequestURI("/")
+	h.SetRequestTarget("/")
 	h.SetProtocol("HTTP/1.1")
 
 	h.SetInt("Content-Length", 100, 10)
@@ -410,8 +593,8 @@ func TestHeader_SetIntOverwrite(t *testing.T) {
 func TestHeader_SetIntNoAlloc(t *testing.T) {
 	buf := make([]byte, 0, 256)
 	var h Header
-	h.Reset(buf)
-	h.EnableBufferGrowth(false)
+	h.Reset(buf, numHeaderCapacity)
+	h.ConfigBufferGrowth(false)
 	h.Add("Content-Length", "0000000000000000000000") // pre-size a reusable slot.
 	allocs := testing.AllocsPerRun(100, func() {
 		h.SetInt("Content-Length", 1234567890, 10)
@@ -421,5 +604,100 @@ func TestHeader_SetIntNoAlloc(t *testing.T) {
 	}
 	if got := string(h.Get("Content-Length")); got != "1234567890" {
 		t.Fatalf("want %q, got %q", "1234567890", got)
+	}
+}
+
+// A browser sends upwards of twenty header fields and an API client with a few
+// custom fields is not far behind. The field table must be sized from the
+// buffer the caller handed over, not fixed at a count that a real request
+// exceeds.
+func TestHeader_FieldTableSizedFromBuffer(t *testing.T) {
+	const wantVal = "the-canary-value"
+	var raw strings.Builder
+	raw.WriteString("GET / HTTP/1.1\r\nHost: lneto.test\r\n")
+	for i := range 40 {
+		raw.WriteString("X-Field-")
+		raw.WriteString(strconv.Itoa(i))
+		raw.WriteString(": value-of-a-realistic-length-here\r\n")
+	}
+	raw.WriteString("X-Canary: " + wantVal + "\r\n\r\n")
+
+	var h Header
+	h.Reset(make([]byte, 0, 8192), numHeaderCapacity) // Room for the block with plenty to spare.
+	err := h.ParseBytes(false, []byte(raw.String()))
+	if err != nil {
+		t.Fatalf("parsing a 42 field request into an 8kB buffer: %s", err)
+	}
+	if got := string(h.Get("X-Canary")); got != wantVal {
+		t.Fatalf("want X-Canary %q, got %q", wantVal, got)
+	}
+}
+
+// A buffer too small for the fields it is handed must be refused with an error
+// the caller can act on, so a server answers 431 instead of dropping the peer.
+func TestHeader_FieldTableFullIsReported(t *testing.T) {
+	var raw strings.Builder
+	raw.WriteString("GET / HTTP/1.1\r\n")
+	for i := range 64 {
+		// As short as a field gets.
+		raw.WriteString("H")
+		raw.WriteString(strconv.Itoa(i))
+		raw.WriteString(":v\r\n")
+	}
+	raw.WriteString("\r\n")
+	var h Header
+	h.Reset(make([]byte, 0, 512), numHeaderCapacity)
+	h.ConfigBufferGrowth(false)
+	err := h.ParseBytes(false, []byte(raw.String()))
+	if !errors.Is(err, ErrHeaderTooMany) {
+		t.Fatalf("want ErrHeaderFieldsTooLarge, got %v", err)
+	}
+}
+
+// EqualDecodedPercentURL must agree with CopyDecodedPercentURL on every input:
+// same decoded bytes, and false wherever the copying decoder reports an error.
+func TestEqualDecodedPercentURL(t *testing.T) {
+	for _, value := range []string{
+		"", "plain", "a+b", "a%20b", "%41%42", "100%25", "a%2Fb", "+", "%2b",
+		"trailing%", "trailing%4", "%zz", "a%2", "%%", "a+b%20c", "%00",
+	} {
+		for _, plusAsSpace := range []bool{false, true} {
+			dst := make([]byte, len(value))
+			n, err := CopyDecodedPercentURL(dst, []byte(value), plusAsSpace)
+			// The copying decoder is the reference: whatever it produces is what
+			// an equal comparison must accept, and only that.
+			want := ""
+			if err == nil {
+				want = string(dst[:n])
+			}
+			got := EqualDecodedPercentURL([]byte(value), want, plusAsSpace)
+			if err != nil {
+				if got {
+					t.Errorf("%q plus=%v: malformed escape must not compare equal", value, plusAsSpace)
+				}
+				continue
+			}
+			if !got {
+				t.Errorf("%q plus=%v: want equal to its own decoding %q", value, plusAsSpace, want)
+			}
+			if EqualDecodedPercentURL([]byte(value), want+"x", plusAsSpace) {
+				t.Errorf("%q plus=%v: must not equal a longer want", value, plusAsSpace)
+			}
+			if want != "" && EqualDecodedPercentURL([]byte(value), want[:len(want)-1], plusAsSpace) {
+				t.Errorf("%q plus=%v: must not equal a shorter want", value, plusAsSpace)
+			}
+		}
+	}
+}
+
+// The comparison must not allocate: it is the reason a query lookup can return
+// a view without scratch space.
+func TestEqualDecodedPercentURLNoAlloc(t *testing.T) {
+	value := []byte("a%20long%2Dish+key")
+	allocs := testing.AllocsPerRun(100, func() {
+		EqualDecodedPercentURL(value, "a long-ish key", true)
+	})
+	if allocs != 0 {
+		t.Fatalf("EqualDecodedPercentURL allocated %v times, want 0", allocs)
 	}
 }

@@ -16,6 +16,7 @@ Userspace networking primitives.
     - Zero scheduling required. No goroutines/channels use in Lneto. Can be run in event loop.
 - Heapless packet processing
     - [`httpraw`](https://github.com/soypat/lneto/tree/main/http/httpraw) is likely the most performant HTTP/1.1 processing package in the Go ecosystem. Based on [`fasthttp`](https://github.com/valyala/fasthttp) but simpler and more thoughtful memory use.
+    - [`httφ`](https://github.com/soypat/lneto/tree/main/http/httphi) - Heapless HTTP router and zero-copy response writing with Go's standard library API.
 - Lean memory footprint
     - HTTP header struct is 80 bytes with no runtime usage nor heap usage other than buffer
     - Entire Ethernet+IPv4+UDP+DHCP+DNS+NTP stack in ~2kB RAM.

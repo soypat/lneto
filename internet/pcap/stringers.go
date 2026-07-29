@@ -33,8 +33,9 @@ const _FieldClass_name = "undefinedsourcedestinationprotocolversiontypesizeflags
 var _FieldClass_index = [...]uint8{0, 9, 15, 26, 34, 41, 45, 49, 54, 68, 76, 83, 90, 94, 101, 112, 114, 123, 131}
 
 func (i FieldClass) String() string {
-	if i >= FieldClass(len(_FieldClass_index)-1) {
+	idx := int(i) - 0
+	if i < 0 || idx >= len(_FieldClass_index)-1 {
 		return "FieldClass(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _FieldClass_name[_FieldClass_index[i]:_FieldClass_index[i+1]]
+	return _FieldClass_name[_FieldClass_index[idx]:_FieldClass_index[idx+1]]
 }

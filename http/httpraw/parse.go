@@ -3,20 +3,28 @@ package httpraw
 import (
 	"bytes"
 	"errors"
-	"slices"
-	"strconv"
-	"unsafe"
 
 	"github.com/soypat/lneto/internal"
 )
 
 var (
-	errNoProto     = errors.New("missing protocol, HTTP/0.9 unsupported")
-	errNeedMore    = errors.New("need more data: cannot find trailing lf")
-	errUnparsed    = errors.New("need to finish parsing")
-	errInvalidName = errors.New("invalid header name")
-	errSmallBuffer = errors.New("small read buffer. Increase ReadBufferSize")
-	errOOM         = errors.New("httpraw: buffer out of memory")
+	errNoProto = errors.New("missing protocol, HTTP/0.9 unsupported")
+	// ErrNeedMoreData signals a parser was handed an incomplete buffer: append
+	// more data to it and call again.
+	ErrNeedMoreData = errors.New("need more data: cannot find trailing lf/delimiter")
+	errNoBoundary   = errors.New("httpraw: multipart boundary not set")
+	errUnparsed     = errors.New("need to finish parsing")
+	errInvalidName  = errors.New("invalid header name")
+	// ErrBufferExhausted signals a buffer with no room left for the data being
+	// written and no permission to grow, see [KVBuffer.EnableBufferGrowth].
+	// Enlarging the buffer handed to Reset is the only fix; a server answers it
+	// on a request header with 431, RFC 6585 5.
+	ErrBufferExhausted = errors.New("httpraw: buffer exhausted, increase size")
+	// ErrHeaderTooMany signals a header block carrying more fields than
+	// the buffer it is parsed into has room for, see [Header.Reset]. A server
+	// answers it with 431, RFC 6585 5: no larger buffer is coming, so reading
+	// the rest of the block would only spend memory on a request already lost.
+	ErrHeaderTooMany = errors.New("httpraw: more header fields than buffer holds")
 	// Header.Set and Header.Add mangles the buffer.
 	// Call them after retrieving the Body. Do not call them before parsing the header (why would you even do that?).
 	errMangledBuffer    = errors.New("httpraw: mangled buffer")
@@ -29,6 +37,10 @@ var (
 	errBadStatusCodeTxt = errors.New("invalid status code or text")
 	errCookiesParsed    = errors.New("cookies already parsed, reset before parsing again")
 	errBufferTooLarge   = errors.New("httpraw: buffer exceeds max size (offsets are uint16)")
+	errBadPercentEncode = errors.New("httpraw: invalid percent-encoding in URL")
+	errBadDelimiter     = errors.New("httpraw: junk between multipart delimiter and part")
+	errNoContentLength  = errors.New("httpraw: no Content-Length field")
+	errBadContentLength = errors.New("httpraw: invalid Content-Length value")
 )
 
 // maxBufLen bounds the header buffer. Offsets/lengths are stored as uint16
@@ -37,38 +49,21 @@ var (
 const maxBufLen = 0xffff
 
 type headerBuf struct {
+	kv kvBuffer
 	// buf[:len] holds entire HTTP header data, which may be normalized by [flags]. buf[off:len] holds data not yet processed during parsing.
-	buf []byte
+	// buf []byte
 	// offset into buf for parsing.
 	off int
 	// args contains key-value store.
-	headers []argsKV
+	// headers []argsKV
 }
 
-// reset sets the buffer data and discards all parsed data.
-func (h *headerBuf) reset(buf []byte) {
-	if buf == nil {
-		buf = h.buf[:0] // Reuse buffer but discard raw data on nil input.
-	}
-	if cap(h.headers) == 0 {
-		h.headers = make([]argsKV, 16)
-	}
-	*h = headerBuf{
-		buf:     buf,
-		headers: h.headers[:0],
-	}
-}
-
-type tokint = uint16
-
-type headerSlice struct {
-	start tokint
-	len   tokint
-}
-
-type argsKV struct {
-	key   headerSlice
-	value headerSlice // value start >0 means value is present.
+// reset sets the buffer data and discards all parsed data. The field table is
+// grown to match the new buffer's capacity and never shrinks, so a header
+// reused across requests settles on its largest buffer and stops allocating.
+func (h *headerBuf) reset(buf []byte, numHeaderCapacity int) {
+	h.kv.Reset(buf, numHeaderCapacity)
+	h.off = 0
 }
 
 type scannerState struct {
@@ -93,60 +88,56 @@ func (h *Header) parse(asResponse bool) (err error) {
 		return err
 	}
 	debuglog("http:firstline:done")
-	err = h.parseNextHeaders()
+	err = h.parseNextHeaders(h.Flags())
 	debuglog("http:headers:done")
 	return err
 }
 
 func (h *Header) parseFirstLine(asResponse bool) (err error) {
-	if len(h.hbuf.buf) > maxBufLen {
+	if len(h.hbuf.kv.buf) > maxBufLen {
 		return errBufferTooLarge // Offsets would overflow uint16 tokint.
 	}
+	flags := h.Flags()
 	if asResponse {
-		h.statusCode, h.statusText, h.flags, err = h.hbuf.parseFirstLineResponse(h.flags)
+		h.statusCode, h.statusText, flags, err = h.hbuf.parseFirstLineResponse(flags)
 	} else {
-		h.method, h.requestURI, h.proto, h.flags, err = h.hbuf.parseFirstLineRequest(h.flags)
+		h.method, h.requestTarget, h.proto, flags, err = h.hbuf.parseFirstLineRequest(flags)
 	}
+	h.hbuf.kv.flags = flags
 	return err
 }
 
-func (h *Header) parseNextHeaders() error {
+func (h *Header) parseNextHeaders(flags Flags) error {
 	var ss scannerState
-	h.hbuf.parseNextHeaders(&ss)
+	h.hbuf.parseNextHeaders(&ss, flags)
 	if ss.err != nil {
-		h.flags |= flagConnClose
+		h.hbuf.kv.flags |= flagConnClose
 		return ss.err
 	}
-	h.flags |= flagDoneParsingHeader
+	h.hbuf.kv.flags |= flagDoneParsingHeader
 	return nil
 }
 
-func (hb *headerBuf) readFromBytes(b []byte) {
-	hb.buf = append(hb.buf, b...)
-}
+func (hb *headerBuf) free() int { return hb.kv.free() }
 
-func (hb *headerBuf) free() int { return cap(hb.buf) - len(hb.buf) }
-
-func (hb *headerBuf) parseNextHeaders(ss *scannerState) {
+func (hb *headerBuf) parseNextHeaders(ss *scannerState, flags Flags) {
 	debuglog("http:nexthdr:loop")
-	for kv := hb.next(ss); kv.isValid(); kv = hb.next(ss) {
-		if len(hb.headers) == cap(hb.headers) {
-			// Refuse to grow the headers slice: caller must pre-allocate
-			// sufficient capacity via reset or use a larger initial size.
-			ss.err = errOOM
+	for kv := hb.next(ss); kv.isValidHeader(); kv = hb.next(ss) {
+		if !hb.kv.canAddOneKV() {
+			ss.err = ErrHeaderTooMany
 			return
 		}
-		hb.headers = append(hb.headers, kv)
+		hb.kv.kvs = append(hb.kv.kvs, kv)
 	}
 	debuglog("http:nexthdr:done")
 }
 
 func (hb *headerBuf) offBuf() []byte {
-	return hb.buf[hb.off:]
+	return hb.kv.buf[hb.off:]
 }
 
 func (hb *headerBuf) skipLeadingCRLF() {
-	for hb.off < len(hb.buf) && (hb.buf[hb.off] == '\n' || hb.buf[hb.off] == '\r') {
+	for hb.off < len(hb.kv.buf) && (hb.kv.buf[hb.off] == '\n' || hb.kv.buf[hb.off] == '\r') {
 		hb.off++
 	}
 }
@@ -156,7 +147,7 @@ func (hb *headerBuf) scanLine() []byte {
 	if len(buf) > 0 && buf[len(buf)-1] == '\r' {
 		buf = buf[:len(buf)-1] // exclude carriage return.
 	}
-	if hb.off < len(hb.buf) {
+	if hb.off < len(hb.kv.buf) {
 		hb.off++ // consume newline.
 	}
 	return buf
@@ -172,17 +163,17 @@ func (hb *headerBuf) scanUntilByte(c byte) []byte {
 	return buf
 }
 
-func (hb *headerBuf) parseFirstLineRequest(initFlags flags) (method, uri, proto headerSlice, flags flags, err error) {
+func (hb *headerBuf) parseFirstLineRequest(initFlags Flags) (method, uri, proto view, flags Flags, err error) {
 	debuglog("http:req:scan")
 	hb.off = 0 // Parsing first line resets offset.
 	hb.skipLeadingCRLF()
 	flags = initFlags
 	if bytes.IndexByte(hb.offBuf(), '\n') < 0 {
-		return method, uri, proto, flags, errNeedMore // Incomplete line.
+		return method, uri, proto, flags, ErrNeedMoreData // Incomplete line.
 	}
 	b := hb.scanLine()
 	if len(b) < 5 {
-		return method, uri, proto, flags, errNeedMore
+		return method, uri, proto, flags, ErrNeedMoreData
 	}
 	debuglog("http:req:parse")
 
@@ -190,8 +181,8 @@ func (hb *headerBuf) parseFirstLineRequest(initFlags flags) (method, uri, proto 
 	reqURIEnd := bytes.IndexByte(b[methodEnd+1:], ' ')
 	if reqURIEnd > 0 {
 		reqURIEnd += methodEnd + 1
-		uri = hb.slice(b[methodEnd+1 : reqURIEnd])
-		proto = hb.slice(b[reqURIEnd+1:]) // Skip space before protocol.
+		uri = hb.kv.view(b[methodEnd+1 : reqURIEnd])
+		proto = hb.kv.view(b[reqURIEnd+1:]) // Skip space before protocol.
 		if b2s(b[reqURIEnd+1:]) != strHTTP11 {
 			flags |= flagNoHTTP11
 		}
@@ -200,30 +191,30 @@ func (hb *headerBuf) parseFirstLineRequest(initFlags flags) (method, uri, proto 
 	} else {
 		// No version provided.
 		flags |= flagNoHTTP11
-		uri = hb.slice(b[methodEnd+1:])
+		uri = hb.kv.view(b[methodEnd+1:])
 	}
-	method = hb.slice(b[:methodEnd])
+	method = hb.kv.view(b[:methodEnd])
 	return method, uri, proto, flags, nil
 }
 
-func (hb *headerBuf) parseFirstLineResponse(initFlags flags) (statusCode, statusText headerSlice, flags flags, err error) {
+func (hb *headerBuf) parseFirstLineResponse(initFlags Flags) (statusCode, statusText view, flags Flags, err error) {
 	debuglog("http:resp:scan")
 	hb.off = 0 // Parsing first line resets offset.
 	hb.skipLeadingCRLF()
 	flags = initFlags
 	if bytes.IndexByte(hb.offBuf(), '\n') < 0 {
-		return statusCode, statusText, flags, errNeedMore // Incomplete line.
+		return statusCode, statusText, flags, ErrNeedMoreData // Incomplete line.
 	}
 	b := hb.scanLine()
 	if len(b) < 5 {
-		return statusCode, statusText, flags, errNeedMore
+		return statusCode, statusText, flags, ErrNeedMoreData
 	}
 	debuglog("http:resp:parse")
 
 	// Parse protocol (e.g. "HTTP/1.1"), then status code, then status text.
 	protoEnd := bytes.IndexByte(b, ' ')
 	if protoEnd < 0 {
-		return statusCode, statusText, flags, errNeedMore
+		return statusCode, statusText, flags, ErrNeedMoreData
 	}
 	if b2s(b[:protoEnd]) != strHTTP11 {
 		flags |= flagNoHTTP11
@@ -244,208 +235,27 @@ func (hb *headerBuf) parseFirstLineResponse(initFlags flags) (statusCode, status
 			return statusCode, statusText, flags, errBadStatusCode
 		}
 	}
-	statusCode = hb.slice(code)
+	statusCode = hb.kv.view(code)
 	if codeEnd < len(b) {
-		statusText = hb.slice(b[codeEnd+1:]) // Skip space before text.
+		statusText = hb.kv.view(b[codeEnd+1:]) // Skip space before text.
 	}
 	debuglog("http:resp:done")
 	return statusCode, statusText, flags, nil
 }
 
-func (kv argsKV) isValid() bool {
-	return kv.key.start > 0
-}
-
-func (kv *argsKV) invalidate() {
-	*kv = argsKV{}
-}
-
-func (tb headerBuf) musttoken(slice headerSlice) []byte {
-	return tok2bytes(tb.buf, slice)
-
-}
-
-func (tb headerBuf) slice(b []byte) headerSlice {
-	return bytes2tok(tb.buf, b)
-}
-
-func (kv argsKV) HasValue() bool { return kv.value.start > 0 }
-
-func (h *Header) hasHeaderValue(key, value string) bool {
-	kv := h.peekHeader(key)
-	return kv.isValid() && b2s(h.hbuf.musttoken(kv.value)) == value
-}
-
-// peekHeader returns header key-value for the given key.
-//
-// The returned value is valid until the request is released,
-// either though ReleaseRequest or your request handler returning.
-// Do not store references to returned value. Make copies instead.
-func (h *Header) peekHeader(key string) argsKV {
-	hb := &h.hbuf
-	for i := 0; i < len(h.hbuf.headers); i++ {
-		if b2s(hb.musttoken(h.hbuf.headers[i].key)) == key {
-			return h.hbuf.headers[i]
-		}
-	}
-	return hb.noKV()
-}
-
-func (hb *headerBuf) mustAppendSlice(value string) headerSlice {
-	L := len(hb.buf)
-	if L == 0 {
-		L++ // Valid key-values start after 0.
-	}
-	copy(hb.buf[L:L+len(value)], value)
-	hb.buf = hb.buf[:L+len(value)]
-	return hb.slice(hb.buf[L : L+len(value)])
-}
-
-func (h *Header) reuseOrAppend(tok headerSlice, value string) headerSlice {
-	if tok.len > tokint(len(value)) {
-		copy(h.hbuf.musttoken(tok), value)
-		tok.len = tokint(len(value))
-		return tok
-	}
-	return h.appendSlice(value)
-}
-
-func (h *Header) appendSlice(value string) headerSlice {
-	debuglog("http:appendslice:start")
-	if !h.reserve(len(value)) {
-		return headerSlice{}
-	}
-	h.flags |= flagMangledBuffer
-	return h.hbuf.mustAppendSlice(value)
-}
-
-func (h *Header) appendHeader(key, value string) {
-	// reserve accounts for the byte-0 reservation mustAppendSlice makes on an
-	// empty buffer, and drops (flagging OOM) rather than panicking when growth
-	// is disabled and space runs out.
-	if !h.reserve(len(key) + len(value)) {
-		return
-	}
-	h.flags |= flagMangledBuffer
-	hb := &h.hbuf
-	k := hb.mustAppendSlice(key)
-	v := hb.mustAppendSlice(value)
-	debuglog("http:appendhdr:grow-hdrs")
-	hb.headers = append(hb.headers, argsKV{
-		key:   k,
-		value: v,
-	})
-}
-
-// appendHeaderInt is appendHeader's integer counterpart: it appends key and the
-// formatted integer value as a new header field.
-func (h *Header) appendHeaderInt(key string, value int64, base int) {
-	n := intLen(value, base)
-	if !h.reserve(len(key) + n) {
-		return // Drop and flag OOM; never panic.
-	}
-	h.flags |= flagMangledBuffer
-	hb := &h.hbuf
-	k := hb.mustAppendSlice(key)
-	v := hb.mustAppendInt(value, base)
-	hb.headers = append(hb.headers, argsKV{
-		key:   k,
-		value: v,
-	})
-}
-
-// reserve ensures need free bytes are available in the buffer, growing it when
-// permitted. It accounts for the byte-0 reservation on an empty buffer (see
-// mustAppendSlice). It returns false and sets flagOOMReached when the space
-// cannot be guaranteed: a tokint offset overflow, or a full buffer with
-// flagNoBufferGrow set.
-func (h *Header) reserve(need int) bool {
-	hb := &h.hbuf
-	if len(hb.buf) == 0 {
-		need++ // mustAppend* reserves byte 0 on an empty buffer.
-	}
-	if len(hb.buf)+need > maxBufLen {
-		h.flags |= flagOOMReached // Offsets would overflow uint16 tokint.
-		return false
-	}
-	if need > hb.free() {
-		if h.flags.hasAny(flagNoBufferGrow) {
-			h.flags |= flagOOMReached
-			return false
-		}
-		hb.buf = slices.Grow(hb.buf, need)
-	}
-	return true
-}
-
-// reuseOrAppendInt writes value into tok's slot in place when it fits, avoiding
-// any buffer growth; otherwise it appends a fresh slot.
-func (h *Header) reuseOrAppendInt(tok headerSlice, value int64, base int) headerSlice {
-	n := intLen(value, base)
-	if int(tok.len) >= n {
-		// Reuse: format directly over the existing slot. No free space needed
-		// since n <= tok.len and the slot already lives inside buf.
-		v := strconv.AppendInt(h.hbuf.buf[tok.start:tok.start], value, base)
-		tok.len = tokint(len(v))
-		h.flags |= flagMangledBuffer
-		return tok
-	}
-	return h.appendInt(value, base, n)
-}
-
-// appendInt reserves space (growing or flagging OOM) and appends value as a new slot.
-func (h *Header) appendInt(value int64, base, n int) headerSlice {
-	if !h.reserve(n) {
-		return headerSlice{} // Drop and flag OOM; never panic.
-	}
-	h.flags |= flagMangledBuffer
-	return h.hbuf.mustAppendInt(value, base)
-}
-
-// mustAppendInt formats value into the buffer's free region and commits it.
-// The caller must have reserved at least intLen(value, base) free bytes.
-func (hb *headerBuf) mustAppendInt(value int64, base int) headerSlice {
-	L := len(hb.buf)
-	if L == 0 {
-		L++ // Valid key-values start after byte 0.
-	}
-	v := strconv.AppendInt(hb.buf[L:L], value, base)
-	hb.buf = hb.buf[:L+len(v)]
-	return hb.slice(hb.buf[L : L+len(v)])
-}
-
-// intLen returns the number of bytes strconv.AppendInt would emit for value in
-// the given base (including a leading minus sign for negatives). Used to size
-// the buffer and to test whether a value fits an existing slot without writing.
-func intLen(value int64, base int) int {
-	n := 1
-	u := uint64(value)
-	if value < 0 {
-		n++    // Leading minus sign.
-		u = -u // Two's-complement magnitude; correct even for math.MinInt64.
-	}
-	for u >= uint64(base) {
-		u /= uint64(base)
-		n++
-	}
-	return n
-}
-
-func (hb *headerBuf) noKV() argsKV { return argsKV{} }
-
-func (hb *headerBuf) next(ss *scannerState) argsKV {
+func (hb *headerBuf) next(ss *scannerState) pairKV {
 	if !ss.initialized {
 		ss.nextColon = -1
 		ss.nextNewLine = -1
 	}
-	buf := hb.buf[hb.off:]
+	buf := hb.kv.buf[hb.off:]
 	blen := len(buf)
 	if blen >= 2 && buf[0] == '\r' && buf[1] == '\n' {
 		hb.off += 2
-		return hb.noKV() // \r\n\r\n Ends header.
+		return hb.kv.noKV() // \r\n\r\n Ends header.
 	} else if blen >= 1 && buf[0] == '\n' {
 		hb.off += 1
-		return hb.noKV() // \n\n Ends header.
+		return hb.kv.noKV() // \n\n Ends header.
 	}
 
 	// n is parsing offset. Will start by storing colon index.
@@ -460,19 +270,19 @@ func (hb *headerBuf) next(ss *scannerState) argsKV {
 		if x < 0 {
 			// A header name should always at some point be followed by a \n
 			// even if it's the one that terminates the header block.
-			ss.err = errNeedMore
-			return hb.noKV()
+			ss.err = ErrNeedMoreData
+			return hb.kv.noKV()
 		} else if x < n {
 			// There was a \n before the colon! This is invalid.
 			ss.err = errInvalidName
-			return hb.noKV()
+			return hb.kv.noKV()
 		} else if n < 0 {
 			// A newline is present (x>=0 reached here) but the line has no
 			// colon: malformed, not incomplete. A split arriving before the
 			// colon has no newline yet and is caught by the x<0 branch above,
-			// so it still returns errNeedMore.
+			// so it still returns ErrNeedMoreData.
 			ss.err = errInvalidName
-			return hb.noKV()
+			return hb.kv.noKV()
 		}
 	}
 	// n stores colon position by now.
@@ -480,12 +290,12 @@ func (hb *headerBuf) next(ss *scannerState) argsKV {
 		// Spaces between the header key and colon are not allowed.
 		// See RFC 7230, Section 3.2.4.
 		ss.err = errInvalidName
-		return hb.noKV()
+		return hb.kv.noKV()
 	}
 
 	// Ready to store key..
-	var resultKV argsKV
-	resultKV.key = hb.slice(buf[:n])
+	var resultKV pairKV
+	resultKV.key = hb.kv.view(buf[:n])
 	n++ // consume colon.
 	for len(buf) > n && buf[n] == ' ' {
 		n++ // Trim leading spaces.
@@ -498,8 +308,8 @@ func (hb *headerBuf) next(ss *scannerState) argsKV {
 		nl := bytes.IndexByte(buf[n:], '\n')
 		if nl < 0 || nl+n+1 == len(buf) {
 			// No newline or newline is last character and can't know if is multiline.
-			ss.err = errNeedMore
-			return hb.noKV()
+			ss.err = ErrNeedMoreData
+			return hb.kv.noKV()
 		}
 		n += nl + 1 // Index of the newly found newline.
 		nextChar := buf[n]
@@ -512,42 +322,40 @@ func (hb *headerBuf) next(ss *scannerState) argsKV {
 	if valueEnd > valueStart && buf[valueEnd-1] == '\r' {
 		valueEnd-- // Trim \r character if present before value.
 	}
-	resultKV.value = hb.slice(buf[valueStart:valueEnd])
+	resultKV.value = hb.kv.view(buf[valueStart:valueEnd])
 	hb.off += n
 	return resultKV
 }
 
 // ConnectionClose returns true if 'Connection: close' header is set or if a invalid header was found.
 func (h *Header) ConnectionClose() bool {
-	closed := h.flags.hasAny(flagConnClose) ||
-		h.hasHeaderValue(headerConnection, strClose) ||
-		(h.flags.hasAny(flagNoHTTP11) && !h.hasHeaderValue(headerConnection, "keep-alive"))
+	flags := h.Flags()
+	closed := flags.HasAny(flagConnClose) ||
+		h.hasConnectionToken(strClose) ||
+		(flags.HasAny(flagNoHTTP11) && !h.hasConnectionToken(strKeepAlive))
 	if closed {
-		h.flags |= flagConnClose
+		h.hbuf.kv.flags |= flagConnClose
 	}
 	return closed
 }
 
-// b2s converts byte slice to a string without memory allocation.
-// See https://groups.google.com/forum/#!msg/Golang-Nuts/ENgbUzYvCuU/90yGx7GUAgAJ .
-func b2s(b []byte) string {
-	return unsafe.String(unsafe.SliceData(b), len(b))
-}
-
-func tok2bytes(buf []byte, slice headerSlice) []byte {
-	return buf[slice.start : slice.start+slice.len]
-}
-
-func bytes2tok(buf, value []byte) headerSlice {
-	base := uintptr(unsafe.Pointer(unsafe.SliceData(buf)))
-	off := uintptr(unsafe.Pointer(unsafe.SliceData(value)))
-	if off < base || off > base+uintptr(len(buf)) {
-		panic("httpx: argument buffer does not alias header buffer")
+// hasConnectionToken reports whether the Connection field lists token, which
+// must be lowercase. The field name, its comma list and each token all compare
+// case insensitively, RFC 9110 5.1 and 7.6.1.
+func (h *Header) hasConnectionToken(token string) bool {
+	value := h.GetFold(headerConnection)
+	for len(value) > 0 {
+		item := value
+		if comma := bytes.IndexByte(value, ','); comma >= 0 {
+			item, value = value[:comma], value[comma+1:]
+		} else {
+			value = nil
+		}
+		if equalFold(trimOWS(item), token) {
+			return true
+		}
 	}
-	return headerSlice{
-		start: tokint(off - base),
-		len:   tokint(len(value)),
-	}
+	return false
 }
 
 const enableDebug = internal.HeapAllocDebugging
