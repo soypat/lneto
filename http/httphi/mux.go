@@ -1,6 +1,7 @@
 package httphi
 
 import (
+	"bytes"
 	"io"
 	"strings"
 	"unsafe"
@@ -65,7 +66,7 @@ func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
 	// Mux on the request path: the query string is the handler's business.
 	path := reqhdr.RequestPath()
 	meth := reqhdr.Method()
-	matchedPattern, handler := mux.LookupHandler(MethodFromBytes(meth), b2s(path))
+	matchedPattern, handler := mux.LookupHandler(MethodFromBytes(meth), path, exch.pathValues)
 	if handler != nil {
 		exch.matchedPattern = matchedPattern
 		handler(exch)
@@ -98,8 +99,9 @@ type HandlerFunc func(ex *Exchange)
 // replies 404 when it returns nil.
 type Mux interface {
 	// LookupHandler matches the requestPath and method to a handler and returns it and the
-	// pattern it matched.
-	LookupHandler(get Method, requestPath string) (matchedPattern string, handler HandlerFunc)
+	// pattern it matched. dstPathVals are set to non-zero values by Mux and can later be accessed by [Exchange.PathValue]
+	// requestPath is a buffer owned by the [Exchange] usually and should not be held after LookupHandler returns.
+	LookupHandler(get Method, requestPath []byte, dstPathVals []pathValue) (matchedPattern string, handler HandlerFunc)
 }
 
 // MuxSlice is a [Mux] backed by a slice of registered endpoints, matched by
@@ -107,10 +109,100 @@ type Mux interface {
 type MuxSlice struct {
 	// TODO: binary search worth it?
 	_handlers []struct {
-		method  Method
-		path    string
-		handler HandlerFunc
+		method     Method
+		path       string
+		handler    HandlerFunc
+		setPathVal bool
 	}
+}
+
+type pathValue struct {
+	Key   string // owned by mux.
+	Value []byte // points to raw exchange buffer.
+}
+
+// pathSeparator is shared so [SetPathValues] never converts a literal per call.
+var pathSeparator = []byte{'/'}
+
+// SetPathValues matches requestPath against pattern and binds its wildcards
+// into dstPathVals, read back with [Exchange.PathValue]. Wildcards are whole
+// segments as per http.ServeMux: "{name}" takes one non-empty segment,
+// "{name...}" the rest including slashes, "{$}" only the path's end, and a
+// trailing slash is an anonymous "{...}". i.e: "/b/{bucket}/o/{obj...}".
+//
+// Unlike ServeMux, segments are compared and bound raw, so "/users/{id}" binds
+// "x%2Fy" and not "x/y". Which paths match is unaffected. Bound values alias
+// requestPath rather than copy it.
+func SetPathValues(dstPathVals []pathValue, pattern string, requestPath []byte) (matched, pathValSliceTooShort bool) {
+	if len(pattern) == 0 || pattern[0] != '/' || len(requestPath) == 0 || requestPath[0] != '/' {
+		return false, false
+	}
+	pattern, requestPath = pattern[1:], requestPath[1:]
+	n := 0
+	for {
+		if len(pattern) == 0 {
+			// Nothing left after a slash: an anonymous "..." taking the rest,
+			// which is why "/files/" matches "/files/a/b" and "/" matches all.
+			return true, false
+		}
+		patSeg, patRest, patMore := strings.Cut(pattern, "/")
+		reqSeg, reqRest, reqMore := bytes.Cut(requestPath, pathSeparator)
+		name, isMulti, isWildcard := pathWildcard(patSeg)
+		switch {
+		case isWildcard && name == "$":
+			// Matches the end of the path and nothing else, so it must be the
+			// last segment of the pattern and leave no path behind.
+			return !patMore && len(requestPath) == 0, false
+
+		case isWildcard && isMulti:
+			// Takes the remainder including slashes, possibly empty.
+			if name != "" {
+				if n >= len(dstPathVals) {
+					return false, true
+				}
+				dstPathVals[n] = pathValue{Key: name, Value: requestPath}
+				n++
+			}
+			return true, false
+
+		case isWildcard:
+			if len(reqSeg) == 0 {
+				return false, false // One segment means a non-empty one.
+			}
+			if n >= len(dstPathVals) {
+				return false, true
+			}
+			dstPathVals[n] = pathValue{Key: name, Value: reqSeg}
+			n++
+
+		default:
+			if b2s(reqSeg) != patSeg {
+				return false, false
+			}
+		}
+		if patMore != reqMore {
+			// One side has a further segment and the other does not, so
+			// "/health" misses "/health/" and "/files/" misses "/files".
+			return false, false
+		} else if !patMore {
+			return true, false // Both spent on the same segment.
+		}
+		pattern, requestPath = patRest, reqRest
+	}
+}
+
+// pathWildcard picks apart a "{name}" or "{name...}" pattern segment. It
+// reports ok false for a literal segment, so "/b_{bucket}" is literal text and
+// not a wildcard, matching ServeMux's rule that wildcards be whole segments.
+func pathWildcard(segment string) (name string, isMulti, ok bool) {
+	if len(segment) < 2 || segment[0] != '{' || segment[len(segment)-1] != '}' {
+		return "", false, false
+	}
+	name = segment[1 : len(segment)-1]
+	if rest, found := strings.CutSuffix(name, "..."); found {
+		return rest, true, true
+	}
+	return name, false, true
 }
 
 // Reset discards all registered handlers, reusing the backing array and growing
@@ -121,13 +213,17 @@ func (sm *MuxSlice) Reset(capacity int) {
 
 // LookupHandler returns the handler registered for request path, or nil if none matches.
 // The first registration matching both method and uri wins.
-func (sm *MuxSlice) LookupHandler(method Method, path string) (matched string, _ HandlerFunc) {
+func (sm *MuxSlice) LookupHandler(method Method, path []byte, dstPathVals []pathValue) (matched string, _ HandlerFunc) {
 	for _, endpoint := range sm._handlers {
 		if endpoint.method != MethUndefined && endpoint.method != method {
 			continue
 		}
 		// Method matches.
-		if path == endpoint.path {
+		if endpoint.setPathVal {
+			if ok, _ := SetPathValues(dstPathVals, endpoint.path, path); ok {
+				return endpoint.path, endpoint.handler
+			}
+		} else if b2s(path) == endpoint.path {
 			return endpoint.path, endpoint.handler
 		}
 	}

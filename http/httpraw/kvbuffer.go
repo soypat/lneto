@@ -225,9 +225,11 @@ func (mb *KVBuffer) At(i int) (key, value []byte) {
 }
 func (mb *KVBuffer) setAt(i int, k, v []byte) {
 	mb.flags |= flagMangledBuffer
+	// Route through slice, not bytes2tok: a nil v is a pair with no '=' and must
+	// stay absent rather than trip the alias check on a nil pointer.
 	mb.kvs[i] = argsKV{
-		key:   bytes2tok(mb.buf, k),
-		value: bytes2tok(mb.buf, v),
+		key:   mb.slice(k),
+		value: mb.slice(v),
 	}
 }
 

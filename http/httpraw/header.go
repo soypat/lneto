@@ -241,49 +241,11 @@ func (h *Header) SetInt(key string, value int64, base int) {
 // Calling Set mangles the buffer.
 func (h *Header) Set(key, value string) (enoughSpace bool) {
 	return h.hbuf.kv.Set(key, value)
-
-	// useKv := h.takeReusableSlot(key)
-	// if useKv == nil {
-	// 	h.hbuf.kv.appendPair(key, value)
-	// } else {
-	// 	useKv.value = h.hbuf.kv.reuseOrAppend(useKv.value, value)
-	// }
-}
-
-// takeReusableSlot returns the valid key-value entry for key with the largest
-// value buffer (best candidate for in-place reuse) and invalidates any other
-// entries sharing the key. Returns nil if the key is not present.
-func (h *Header) takeReusableSlot(key string) *argsKV {
-	// hb := &h.hbuf
-	var useKv *argsKV
-	// for i := 0; i < len(hb.headers); i++ {
-	// 	// Search for key-value with largest buffer for value to store value reusing buffer.
-	// 	gotkv := &hb.headers[i]
-	// 	if gotkv.isValidHeader() && b2s(hb.musttoken(gotkv.key)) == key {
-	// 		if useKv == nil {
-	// 			useKv = gotkv
-	// 		} else if gotkv.value.len > useKv.value.len {
-	// 			useKv.invalidate()
-	// 			useKv = gotkv
-	// 		} else {
-	// 			gotkv.invalidate()
-	// 		}
-	// 	}
-	// }
-	return useKv
 }
 
 // Get gets the first exact-match value of a key found in the headers. Use [Header.ForEach] to find multiple values corresponding to same key.
 func (h *Header) Get(key string) []byte {
 	return h.hbuf.kv.Get(key)
-	// debuglog("http:get:start")
-	// kv := h.peekHeader(key)
-	// if kv.isValidHeader() {
-	// 	debuglog("http:get:found")
-	// 	return h.hbuf.musttoken(kv.value)
-	// }
-	// debuglog("http:get:notfound")
-	// return nil
 }
 
 // GetFold gets the first value whose key matches key under ASCII case-insensitive

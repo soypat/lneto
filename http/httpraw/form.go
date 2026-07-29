@@ -22,6 +22,9 @@ func (f *Form) Reset(buf []byte, capKV int) {
 // ParseBytes copies the argument bytes to the Form's underlying buffer and parses them.
 func (f *Form) ParseBytes(b []byte) error {
 	f.Reset(nil, 0)
+	if len(b) == 0 {
+		return nil // An empty body is an empty form, not a failure to read one.
+	}
 	err := f.kv.ReadFromBytes(b)
 	if err != nil {
 		return err
@@ -54,7 +57,7 @@ func (f *Form) Decode() error {
 			return err
 		} else if len(v) == 0 {
 			if nk != len(k) {
-				f.kv.setAt(i, k, v)
+				f.kv.setAt(i, k[:nk], v) // k[:nk]: the decoded key is shorter.
 			}
 			continue
 		}

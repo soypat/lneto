@@ -66,6 +66,29 @@ func TestFormDecode(t *testing.T) {
 	}
 }
 
+// Decoding a valueless key that shrinks must rewrite the key without inventing
+// a value: the pair has no '=' before Decode and must have none after.
+func TestFormDecodeValuelessKeyShrinks(t *testing.T) {
+	var f Form
+	const body = "a=1&o%6Bay"
+	if err := f.ParseBytes([]byte(body)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Decode(); err != nil {
+		t.Fatal(err)
+	}
+	const want = "a=1|okay"
+	if got := render(&f); got != want {
+		t.Errorf("want %q, got %q", want, got)
+	}
+	if _, value := f.Pair(1); value != nil {
+		t.Errorf("want valueless pair to stay valueless, got value %q", value)
+	}
+	if !f.Has("okay") {
+		t.Error("want decoded valueless key present")
+	}
+}
+
 // A malformed escape must be reported, never silently passed through.
 func TestFormDecodeMalformed(t *testing.T) {
 	for _, body := range []string{"q=%zz", "%zz=v", "q=%4"} {

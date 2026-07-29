@@ -12,10 +12,10 @@ var (
 	errNoProto = errors.New("missing protocol, HTTP/0.9 unsupported")
 	// ErrNeedMoreData signals a parser was handed an incomplete buffer: append
 	// more data to it and call again.
-	ErrNeedMoreData      = errors.New("need more data: cannot find trailing lf/delimiter")
-	errNoBoundary        = errors.New("httpraw: multipart boundary not set")
-	errUnparsed          = errors.New("need to finish parsing")
-	errInvalidName       = errors.New("invalid header name")
+	ErrNeedMoreData = errors.New("need more data: cannot find trailing lf/delimiter")
+	errNoBoundary   = errors.New("httpraw: multipart boundary not set")
+	errUnparsed     = errors.New("need to finish parsing")
+	errInvalidName  = errors.New("invalid header name")
 	// ErrBufferExhausted signals a buffer with no room left for the data being
 	// written and no permission to grow, see [KVBuffer.EnableBufferGrowth].
 	// Enlarging the buffer handed to Reset is the only fix; a server answers it

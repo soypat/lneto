@@ -34,6 +34,7 @@ type Exchange struct {
 	respHeaderOff uint16
 	respHeaderLen uint16
 	reqHdr        httpraw.Header
+	pathValues    []pathValue
 
 	hijacked bool
 	rw       conn
@@ -54,6 +55,9 @@ type ExchangeConfig struct {
 	NumHeaderKVCap        int
 	NormalizeOutgoingKeys bool
 	NoRequestBufferGrowth bool
+	// MaxPathValues is how many wildcards a single pattern may bind, read back with
+	// [Exchange.PathValue]. A pattern with more never matches, see [SetPathValues].
+	MaxPathValues int
 }
 
 // HijackRaw is a low-level implementation of http.Hijacker interface.
@@ -99,6 +103,27 @@ func (exch *Exchange) Configure(cfg ExchangeConfig) {
 	exch.reqHdr.Reset(cfg.RawBuf[:0:cfg.RequestBufferLim], cfg.NumHeaderKVCap)
 	exch.reqHdr.ConfigBufferGrowth(!cfg.NoRequestBufferGrowth)
 	exch.normalizeKeys = cfg.NormalizeOutgoingKeys
+	internal.SliceReuse(&exch.pathValues, cfg.MaxPathValues)
+	exch.pathValues = exch.pathValues[:cfg.MaxPathValues]
+}
+
+// PathValue returns the segment the request path bound to the wildcard named
+// key, or nil if the matched pattern has no such wildcard. It plays the part of
+// http.Request.PathValue. See [SetPathValues] for the pattern syntax and for
+// which segments a wildcard binds.
+//
+//	sm.Handle("GET /users/{id}", func(exch *httphi.Exchange) {
+//		id := exch.PathValue("id") // "42" on a GET /users/42.
+//	})
+func (exch *Exchange) PathValue(key string) []byte {
+	for i := range exch.pathValues {
+		if exch.pathValues[i].Key == key {
+			return exch.pathValues[i].Value
+		} else if exch.pathValues[i].Key == "" {
+			break // No more keys set.
+		}
+	}
+	return nil
 }
 
 // Acquire claims the exchange for conn and resets it to serve a new request,
@@ -120,6 +145,7 @@ func (exch *Exchange) Acquire(conn conn) bool {
 	exch.rw = conn
 	exch.headerWritten = false
 	exch.nextFree = nil
+	clear(exch.pathValues)
 	exch.reqHdr.Reset(nil, 0)
 	return true
 }
