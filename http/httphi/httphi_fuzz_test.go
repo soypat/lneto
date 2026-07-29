@@ -188,7 +188,7 @@ func FuzzHandleRequest(f *testing.F) {
 			if ops&opStageHeaders != 0 {
 				// Literal fields: staging request bytes would test the caller's
 				// escaping, not this package's framing.
-				for i := uint64(0); i < stage; i++ {
+				for i := range stage {
 					exch.StageHeader("X-Fuzz", "value")
 					exch.StageHeaderInt("X-Fuzz-Int", int64(i), 10)
 				}
