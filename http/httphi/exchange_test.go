@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -958,10 +959,8 @@ func serveMultipart(t *testing.T, request string, bufSize int, discard []string,
 	sm.Reset(1)
 	sm.Handle("/f", func(exch *Exchange) {
 		newSink := func(hdr *httpraw.MultipartHeader) io.WriteCloser {
-			for _, name := range discard {
-				if string(hdr.Name) == name {
-					return nil // Discard this part's content.
-				}
+			if slices.Contains(discard, string(hdr.Name)) {
+				return nil // Discard this part's content.
 			}
 			return new(partBuffer)
 		}
