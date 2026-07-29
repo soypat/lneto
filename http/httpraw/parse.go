@@ -49,42 +49,21 @@ var (
 const maxBufLen = 0xffff
 
 type headerBuf struct {
+	kv KVBuffer
 	// buf[:len] holds entire HTTP header data, which may be normalized by [flags]. buf[off:len] holds data not yet processed during parsing.
-	buf []byte
+	// buf []byte
 	// offset into buf for parsing.
 	off int
 	// args contains key-value store.
-	headers []argsKV
+	// headers []argsKV
 }
 
 // reset sets the buffer data and discards all parsed data. The field table is
 // grown to match the new buffer's capacity and never shrinks, so a header
 // reused across requests settles on its largest buffer and stops allocating.
 func (h *headerBuf) reset(buf []byte, numHeaderCapacity int) {
-	if buf == nil {
-		buf = h.buf[:0] // Reuse buffer but discard raw data on nil input.
-	}
-	if numHeaderCapacity != 0 {
-		internal.SliceReuse(&h.headers, numHeaderCapacity)
-	} else {
-		h.headers = h.headers[:0]
-	}
-	*h = headerBuf{
-		buf:     buf,
-		headers: h.headers,
-	}
-}
-
-type tokint = uint16
-
-type headerSlice struct {
-	start tokint
-	len   tokint
-}
-
-type argsKV struct {
-	key   headerSlice
-	value headerSlice // value start >0 means value is present.
+	h.kv.Reset(buf, numHeaderCapacity)
+	h.off = 0
 }
 
 type scannerState struct {
@@ -109,20 +88,22 @@ func (h *Header) parse(asResponse bool) (err error) {
 		return err
 	}
 	debuglog("http:firstline:done")
-	err = h.parseNextHeaders(h.flags)
+	err = h.parseNextHeaders(h.Flags())
 	debuglog("http:headers:done")
 	return err
 }
 
 func (h *Header) parseFirstLine(asResponse bool) (err error) {
-	if len(h.hbuf.buf) > maxBufLen {
+	if len(h.hbuf.kv.buf) > maxBufLen {
 		return errBufferTooLarge // Offsets would overflow uint16 tokint.
 	}
+	flags := h.Flags()
 	if asResponse {
-		h.statusCode, h.statusText, h.flags, err = h.hbuf.parseFirstLineResponse(h.flags)
+		h.statusCode, h.statusText, flags, err = h.hbuf.parseFirstLineResponse(flags)
 	} else {
-		h.method, h.requestTarget, h.proto, h.flags, err = h.hbuf.parseFirstLineRequest(h.flags)
+		h.method, h.requestTarget, h.proto, flags, err = h.hbuf.parseFirstLineRequest(flags)
 	}
+	h.hbuf.kv.flags = flags
 	return err
 }
 
@@ -130,39 +111,33 @@ func (h *Header) parseNextHeaders(flags Flags) error {
 	var ss scannerState
 	h.hbuf.parseNextHeaders(&ss, flags)
 	if ss.err != nil {
-		h.flags |= flagConnClose
+		h.hbuf.kv.flags |= flagConnClose
 		return ss.err
 	}
-	h.flags |= flagDoneParsingHeader
+	h.hbuf.kv.flags |= flagDoneParsingHeader
 	return nil
 }
 
-func (hb *headerBuf) readFromBytes(b []byte) {
-	hb.buf = append(hb.buf, b...)
-}
-
-func (hb *headerBuf) free() int { return cap(hb.buf) - len(hb.buf) }
+func (hb *headerBuf) free() int { return hb.kv.free() }
 
 func (hb *headerBuf) parseNextHeaders(ss *scannerState, flags Flags) {
 	debuglog("http:nexthdr:loop")
-	for kv := hb.next(ss); kv.isValid(); kv = hb.next(ss) {
-		if len(hb.headers) == cap(hb.headers) && flags.HasAny(flagNoBufferGrow) {
-			// Refuse to grow the headers slice: the caller granted this much
-			// memory and no more, see [Header.Reset].
+	for kv := hb.next(ss); kv.isValidHeader(); kv = hb.next(ss) {
+		if !hb.kv.canAddOneKV() {
 			ss.err = ErrHeaderTooMany
 			return
 		}
-		hb.headers = append(hb.headers, kv)
+		hb.kv.kvs = append(hb.kv.kvs, kv)
 	}
 	debuglog("http:nexthdr:done")
 }
 
 func (hb *headerBuf) offBuf() []byte {
-	return hb.buf[hb.off:]
+	return hb.kv.buf[hb.off:]
 }
 
 func (hb *headerBuf) skipLeadingCRLF() {
-	for hb.off < len(hb.buf) && (hb.buf[hb.off] == '\n' || hb.buf[hb.off] == '\r') {
+	for hb.off < len(hb.kv.buf) && (hb.kv.buf[hb.off] == '\n' || hb.kv.buf[hb.off] == '\r') {
 		hb.off++
 	}
 }
@@ -172,7 +147,7 @@ func (hb *headerBuf) scanLine() []byte {
 	if len(buf) > 0 && buf[len(buf)-1] == '\r' {
 		buf = buf[:len(buf)-1] // exclude carriage return.
 	}
-	if hb.off < len(hb.buf) {
+	if hb.off < len(hb.kv.buf) {
 		hb.off++ // consume newline.
 	}
 	return buf
@@ -206,8 +181,8 @@ func (hb *headerBuf) parseFirstLineRequest(initFlags Flags) (method, uri, proto 
 	reqURIEnd := bytes.IndexByte(b[methodEnd+1:], ' ')
 	if reqURIEnd > 0 {
 		reqURIEnd += methodEnd + 1
-		uri = hb.slice(b[methodEnd+1 : reqURIEnd])
-		proto = hb.slice(b[reqURIEnd+1:]) // Skip space before protocol.
+		uri = hb.kv.slice(b[methodEnd+1 : reqURIEnd])
+		proto = hb.kv.slice(b[reqURIEnd+1:]) // Skip space before protocol.
 		if b2s(b[reqURIEnd+1:]) != strHTTP11 {
 			flags |= flagNoHTTP11
 		}
@@ -216,9 +191,9 @@ func (hb *headerBuf) parseFirstLineRequest(initFlags Flags) (method, uri, proto 
 	} else {
 		// No version provided.
 		flags |= flagNoHTTP11
-		uri = hb.slice(b[methodEnd+1:])
+		uri = hb.kv.slice(b[methodEnd+1:])
 	}
-	method = hb.slice(b[:methodEnd])
+	method = hb.kv.slice(b[:methodEnd])
 	return method, uri, proto, flags, nil
 }
 
@@ -260,66 +235,19 @@ func (hb *headerBuf) parseFirstLineResponse(initFlags Flags) (statusCode, status
 			return statusCode, statusText, flags, errBadStatusCode
 		}
 	}
-	statusCode = hb.slice(code)
+	statusCode = hb.kv.slice(code)
 	if codeEnd < len(b) {
-		statusText = hb.slice(b[codeEnd+1:]) // Skip space before text.
+		statusText = hb.kv.slice(b[codeEnd+1:]) // Skip space before text.
 	}
 	debuglog("http:resp:done")
 	return statusCode, statusText, flags, nil
 }
 
-func (kv argsKV) isValid() bool {
-	return kv.key.start > 0
-}
-
-func (kv *argsKV) invalidate() {
-	*kv = argsKV{}
-}
-
-func (tb headerBuf) musttoken(slice headerSlice) []byte {
-	return tok2bytes(tb.buf, slice)
-
-}
-
-func (tb headerBuf) slice(b []byte) headerSlice {
-	return bytes2tok(tb.buf, b)
-}
-
 func (kv argsKV) HasValue() bool { return kv.value.start > 0 }
-
-func (h *Header) hasHeaderValue(key, value string) bool {
-	kv := h.peekHeader(key)
-	return kv.isValid() && b2s(h.hbuf.musttoken(kv.value)) == value
-}
-
-// peekHeader returns header key-value for the given key.
-//
-// The returned value is valid until the request is released,
-// either though ReleaseRequest or your request handler returning.
-// Do not store references to returned value. Make copies instead.
-func (h *Header) peekHeader(key string) argsKV {
-	hb := &h.hbuf
-	for i := 0; i < len(h.hbuf.headers); i++ {
-		if b2s(hb.musttoken(h.hbuf.headers[i].key)) == key {
-			return h.hbuf.headers[i]
-		}
-	}
-	return hb.noKV()
-}
-
-func (hb *headerBuf) mustAppendSlice(value string) headerSlice {
-	L := len(hb.buf)
-	if L == 0 {
-		L++ // Valid key-values start after 0.
-	}
-	copy(hb.buf[L:L+len(value)], value)
-	hb.buf = hb.buf[:L+len(value)]
-	return hb.slice(hb.buf[L : L+len(value)])
-}
 
 func (h *Header) reuseOrAppend(tok headerSlice, value string) headerSlice {
 	if tok.len > tokint(len(value)) {
-		copy(h.hbuf.musttoken(tok), value)
+		copy(h.hbuf.kv.musttoken(tok), value)
 		tok.len = tokint(len(value))
 		return tok
 	}
@@ -332,7 +260,7 @@ func (h *Header) appendSlice(value string) headerSlice {
 		return headerSlice{}
 	}
 	h.flags |= flagMangledBuffer
-	return h.hbuf.mustAppendSlice(value)
+	return h.hbuf.kv.mustAppendSlice(value)
 }
 
 func (h *Header) appendHeader(key, value string) {
@@ -437,7 +365,7 @@ func (hb *headerBuf) next(ss *scannerState) argsKV {
 		ss.nextColon = -1
 		ss.nextNewLine = -1
 	}
-	buf := hb.buf[hb.off:]
+	buf := hb.kv.buf[hb.off:]
 	blen := len(buf)
 	if blen >= 2 && buf[0] == '\r' && buf[1] == '\n' {
 		hb.off += 2
@@ -484,7 +412,7 @@ func (hb *headerBuf) next(ss *scannerState) argsKV {
 
 	// Ready to store key..
 	var resultKV argsKV
-	resultKV.key = hb.slice(buf[:n])
+	resultKV.key = hb.kv.slice(buf[:n])
 	n++ // consume colon.
 	for len(buf) > n && buf[n] == ' ' {
 		n++ // Trim leading spaces.
@@ -511,18 +439,19 @@ func (hb *headerBuf) next(ss *scannerState) argsKV {
 	if valueEnd > valueStart && buf[valueEnd-1] == '\r' {
 		valueEnd-- // Trim \r character if present before value.
 	}
-	resultKV.value = hb.slice(buf[valueStart:valueEnd])
+	resultKV.value = hb.kv.slice(buf[valueStart:valueEnd])
 	hb.off += n
 	return resultKV
 }
 
 // ConnectionClose returns true if 'Connection: close' header is set or if a invalid header was found.
 func (h *Header) ConnectionClose() bool {
-	closed := h.flags.HasAny(flagConnClose) ||
-		h.hasHeaderValue(headerConnection, strClose) ||
-		(h.flags.HasAny(flagNoHTTP11) && !h.hasHeaderValue(headerConnection, "keep-alive"))
+	flags := h.Flags()
+	closed := flags.HasAny(flagConnClose) ||
+		h.hbuf.kv.HasKeyValue(headerConnection, strClose) ||
+		(flags.HasAny(flagNoHTTP11) && !h.hbuf.kv.HasKeyValue(headerConnection, "keep-alive"))
 	if closed {
-		h.flags |= flagConnClose
+		h.hbuf.kv.flags |= flagConnClose
 	}
 	return closed
 }

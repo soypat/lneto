@@ -434,7 +434,7 @@ func (exch *Exchange) RequestParseForm(dst *httpraw.Form, buf []byte) error {
 
 	length, present, err := exch.RequestContentLength()
 	if !present {
-		dst.Reset(nil)
+		dst.Reset(nil, 0)
 		return nil // No length is no body, RFC 9112 6.3.
 	} else if err != nil {
 		return err
@@ -454,7 +454,7 @@ func (exch *Exchange) RequestParseForm(dst *httpraw.Form, buf []byte) error {
 			return err
 		}
 	}
-	dst.Reset(buf)
+	dst.Reset(buf, 0)
 	return dst.Parse()
 }
 

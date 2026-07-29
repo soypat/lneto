@@ -77,8 +77,17 @@ func (c *Cookie) Get(key string) []byte { return c.kv.Get(key) }
 
 // HasKeyOrSingleValue returns true if the cookie contains a pair with the given
 // key or a valueless attribute with the given text, i.e: "Secure" or "HttpOnly".
+// It cannot defer to [KVBuffer.Present]: parseCookie stores a valueless
+// attribute with an empty key and the text as the value, so a key-only lookup
+// would never match one.
 func (c *Cookie) HasKeyOrSingleValue(keyOrSingleValue string) bool {
-	return c.kv.Present(keyOrSingleValue)
+	for i, nc := 0, c.kv.Len(); i < nc; i++ {
+		k, v := c.kv.At(i)
+		if (len(k) == 0 && b2s(v) == keyOrSingleValue) || b2s(k) == keyOrSingleValue {
+			return true
+		}
+	}
+	return false
 }
 
 // parseCookie parses a cookie inside cookie buffer and adds it to cookie buffer..

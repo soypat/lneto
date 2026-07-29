@@ -125,7 +125,7 @@ func TestFormParseReuseNoAlloc(t *testing.T) {
 		t.Fatal(err)
 	}
 	allocs := testing.AllocsPerRun(100, func() {
-		f.Reset(body)
+		f.Reset(body, 0)
 		f.Parse()
 	})
 	if allocs != 0 {

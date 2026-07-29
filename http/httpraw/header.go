@@ -3,7 +3,6 @@ package httpraw
 import (
 	"bytes"
 	"io"
-	"slices"
 	"strconv"
 )
 
@@ -29,6 +28,7 @@ const (
 	flagConnClose
 	flagNoHTTP11
 	flagMangledBuffer // set when header fields appended to buffer via Add,Set calls
+	flagKVAppended    // set after KV appended to buffer outside Read methods.
 	flagReaderEOF
 	// set if [Header.SetStatus] or [Header.SetStatusInt] has been called.
 	FlagStatusSet
@@ -57,30 +57,27 @@ type Header struct {
 	// Response fields.
 	statusCode headerSlice
 	statusText headerSlice
-
-	flags Flags
-	_     noCopy
+	_          noCopy
 }
 
 // Flags returns [Flags] to signal status code has been set, Connection:Close or other useful signals provided by flags.
-func (h *Header) Flags() Flags { return h.flags }
+func (h *Header) Flags() Flags { return h.hbuf.kv.flags }
 
 // ConfigBufferGrowth configures the memory the header may use. Setting
 // outlives [Header.Reset]. Call before parsing/reading.
 //
 // enableBufferGrowth enables growing both the header buffer and the header key/value pair slice.
 func (h *Header) ConfigBufferGrowth(enableBufferGrowth bool) {
-	if !enableBufferGrowth {
-		h.flags |= flagNoBufferGrow
-	} else {
-		h.flags &^= flagNoBufferGrow
-	}
+	h.hbuf.kv.EnableBufferGrowth(enableBufferGrowth)
 }
 
 // ParseBytes copies the bytes into buffer and parses the HTTP header. It fails if HTTP header data is incomplete.
 func (h *Header) ParseBytes(asResponse bool, b []byte) error {
 	h.Reset(nil, 0)
-	h.hbuf.readFromBytes(b)
+	err := h.hbuf.kv.ReadFromBytes(b)
+	if err != nil {
+		return err
+	}
 	return h.parse(asResponse)
 }
 
@@ -88,7 +85,7 @@ func (h *Header) ParseBytes(asResponse bool, b []byte) error {
 // It fails if HTTP data is incomplete.
 func (h *Header) Parse(asResponse bool) error {
 	debuglog("http:parse:reset")
-	h.Reset(h.hbuf.buf, 0)
+	h.Reset(h.hbuf.kv.buf, 0)
 	debuglog("http:parse:start")
 	return h.parse(asResponse)
 }
@@ -110,9 +107,10 @@ func (h *Header) Parse(asResponse bool) error {
 //		return err
 //	}
 func (h *Header) TryParse(asResponse bool) (needMoreData bool, err error) {
-	if h.flags.HasAny(flagDoneParsingHeader) {
+	flags := h.Flags()
+	if flags.HasAny(flagDoneParsingHeader) {
 		return false, errAlreadyParsed
-	} else if h.flags.HasAny(flagMangledBuffer) {
+	} else if flags.HasAny(flagMangledBuffer) {
 		return false, errMangledBuffer
 	}
 	if asResponse && h.statusCode.len == 0 || !asResponse && h.requestTarget.start == 0 {
@@ -121,80 +119,42 @@ func (h *Header) TryParse(asResponse bool) (needMoreData bool, err error) {
 			return err == ErrNeedMoreData, err
 		}
 	}
-	err = h.parseNextHeaders(h.flags)
+	err = h.parseNextHeaders(flags)
 	return err == ErrNeedMoreData, err
 }
 
 // ParsingSuccess returns true if TryParse was successful, that is to say it returned needMoreData==false and err==nil.
 func (h *Header) ParsingSuccess() bool {
-	return h.flags.HasAny(flagDoneParsingHeader)
+	return h.Flags().HasAny(flagDoneParsingHeader)
 }
 
 // ReadFromLimited reads at most maxBytesToRead from reader and appends them to underlying buffer.
 // Used to accumulate HTTP header for later parsing with [Header.TryParse].
 // If read is successful (read length>0) and reader returns [io.EOF] then ReadFromLimited will return a nil error.
 func (h *Header) ReadFromLimited(r io.Reader, maxBytesToRead int) (int, error) {
-	if maxBytesToRead <= 0 {
-		return 0, ErrSmallHeaderBuffer
-	} else if h.flags.HasAny(flagMangledBuffer) {
-		return 0, errMangledBuffer
-	} else if h.flags.HasAny(flagReaderEOF) {
-		return 0, io.EOF // Now we do return EOF.
-	}
-	free := h.BufferFree()
-	if free < maxBytesToRead {
-		if h.flags.HasAny(flagNoBufferGrow) {
-			return 0, ErrSmallHeaderBuffer
-		}
-		h.hbuf.buf = slices.Grow(h.hbuf.buf, maxBytesToRead)
-	}
-	blen := len(h.hbuf.buf)
-	b := h.hbuf.buf[blen:min(blen+maxBytesToRead, cap(h.hbuf.buf))]
-	if len(b) == 0 {
-		return 0, ErrSmallHeaderBuffer
-	}
-	n, err := r.Read(b)
-	if err != nil && err == io.EOF {
-		h.flags |= flagReaderEOF
-		if n > 0 {
-			err = nil // Nil-out error if read was succesful so as to not spook readers.
-		}
-	}
-	h.hbuf.buf = h.hbuf.buf[:blen+n]
-	return n, err
+	return h.hbuf.kv.ReadLimited(r, maxBytesToRead)
 }
 
 // ReadFromBytes appends argument buffer to underlying buffer.
 // Used to accumulate HTTP header for later parsing with [Header.TryParse].
-func (h *Header) ReadFromBytes(b []byte) (int, error) {
-	if len(b) == 0 {
-		return 0, ErrSmallHeaderBuffer
-	}
-	free := h.BufferFree()
-	if free < len(b) {
-		if h.flags.HasAny(flagNoBufferGrow) {
-			return 0, ErrSmallHeaderBuffer
-		}
-		h.hbuf.buf = slices.Grow(h.hbuf.buf, len(b))
-	}
-	h.hbuf.readFromBytes(b)
-	return len(b), nil
+func (h *Header) ReadFromBytes(b []byte) error {
+	return h.hbuf.kv.ReadFromBytes(b)
 }
 
 // BufferReceived returns the amoung of bytes read during calls to Read* methods.
 // Returns 0 if buffer is invalid/mangled.
 func (h *Header) BufferReceived() int {
-	if h.flags.HasAny(flagMangledBuffer | flagOOMReached) {
+	if h.Flags().HasAny(flagMangledBuffer | flagOOMReached) {
 		return 0
 	}
-	return len(h.hbuf.buf)
+	return len(h.hbuf.kv.BufferRaw())
 }
 
 // BufferParsed returns the amount of bytes parsed during a call to Parse* methods.
 // If the Parse* method completed without error then BufferParsed returns the header's length including the final "\r\n\r\n" text.
 // BufferParsed returns 0 if the buffer is invalid/mangled or if no header data has been parsed succesfully.
 func (h *Header) BufferParsed() int {
-	if h.flags.HasAny(flagMangledBuffer | flagOOMReached) {
+	if h.Flags().HasAny(flagMangledBuffer | flagOOMReached) {
 		return 0
 	}
 	return h.hbuf.off
@@ -202,13 +162,13 @@ func (h *Header) BufferParsed() int {
 
 // BufferRaw returns the undeerlying buffer as stored currently in memory.
 // The length of the returned buffer is the used portion. Capacity of returned slice is [Header.BufferCapacity].
-func (h *Header) BufferRaw() []byte { return h.hbuf.buf }
+func (h *Header) BufferRaw() []byte { return h.hbuf.kv.BufferRaw() }
 
 // BufferUsed returns the raw memory used.
 //
 //	BufferUsed + BufferFree == BufferCapacity
 func (h *Header) BufferUsed() int {
-	return len(h.hbuf.buf)
+	return len(h.hbuf.kv.BufferRaw())
 }
 
 // BufferFree returns amount of bytes free in underlying buffer.
@@ -222,29 +182,12 @@ func (h *Header) BufferFree() int {
 //
 //	BufferUsed + BufferFree == BufferCapacity
 func (h *Header) BufferCapacity() int {
-	return cap(h.hbuf.buf)
+	return cap(h.hbuf.kv.BufferRaw())
 }
 
 // ForEach iterates over header key-value field tuples.
-func (h *Header) ForEach(cb func(key, value []byte) error) error {
-	return h.hbuf.forEach(cb)
-}
-
-func (hb *headerBuf) forEach(cb func(key, value []byte) error) error {
-	nh := len(hb.headers)
-	for i := range nh {
-		kv := hb.headers[i]
-		if !kv.isValid() {
-			continue
-		}
-		key := hb.musttoken(kv.key)
-		value := hb.musttoken(kv.value)
-		err := cb(key, value)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+func (h *Header) ForEach(cb func(key, value []byte) bool) {
+	h.hbuf.kv.ForEach(cb)
 }
 
 // Reset discards all parsed data and sets the buffer data to buf. This method
@@ -259,23 +202,21 @@ func (h *Header) Reset(buf []byte, numHeaderCapacity int) {
 	const persistentFlags = flagNoBufferGrow
 	debuglog("http:reset:hbuf")
 	h.hbuf.reset(buf, numHeaderCapacity)
-	if h.flags.HasAny(flagNoBufferGrow) && cap(h.hbuf.buf) < 32 {
+	if h.Flags().HasAny(flagNoBufferGrow) && h.BufferCapacity() < 32 {
 		panic("small buffer and flagNoBufferGrow set")
 	}
-	*h = Header{
-		hbuf:  h.hbuf,
-		flags: h.flags & persistentFlags,
-	}
+	*h = Header{hbuf: h.hbuf}
 	debuglog("http:reset:done")
 }
 
 // Body returns the surplus data following headers. It is only valid as long as Parse* or Reset methods are not called.
 func (h *Header) Body() ([]byte, error) {
 	debuglog("http:body")
-	if h.flags.HasAny(flagMangledBuffer) {
+	flags := h.Flags()
+	if flags.HasAny(flagMangledBuffer) {
 		return nil, errMangledBuffer
-	} else if h.flags.HasAny(flagDoneParsingHeader) {
-		return h.hbuf.buf[h.hbuf.off:], nil
+	} else if flags.HasAny(flagDoneParsingHeader) {
+		return h.BufferRaw()[h.hbuf.off:], nil
 	}
 	return nil, errUnparsed
 }
@@ -303,48 +244,51 @@ func (h *Header) SetInt(key string, value int64, base int) {
 
 // Set sets a key-value pair in the HTTP header.
 // Calling Set mangles the buffer.
-func (h *Header) Set(key, value string) {
-	useKv := h.takeReusableSlot(key)
-	if useKv == nil {
-		h.appendHeader(key, value)
-	} else {
-		useKv.value = h.reuseOrAppend(useKv.value, value)
-	}
+func (h *Header) Set(key, value string) (enoughSpace bool) {
+	return h.hbuf.kv.Set(key, value)
+
+	// useKv := h.takeReusableSlot(key)
+	// if useKv == nil {
+	// 	h.appendHeader(key, value)
+	// } else {
+	// 	useKv.value = h.reuseOrAppend(useKv.value, value)
+	// }
 }
 
 // takeReusableSlot returns the valid key-value entry for key with the largest
 // value buffer (best candidate for in-place reuse) and invalidates any other
 // entries sharing the key. Returns nil if the key is not present.
 func (h *Header) takeReusableSlot(key string) *argsKV {
-	hb := &h.hbuf
+	// hb := &h.hbuf
 	var useKv *argsKV
-	for i := 0; i < len(hb.headers); i++ {
-		// Search for key-value with largest buffer for value to store value reusing buffer.
-		gotkv := &hb.headers[i]
-		if gotkv.isValid() && b2s(hb.musttoken(gotkv.key)) == key {
-			if useKv == nil {
-				useKv = gotkv
-			} else if gotkv.value.len > useKv.value.len {
-				useKv.invalidate()
-				useKv = gotkv
-			} else {
-				gotkv.invalidate()
-			}
-		}
-	}
+	// for i := 0; i < len(hb.headers); i++ {
+	// 	// Search for key-value with largest buffer for value to store value reusing buffer.
+	// 	gotkv := &hb.headers[i]
+	// 	if gotkv.isValidHeader() && b2s(hb.musttoken(gotkv.key)) == key {
+	// 		if useKv == nil {
+	// 			useKv = gotkv
+	// 		} else if gotkv.value.len > useKv.value.len {
+	// 			useKv.invalidate()
+	// 			useKv = gotkv
+	// 		} else {
+	// 			gotkv.invalidate()
+	// 		}
+	// 	}
+	// }
 	return useKv
 }
 
 // Get gets the first exact-match value of a key found in the headers. Use [Header.ForEach] to find multiple values corresponding to same key.
 func (h *Header) Get(key string) []byte {
-	debuglog("http:get:start")
-	kv := h.peekHeader(key)
-	if kv.isValid() {
-		debuglog("http:get:found")
-		return h.hbuf.musttoken(kv.value)
-	}
-	debuglog("http:get:notfound")
-	return nil
+	return h.hbuf.kv.Get(key)
+	// debuglog("http:get:start")
+	// kv := h.peekHeader(key)
+	// if kv.isValidHeader() {
+	// 	debuglog("http:get:found")
+	// 	return h.hbuf.musttoken(kv.value)
+	// }
+	// debuglog("http:get:notfound")
+	// return nil
 }
 
 // GetFold gets the first value whose key matches key under ASCII case-insensitive
@@ -352,11 +296,10 @@ func (h *Header) Get(key string) []byte {
 // Use [Header.Get] for exact match and [Header.ForEach] to find multiple values
 // corresponding to same key.
 func (h *Header) GetFold(key string) []byte {
-	hb := &h.hbuf
-	for i := 0; i < len(hb.headers); i++ {
-		kv := hb.headers[i]
-		if kv.isValid() && asciiEqualFold(b2s(hb.musttoken(kv.key)), key) {
-			return hb.musttoken(kv.value)
+	nh := h.hbuf.kv.Len()
+	for i := range nh {
+		if asciiEqualFold(key, b2s(h.hbuf.kv.AtKey(i))) {
+			return h.hbuf.kv.AtValue(i)
 		}
 	}
 	return nil
@@ -387,9 +330,9 @@ func asciiEqualFold(a, b string) bool {
 
 // NormalizeKeys normalizes all header keys. i.e: CONTENT-type -> Content-Type
 func (h *Header) NormalizeKeys() {
-	for _, kv := range h.hbuf.headers {
-		if kv.isValid() {
-			NormalizeHeaderKey(h.hbuf.musttoken(kv.key))
+	for i, kv := range h.hbuf.kv.kvs {
+		if kv.isValidHeader() {
+			NormalizeHeaderKey(h.hbuf.kv.AtKey(i))
 		}
 	}
 }
@@ -507,19 +450,19 @@ func (h *Header) Status() (code, statusText []byte) {
 	if h.statusCode.len == 0 {
 		return nil, nil
 	}
-	return h.hbuf.musttoken(h.statusCode), h.hbuf.musttoken(h.statusText)
+	return h.hbuf.kv.musttoken(h.statusCode), h.hbuf.kv.musttoken(h.statusText)
 }
 
 // SetStatus sets the response header's status code and status text. i.e: "200" "OK".
 func (h *Header) SetStatus(code, statusText string) {
-	h.flags |= FlagStatusSet
+	h.hbuf.kv.flags |= FlagStatusSet
 	h.statusCode = h.reuseOrAppend(h.statusCode, code)
 	h.statusText = h.reuseOrAppend(h.statusText, statusText)
 }
 
 // SetStatusInt is identical to [Header.SetStatus] but performs integer to text conversion for status code.
 func (h *Header) SetStatusInt(code int64, statusText string) {
-	h.flags |= FlagStatusSet
+	h.hbuf.kv.flags |= FlagStatusSet
 	h.statusCode = h.reuseOrAppendInt(h.statusCode, code, 10)
 	h.statusText = h.reuseOrAppend(h.statusText, statusText)
 }
@@ -528,13 +471,13 @@ func (h *Header) getNonEmptyValue(s headerSlice) []byte {
 	if s.len == 0 {
 		return nil // If empty then value is invalid, return nil.
 	}
-	return h.hbuf.musttoken(s)
+	return h.hbuf.kv.musttoken(s)
 }
 
 // AppendRequest appends the request header representation to the buffer and returns the result.
 func (h *Header) AppendRequest(dst []byte) ([]byte, error) {
 	proto := h.Protocol()
-	if h.flags.HasAny(flagOOMReached) {
+	if h.hbuf.kv.flags.HasAny(flagOOMReached) {
 		return dst, errOOM
 	} else if h.requestTarget.len == 0 || h.method.len == 0 {
 		return dst, errNeedMethodURI
@@ -574,7 +517,7 @@ func (h *Header) AppendResponse(dst []byte) ([]byte, error) {
 // AppendResponseNoHeaders appends the first line of the response containing protocol and status code/text: i.e: "HTTP/1.1 200 OK\r\n"
 func (h *Header) AppendResponseNoHeaders(dst []byte) ([]byte, error) {
 	proto := h.Protocol()
-	if h.flags.HasAny(flagOOMReached) {
+	if h.hbuf.kv.flags.HasAny(flagOOMReached) {
 		return dst, errOOM
 	} else if h.statusCode.len == 0 || h.statusText.len == 0 {
 		return dst, errBadStatusCodeTxt
@@ -595,12 +538,10 @@ func (h *Header) AppendResponseNoHeaders(dst []byte) ([]byte, error) {
 // AppendHeaders appends headers to buffer. Use AppendRequest and AppendResponse over this.
 // Does not append extra \r\n to end. Appends nothing if contains no headers.
 func (h *Header) AppendHeaders(dst []byte) []byte {
-	for i, n := 0, len(h.hbuf.headers); i < n; i++ {
-		kv := &h.hbuf.headers[i]
-		if kv.isValid() {
-			key := h.hbuf.musttoken(kv.key)
-			value := h.hbuf.musttoken(kv.value)
-			dst = appendHeaderLine(dst, b2s(key), b2s(value))
+	for i, kv := range h.hbuf.kv.kvs {
+		if kv.isValidHeader() {
+			k, v := h.hbuf.kv.At(i)
+			dst = appendHeaderLine(dst, b2s(k), b2s(v))
 		}
 	}
 	return dst

@@ -331,6 +331,14 @@ func TestCookie_ParseBytes(t *testing.T) {
 	if string(c.Get("Path")) != "/" {
 		t.Errorf("Path = %q; want /", c.Get("Path"))
 	}
+	// The first pair sits at buffer offset 0, which a presence check keyed on
+	// the offset rather than the length reads as absent.
+	if string(c.Get("session")) != "abc123" {
+		t.Errorf("Get(session) = %q; want abc123", c.Get("session"))
+	}
+	if !c.HasKeyOrSingleValue("session") {
+		t.Error("expected first pair to be present by key")
+	}
 	if !c.HasKeyOrSingleValue("Secure") {
 		t.Error("expected Secure flag")
 	}

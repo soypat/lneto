@@ -8,39 +8,35 @@ package httpraw
 // undecoded, until [Form.Decode] rewrites them in place. The caller bounds the
 // data: Form parses the buffer it is handed and reads nothing more.
 type Form struct {
-	buf []byte
-	kvs []argsKV
+	kv KVBuffer
 }
+
+func (f *Form) EnableBufferGrowth(enableGrowth bool) { f.kv.EnableBufferGrowth(enableGrowth) }
 
 // Reset discards parsed pairs and sets the buffer to parse in place.
 // If buf is nil the current buffer is reused.
-func (f *Form) Reset(buf []byte) {
-	if buf == nil {
-		buf = f.buf[:0]
-	}
-	*f = Form{
-		buf: buf,
-		kvs: f.kvs[:0],
-	}
+func (f *Form) Reset(buf []byte, capKV int) {
+	f.kv.Reset(buf, capKV)
 }
 
 // ParseBytes copies the argument bytes to the Form's underlying buffer and parses them.
 func (f *Form) ParseBytes(b []byte) error {
-	f.Reset(nil)
-	f.buf = append(f.buf[:0], b...)
+	f.Reset(nil, 0)
+	err := f.kv.ReadFromBytes(b)
+	if err != nil {
+		return err
+	}
 	return f.Parse()
 }
 
 // Parse parses the form's buffer in place.
 func (f *Form) Parse() error {
-	f.kvs = f.kvs[:0]
-	key, value, rest := NextQueryPair(f.buf)
+	f.kv.discardKVs()
+	key, value, rest := NextQueryPair(f.kv.buf)
 	for key != nil {
-		kv := argsKV{key: bytes2tok(f.buf, key)}
-		if value != nil {
-			kv.value = bytes2tok(f.buf, value)
+		if !f.kv.setInternal(key, value) {
+			return errOOM
 		}
-		f.kvs = append(f.kvs, kv)
 		key, value, rest = NextQueryPair(rest)
 	}
 	return nil
@@ -50,66 +46,51 @@ func (f *Form) Parse() error {
 // '+' with the bytes they encode. Decoding only shrinks, so no memory is added.
 func (f *Form) Decode() error {
 	const plusAsSpace = true // Form encoded data, unlike a path.
-	for i := range f.kvs {
-		kv := &f.kvs[i]
-		n, err := CopyDecodedPercentURL(tok2bytes(f.buf, kv.key), tok2bytes(f.buf, kv.key), plusAsSpace)
+	nkvs := f.kv.Len()
+	for i := range nkvs {
+		k, v := f.kv.At(i)
+		nk, err := CopyDecodedPercentURL(k, k, plusAsSpace)
 		if err != nil {
 			return err
-		}
-		kv.key.len = tokint(n)
-		if !kv.HasValue() {
+		} else if len(v) == 0 {
+			if nk != len(k) {
+				f.kv.setAt(i, k, v)
+			}
 			continue
 		}
-		n, err = CopyDecodedPercentURL(tok2bytes(f.buf, kv.value), tok2bytes(f.buf, kv.value), plusAsSpace)
+		nv, err := CopyDecodedPercentURL(v, v, plusAsSpace)
 		if err != nil {
 			return err
 		}
-		kv.value.len = tokint(n)
+		if nk != len(k) || nv != len(v) {
+			f.kv.setAt(i, k[:nk], v[:nv])
+		}
 	}
 	return nil
 }
 
 // Len returns the amount of key-value pairs parsed.
-func (f *Form) Len() int { return len(f.kvs) }
+func (f *Form) Len() int { return f.kv.Len() }
 
 // Pair returns the i'th key-value pair in wire order. The value is nil for a
 // pair with no '=', i.e: "ok" in "ok&q=go", which distinguishes it from "ok="
 // where the value is present and empty.
 func (f *Form) Pair(i int) (key, value []byte) {
-	kv := f.kvs[i]
-	key = tok2bytes(f.buf, kv.key)
-	if kv.HasValue() {
-		value = tok2bytes(f.buf, kv.value)
-	}
-	return key, value
+	return f.kv.At(i)
 }
 
 // Get returns the value of the first pair matching key, nil if absent or if the
 // pair has no value. Bytes are compared as stored, so call [Form.Decode] first
 // when keys may be encoded.
-func (f *Form) Get(key string) []byte {
-	for i := range f.kvs {
-		gotKey, value := f.Pair(i)
-		if b2s(gotKey) == key {
-			return value
-		}
-	}
-	return nil
-}
+func (f *Form) Get(key string) []byte { return f.kv.Get(key) }
 
 // Has returns true if key is present, with or without a value.
-func (f *Form) Has(key string) bool {
-	for i := range f.kvs {
-		if b2s(tok2bytes(f.buf, f.kvs[i].key)) == key {
-			return true
-		}
-	}
-	return false
-}
+func (f *Form) Has(key string) bool { return f.kv.Present(key) }
 
 // AppendKeyValues appends the form's wire representation to dst and returns it.
 func (f *Form) AppendKeyValues(dst []byte) []byte {
-	for i := range f.kvs {
+	nkv := f.kv.Len()
+	for i := range nkv {
 		key, value := f.Pair(i)
 		if i > 0 {
 			dst = append(dst, '&')
