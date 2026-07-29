@@ -186,7 +186,7 @@ func TestHeaderContentLength(t *testing.T) {
 		{field: "Content-Length: 12", want: 12},
 		{field: "Content-Length:  12 ", want: 12}, // OWS around the value, RFC 9110 5.6.3.
 		{field: "Content-Length: 9223372036854775807", want: 9223372036854775807},
-		{field: "", wantErr: errNoContentLength},                     // No body, RFC 9112 6.3.
+		{field: ""}, // Absent field is no body and no error, RFC 9112 6.3.
 		{field: "Content-Length:", wantErr: errBadContentLength},     // Present but empty.
 		{field: "Content-Length: -1", wantErr: errBadContentLength},  // Digits only, RFC 9112 6.2.
 		{field: "Content-Length: 1 2", wantErr: errBadContentLength}, // Not a list.
@@ -206,7 +206,8 @@ func TestHeaderContentLength(t *testing.T) {
 		} else if err == nil && got != test.want {
 			t.Errorf("%q: want %d, got %d", test.field, test.want, got)
 		}
-		if strings.EqualFold(test.field, headerContentLength) != present {
+		key, _, _ := strings.Cut(test.field, ":")
+		if strings.EqualFold(key, headerContentLength) != present {
 			t.Error("unexpected 'present'", test.field)
 		}
 	}
