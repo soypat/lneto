@@ -14,7 +14,7 @@ import (
 
 // ExampleRouter_linux goes over how to setup a linux server using raw linux connections.
 // See [ExampleMuxSlice_query_forms_multipart] on how to define handlers for common HTTP processing.
-func ExampleRouter_net_Conn() {
+func ExampleRouter() {
 	// Chrome tends to send ~700 bytes on a typical landing page request.
 	const requestBuffer = 1024
 	const numHeaderKV = requestBuffer / 32 //
