@@ -49,6 +49,18 @@ func (mb *KVBuffer) Get(key string) []byte {
 	return mb.musttoken(mb.kvs[v].value)
 }
 
+// ForEach iterates over the cookie's key-value pairs until cb returns false.
+func (c *KVBuffer) ForEach(cb func(key, value []byte) bool) {
+	nc := len(c.kvs)
+	for i := range nc {
+		if !c.kvs[i].isValid() {
+			continue
+		} else if !cb(c.At(i)) {
+			break
+		}
+	}
+}
+
 func (mb *KVBuffer) Present(key string) bool {
 	return mb.getIdx(key) >= 0
 }
@@ -69,10 +81,12 @@ func (mb *KVBuffer) setInternal(key, value []byte) bool {
 }
 
 func (mb *KVBuffer) Len() int { return len(mb.kvs) }
-func (mb *KVBuffer) Pair(i int) (key, value []byte) {
+func (mb *KVBuffer) At(i int) (key, value []byte) {
 	kv := mb.kvs[i]
 	return mb.musttoken(kv.key), mb.musttoken(kv.value)
 }
+func (mb *KVBuffer) AtKey(i int) (key []byte)   { return mb.musttoken(mb.kvs[i].key) }
+func (mb *KVBuffer) AtValue(i int) (key []byte) { return mb.musttoken(mb.kvs[i].value) }
 
 func (mb *KVBuffer) getIdx(key string) int {
 	for i, kv := range mb.kvs {

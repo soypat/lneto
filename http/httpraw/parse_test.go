@@ -356,13 +356,10 @@ func TestCookie_ForEach(t *testing.T) {
 	c.ParseBytes([]byte("a=1; b=2; c=3"))
 
 	var keys []string
-	err := c.ForEach(func(key, value []byte) error {
+	c.ForEach(func(key, value []byte) bool {
 		keys = append(keys, string(key))
-		return nil
+		return true
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if len(keys) != 3 {
 		t.Fatalf("expected 3 cookie entries, got %d", len(keys))
 	}

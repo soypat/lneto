@@ -62,7 +62,7 @@ func TestHeaderParseRequest(t *testing.T) {
 	}
 	var c Cookie
 	cookie := hdr.Get("Cookie")
-	c.Reset(cookie)
+	c.Reset(cookie, 0)
 	err = c.Parse()
 	if err != nil {
 		t.Error(err)
