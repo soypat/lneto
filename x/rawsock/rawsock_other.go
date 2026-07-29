@@ -1,4 +1,4 @@
-//go:build tinygo || !linux
+//go:build tinygo || (!linux && !darwin)
 
 // Package rawsock listens and reads over Linux sockets through syscalls
 // directly, without the net package. Every operation fails with
