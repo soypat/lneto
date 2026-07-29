@@ -262,6 +262,58 @@ func TestHandleMalformedRequest(t *testing.T) {
 	}
 }
 
+// A request-line naming a version this package does not speak must be answered
+// 505 without reaching a handler, RFC 9112 2.6. The third token is not
+// validated by the parser, so anything that is not HTTP/1.0 or HTTP/1.1 lands
+// here: bogus versions, non-HTTP tokens, and the tail of a request-target that
+// contained a space and got split across the URI/protocol boundary.
+func TestHandleUnsupportedProtocol(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		request string
+	}{
+		{name: "future major", request: "GET / HTTP/6.9\r\nHost: h\r\n\r\n"},
+		{name: "future major keepalive", request: "GET / HTTP/6.9\r\nHost: h\r\nConnection: keep-alive\r\n\r\n"},
+		{name: "http2", request: "GET / HTTP/2.0\r\nHost: h\r\n\r\n"},
+		{name: "long minor", request: "GET / HTTP/1.10\r\nHost: h\r\n\r\n"},
+		{name: "lowercase", request: "GET / http/1.1\r\nHost: h\r\n\r\n"},
+		{name: "not http", request: "GET / BANANA\r\nHost: h\r\n\r\n"},
+		{name: "space in target", request: "GET /a b HTTP/1.1\r\nHost: h\r\n\r\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var handled bool
+			var sm MuxSlice
+			sm.Handle("/", func(ex *Exchange) { handled = true })
+			sm.Handle("/a", func(ex *Exchange) { handled = true })
+			conn := newConn(test.request)
+			conn.Hangup()
+			exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 2*1024), RequestBufferLim: 1024})
+			if err := Handle(exch, &sm, nopBackoff); err == nil {
+				t.Error("want error on unsupported protocol, got nil")
+			}
+			if handled {
+				t.Error("handler must not run on unsupported protocol")
+			}
+			const want = "HTTP/1.1 505 HTTP Version Not Supported\r\n\r\n"
+			if got := conn.ViewWritten(); got != want {
+				t.Errorf("want %q, got %q", want, got)
+			}
+		})
+	}
+}
+
+// HTTP/1.0 predates HTTP/1.1 but is still served: only the connection is not
+// kept alive. It must not be swept up by the 505 gate.
+func TestHandleHTTP10Served(t *testing.T) {
+	var sm MuxSlice
+	sm.Handle("/", func(ex *Exchange) { ex.WriteHeader(200) })
+	conn := serve(t, "GET / HTTP/1.0\r\nHost: h\r\n\r\n", &sm)
+	const want = "HTTP/1.1 200 OK\r\n\r\n"
+	if got := conn.ViewWritten(); got != want {
+		t.Errorf("want %q, got %q", want, got)
+	}
+}
+
 // No registered handler must yield 404, not an empty response.
 func TestHandleNoHandler(t *testing.T) {
 	var sm MuxSlice

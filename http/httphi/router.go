@@ -20,7 +20,8 @@ import (
 const reconfigureWait = 10 * time.Millisecond
 
 var (
-	errNoRequestProto = errors.New("httphi: request line with no HTTP version")
+	errNoRequestProto  = errors.New("httphi: request line with no HTTP version")
+	errBadRequestProto = errors.New("httphi: unsupported HTTP version in request line")
 	errBusyExchanges  = errors.New("httphi: exchanges still serving, cannot reuse their buffers")
 	errRouterTornDown = errors.New("httphi: router torn down, configure it before serving")
 

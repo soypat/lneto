@@ -52,11 +52,15 @@ func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
 	exch.respRemains = reqhdr.BufferReceived() - parsed
 	exch.respHeaderOff = uint16(parsed)
 	exch.respHeaderLen = 0
-	if len(reqhdr.Protocol()) == 0 {
-		// Request line with no HTTP version is a HTTP/0.9 simple-request, which
-		// httpraw tolerates. It is not a valid HTTP/1.1 request-line, RFC 9112 3.
+	proto := b2s(reqhdr.Protocol())
+	if len(proto) == 0 {
+		// HTTP/0.9 not tolerated RFC 9112 3.
 		exch.WriteHeader(int(StatusBadRequest))
 		return errNoRequestProto
+	} else if proto != "HTTP/1.1" && proto != "HTTP/1.0" {
+		// RFC 9112 2.6.
+		exch.WriteHeader(int(StatusHTTPVersionNotSupported))
+		return errBadRequestProto
 	}
 	// Mux on the request path: the query string is the handler's business.
 	path := reqhdr.RequestPath()
