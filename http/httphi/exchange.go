@@ -49,11 +49,24 @@ type Exchange struct {
 	readErr       error
 }
 
+// ExchangeConfig is the memory an [Exchange] is fixed to for the rest of its
+// life by [Exchange.Configure]. A [Router] derives one per exchange from its
+// [RouterConfig], which is what bounds the router's memory.
 type ExchangeConfig struct {
-	RawBuf                []byte
-	RequestBufferLim      int
-	NumHeaderKVCap        int
+	// RawBuf is the single buffer holding the request header, the response
+	// header and any surplus body. See [Exchange.UnsafeRawBuffer].
+	RawBuf []byte
+	// RequestBufferLim reserves the first bytes of RawBuf for the request
+	// header, the rest being the response. Configure panics if it exceeds RawBuf.
+	RequestBufferLim int
+	// NumHeaderKVCap is how many request header fields may be parsed. A request
+	// carrying more is answered 431, see [httpraw.ErrHeaderTooMany].
+	NumHeaderKVCap int
+	// NormalizeOutgoingKeys normalizes staged response header keys as they are
+	// written, i.e: "content-type" becomes "Content-Type".
 	NormalizeOutgoingKeys bool
+	// NoRequestBufferGrowth holds the request header to RequestBufferLim rather
+	// than growing it. A header outgrowing it is answered 431, see [httpraw.ErrBufferExhausted].
 	NoRequestBufferGrowth bool
 	// MaxPathValues is how many wildcards a single pattern may bind, read back with
 	// [Exchange.PathValue]. A pattern with more never matches, see [SetPathValues].
@@ -443,7 +456,7 @@ func (exch *Exchange) RequestContentLength() (_ int64, present bool, _ error) {
 // left as they arrived, call [httpraw.Form.Decode] to decode them in place.
 //
 // Unlike http.Request.ParseForm the query string is not folded in, reach it with
-// [Exchange.RequestQuery] or [Exchange.AppendQuery]. The body is consumed, so
+// [Exchange.RequestQuery] or [Exchange.RequestQueryAppend]. The body is consumed, so
 // call this before [Exchange.ReadBody].
 //
 // A request with no Content-Length has no body, RFC 9112 6.3, and yields an
@@ -615,47 +628,51 @@ func (exch *Exchange) RequestQuery() []byte {
 	return exch.RequestHeaderRaw().RequestQuery()
 }
 
-// AppendQuery appends the value of the first query parameter matching key to
-// dst and reports whether the parameter was present. A parameter with no value
-// ("?debug") and one with an empty value ("?debug=") are both present with
-// nothing appended.
+// RequestQueryValue returns an undecoded view of the first query parameter
+// matching key and reports whether it was present. Keys are matched decoded, so
+// key "a b" finds "a%20b" and "a+b"; a parameter whose key is a malformed
+// escape is skipped. A parameter with no value ("?debug") and one with an empty
+// value ("?debug=") are both present with a zero length view.
 //
-// Keys are matched decoded, so key "a b" finds "a%20b" and "a+b". Values are
-// appended raw unless decoded is set, in which case percent escapes and '+' are
-// decoded. A parameter whose value fails to decode is reported absent, and a
-// parameter whose key fails to decode is skipped.
-//
-// dst doubles as scratch space for decoding candidate keys, so AppendQuery only
-// allocates when dst lacks the capacity to hold the longest key it inspects.
-func (exch *Exchange) AppendQuery(dst []byte, key string, decoded bool) (valueAppended []byte, present bool) {
+// The view aliases the request buffer, so copy it to outlive the handler or use
+// [Exchange.RequestQueryAppend] to decode it out.
+func (exch *Exchange) RequestQueryValue(key string) (rawValue []byte, present bool) {
 	const plusAsSpace = true // Query strings are form encoded, unlike paths.
-	base := len(dst)
 	rawkey, rawval, rest := httpraw.NextQueryPair(exch.RequestQuery())
 	for ; rawkey != nil; rawkey, rawval, rest = httpraw.NextQueryPair(rest) {
-		if b2s(rawkey) != key {
-			// Key may be encoded: decode it over dst's free space and compare.
-			// A decoded key cannot appear raw, so this cannot alias a real key.
-			dst = slices.Grow(dst, len(rawkey))
-			scratch := dst[base : base+len(rawkey)]
-			n, err := httpraw.CopyDecodedPercentURL(scratch, rawkey, plusAsSpace)
-			if err != nil || b2s(scratch[:n]) != key {
-				continue // Malformed or different key, keep looking.
-			}
+		// Compare raw first: a key needing no decoding is the common case, and
+		// the decoding compare walks the key an escape at a time.
+		if b2s(rawkey) == key || httpraw.EqualDecodedPercentURL(rawkey, key, plusAsSpace) {
+			return rawval, true
 		}
-		if len(rawval) == 0 {
-			return dst[:base], true // Flag or empty value, nothing to append.
-		}
-		dst = slices.Grow(dst, len(rawval))
-		if !decoded {
-			return append(dst[:base], rawval...), true
-		}
-		n, err := httpraw.CopyDecodedPercentURL(dst[base:base+len(rawval)], rawval, plusAsSpace)
-		if err != nil {
-			return dst[:base], false // Do not hand back half a decode.
-		}
-		return dst[:base+n], true
 	}
-	return dst[:base], false
+	return nil, false
+}
+
+// RequestQueryAppend appends the value of the first query parameter matching key to
+// dst and reports whether the parameter was present, matching keys as
+// [Exchange.RequestQueryValue] does. A parameter with no value ("?debug") and
+// one with an empty value ("?debug=") are both present with nothing appended.
+//
+// Values are appended raw unless decoded is set, in which case percent escapes
+// and '+' are decoded. A parameter whose value fails to decode is reported
+// absent, dst being left as it was rather than holding half a decode.
+func (exch *Exchange) RequestQueryAppend(dst []byte, key string, decoded bool) (valueAppended []byte, present bool) {
+	const plusAsSpace = true // Query strings are form encoded, unlike paths.
+	rawval, present := exch.RequestQueryValue(key)
+	if !present || len(rawval) == 0 {
+		return dst, present
+	}
+	if !decoded {
+		return append(dst, rawval...), true
+	}
+	base := len(dst)
+	dst = slices.Grow(dst, len(rawval))
+	n, err := httpraw.CopyDecodedPercentURL(dst[base:base+len(rawval)], rawval, plusAsSpace)
+	if err != nil {
+		return dst[:base], false // Do not hand back half a decode.
+	}
+	return dst[:base+n], true
 }
 
 // RequestMethod returns the request line's method, i.e: "GET". See

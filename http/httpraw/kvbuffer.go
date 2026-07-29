@@ -8,7 +8,7 @@ import (
 	"github.com/soypat/lneto/internal"
 )
 
-// KVBuffer is a common key-value store engine for Cookie, Form, and other HTTP abstractions that need
+// KVBuffer is a common key-value store engine for Cookie, Form, Header and other HTTP abstractions that need
 // a key-value store with underlying buffer memory.
 type KVBuffer struct {
 	buf   []byte
@@ -18,8 +18,12 @@ type KVBuffer struct {
 
 func (mb *KVBuffer) free() int { return cap(mb.buf) - len(mb.buf) }
 
+// BufferRaw returns the underlying buffer, its length being the portion in use.
+// Stored pairs alias it, so writing to it mangles them.
 func (mb *KVBuffer) BufferRaw() []byte { return mb.buf }
 
+// EnableBufferGrowth allows the buffer to grow past the memory [KVBuffer.Reset]
+// was handed. The setting outlives Reset; with growth off callers get [ErrBufferExhausted].
 func (mb *KVBuffer) EnableBufferGrowth(enableGrowth bool) {
 	if enableGrowth {
 		mb.flags &^= flagNoBufferGrow
@@ -30,8 +34,11 @@ func (mb *KVBuffer) EnableBufferGrowth(enableGrowth bool) {
 
 func (mb *KVBuffer) discardKVs() { mb.kvs = mb.kvs[:0] }
 
+// BufferGrowthEnabled reports whether the buffer may grow, see [KVBuffer.EnableBufferGrowth].
 func (mb *KVBuffer) BufferGrowthEnabled() bool { return !mb.flags.HasAny(flagNoBufferGrow) }
 
+// ReadFromBytes appends buf to the underlying buffer, accumulating data to parse.
+// Returns [ErrBufferExhausted] when buf does not fit and growth is disabled.
 func (mb *KVBuffer) ReadFromBytes(buf []byte) error {
 	if len(buf) == 0 {
 		return io.ErrNoProgress // Nothing handed over, not a buffer problem.
@@ -48,6 +55,8 @@ func (mb *KVBuffer) ReadFromBytes(buf []byte) error {
 	return nil
 }
 
+// ReadLimited appends at most limit bytes read from r to the underlying buffer.
+// A read returning data alongside [io.EOF] reports a nil error, later ones io.EOF.
 func (mb *KVBuffer) ReadLimited(r io.Reader, limit int) (int, error) {
 	free := mb.free()
 	growthEnabled := mb.BufferGrowthEnabled()
@@ -72,6 +81,8 @@ func (mb *KVBuffer) ReadLimited(r io.Reader, limit int) (int, error) {
 	return n, err
 }
 
+// Reset discards all pairs and takes buf as the buffer to parse in place, nil
+// reusing the current one. kvCap sizes the pair table. Only the growth setting survives.
 func (mb *KVBuffer) Reset(buf []byte, kvCap int) {
 	if buf == nil {
 		mb.buf = mb.buf[:0]
@@ -82,6 +93,8 @@ func (mb *KVBuffer) Reset(buf []byte, kvCap int) {
 	mb.flags = mb.flags & flagNoBufferGrow // Only flag persisted is buffer grow config.
 }
 
+// CopyFrom replaces the receiver's contents with a copy of src, sharing no
+// memory with it afterwards.
 func (mb *KVBuffer) CopyFrom(src *KVBuffer) {
 	mb.buf = append(mb.buf[:0], src.buf...)
 	mb.kvs = append(mb.kvs[:0], src.kvs...)
@@ -124,6 +137,9 @@ func (mb *KVBuffer) HasKeyValue(key, value string) bool {
 	}
 	return false
 }
+
+// Add appends a pair, keeping any already sharing the key: use [KVBuffer.Set]
+// to replace instead. Reports false if the buffer could not hold it.
 func (mb *KVBuffer) Add(key, value string) (enoughSpace bool) {
 	mb.appendPair(key, value)
 	return mb.getIdx(key) >= 0
@@ -215,7 +231,11 @@ func (mb *KVBuffer) setInternal(key, value []byte) (enoughSpace bool) {
 	return true
 }
 
+// Len returns the number of slots stored, counting those [KVBuffer.Set] invalidated.
 func (mb *KVBuffer) Len() int { return len(mb.kvs) }
+
+// At returns the i'th pair in wire order. value is nil for a pair holding none,
+// which is what tells a form's "ok" from "ok=".
 func (mb *KVBuffer) At(i int) (key, value []byte) {
 	kv := mb.kvs[i]
 	if !kv.HasValue() {
@@ -233,7 +253,10 @@ func (mb *KVBuffer) setAt(i int, k, v []byte) {
 	}
 }
 
+// AtKey is [KVBuffer.At] limited to the i'th key.
 func (mb *KVBuffer) AtKey(i int) (key []byte) { return mb.musttoken(mb.kvs[i].key) }
+
+// AtValue is [KVBuffer.At] limited to the i'th value, nil when the pair holds none.
 func (mb *KVBuffer) AtValue(i int) (key []byte) {
 	if !mb.kvs[i].HasValue() {
 		return nil

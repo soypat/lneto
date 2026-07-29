@@ -10,6 +10,12 @@ type Cookie struct {
 	kv KVBuffer
 }
 
+// EnableBufferGrowth allows the cookie's buffer to grow past what [Cookie.Reset] was
+// handed. See [KVBuffer.EnableBufferGrowth].
+func (c *Cookie) EnableBufferGrowth(enableBufferGrowth bool) {
+	c.kv.EnableBufferGrowth(enableBufferGrowth)
+}
+
 // Reset functions very similarly to [Header.Reset]. Can be used for in-place cookie parsing.
 func (c *Cookie) Reset(buf []byte, capKV int) { c.kv.Reset(buf, capKV) }
 

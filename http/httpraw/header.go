@@ -634,6 +634,42 @@ func CopyDecodedPercentURL(dst, value []byte, plusAsSpace bool) (n int, err erro
 	}
 }
 
+// EqualDecodedPercentURL reports whether value, once decoded, equals want. It
+// decodes as it compares so it needs no scratch buffer, and reports false on a
+// malformed escape just as [CopyDecodedPercentURL] errors on one.
+// plusAsSpace decodes '+' to ' ', correct for query and form-encoded data but
+// NOT for path segments.
+func EqualDecodedPercentURL(value []byte, want string, plusAsSpace bool) bool {
+	w := 0
+	for i := 0; i < len(value); {
+		var c byte
+		switch {
+		case value[i] == '%':
+			if i+2 >= len(value) {
+				return false // Truncated escape at end of value.
+			}
+			hi, okhi := unhexdigit(value[i+1])
+			lo, oklo := unhexdigit(value[i+2])
+			if !okhi || !oklo {
+				return false
+			}
+			c = hi<<4 | lo
+			i += 3
+		case plusAsSpace && value[i] == '+':
+			c = ' '
+			i++
+		default:
+			c = value[i]
+			i++
+		}
+		if w >= len(want) || want[w] != c {
+			return false
+		}
+		w++
+	}
+	return w == len(want)
+}
+
 // copyPlusDecoded copies src to dst replacing '+' with ' ' if plusAsSpace set.
 func copyPlusDecoded(dst, src []byte, plusAsSpace bool) int {
 	n := copy(dst, src)

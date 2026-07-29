@@ -671,7 +671,7 @@ func TestExchangeAppendQuery(t *testing.T) {
 			var present bool
 			sm.Handle("/x", func(ex *Exchange) {
 				var value []byte
-				value, present = ex.AppendQuery(nil, test.key, test.decoded)
+				value, present = ex.RequestQueryAppend(nil, test.key, test.decoded)
 				got = string(value)
 			})
 			serve(t, "GET "+test.uri+" HTTP/1.1\r\nHost: h\r\n\r\n", &sm)
@@ -696,7 +696,7 @@ func TestExchangeAppendQueryReusesBuffer(t *testing.T) {
 	sm.Handle("/x", func(ex *Exchange) {
 		var value []byte
 		allocs = testing.AllocsPerRun(50, func() {
-			value, _ = ex.AppendQuery(dst[:len("prefix:")], "q", true)
+			value, _ = ex.RequestQueryAppend(dst[:len("prefix:")], "q", true)
 		})
 		got = string(value) // Conversion allocates, keep it out of the measurement.
 	})

@@ -69,7 +69,7 @@ func BenchmarkHandle(b *testing.B) {
 			handler: func(ex *Exchange) {
 				ex.StageHeader("Content-Type", "text/plain")
 				ex.StageHeaderInt("Content-Length", int64(len(benchBody)), 10)
-				data, present := ex.AppendQuery(buf[:0], "abc", true)
+				data, present := ex.RequestQueryAppend(buf[:0], "abc", true)
 				if !present || !internal.BytesEqual(data, expect) {
 					panic("invalid result")
 				}

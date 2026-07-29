@@ -11,6 +11,8 @@ type Form struct {
 	kv KVBuffer
 }
 
+// EnableBufferGrowth allows the form's buffer to grow past what [Form.Reset] was
+// handed. See [KVBuffer.EnableBufferGrowth].
 func (f *Form) EnableBufferGrowth(enableGrowth bool) { f.kv.EnableBufferGrowth(enableGrowth) }
 
 // Reset discards parsed pairs and sets the buffer to parse in place.

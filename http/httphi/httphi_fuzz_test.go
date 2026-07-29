@@ -242,7 +242,7 @@ func FuzzQueryAndForm(f *testing.F) {
 					if n > len(key) {
 						t.Fatalf("decoding key %q grew it to %d bytes", key, n)
 					}
-					if _, present := exch.AppendQuery(nil, string(dec[:n]), decoded); !present {
+					if _, present := exch.RequestQueryAppend(nil, string(dec[:n]), decoded); !present {
 						t.Fatalf("query pair %q absent from AppendQuery", key)
 					}
 				}

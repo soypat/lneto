@@ -653,3 +653,51 @@ func TestHeader_FieldTableFullIsReported(t *testing.T) {
 		t.Fatalf("want ErrHeaderFieldsTooLarge, got %v", err)
 	}
 }
+
+// EqualDecodedPercentURL must agree with CopyDecodedPercentURL on every input:
+// same decoded bytes, and false wherever the copying decoder reports an error.
+func TestEqualDecodedPercentURL(t *testing.T) {
+	for _, value := range []string{
+		"", "plain", "a+b", "a%20b", "%41%42", "100%25", "a%2Fb", "+", "%2b",
+		"trailing%", "trailing%4", "%zz", "a%2", "%%", "a+b%20c", "%00",
+	} {
+		for _, plusAsSpace := range []bool{false, true} {
+			dst := make([]byte, len(value))
+			n, err := CopyDecodedPercentURL(dst, []byte(value), plusAsSpace)
+			// The copying decoder is the reference: whatever it produces is what
+			// an equal comparison must accept, and only that.
+			want := ""
+			if err == nil {
+				want = string(dst[:n])
+			}
+			got := EqualDecodedPercentURL([]byte(value), want, plusAsSpace)
+			if err != nil {
+				if got {
+					t.Errorf("%q plus=%v: malformed escape must not compare equal", value, plusAsSpace)
+				}
+				continue
+			}
+			if !got {
+				t.Errorf("%q plus=%v: want equal to its own decoding %q", value, plusAsSpace, want)
+			}
+			if EqualDecodedPercentURL([]byte(value), want+"x", plusAsSpace) {
+				t.Errorf("%q plus=%v: must not equal a longer want", value, plusAsSpace)
+			}
+			if want != "" && EqualDecodedPercentURL([]byte(value), want[:len(want)-1], plusAsSpace) {
+				t.Errorf("%q plus=%v: must not equal a shorter want", value, plusAsSpace)
+			}
+		}
+	}
+}
+
+// The comparison must not allocate: it is the reason a query lookup can return
+// a view without scratch space.
+func TestEqualDecodedPercentURLNoAlloc(t *testing.T) {
+	value := []byte("a%20long%2Dish+key")
+	allocs := testing.AllocsPerRun(100, func() {
+		EqualDecodedPercentURL(value, "a long-ish key", true)
+	})
+	if allocs != 0 {
+		t.Fatalf("EqualDecodedPercentURL allocated %v times, want 0", allocs)
+	}
+}

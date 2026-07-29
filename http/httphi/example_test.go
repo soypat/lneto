@@ -62,15 +62,19 @@ func ExampleMuxSlice_query_forms_multipart() {
 
 	mux.Handle("/users/{id}", func(ex *httphi.Exchange) {
 		userID := ex.PathValue("id")
-		fmt.Printf("someone requested data for user %s", userID)
+		fmt.Printf("someone requested data for user %s\n", userID)
 	})
 
 	mux.Handle("/query", func(ex *httphi.Exchange) {
 		// query parameter in URL.
 		const decodeQuery = true
 		const queryKey = "search"
-		queryValue, present := ex.AppendQuery(nil, queryKey, decodeQuery)
-		fmt.Printf("got query=%v %s=%s", present, queryKey, queryValue)
+		valueRaw, present := ex.RequestQueryValue(queryKey)
+		if !present {
+			return
+		}
+		valueDecoded, present := ex.RequestQueryAppend(nil, queryKey, decodeQuery)
+		fmt.Printf("got query=%v %s=%s (raw:%s)\n", present, queryKey, valueDecoded, valueRaw)
 	})
 
 	mux.Handle("GET /form", func(ex *httphi.Exchange) {
