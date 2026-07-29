@@ -616,7 +616,9 @@ func TestHeader_FieldTableSizedFromBuffer(t *testing.T) {
 	var raw strings.Builder
 	raw.WriteString("GET / HTTP/1.1\r\nHost: lneto.test\r\n")
 	for i := range 40 {
-		raw.WriteString("X-Field-" + strconv.Itoa(i) + ": value-of-a-realistic-length-here\r\n")
+		raw.WriteString("X-Field-")
+		raw.WriteString(strconv.Itoa(i))
+		raw.WriteString(": value-of-a-realistic-length-here\r\n")
 	}
 	raw.WriteString("X-Canary: " + wantVal + "\r\n\r\n")
 
@@ -637,7 +639,10 @@ func TestHeader_FieldTableFullIsReported(t *testing.T) {
 	var raw strings.Builder
 	raw.WriteString("GET / HTTP/1.1\r\n")
 	for i := range 64 {
-		raw.WriteString("H" + strconv.Itoa(i) + ":v\r\n") // As short as a field gets.
+		// As short as a field gets.
+		raw.WriteString("H")
+		raw.WriteString(strconv.Itoa(i))
+		raw.WriteString(":v\r\n")
 	}
 	raw.WriteString("\r\n")
 	var h Header
