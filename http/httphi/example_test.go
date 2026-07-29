@@ -5,16 +5,16 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"net"
 	"os"
 
 	"github.com/soypat/lneto/http/httphi"
 	"github.com/soypat/lneto/http/httpraw"
-	"github.com/soypat/lneto/x/rawsock"
 )
 
 // ExampleRouter_linux goes over how to setup a linux server using raw linux connections.
 // See [ExampleMuxSlice_query_forms_multipart] on how to define handlers for common HTTP processing.
-func ExampleRouter_linux() {
+func ExampleRouter_net_Conn() {
 	// Chrome tends to send ~700 bytes on a typical landing page request.
 	const requestBuffer = 1024
 	const numHeaderKV = requestBuffer / 32 //
@@ -35,13 +35,12 @@ func ExampleRouter_linux() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// Raw linux sockets.
-	var listener rawsock.Listener
-	err = listener.Listen(8080)
+	const port = ":8080"
+	listener, err := net.Listen("tcp", port)
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("server up at http://localhost:%d", listener.Port())
+	log.Printf("server up at http://localhost%s", port)
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
