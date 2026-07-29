@@ -4,13 +4,13 @@ package main
 
 import (
 	"log/slog"
+	"net"
 	"os"
 	"strconv"
 	"sync/atomic"
 	"time"
 
 	"github.com/soypat/lneto/http/httphi"
-	"github.com/soypat/lneto/x/rawsock"
 )
 
 const (
@@ -34,8 +34,7 @@ func main() {
 }
 
 func run() error {
-	var ln rawsock.Listener
-	err := ln.Listen(listenPort)
+	ln, err := net.Listen("tcp", ":"+strconv.Itoa(listenPort))
 	if err != nil {
 		return err
 	}
@@ -61,14 +60,13 @@ func run() error {
 	defer router.TeardownGoroutines()
 
 	for {
-		conn := new(rawsock.Conn)
-		err := ln.AcceptConn(conn)
+		conn, err := ln.Accept()
 		if err != nil {
 			return err
 		}
 		// The connection owns the idle policy: a peer that opens a socket and
 		// then stalls fails its read instead of holding a router goroutine.
-		conn.SetReadTimeout(readTimeout)
+		conn.SetReadDeadline(time.Now().Add(readTimeout))
 		err = router.Handle(conn)
 		if err != nil {
 			// Every goroutine is busy and the queue is full. Dropping the
