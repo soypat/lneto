@@ -8,11 +8,11 @@ package httpraw
 // undecoded, until [Form.Decode] rewrites them in place. The caller bounds the
 // data: Form parses the buffer it is handed and reads nothing more.
 type Form struct {
-	kv KVBuffer
+	kv kvBuffer
 }
 
 // EnableBufferGrowth allows the form's buffer to grow past what [Form.Reset] was
-// handed. See [KVBuffer.EnableBufferGrowth].
+// handed. See [kvBuffer.EnableBufferGrowth].
 func (f *Form) EnableBufferGrowth(enableGrowth bool) { f.kv.EnableBufferGrowth(enableGrowth) }
 
 // Reset discards parsed pairs and sets the buffer to parse in place.

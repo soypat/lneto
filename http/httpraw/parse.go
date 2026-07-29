@@ -50,7 +50,7 @@ var (
 const maxBufLen = 0xffff
 
 type headerBuf struct {
-	kv KVBuffer
+	kv kvBuffer
 	// buf[:len] holds entire HTTP header data, which may be normalized by [flags]. buf[off:len] holds data not yet processed during parsing.
 	// buf []byte
 	// offset into buf for parsing.

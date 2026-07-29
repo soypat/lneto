@@ -7,11 +7,11 @@ import (
 // Cookie implements cookie key-value parsing. Methods function similarly to eponymous [Header] methods.
 // Cookie represents a single-line Cookie header value in a HTTP header, much like the standard library Cookie.
 type Cookie struct {
-	kv KVBuffer
+	kv kvBuffer
 }
 
 // EnableBufferGrowth allows the cookie's buffer to grow past what [Cookie.Reset] was
-// handed. See [KVBuffer.EnableBufferGrowth].
+// handed. See [kvBuffer.EnableBufferGrowth].
 func (c *Cookie) EnableBufferGrowth(enableBufferGrowth bool) {
 	c.kv.EnableBufferGrowth(enableBufferGrowth)
 }
