@@ -120,25 +120,6 @@ func (exch *Exchange) Configure(cfg ExchangeConfig) {
 	exch.pathValues = exch.pathValues[:cfg.MaxPathValues]
 }
 
-// PathValue returns the segment the request path bound to the wildcard named
-// key, or nil if the matched pattern has no such wildcard. It plays the part of
-// http.Request.PathValue. See [SetPathValues] for the pattern syntax and for
-// which segments a wildcard binds.
-//
-//	sm.Handle("GET /users/{id}", func(exch *httphi.Exchange) {
-//		id := exch.PathValue("id") // "42" on a GET /users/42.
-//	})
-func (exch *Exchange) PathValue(key string) []byte {
-	for i := range exch.pathValues {
-		if exch.pathValues[i].Key == key {
-			return exch.pathValues[i].Value
-		} else if exch.pathValues[i].Key == "" {
-			break // No more keys set.
-		}
-	}
-	return nil
-}
-
 // Acquire claims the exchange for conn and resets it to serve a new request,
 // reusing the buffer set by [Exchange.Configure]. Returns false if the exchange
 // is already serving, in which case conn is untouched.
@@ -673,6 +654,42 @@ func (exch *Exchange) RequestQueryAppend(dst []byte, key string, decoded bool) (
 		return dst[:base], false // Do not hand back half a decode.
 	}
 	return dst[:base+n], true
+}
+
+// PathValue returns the segment the request path bound to the wildcard named
+// key, or nil if the matched pattern has no such wildcard. It plays the part of
+// http.Request.PathValue. See [SetPathValues] for the pattern syntax and for
+// which segments a wildcard binds.
+//
+//	sm.Handle("GET /users/{id}", func(exch *httphi.Exchange) {
+//		id := exch.PathValue("id") // "42" on a GET /users/42.
+//	})
+func (exch *Exchange) PathValue(key string) []byte {
+	for i := range exch.pathValues {
+		if exch.pathValues[i].Key == key {
+			return exch.pathValues[i].Value
+		} else if exch.pathValues[i].Key == "" {
+			break // No more keys set.
+		}
+	}
+	return nil
+}
+
+// PathValueAppend acceses the result of [Exchange.PathValue] and appends it to dst.
+// If decoded is set to true the result will be URL-percent decoded. An error is returned if URL-percent decoding fails.
+func (exch *Exchange) PathValueAppend(dst []byte, key string, decoded bool) ([]byte, error) {
+	const plusAsSpace = true
+	rawValue := exch.PathValue(key)
+	if !decoded || len(rawValue) == 0 {
+		return append(dst, rawValue...), nil
+	}
+	base := len(dst)
+	dst = slices.Grow(dst, len(rawValue))
+	n, err := httpraw.CopyDecodedPercentURL(dst[base:base+len(rawValue)], rawValue, plusAsSpace)
+	if err != nil {
+		return dst[:base], err // Do not hand back half a decode.
+	}
+	return dst[:base+n], nil
 }
 
 // RequestMethod returns the request line's method, i.e: "GET". See
