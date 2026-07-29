@@ -35,7 +35,7 @@ func (f *Form) Parse() error {
 	key, value, rest := NextQueryPair(f.kv.buf)
 	for key != nil {
 		if !f.kv.setInternal(key, value) {
-			return errOOM
+			return ErrBufferExhausted
 		}
 		key, value, rest = NextQueryPair(rest)
 	}

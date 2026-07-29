@@ -55,7 +55,7 @@ func (c *Cookie) Parse() error {
 			break
 		}
 		if !c.kv.setInternal(k, v) {
-			return errOOM
+			return ErrBufferExhausted
 		}
 
 		off += n

@@ -3,8 +3,6 @@ package httpraw
 import (
 	"bytes"
 	"errors"
-	"slices"
-	"strconv"
 	"unsafe"
 
 	"github.com/soypat/lneto/internal"
@@ -18,8 +16,11 @@ var (
 	errNoBoundary        = errors.New("httpraw: multipart boundary not set")
 	errUnparsed          = errors.New("need to finish parsing")
 	errInvalidName       = errors.New("invalid header name")
-	ErrSmallHeaderBuffer = errors.New("httpraw: Header buffer exhausted, increase size")
-	errOOM               = errors.New("httpraw: Header incomplete due to OOM")
+	// ErrBufferExhausted signals a buffer with no room left for the data being
+	// written and no permission to grow, see [KVBuffer.EnableBufferGrowth].
+	// Enlarging the buffer handed to Reset is the only fix; a server answers it
+	// on a request header with 431, RFC 6585 5.
+	ErrBufferExhausted = errors.New("httpraw: buffer exhausted, increase size")
 	// ErrHeaderTooMany signals a header block carrying more fields than
 	// the buffer it is parsed into has room for, see [Header.Reset]. A server
 	// answers it with 431, RFC 6585 5: no larger buffer is coming, so reading
@@ -245,121 +246,6 @@ func (hb *headerBuf) parseFirstLineResponse(initFlags Flags) (statusCode, status
 
 func (kv argsKV) HasValue() bool { return kv.value.start > 0 }
 
-func (h *Header) reuseOrAppend(tok headerSlice, value string) headerSlice {
-	if tok.len > tokint(len(value)) {
-		copy(h.hbuf.kv.musttoken(tok), value)
-		tok.len = tokint(len(value))
-		return tok
-	}
-	return h.appendSlice(value)
-}
-
-func (h *Header) appendSlice(value string) headerSlice {
-	debuglog("http:appendslice:start")
-	if !h.reserve(len(value)) {
-		return headerSlice{}
-	}
-	h.flags |= flagMangledBuffer
-	return h.hbuf.kv.mustAppendSlice(value)
-}
-
-func (h *Header) appendHeader(key, value string) {
-	// reserve accounts for the byte-0 reservation mustAppendSlice makes on an
-	// empty buffer, and drops (flagging OOM) rather than panicking when growth
-	// is disabled and space runs out.
-	if !h.reserve(len(key) + len(value)) {
-		return
-	}
-	h.flags |= flagMangledBuffer
-	hb := &h.hbuf
-	k := hb.mustAppendSlice(key)
-	v := hb.mustAppendSlice(value)
-	debuglog("http:appendhdr:grow-hdrs")
-	hb.headers = append(hb.headers, argsKV{
-		key:   k,
-		value: v,
-	})
-}
-
-// appendHeaderInt is appendHeader's integer counterpart: it appends key and the
-// formatted integer value as a new header field.
-func (h *Header) appendHeaderInt(key string, value int64, base int) {
-	n := internal.IntLen(value, base)
-	if !h.reserve(len(key) + n) {
-		return // Drop and flag OOM; never panic.
-	}
-	h.flags |= flagMangledBuffer
-	hb := &h.hbuf
-	k := hb.mustAppendSlice(key)
-	v := hb.mustAppendInt(value, base)
-	hb.headers = append(hb.headers, argsKV{
-		key:   k,
-		value: v,
-	})
-}
-
-// reserve ensures need free bytes are available in the buffer, growing it when
-// permitted. It accounts for the byte-0 reservation on an empty buffer (see
-// mustAppendSlice). It returns false and sets flagOOMReached when the space
-// cannot be guaranteed: a tokint offset overflow, or a full buffer with
-// flagNoBufferGrow set.
-func (h *Header) reserve(need int) bool {
-	hb := &h.hbuf
-	if len(hb.buf) == 0 {
-		need++ // mustAppend* reserves byte 0 on an empty buffer.
-	}
-	if len(hb.buf)+need > maxBufLen {
-		h.flags |= flagOOMReached // Offsets would overflow uint16 tokint.
-		return false
-	}
-	if need > hb.free() {
-		if h.flags.HasAny(flagNoBufferGrow) {
-			h.flags |= flagOOMReached
-			return false
-		}
-		hb.buf = slices.Grow(hb.buf, need)
-	}
-	return true
-}
-
-// reuseOrAppendInt writes value into tok's slot in place when it fits, avoiding
-// any buffer growth; otherwise it appends a fresh slot.
-func (h *Header) reuseOrAppendInt(tok headerSlice, value int64, base int) headerSlice {
-	n := internal.IntLen(value, base)
-	if int(tok.len) >= n {
-		// Reuse: format directly over the existing slot. No free space needed
-		// since n <= tok.len and the slot already lives inside buf.
-		v := strconv.AppendInt(h.hbuf.buf[tok.start:tok.start], value, base)
-		tok.len = tokint(len(v))
-		h.flags |= flagMangledBuffer
-		return tok
-	}
-	return h.appendInt(value, base, n)
-}
-
-// appendInt reserves space (growing or flagging OOM) and appends value as a new slot.
-func (h *Header) appendInt(value int64, base, n int) headerSlice {
-	if !h.reserve(n) {
-		return headerSlice{} // Drop and flag OOM; never panic.
-	}
-	h.flags |= flagMangledBuffer
-	return h.hbuf.mustAppendInt(value, base)
-}
-
-// mustAppendInt formats value into the buffer's free region and commits it.
-// The caller must have reserved at least internal.IntLen(value, base) free bytes.
-func (hb *headerBuf) mustAppendInt(value int64, base int) headerSlice {
-	L := len(hb.buf)
-	if L == 0 {
-		L++ // Valid key-values start after byte 0.
-	}
-	v := strconv.AppendInt(hb.buf[L:L], value, base)
-	hb.buf = hb.buf[:L+len(v)]
-	return hb.slice(hb.buf[L : L+len(v)])
-}
-
-func (hb *headerBuf) noKV() argsKV { return argsKV{} }
-
 func (hb *headerBuf) next(ss *scannerState) argsKV {
 	if !ss.initialized {
 		ss.nextColon = -1
@@ -369,10 +255,10 @@ func (hb *headerBuf) next(ss *scannerState) argsKV {
 	blen := len(buf)
 	if blen >= 2 && buf[0] == '\r' && buf[1] == '\n' {
 		hb.off += 2
-		return hb.noKV() // \r\n\r\n Ends header.
+		return hb.kv.noKV() // \r\n\r\n Ends header.
 	} else if blen >= 1 && buf[0] == '\n' {
 		hb.off += 1
-		return hb.noKV() // \n\n Ends header.
+		return hb.kv.noKV() // \n\n Ends header.
 	}
 
 	// n is parsing offset. Will start by storing colon index.
@@ -388,18 +274,18 @@ func (hb *headerBuf) next(ss *scannerState) argsKV {
 			// A header name should always at some point be followed by a \n
 			// even if it's the one that terminates the header block.
 			ss.err = ErrNeedMoreData
-			return hb.noKV()
+			return hb.kv.noKV()
 		} else if x < n {
 			// There was a \n before the colon! This is invalid.
 			ss.err = errInvalidName
-			return hb.noKV()
+			return hb.kv.noKV()
 		} else if n < 0 {
 			// A newline is present (x>=0 reached here) but the line has no
 			// colon: malformed, not incomplete. A split arriving before the
 			// colon has no newline yet and is caught by the x<0 branch above,
 			// so it still returns ErrNeedMoreData.
 			ss.err = errInvalidName
-			return hb.noKV()
+			return hb.kv.noKV()
 		}
 	}
 	// n stores colon position by now.
@@ -407,7 +293,7 @@ func (hb *headerBuf) next(ss *scannerState) argsKV {
 		// Spaces between the header key and colon are not allowed.
 		// See RFC 7230, Section 3.2.4.
 		ss.err = errInvalidName
-		return hb.noKV()
+		return hb.kv.noKV()
 	}
 
 	// Ready to store key..
@@ -426,7 +312,7 @@ func (hb *headerBuf) next(ss *scannerState) argsKV {
 		if nl < 0 || nl+n+1 == len(buf) {
 			// No newline or newline is last character and can't know if is multiline.
 			ss.err = ErrNeedMoreData
-			return hb.noKV()
+			return hb.kv.noKV()
 		}
 		n += nl + 1 // Index of the newly found newline.
 		nextChar := buf[n]

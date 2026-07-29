@@ -33,36 +33,34 @@ func (mb *KVBuffer) discardKVs() { mb.kvs = mb.kvs[:0] }
 func (mb *KVBuffer) BufferGrowthEnabled() bool { return !mb.flags.HasAny(flagNoBufferGrow) }
 
 func (mb *KVBuffer) ReadFromBytes(buf []byte) error {
-	if mb.flags.HasAny(flagMangledBuffer) {
+	if len(buf) == 0 {
+		return io.ErrNoProgress // Nothing handed over, not a buffer problem.
+	} else if mb.flags.HasAny(flagMangledBuffer) {
 		return errMangledBuffer
 	} else if len(buf)+cap(mb.buf) > maxBufLen {
-		return errOOM
+		return ErrBufferExhausted
 	}
 	free := mb.free()
 	if len(buf) > free && !mb.BufferGrowthEnabled() {
-		return errOOM
+		return ErrBufferExhausted
 	}
 	mb.buf = append(mb.buf, buf...)
 	return nil
 }
 
 func (mb *KVBuffer) ReadLimited(r io.Reader, limit int) (int, error) {
-	if mb.flags.HasAny(flagMangledBuffer) {
+	free := mb.free()
+	growthEnabled := mb.BufferGrowthEnabled()
+	if !growthEnabled && (free == 0 || free < limit) || len(mb.buf) >= maxBufLen {
+		return 0, ErrBufferExhausted
+	} else if mb.flags.HasAny(flagMangledBuffer) {
 		return 0, errMangledBuffer
 	} else if mb.flags.HasAny(flagReaderEOF) {
 		return 0, io.EOF
 	} else if limit <= 0 {
 		return 0, io.ErrNoProgress
-	} else if len(mb.buf) >= maxBufLen {
-		return 0, errOOM
 	}
-	free := mb.free()
-	if limit > free {
-		if !mb.BufferGrowthEnabled() {
-			return 0, errOOM
-		}
-		mb.buf = slices.Grow(mb.buf, limit)
-	}
+	mb.buf = slices.Grow(mb.buf, limit)
 	n, err := r.Read(mb.buf[len(mb.buf):min(len(mb.buf)+limit, maxBufLen)])
 	mb.buf = mb.buf[:len(mb.buf)+n]
 	if err != nil {
@@ -140,6 +138,37 @@ func (mb *KVBuffer) Add(key, value string) (enoughSpace bool) {
 // appended with [KVBuffer.Add] and the invalidated regions are stranded, since
 // nothing here compacts the buffer.
 func (mb *KVBuffer) Set(key, value string) (enoughSpace bool) {
+	reuse := mb.takeReusableSlot(key, len(key), len(value))
+	if reuse < 0 {
+		return mb.Add(key, value)
+	}
+	mb.overwriteAt(reuse, key, value)
+	return true
+}
+
+// SetInt is [KVBuffer.Set]'s integer counterpart. It formats value straight into
+// the slot it reuses, so overwriting a pair never allocates.
+func (mb *KVBuffer) SetInt(key string, value int64, base int) (enoughSpace bool) {
+	reuse := mb.takeReusableSlot(key, len(key), internal.IntLen(value, base))
+	if reuse < 0 {
+		return mb.appendPairInt(key, value, base)
+	}
+	mb.flags |= flagMangledBuffer
+	kv := &mb.kvs[reuse]
+	copy(mb.buf[kv.key.start:], key)
+	kv.key.len = tokint(len(key))
+	// The slot was picked to hold keyLen/valueLen, so AppendInt writes inside
+	// buf and never grows a new backing array.
+	v := strconv.AppendInt(mb.buf[kv.value.start:kv.value.start], value, base)
+	kv.value.len = tokint(len(v))
+	return true
+}
+
+// takeReusableSlot invalidates every pair matching key except the smallest one
+// whose key and value regions hold keyLen and valueLen bytes, whose index it
+// returns. It returns -1 when no surviving slot fits, meaning the caller must
+// append instead.
+func (mb *KVBuffer) takeReusableSlot(key string, keyLen, valueLen int) int {
 	reuse := -1
 	for i := range mb.kvs {
 		kv := &mb.kvs[i]
@@ -147,9 +176,9 @@ func (mb *KVBuffer) Set(key, value string) (enoughSpace bool) {
 			continue
 		}
 		// A valueless pair holds no value region, so reusing one would write the
-		// value over byte 0. Let it fall through to Add, which gives the pair a
-		// real region and keeps "ok" distinct from "ok=".
-		fits := kv.HasValue() && int(kv.key.len) >= len(key) && int(kv.value.len) >= len(value)
+		// value over byte 0. Let it fall through to the caller's append, which
+		// gives the pair a real region and keeps "ok" distinct from "ok=".
+		fits := kv.HasValue() && int(kv.key.len) >= keyLen && int(kv.value.len) >= valueLen
 		if fits && (reuse < 0 || kv.size() < mb.kvs[reuse].size()) {
 			if reuse >= 0 {
 				mb.kvs[reuse].invalidate() // Superseded by a tighter fit.
@@ -159,11 +188,7 @@ func (mb *KVBuffer) Set(key, value string) (enoughSpace bool) {
 		}
 		kv.invalidate()
 	}
-	if reuse < 0 {
-		return mb.Add(key, value)
-	}
-	mb.overwriteAt(reuse, key, value)
-	return true
+	return reuse
 }
 
 // overwriteAt writes key and value over the regions pair i already owns. The
@@ -217,24 +242,6 @@ func (mb *KVBuffer) AtValue(i int) (key []byte) {
 func (mb *KVBuffer) getIdx(key string) int {
 	for i, kv := range mb.kvs {
 		if kv.isValid() && b2s(mb.musttoken(kv.key)) == key {
-			return i
-		}
-	}
-	return -1
-}
-
-func (mb *KVBuffer) getInvalidIdx() int {
-	for i, kv := range mb.kvs {
-		if !kv.isValid() {
-			return i
-		}
-	}
-	return -1
-}
-
-func (mb *KVBuffer) getInvalidOrKeyIdx(key string) int {
-	for i, kv := range mb.kvs {
-		if !kv.isValid() || key == b2s(mb.musttoken(kv.key)) {
 			return i
 		}
 	}
@@ -311,6 +318,51 @@ func (hb *KVBuffer) mustAppendInt(value int64, base int) headerSlice {
 	v := strconv.AppendInt(hb.buf[L:L], value, base)
 	hb.buf = hb.buf[:L+len(v)]
 	return hb.slice(hb.buf[L : L+len(v)])
+}
+
+// reuseOrAppend writes value over tok's slot when it fits there, avoiding any
+// buffer growth; otherwise it appends a fresh slot.
+func (mb *KVBuffer) reuseOrAppend(tok headerSlice, value string) headerSlice {
+	if tok.len > tokint(len(value)) {
+		copy(mb.musttoken(tok), value)
+		tok.len = tokint(len(value))
+		return tok
+	}
+	return mb.appendSlice(value)
+}
+
+// appendSlice reserves space (growing or flagging OOM) and appends value as a
+// new slot.
+func (mb *KVBuffer) appendSlice(value string) headerSlice {
+	debuglog("http:appendslice:start")
+	if !mb.reserve(len(value)) {
+		return headerSlice{} // Drop and flag OOM; never panic.
+	}
+	mb.flags |= flagMangledBuffer
+	return mb.mustAppendSlice(value)
+}
+
+// reuseOrAppendInt is [KVBuffer.reuseOrAppend]'s integer counterpart.
+func (mb *KVBuffer) reuseOrAppendInt(tok headerSlice, value int64, base int) headerSlice {
+	n := internal.IntLen(value, base)
+	if int(tok.len) >= n {
+		// Reuse: format directly over the existing slot. No free space needed
+		// since n <= tok.len and the slot already lives inside buf.
+		v := strconv.AppendInt(mb.buf[tok.start:tok.start], value, base)
+		tok.len = tokint(len(v))
+		mb.flags |= flagMangledBuffer
+		return tok
+	}
+	return mb.appendInt(value, base, n)
+}
+
+// appendInt reserves space (growing or flagging OOM) and appends value as a new slot.
+func (mb *KVBuffer) appendInt(value int64, base, n int) headerSlice {
+	if !mb.reserve(n) {
+		return headerSlice{} // Drop and flag OOM; never panic.
+	}
+	mb.flags |= flagMangledBuffer
+	return mb.mustAppendInt(value, base)
 }
 
 func (mb *KVBuffer) slice(value []byte) headerSlice {

@@ -1267,9 +1267,9 @@ func TestHandleBrowserSizedRequest(t *testing.T) {
 	sm.Reset(1)
 	sm.Handle("GET /echo", func(exch *Exchange) {
 		gotMode = string(exch.RequestHeader("X-Mode"))
-		exch.RequestHeaderRaw().ForEach(func(key, value []byte) error {
+		exch.RequestHeaderRaw().ForEach(func(key, value []byte) bool {
 			fields++
-			return nil
+			return true
 		})
 	})
 	conn := newConn(request)
@@ -1321,7 +1321,7 @@ func TestHandleRequestTooLargeAnswers431(t *testing.T) {
 			// Room for the fields, but not for the bytes they arrive in.
 			name:    "more bytes than the buffer holds",
 			cfg:     ExchangeConfig{RawBuf: make([]byte, 2*1024), RequestBufferLim: 1024, NumHeaderKVCap: 1024, NoRequestBufferGrowth: true},
-			wantErr: httpraw.ErrSmallHeaderBuffer,
+			wantErr: httpraw.ErrBufferExhausted,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

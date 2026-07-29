@@ -234,12 +234,7 @@ func (h *Header) SetInt(key string, value int64, base int) {
 	if base < 2 || base > 36 {
 		return // strconv.AppendInt only supports base 2..36.
 	}
-	useKv := h.takeReusableSlot(key)
-	if useKv == nil {
-		h.appendHeaderInt(key, value, base)
-	} else {
-		useKv.value = h.reuseOrAppendInt(useKv.value, value, base)
-	}
+	h.hbuf.kv.SetInt(key, value, base)
 }
 
 // Set sets a key-value pair in the HTTP header.
@@ -249,9 +244,9 @@ func (h *Header) Set(key, value string) (enoughSpace bool) {
 
 	// useKv := h.takeReusableSlot(key)
 	// if useKv == nil {
-	// 	h.appendHeader(key, value)
+	// 	h.hbuf.kv.appendPair(key, value)
 	// } else {
-	// 	useKv.value = h.reuseOrAppend(useKv.value, value)
+	// 	useKv.value = h.hbuf.kv.reuseOrAppend(useKv.value, value)
 	// }
 }
 
@@ -355,7 +350,7 @@ func (h *Header) ContentLength() (_ int64, present bool, _ error) {
 
 // Add adds a new key-value pair to the HTTP header. Calling Add mangles the buffer.
 func (h *Header) Add(key, value string) {
-	h.appendHeader(key, value)
+	h.hbuf.kv.appendPair(key, value)
 }
 
 // Method returns HTTP request method.
@@ -365,12 +360,12 @@ func (h *Header) Method() []byte {
 
 // SetMethod sets the request header's method.
 func (h *Header) SetMethod(method string) {
-	h.method = h.reuseOrAppend(h.method, method)
+	h.method = h.hbuf.kv.reuseOrAppend(h.method, method)
 }
 
 // SetRequestTarget sets request-target (URI) for the first HTTP request line.
 func (h *Header) SetRequestTarget(requestTarget string) {
-	h.requestTarget = h.reuseOrAppend(h.requestTarget, requestTarget)
+	h.requestTarget = h.hbuf.kv.reuseOrAppend(h.requestTarget, requestTarget)
 }
 
 // RequestTarget returns a view of the request-target (URI) of the first HTTP request line.
@@ -442,7 +437,7 @@ func (h *Header) Protocol() []byte {
 
 // SetProtocol sets the request header's protocol. Usually "HTTP/1.1".
 func (h *Header) SetProtocol(protocol string) {
-	h.proto = h.reuseOrAppend(h.proto, protocol)
+	h.proto = h.hbuf.kv.reuseOrAppend(h.proto, protocol)
 }
 
 // Status returns the response header's status code and status text. i.e: "200" "OK".
@@ -456,15 +451,15 @@ func (h *Header) Status() (code, statusText []byte) {
 // SetStatus sets the response header's status code and status text. i.e: "200" "OK".
 func (h *Header) SetStatus(code, statusText string) {
 	h.hbuf.kv.flags |= FlagStatusSet
-	h.statusCode = h.reuseOrAppend(h.statusCode, code)
-	h.statusText = h.reuseOrAppend(h.statusText, statusText)
+	h.statusCode = h.hbuf.kv.reuseOrAppend(h.statusCode, code)
+	h.statusText = h.hbuf.kv.reuseOrAppend(h.statusText, statusText)
 }
 
 // SetStatusInt is identical to [Header.SetStatus] but performs integer to text conversion for status code.
 func (h *Header) SetStatusInt(code int64, statusText string) {
 	h.hbuf.kv.flags |= FlagStatusSet
-	h.statusCode = h.reuseOrAppendInt(h.statusCode, code, 10)
-	h.statusText = h.reuseOrAppend(h.statusText, statusText)
+	h.statusCode = h.hbuf.kv.reuseOrAppendInt(h.statusCode, code, 10)
+	h.statusText = h.hbuf.kv.reuseOrAppend(h.statusText, statusText)
 }
 
 func (h *Header) getNonEmptyValue(s headerSlice) []byte {
@@ -478,7 +473,7 @@ func (h *Header) getNonEmptyValue(s headerSlice) []byte {
 func (h *Header) AppendRequest(dst []byte) ([]byte, error) {
 	proto := h.Protocol()
 	if h.hbuf.kv.flags.HasAny(flagOOMReached) {
-		return dst, errOOM
+		return dst, ErrBufferExhausted
 	} else if h.requestTarget.len == 0 || h.method.len == 0 {
 		return dst, errNeedMethodURI
 	} else if len(proto) == 0 {
@@ -518,7 +513,7 @@ func (h *Header) AppendResponse(dst []byte) ([]byte, error) {
 func (h *Header) AppendResponseNoHeaders(dst []byte) ([]byte, error) {
 	proto := h.Protocol()
 	if h.hbuf.kv.flags.HasAny(flagOOMReached) {
-		return dst, errOOM
+		return dst, ErrBufferExhausted
 	} else if h.statusCode.len == 0 || h.statusText.len == 0 {
 		return dst, errBadStatusCodeTxt
 	} else if len(proto) == 0 {

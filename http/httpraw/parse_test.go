@@ -17,12 +17,9 @@ func TestTryParse_IncrementalRequest(t *testing.T) {
 	var done bool
 	var doneIdx int
 	for i, chunk := range chunks {
-		n, err := hdr.ReadFromBytes([]byte(chunk))
+		err := hdr.ReadFromBytes([]byte(chunk))
 		if err != nil {
 			t.Fatalf("ReadFromBytes: %v", err)
-		}
-		if n != len(chunk) {
-			t.Fatalf("expected %d bytes read, got %d", len(chunk), n)
 		}
 
 		var needMore bool
@@ -58,13 +55,10 @@ func TestTryParse_IncrementalRequest(t *testing.T) {
 
 	// Verify headers via ForEach.
 	headers := make(map[string]string)
-	err := hdr.ForEach(func(key, value []byte) error {
+	hdr.ForEach(func(key, value []byte) bool {
 		headers[string(key)] = string(value)
-		return nil
+		return true
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if headers["Host"] != "example.com" {
 		t.Errorf("Host = %q; want example.com", headers["Host"])
 	}
@@ -176,7 +170,7 @@ func TestReadFromBytes_Empty(t *testing.T) {
 	var hdr Header
 	hdr.Reset(make([]byte, 0, 256), numHeaderCapacity)
 
-	_, err := hdr.ReadFromBytes(nil)
+	err := hdr.ReadFromBytes(nil)
 	if err == nil {
 		t.Fatal("expected error for empty bytes")
 	}
@@ -209,7 +203,7 @@ func TestEnableBufferGrowth(t *testing.T) {
 	for i := range big {
 		big[i] = 'A'
 	}
-	_, err := hdr.ReadFromBytes(big)
+	err := hdr.ReadFromBytes(big)
 	if err == nil {
 		t.Fatal("expected error when buffer growth disabled and data exceeds capacity")
 	}
@@ -228,11 +222,11 @@ func TestHeader_Add(t *testing.T) {
 
 	// ForEach should find both.
 	var values []string
-	hdr.ForEach(func(key, value []byte) error {
+	hdr.ForEach(func(key, value []byte) bool {
 		if string(key) == "X-Custom" {
 			values = append(values, string(value))
 		}
-		return nil
+		return true
 	})
 	if len(values) != 2 {
 		t.Fatalf("expected 2 X-Custom headers, got %d", len(values))

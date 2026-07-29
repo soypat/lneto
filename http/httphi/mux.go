@@ -79,7 +79,7 @@ func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
 }
 
 func (exch *Exchange) handleError(err error) {
-	if err == httpraw.ErrHeaderTooMany || err == httpraw.ErrSmallHeaderBuffer || exch.reqHdr.BufferFree() == 0 {
+	if err == httpraw.ErrHeaderTooMany || err == httpraw.ErrBufferExhausted || exch.reqHdr.BufferFree() == 0 {
 		// The peer is owed an answer: no larger buffer is coming, so
 		// say so instead of dropping the connection, RFC 6585 5.
 		exch.StageHeader("Content-Length", "0")

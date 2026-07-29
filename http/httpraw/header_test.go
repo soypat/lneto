@@ -473,7 +473,7 @@ func TestHeader_SplitBeforeColonStillParses(t *testing.T) {
 
 	var h Header
 	h.Reset(nil, numHeaderCapacity)
-	if _, err := h.ReadFromBytes([]byte(part1)); err != nil {
+	if err := h.ReadFromBytes([]byte(part1)); err != nil {
 		t.Fatal(err)
 	}
 	needMore, err := h.TryParse(false)
@@ -484,7 +484,7 @@ func TestHeader_SplitBeforeColonStillParses(t *testing.T) {
 		t.Fatal("want needMoreData=true after partial input")
 	}
 
-	if _, err := h.ReadFromBytes([]byte(part2)); err != nil {
+	if err := h.ReadFromBytes([]byte(part2)); err != nil {
 		t.Fatal(err)
 	}
 	needMore, err = h.TryParse(false)
