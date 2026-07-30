@@ -1,6 +1,9 @@
 package httpraw
 
-import "bytes"
+import (
+	"bytes"
+	"io"
+)
 
 // Form holds "application/x-www-form-urlencoded" key-value pairs, the encoding
 // HTML forms use for POST bodies and query strings alike. Methods function
@@ -22,6 +25,12 @@ func (f *Form) EnableBufferGrowth(enableGrowth bool) { f.kv.EnableBufferGrowth(e
 func (f *Form) Reset(buf []byte, capKV int) {
 	f.kv.Reset(buf, capKV)
 }
+
+// ReadFromBytes appends buf to the underlying buffer, accumulating data to parse. Returns ErrBufferExhausted when buf does not fit and growth is disabled.
+func (f *Form) ReadFromBytes(b []byte) error { return f.kv.ReadFromBytes(b) }
+
+// ReadLimited appends at most limit bytes read from r to the underlying buffer. A read returning data alongside io.EOF reports a nil error, later ones io.EOF.
+func (f *Form) ReadLimited(r io.Reader, limit int) (int, error) { return f.kv.ReadLimited(r, limit) }
 
 // ParseBytes copies the argument bytes to the Form's underlying buffer and parses them.
 func (f *Form) ParseBytes(b []byte) error {

@@ -506,6 +506,62 @@ func (exch *Exchange) RequestContentLength() (_ int64, present bool, _ error) {
 	return exch.RequestHeaderRaw().ContentLength()
 }
 
+func (exch *Exchange) RequestParseForm(dst *httpraw.Form, parseURL, prioritizeURL bool) (err error) {
+	dst.Reset(nil, 0)
+	if parseURL {
+		err = dst.ReadFromBytes(exch.RequestQuery())
+
+	}
+	if !parseURL {
+		cl, ok, err := exch.RequestContentLength()
+		if cl == 0 {
+			return nil
+		}
+		var rw ExchangeRW
+		exch.ReadWriter(&rw)
+		_, err = dst.ReadLimited(&rw, int(cl))
+
+	}
+
+}
+
+func (exch *Exchange) readQueryForm(dst *httpraw.Form) (n int, err error) {
+	query := exch.RequestQuery()
+	if len(query) == 0 {
+		return 0, nil
+	} else if dst.Len() > 0 {
+		err = dst.ReadFromBytes([]byte{'&'}) // Add separator.
+		if err != nil {
+			return 0, err
+		}
+	}
+	err = dst.ReadFromBytes(query)
+	if err != nil {
+		return 0, err
+	}
+	return len(query), nil
+}
+
+func (exch *Exchange) readBodyForm(dst *httpraw.Form) (n int, err error) {
+	cl, _, err := exch.RequestContentLength()
+	if cl <= 0 {
+		return 0, nil
+	}
+	if dst.Len() > 0 {
+		err = dst.ReadFromBytes([]byte{'&'}) // Add separator.
+		if err != nil {
+			return 0, err
+		}
+	}
+	var rw ExchangeRW
+	exch.ReadWriter(&rw)
+	n, err = dst.ReadLimited(&rw, int(cl))
+	if err != nil {
+		return n, err
+	}
+	return n, nil
+}
+
 // RequestParseForm reads the request body into buf and parses it as
 // "application/x-www-form-urlencoded" into dst. buf is the only storage used and
 // the only limit: a body longer than buf is refused with [lneto.ErrBufferFull]
