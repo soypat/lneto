@@ -317,7 +317,9 @@ func TestHandleHTTP10Served(t *testing.T) {
 // No registered handler must yield 404, not an empty response.
 func TestHandleNoHandler(t *testing.T) {
 	var sm MuxSlice
-	sm.Handle("GET /", func(ex *Exchange) { t.Error("handler must not run") })
+	// "/{$}" is the root and nothing else; a bare "/" is a catch-all that would
+	// match /nowhere too, see [SetPathValues].
+	sm.Handle("GET /{$}", func(ex *Exchange) { t.Error("handler must not run") })
 	conn := serve(t, "GET /nowhere HTTP/1.1\r\nHost: h\r\n\r\n", &sm)
 	const want = "HTTP/1.1 404 Not Found\r\n\r\n"
 	if got := conn.ViewWritten(); got != want {

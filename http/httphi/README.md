@@ -48,3 +48,8 @@ for {
 
 Runnable server over raw Linux sockets, plus query, form and multipart handlers:
 [`example_test.go`](./example_test.go).
+
+
+## Naming
+
+Gonna be honest with y'all. I initially wanted it to be named `httplo` until I saw I could write `httphi.MethHead` with a small change.

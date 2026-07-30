@@ -247,7 +247,9 @@ func TestRouterMux(t *testing.T) {
 				sm     MuxSlice
 				router Router
 			)
-			sm.Handle("GET /", staticPage(t, "root"))
+			// "/{$}" is the root alone: a bare "/" is a catch-all and would serve
+			// "root" for /page and /nowhere as well, see [SetPathValues].
+			sm.Handle("GET /{$}", staticPage(t, "root"))
 			sm.Handle("GET /page", staticPage(t, "page"))
 			sm.Handle("/any", staticPage(t, "any")) // No method: matches any.
 			configSynchronousRouter(t, &router, bufferSize, &sm)

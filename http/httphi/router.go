@@ -184,7 +184,8 @@ func (r *Router) Configure(cfg RouterConfig) error {
 	r.respBuf = cfg.ResponseHeaderMinBufferSize
 	r.mux = cfg.Mux
 	r.log = cfg.Logger
-	r.maxPathValues = cfg.Mux.MaxPathValues()
+	maxPathValues := cfg.Mux.MaxPathValues()
+	r.maxPathValues = maxPathValues
 	r.normalizeKeys = cfg.NormalizeOutgoingKeys
 	// Freelist entries were sized by the outgoing configuration: recycling one
 	// would serve a request with buffer limits cfg never asked for.
@@ -208,7 +209,7 @@ func (r *Router) Configure(cfg RouterConfig) error {
 		r.exchs = r.exchs[:numgoro]
 		rawBuflen := cfg.RequestHeaderBufferSize + cfg.ResponseHeaderMinBufferSize
 		internal.SliceReuse(&r.globbuf, numgoro*rawBuflen)
-		maxPathValues := cfg.Mux.MaxPathValues()
+
 		for i := range numgoro {
 			// TODO exchange buffer alloc
 			goff := i * rawBuflen

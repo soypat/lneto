@@ -224,3 +224,87 @@ func TestExchangePathValueClearedBetweenRequests(t *testing.T) {
 		t.Errorf("want no path value on a literal route, got id=%q from the previous request", leaked)
 	}
 }
+
+// A lookup tries each endpoint in turn and [SetPathValues] binds as it walks, so
+// a pattern that binds values and then fails must not leave them behind for the
+// pattern that does match: a handler would read a wildcard no matched pattern has.
+func TestMuxSliceNoStaleBindingsAcrossCandidates(t *testing.T) {
+	var sm MuxSlice
+	sm.Reset(2)
+	sm.Handle("/a/{x}/{y}/z", func(ex *Exchange) { t.Error("non-matching handler ran") })
+	var gotP, gotX, gotY string
+	sm.Handle("/a/{p}/b", func(ex *Exchange) {
+		gotP = string(ex.PathValue("p"))
+		gotX = string(ex.PathValue("x"))
+		gotY = string(ex.PathValue("y"))
+		ex.WriteHeader(200)
+	})
+
+	exch := new(Exchange)
+	exch.Configure(ExchangeConfig{
+		RawBuf: make([]byte, 2048), RequestBufferLim: 1024,
+		NumHeaderKVCap: defaultNumHeaderKVCap, MaxPathValues: sm.MaxPathValues(),
+	})
+	conn := newConn("GET /a/1/b HTTP/1.1\r\nHost: h\r\n\r\n")
+	conn.Hangup()
+	if !exch.Acquire(conn) {
+		t.Fatal("fresh exchange failed to acquire")
+	}
+	if err := Handle(exch, &sm, nopBackoff); err != nil {
+		t.Fatal(err)
+	}
+	if gotP != "1" {
+		t.Errorf("want p=1 from the matched pattern, got %q", gotP)
+	}
+	if gotX != "" || gotY != "" {
+		t.Errorf("want no x/y from the failed candidate, got x=%q y=%q", gotX, gotY)
+	}
+}
+
+// A pattern ending in '/' carries no brace but is still a wildcard: the trailing
+// slash is an anonymous "{...}", see [SetPathValues]. MuxSlice must route it
+// through the same matcher rather than comparing the path literally.
+func TestMuxSliceTrailingSlashPattern(t *testing.T) {
+	for _, test := range []struct {
+		pattern string
+		path    string
+		want    bool
+	}{
+		{pattern: "/files/", path: "/files/a/b", want: true},
+		{pattern: "/files/", path: "/files/", want: true},
+		{pattern: "/files/", path: "/files", want: false},
+		{pattern: "/files/", path: "/other/a", want: false},
+		{pattern: "/", path: "/anything/at/all", want: true},
+		{pattern: "/", path: "/", want: true},
+		// Without the trailing slash a pattern stays literal.
+		{pattern: "/files", path: "/files/a", want: false},
+		{pattern: "/files", path: "/files", want: true},
+	} {
+		t.Run(test.pattern+"__"+test.path, func(t *testing.T) {
+			var sm MuxSlice
+			sm.Reset(1)
+			var served bool
+			sm.Handle(test.pattern, func(ex *Exchange) { served = true; ex.WriteHeader(200) })
+			// MuxSlice must agree with the matcher it delegates to.
+			if ok, _ := SetPathValues(nil, test.pattern, []byte(test.path)); ok != test.want {
+				t.Fatalf("SetPathValues disagrees with the table: got %v", ok)
+			}
+			exch := new(Exchange)
+			exch.Configure(ExchangeConfig{
+				RawBuf: make([]byte, 2048), RequestBufferLim: 1024,
+				NumHeaderKVCap: defaultNumHeaderKVCap, MaxPathValues: sm.MaxPathValues(),
+			})
+			conn := newConn("GET " + test.path + " HTTP/1.1\r\nHost: h\r\n\r\n")
+			conn.Hangup()
+			if !exch.Acquire(conn) {
+				t.Fatal("fresh exchange failed to acquire")
+			}
+			if err := Handle(exch, &sm, nopBackoff); err != nil {
+				t.Fatal(err)
+			}
+			if served != test.want {
+				t.Errorf("want served=%v, got %v", test.want, served)
+			}
+		})
+	}
+}

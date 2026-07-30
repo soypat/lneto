@@ -66,6 +66,7 @@ func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
 	// Mux on the request path: the query string is the handler's business.
 	path := reqhdr.RequestPath()
 	meth := reqhdr.Method()
+	clear(exch.pathValues)
 	matchedPattern, handler := mux.LookupHandler(MethodFromBytes(meth), path, exch.pathValues)
 	if handler != nil {
 		exch.matchedPattern = matchedPattern
@@ -124,17 +125,30 @@ var pathSeparator = []byte{'/'}
 // Unlike ServeMux, segments are compared and bound raw, so "/users/{id}" binds
 // "x%2Fy" and not "x/y". Which paths match is unaffected. Bound values alias
 // requestPath rather than copy it.
+//
+// Values are bound while walking, before the match is known, so on failure
+// SetPathValues clears what it bound. A [Mux] may then try patterns in turn
+// without a matching one inheriting values from one that failed.
 func SetPathValues(dstPathVals []PathValue, pattern string, requestPath []byte) (matched, pathValSliceTooShort bool) {
+	n, matched, pathValSliceTooShort := setPathValues(dstPathVals, pattern, requestPath)
+	if !matched {
+		clear(dstPathVals[:n])
+	}
+	return matched, pathValSliceTooShort
+}
+
+// setPathValues is [SetPathValues] reporting how many values it bound, so its
+// caller can discard them when the pattern turns out not to match.
+func setPathValues(dstPathVals []PathValue, pattern string, requestPath []byte) (n int, matched, pathValSliceTooShort bool) {
 	if len(pattern) == 0 || pattern[0] != '/' || len(requestPath) == 0 || requestPath[0] != '/' {
-		return false, false
+		return n, false, false
 	}
 	pattern, requestPath = pattern[1:], requestPath[1:]
-	n := 0
 	for {
 		if len(pattern) == 0 {
 			// Nothing left after a slash: an anonymous "..." taking the rest,
 			// which is why "/files/" matches "/files/a/b" and "/" matches all.
-			return true, false
+			return n, true, false
 		}
 		patSeg, patRest, patMore := strings.Cut(pattern, "/")
 		reqSeg, reqRest, reqMore := bytes.Cut(requestPath, pathSeparator)
@@ -143,40 +157,40 @@ func SetPathValues(dstPathVals []PathValue, pattern string, requestPath []byte) 
 		case isWildcard && name == "$":
 			// Matches the end of the path and nothing else, so it must be the
 			// last segment of the pattern and leave no path behind.
-			return !patMore && len(requestPath) == 0, false
+			return n, !patMore && len(requestPath) == 0, false
 
 		case isWildcard && isMulti:
 			// Takes the remainder including slashes, possibly empty.
 			if name != "" {
 				if n >= len(dstPathVals) {
-					return false, true
+					return n, false, true
 				}
 				dstPathVals[n] = PathValue{Key: name, Value: requestPath}
 				n++
 			}
-			return true, false
+			return n, true, false
 
 		case isWildcard:
 			if len(reqSeg) == 0 {
-				return false, false // One segment means a non-empty one.
+				return n, false, false // One segment means a non-empty one.
 			}
 			if n >= len(dstPathVals) {
-				return false, true
+				return n, false, true
 			}
 			dstPathVals[n] = PathValue{Key: name, Value: reqSeg}
 			n++
 
 		default:
 			if b2s(reqSeg) != patSeg {
-				return false, false
+				return n, false, false
 			}
 		}
 		if patMore != reqMore {
 			// One side has a further segment and the other does not, so
 			// "/health" misses "/health/" and "/files/" misses "/files".
-			return false, false
+			return n, false, false
 		} else if !patMore {
-			return true, false // Both spent on the same segment.
+			return n, true, false // Both spent on the same segment.
 		}
 		pattern, requestPath = patRest, reqRest
 	}
@@ -221,8 +235,10 @@ func (sm *MuxSlice) LookupHandler(method Method, path []byte, dstPathVals []Path
 		if endpoint.method != MethUndefined && endpoint.method != method {
 			continue
 		}
-		// Method matches.
-		if endpoint.pathVals > 0 {
+		// Method matches. A pattern ending in '/' is a wildcard despite binding no
+		// values: the trailing slash is an anonymous "{...}", so it must go
+		// through the matcher and not a literal compare, see [SetPathValues].
+		if endpoint.pathVals > 0 || strings.HasSuffix(endpoint.path, "/") {
 			if ok, _ := SetPathValues(dstPathVals, endpoint.path, path); ok {
 				return endpoint.path, endpoint.handler
 			}
