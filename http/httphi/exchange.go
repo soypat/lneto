@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"sync/atomic"
+	"unsafe"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/http/httpraw"
@@ -319,6 +320,14 @@ func (rw *ExchangeRW) Write(buf []byte) (int, error) {
 	return rw.exch.WriteBody(buf)
 }
 
+// WriteString wraps [Exchange.WriteBodyString]. Fails if handle no longer valid.
+func (rw *ExchangeRW) WriteString(s string) (int, error) {
+	if err := rw.validate(); err != nil {
+		return 0, err
+	}
+	return rw.exch.WriteBodyString(s)
+}
+
 // Read reads request body bytes. See [Exchange.ReadBody].
 // Fails with [net.ErrClosed] once the handle is no longer valid.
 func (rw *ExchangeRW) Read(buf []byte) (int, error) {
@@ -344,6 +353,12 @@ func (rw *ExchangeRW) Close() error {
 func (exch *Exchange) ReadWriter(dst *ExchangeRW) {
 	dst.gen = exch.gen.Load()
 	dst.exch = exch
+}
+
+// WriteBodyString implements [io.StringWriter] by unsafe conversion.
+// Most underlying [io.Writer] implementations are TCP transport and not modify/own the underlying buffer.
+func (exch *Exchange) WriteBodyString(buf string) (int, error) {
+	return exch.WriteBody(unsafe.Slice(unsafe.StringData(buf), len(buf)))
 }
 
 // Write writes response body bytes, flushing the header first if the handler
