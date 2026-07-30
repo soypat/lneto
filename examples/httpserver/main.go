@@ -267,7 +267,7 @@ func handleConnection(conn *tcp.Conn) error {
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
 
 	// Read HTTP request.
-	var hdr httpraw.Header
+	var hdr httpraw.HeaderV1
 	var needMore bool = true
 	for needMore {
 		_, err := hdr.ReadFromLimited(conn, 1024)
@@ -288,7 +288,7 @@ func handleConnection(conn *tcp.Conn) error {
 	// Build response body.
 
 	// Build HTTP response.
-	var resp httpraw.Header
+	var resp httpraw.HeaderV1
 	resp.SetProtocol("HTTP/1.1")
 	resp.SetStatus("200", "OK")
 	resp.Set("Content-Type", "text/html")

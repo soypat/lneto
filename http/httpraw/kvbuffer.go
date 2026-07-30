@@ -468,7 +468,7 @@ func (pair pairKV) isValid() bool {
 	return pair.key.len > 0 || pair.value.len > 0
 }
 
-// isValidHeader is for the append-built [Header] store, where mustAppendSlice
+// isValidHeader is for the append-built [HeaderV1] store, where mustAppendSlice
 // burns byte 0 so a zero offset means absent. Drops offset-0 pairs otherwise.
 func (pair pairKV) isValidHeader() bool { return pair.key.start > 0 }
 

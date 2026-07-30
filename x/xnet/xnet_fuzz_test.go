@@ -21,7 +21,7 @@ func FuzzStackPacketHTTP(f *testing.F) {
 	const seed = 1
 	var buf [ethernet.MaxFrameLength]byte
 	s1, s2, c1, c2 := newTCPStacks(f, seed, MTU)
-	var hdr httpraw.Header
+	var hdr httpraw.HeaderV1
 	err := s1.ListenTCP4(c1, 80)
 	if err != nil {
 		f.Fatal(err)
@@ -129,7 +129,7 @@ func FuzzStackPacketHTTP(f *testing.F) {
 			if n1 == 0 && n2 == 0 {
 				if !closed {
 					if c1.BufferedInput() > 0 {
-						var hdr httpraw.Header
+						var hdr httpraw.HeaderV1
 						n, _ := c1.Read(buf[:])
 						hdr.ReadFromBytes(buf[:n])
 						hdr.TryParse(false)

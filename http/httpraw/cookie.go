@@ -4,7 +4,7 @@ import (
 	"bytes"
 )
 
-// Cookie implements cookie key-value parsing. Methods function similarly to eponymous [Header] methods.
+// Cookie implements cookie key-value parsing. Methods function similarly to eponymous [HeaderV1] methods.
 // Cookie represents a single-line Cookie header value in a HTTP header, much like the standard library Cookie.
 type Cookie struct {
 	kv kvBuffer
@@ -16,7 +16,7 @@ func (c *Cookie) EnableBufferGrowth(enableBufferGrowth bool) {
 	c.kv.EnableBufferGrowth(enableBufferGrowth)
 }
 
-// Reset functions very similarly to [Header.Reset]. Can be used for in-place cookie parsing.
+// Reset functions very similarly to [HeaderV1.Reset]. Can be used for in-place cookie parsing.
 func (c *Cookie) Reset(buf []byte, capKV int) { c.kv.Reset(buf, capKV) }
 
 func (c *Cookie) valid() bool {

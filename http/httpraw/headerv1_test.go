@@ -44,7 +44,7 @@ func TestHeaderParseRequest(t *testing.T) {
 
 	var buf bytes.Buffer
 	req.Write(&buf)
-	var hdr Header
+	var hdr HeaderV1
 	msg := buf.Bytes()
 
 	start := time.Now()
@@ -128,7 +128,7 @@ func BenchmarkParseBytes(b *testing.B) {
 	// allocating on every iteration. Declaring it inside the loop causes
 	// two allocs per iteration: one for the headers slice (make in reset)
 	// and one for the data buffer (append in readFromBytes).
-	var hdr Header
+	var hdr HeaderV1
 	b.StartTimer()
 
 	for b.Loop() {
@@ -169,7 +169,7 @@ func TestHeaderRequestPath(t *testing.T) {
 		{uri: "/a/b/c?x=1&y=2", want: "/a/b/c"},
 		{uri: "/?q=go", want: "/"},
 	} {
-		var h Header
+		var h HeaderV1
 		err := h.ParseBytes(false, []byte("GET "+test.uri+" HTTP/1.1\r\nHost: h\r\n\r\n"))
 		if err != nil {
 			t.Fatal(err)
@@ -196,7 +196,7 @@ func TestHeaderContentLength(t *testing.T) {
 		{field: "Content-Length: 1 2", wantErr: errBadContentLength}, // Not a list.
 		{field: "Content-Length: 9223372036854775808", wantErr: errBadContentLength},
 	} {
-		var h Header
+		var h HeaderV1
 		raw := "POST / HTTP/1.1\r\nHost: h\r\n"
 		if test.field != "" {
 			raw += test.field + "\r\n"
@@ -234,7 +234,7 @@ func TestNextQueryPair(t *testing.T) {
 		{uri: "/x?a%20b=c%20d", want: "a%20b=c%20d"}, // Raw, undecoded.
 		{uri: "/x?a=b=c", want: "a=b=c"},             // Only first '=' splits.
 	} {
-		var h Header
+		var h HeaderV1
 		err := h.ParseBytes(false, []byte("GET "+test.uri+" HTTP/1.1\r\nHost: h\r\n\r\n"))
 		if err != nil {
 			t.Fatal(err)
@@ -397,7 +397,7 @@ func TestCopyDecodedPercentURLInPlace(t *testing.T) {
 }
 
 func TestHeaderSetOverwrite(t *testing.T) {
-	var h Header
+	var h HeaderV1
 	h.Reset(nil, defaultKVCap)
 	h.SetMethod("GET")
 	h.SetRequestTarget("/")
@@ -420,7 +420,7 @@ func TestHeaderSetOverwrite(t *testing.T) {
 }
 
 func TestHeaderSetBytesEmptyValue(t *testing.T) {
-	var h Header
+	var h HeaderV1
 	h.Reset(nil, defaultKVCap)
 	h.SetBytes("X-Empty", nil)
 	if got := h.Get("X-Empty"); len(got) != 0 {
@@ -440,7 +440,7 @@ func TestHeader_LargeBufferOverflow(t *testing.T) {
 		"X-Canary: " + wantVal + "\r\n" +
 		"\r\n"
 
-	var h Header
+	var h HeaderV1
 	err := h.ParseBytes(false, []byte(raw))
 	if err != nil {
 		// Clean rejection of the oversized header is the intended behavior:
@@ -458,7 +458,7 @@ func TestHeader_LargeBufferOverflow(t *testing.T) {
 // not ErrNeedMoreData (which makes a streaming parser wait forever).
 func TestHeader_ColonlessLineIsHardError(t *testing.T) {
 	raw := "GET / HTTP/1.1\r\nBadHeaderNoColon\r\n\r\n"
-	var h Header
+	var h HeaderV1
 	err := h.ParseBytes(false, []byte(raw))
 	if err == nil {
 		t.Fatal("want error on colonless header line, got nil")
@@ -475,7 +475,7 @@ func TestHeader_SplitBeforeColonStillParses(t *testing.T) {
 	const part1 = "GET / HTTP/1.1\r\nHost" // split mid-key, before colon+newline
 	const part2 = ": example.com\r\n\r\n"
 
-	var h Header
+	var h HeaderV1
 	h.Reset(nil, defaultKVCap)
 	if err := h.ReadFromBytes([]byte(part1)); err != nil {
 		t.Fatal(err)
@@ -508,7 +508,7 @@ func TestHeader_SplitBeforeColonStillParses(t *testing.T) {
 func TestHeader_AppendHeaderExactCapNoPanic(t *testing.T) {
 	const key, value = "K", "V"
 	buf := make([]byte, 0, len(key)+len(value)) // exact cap, no slack.
-	var h Header
+	var h HeaderV1
 	h.Reset(buf, defaultKVCap)
 	defer func() {
 		if r := recover(); r != nil {
@@ -525,7 +525,7 @@ func TestHeader_AppendHeaderExactCapNoPanic(t *testing.T) {
 // never panic. Panicking is unacceptable for this package.
 func TestHeader_AddFullBufferNoPanic(t *testing.T) {
 	buf := make([]byte, 0, 40) // Small cap; enough for Reset (len 0) but not the field below.
-	var h Header
+	var h HeaderV1
 	h.Reset(buf, defaultKVCap)
 	h.ConfigBufferGrowth(false)
 	h.SetMethod("GET")
@@ -560,7 +560,7 @@ func TestHeader_SetInt(t *testing.T) {
 		{"hex", 255, 16, "ff"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var h Header
+			var h HeaderV1
 			h.Reset(nil, defaultKVCap)
 			h.SetInt("Content-Length", tc.value, tc.base)
 			if got := string(h.Get("Content-Length")); got != tc.want {
@@ -572,7 +572,7 @@ func TestHeader_SetInt(t *testing.T) {
 
 // SetInt on an existing key must reuse the slot in place (single field, latest value).
 func TestHeader_SetIntOverwrite(t *testing.T) {
-	var h Header
+	var h HeaderV1
 	h.Reset(nil, defaultKVCap)
 	h.SetMethod("GET")
 	h.SetRequestTarget("/")
@@ -596,7 +596,7 @@ func TestHeader_SetIntOverwrite(t *testing.T) {
 // SetInt must not heap-allocate: it must format directly into the header buffer.
 func TestHeader_SetIntNoAlloc(t *testing.T) {
 	buf := make([]byte, 0, 256)
-	var h Header
+	var h HeaderV1
 	h.Reset(buf, defaultKVCap)
 	h.ConfigBufferGrowth(false)
 	h.Add("Content-Length", "0000000000000000000000") // pre-size a reusable slot.
@@ -626,7 +626,7 @@ func TestHeader_FieldTableSizedFromBuffer(t *testing.T) {
 	}
 	raw.WriteString("X-Canary: " + wantVal + "\r\n\r\n")
 
-	var h Header
+	var h HeaderV1
 	h.Reset(make([]byte, 0, 8192), defaultKVCap) // Room for the block with plenty to spare.
 	err := h.ParseBytes(false, []byte(raw.String()))
 	if err != nil {
@@ -649,7 +649,7 @@ func TestHeader_FieldTableFullIsReported(t *testing.T) {
 		raw.WriteString(":v\r\n")
 	}
 	raw.WriteString("\r\n")
-	var h Header
+	var h HeaderV1
 	h.Reset(make([]byte, 0, 512), defaultKVCap)
 	h.ConfigBufferGrowth(false)
 	err := h.ParseBytes(false, []byte(raw.String()))

@@ -1282,7 +1282,7 @@ func TestHandleBrowserSizedRequest(t *testing.T) {
 	sm.Reset(1)
 	sm.Handle("GET /echo", func(exch *Exchange) {
 		gotMode = string(exch.RequestHeader("X-Mode"))
-		exch.RequestHeaderRaw().ForEach(func(key, value []byte) bool {
+		exch.RequestHeaderV1Raw().ForEach(func(key, value []byte) bool {
 			fields++
 			return true
 		})

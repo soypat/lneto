@@ -81,6 +81,18 @@ func Handle(exch *Exchange, mux Mux, backoff lneto.BackoffStrategy) error {
 }
 
 func (exch *Exchange) handleError(err error) {
+	if err == lneto.ErrUnsupported {
+		// httpraw refused a first line naming a version it does not speak, before
+		// spending the field loop on it. An empty protocol is a HTTP/0.9
+		// simple-request, RFC 9112 3: a malformed 1.x request-line rather than a
+		// version there is any point naming back.
+		if len(exch.reqHdr.Protocol()) == 0 {
+			exch.WriteHeader(int(StatusBadRequest))
+		} else {
+			exch.WriteHeader(int(StatusHTTPVersionNotSupported))
+		}
+		return
+	}
 	if err == httpraw.ErrHeaderTooMany || err == httpraw.ErrBufferExhausted || exch.reqHdr.BufferFree() == 0 {
 		// The peer is owed an answer: no larger buffer is coming, so
 		// say so instead of dropping the connection, RFC 6585 5.
@@ -221,6 +233,7 @@ type MuxSlice struct {
 		path     string
 		handler  HandlerFunc
 		pathVals int
+		spec     int
 	}
 }
 
@@ -230,30 +243,50 @@ func (sm *MuxSlice) Reset(capacity int) {
 	internal.SliceReuse(&sm._handlers, capacity)
 }
 
-// LookupHandler returns the handler registered for request path, or nil if none matches.
-// The first registration matching both method and uri wins.
+// LookupHandler returns the handler registered for request path, or nil if none
+// matches. The most specific matching registration wins, not the first, so the
+// catch-all "/" may be registered alongside the endpoints it backs without
+// shadowing them, as in http.ServeMux, see [patternSpecificity]. Registrations
+// of equal specificity are resolved in registration order.
 //
 // Every method this package does not name is [MethUnknown], so a request with an
 // extension method matches a bare-path registration and any registration naming
 // an extension method, whichever it names. Tell PROPFIND from MKCOL inside the
 // handler with [Exchange.RequestMethodRaw].
 func (sm *MuxSlice) LookupHandler(method Method, path []byte, dstPathVals []PathValue) (matched string, _ HandlerFunc) {
-	for _, endpoint := range sm._handlers {
+	best := -1
+	bestSpec := 0
+	for i, endpoint := range sm._handlers {
 		if endpoint.method != MethUndefined && endpoint.method != method {
 			continue
+		} else if best >= 0 && endpoint.spec <= bestSpec {
+			continue // Cannot beat the incumbent, so do not pay to match it.
 		}
 		// Method matches. A pattern ending in '/' is a wildcard despite binding no
 		// values: the trailing slash is an anonymous "{...}", so it must go
 		// through the matcher and not a literal compare, see [SetPathValues].
+		var ok bool
 		if isWildcardPattern(endpoint.path) {
-			if ok, _ := SetPathValues(dstPathVals, endpoint.path, path); ok {
-				return endpoint.path, endpoint.handler
-			}
-		} else if b2s(path) == endpoint.path {
-			return endpoint.path, endpoint.handler
+			// dstPathVals is scratch during the scan: a candidate that matches and
+			// is then beaten, or one that is beaten and clears on failure, would
+			// leave the winner's values wrong, so the winner is bound below.
+			ok, _ = SetPathValues(dstPathVals, endpoint.path, path)
+		} else {
+			ok = b2s(path) == endpoint.path
+		}
+		if ok {
+			best, bestSpec = i, endpoint.spec
 		}
 	}
-	return "", nil
+	if best < 0 {
+		return "", nil
+	}
+	winner := sm._handlers[best]
+	if isWildcardPattern(winner.path) {
+		clear(dstPathVals) // The scan may have bound more values than the winner does.
+		SetPathValues(dstPathVals, winner.path, path)
+	}
+	return winner.path, winner.handler
 }
 
 // MaxPathValues returns the maximum number of path values any endpoint could have.
@@ -303,9 +336,49 @@ func (sm *MuxSlice) Handle(optMethodAndPath string, handler HandlerFunc) {
 	}
 	v := internal.SliceReclaim(&sm._handlers)
 	v.pathVals = countPathValues(url)
+	v.spec = patternSpecificity(url)
 	v.method = method
 	v.path = url
 	v.handler = handler
+}
+
+// patternSpecificity scores how tightly pattern pins a path, letting
+// [MuxSlice.LookupHandler] prefer the most specific match over the first one
+// registered. A literal segment pins harder than a wildcard segment, and a
+// pattern left open at the end ("/", "/files/", "/{p...}") pins less than one
+// spent on the whole path, so "/cnt" outscores "/" and "/users/me" outscores
+// "/users/{id}". Scoring at registration keeps lookup to an integer compare.
+//
+// The score is a total order over patterns, which the subset relation is not:
+// neither of "/a/{x}/c" and "/a/b/{y}" is more specific than the other, and they
+// tie here where http.ServeMux rejects the pair as conflicting. A tie is settled
+// by registration order rather than by a panic.
+func patternSpecificity(pattern string) (spec int) {
+	if len(pattern) == 0 || pattern[0] != '/' {
+		return 0
+	}
+	pattern = pattern[1:]
+	for {
+		if len(pattern) == 0 {
+			return spec // Nothing after a slash: an anonymous "{...}" taking the rest.
+		}
+		segment, rest, more := strings.Cut(pattern, "/")
+		name, isMulti, isWildcard := pathWildcard(segment)
+		switch {
+		case isWildcard && name == "$":
+			return spec + 1 // Ends the path, so nothing is left open.
+		case isWildcard && isMulti:
+			return spec // Takes the remainder, pinning nothing more.
+		case isWildcard:
+			spec++
+		default:
+			spec += 2
+		}
+		if !more {
+			return spec + 1 // Spent on the last segment: the pattern is exact.
+		}
+		pattern = rest
+	}
 }
 
 // countPathValues is how many values pattern can bind, which is what sizes the

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
 )
 
@@ -48,7 +49,11 @@ var (
 // returning the wrong bytes or panicking on a wrapped slice bound.
 const maxBufLen = 0xffff
 
-type headerBuf struct {
+func protoIsV1(s string) bool {
+	return s[:min(len(strHTTP1), len(s))] == strHTTP1
+}
+
+type headerv1Buf struct {
 	kv kvBuffer
 	// buf[:len] holds entire HTTP header data, which may be normalized by [flags]. buf[off:len] holds data not yet processed during parsing.
 	// buf []byte
@@ -61,7 +66,7 @@ type headerBuf struct {
 // reset sets the buffer data and discards all parsed data. The field table is
 // grown to match the new buffer's capacity and never shrinks, so a header
 // reused across requests settles on its largest buffer and stops allocating.
-func (h *headerBuf) reset(buf []byte, numHeaderCapacity int) {
+func (h *headerv1Buf) reset(buf []byte, numHeaderCapacity int) {
 	h.kv.Reset(buf, numHeaderCapacity)
 	h.off = 0
 }
@@ -80,7 +85,7 @@ type scannerState struct {
 	initialized bool
 }
 
-func (h *Header) parse(asResponse bool) (err error) {
+func (h *HeaderV1) parse(asResponse bool) (err error) {
 	debuglog("http:firstline:start")
 	err = h.parseFirstLine(asResponse)
 	if err != nil {
@@ -93,7 +98,7 @@ func (h *Header) parse(asResponse bool) (err error) {
 	return err
 }
 
-func (h *Header) parseFirstLine(asResponse bool) (err error) {
+func (h *HeaderV1) parseFirstLine(asResponse bool) (err error) {
 	if len(h.hbuf.kv.buf) > maxBufLen {
 		return errBufferTooLarge // Offsets would overflow uint16 tokint.
 	}
@@ -107,7 +112,7 @@ func (h *Header) parseFirstLine(asResponse bool) (err error) {
 	return err
 }
 
-func (h *Header) parseNextHeaders(flags Flags) error {
+func (h *HeaderV1) parseNextHeaders(flags Flags) error {
 	var ss scannerState
 	h.hbuf.parseNextHeaders(&ss, flags)
 	if ss.err != nil {
@@ -118,9 +123,9 @@ func (h *Header) parseNextHeaders(flags Flags) error {
 	return nil
 }
 
-func (hb *headerBuf) free() int { return hb.kv.free() }
+func (hb *headerv1Buf) free() int { return hb.kv.free() }
 
-func (hb *headerBuf) parseNextHeaders(ss *scannerState, flags Flags) {
+func (hb *headerv1Buf) parseNextHeaders(ss *scannerState, flags Flags) {
 	debuglog("http:nexthdr:loop")
 	for kv := hb.next(ss); kv.isValidHeader(); kv = hb.next(ss) {
 		if !hb.kv.canAddOneKV() {
@@ -132,17 +137,17 @@ func (hb *headerBuf) parseNextHeaders(ss *scannerState, flags Flags) {
 	debuglog("http:nexthdr:done")
 }
 
-func (hb *headerBuf) offBuf() []byte {
+func (hb *headerv1Buf) offBuf() []byte {
 	return hb.kv.buf[hb.off:]
 }
 
-func (hb *headerBuf) skipLeadingCRLF() {
+func (hb *headerv1Buf) skipLeadingCRLF() {
 	for hb.off < len(hb.kv.buf) && (hb.kv.buf[hb.off] == '\n' || hb.kv.buf[hb.off] == '\r') {
 		hb.off++
 	}
 }
 
-func (hb *headerBuf) scanLine() []byte {
+func (hb *headerv1Buf) scanLine() []byte {
 	buf := hb.scanUntilByte('\n')
 	if len(buf) > 0 && buf[len(buf)-1] == '\r' {
 		buf = buf[:len(buf)-1] // exclude carriage return.
@@ -153,7 +158,7 @@ func (hb *headerBuf) scanLine() []byte {
 	return buf
 }
 
-func (hb *headerBuf) scanUntilByte(c byte) []byte {
+func (hb *headerv1Buf) scanUntilByte(c byte) []byte {
 	buf := hb.offBuf()
 	idx := bytes.IndexByte(buf, c)
 	if idx >= 0 {
@@ -163,7 +168,7 @@ func (hb *headerBuf) scanUntilByte(c byte) []byte {
 	return buf
 }
 
-func (hb *headerBuf) parseFirstLineRequest(initFlags Flags) (method, uri, proto view, flags Flags, err error) {
+func (hb *headerv1Buf) parseFirstLineRequest(initFlags Flags) (method, uri, proto view, flags Flags, err error) {
 	debuglog("http:req:scan")
 	hb.off = 0 // Parsing first line resets offset.
 	hb.skipLeadingCRLF()
@@ -183,21 +188,30 @@ func (hb *headerBuf) parseFirstLineRequest(initFlags Flags) (method, uri, proto 
 		reqURIEnd += methodEnd + 1
 		uri = hb.kv.view(b[methodEnd+1 : reqURIEnd])
 		proto = hb.kv.view(b[reqURIEnd+1:]) // Skip space before protocol.
-		if b2s(b[reqURIEnd+1:]) != strHTTP11 {
-			flags |= flagNoHTTP11
+		protoText := b2s(b[reqURIEnd+1:])
+		if !protoIsV1(protoText) {
+			// Refused here rather than after the fields: the field loop is nearly
+			// all of the parse cost and none of it serves a version this type
+			// does not speak. proto is set so the caller can name it, i.e: 505.
+			method = hb.kv.view(b[:methodEnd])
+			return method, uri, proto, flags | flagNoHTTP11, lneto.ErrUnsupported
+		} else if protoText != strHTTP11 {
+			flags |= flagNoHTTP11 // HTTP/1.0, which defaults to closing the connection.
 		}
 	} else if reqURIEnd == 0 {
 		return method, uri, proto, flags, errEmptyURI
 	} else {
-		// No version provided.
-		flags |= flagNoHTTP11
+		// No version at all is a HTTP/0.9 simple-request, not a 1.x request-line,
+		// RFC 9112 3. proto stays empty, telling it apart from a named version.
 		uri = hb.kv.view(b[methodEnd+1:])
+		method = hb.kv.view(b[:methodEnd])
+		return method, uri, proto, flags | flagNoHTTP11, lneto.ErrUnsupported
 	}
 	method = hb.kv.view(b[:methodEnd])
 	return method, uri, proto, flags, nil
 }
 
-func (hb *headerBuf) parseFirstLineResponse(initFlags Flags) (statusCode, statusText view, flags Flags, err error) {
+func (hb *headerv1Buf) parseFirstLineResponse(initFlags Flags) (statusCode, statusText view, flags Flags, err error) {
 	debuglog("http:resp:scan")
 	hb.off = 0 // Parsing first line resets offset.
 	hb.skipLeadingCRLF()
@@ -216,7 +230,11 @@ func (hb *headerBuf) parseFirstLineResponse(initFlags Flags) (statusCode, status
 	if protoEnd < 0 {
 		return statusCode, statusText, flags, ErrNeedMoreData
 	}
-	if b2s(b[:protoEnd]) != strHTTP11 {
+	if !protoIsV1(b2s(b[:protoEnd])) {
+		// Refused before the fields, as on the request side: a response naming
+		// another version is not one this type can read.
+		return statusCode, statusText, flags | flagNoHTTP11, lneto.ErrUnsupported
+	} else if b2s(b[:protoEnd]) != strHTTP11 {
 		flags |= flagNoHTTP11
 	}
 	b = b[protoEnd+1:] // Advance past protocol and space.
@@ -243,7 +261,7 @@ func (hb *headerBuf) parseFirstLineResponse(initFlags Flags) (statusCode, status
 	return statusCode, statusText, flags, nil
 }
 
-func (hb *headerBuf) next(ss *scannerState) pairKV {
+func (hb *headerv1Buf) next(ss *scannerState) pairKV {
 	if !ss.initialized {
 		ss.nextColon = -1
 		ss.nextNewLine = -1
@@ -328,7 +346,7 @@ func (hb *headerBuf) next(ss *scannerState) pairKV {
 }
 
 // ConnectionClose returns true if 'Connection: close' header is set or if a invalid header was found.
-func (h *Header) ConnectionClose() bool {
+func (h *HeaderV1) ConnectionClose() bool {
 	flags := h.Flags()
 	closed := flags.HasAny(flagConnClose) ||
 		h.hasConnectionToken(strClose) ||
@@ -342,7 +360,7 @@ func (h *Header) ConnectionClose() bool {
 // hasConnectionToken reports whether the Connection field lists token, which
 // must be lowercase. The field name, its comma list and each token all compare
 // case insensitively, RFC 9110 5.1 and 7.6.1.
-func (h *Header) hasConnectionToken(token string) bool {
+func (h *HeaderV1) hasConnectionToken(token string) bool {
 	value := h.GetFold(headerConnection)
 	for len(value) > 0 {
 		item := value

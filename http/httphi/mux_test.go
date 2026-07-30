@@ -363,6 +363,85 @@ func TestMuxSliceHandleAllowsExtensionMethod(t *testing.T) {
 	}
 }
 
+// A catch-all registered before the endpoints it sits above must not swallow
+// them. "/" is a wildcard pattern: its trailing slash is an anonymous "{...}",
+// so a purely first-match-wins scan hands every request to it and the specific
+// registrations below become dead code, answered with the root page instead of
+// their own body. Registering the site root first is the ordinary way to write
+// a mux, so the more specific pattern has to win regardless of order, as in
+// http.ServeMux.
+func TestMuxSliceSpecificPatternBeatsEarlierCatchAll(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		register []string
+		path     string
+		want     string
+	}{
+		{
+			name:     "root registered first",
+			register: []string{"/", "/hello", "/cnt", "/6"},
+			path:     "/cnt",
+			want:     "/cnt",
+		}, {
+			name:     "root registered last",
+			register: []string{"/hello", "/cnt", "/6", "/"},
+			path:     "/cnt",
+			want:     "/cnt",
+		}, {
+			name:     "root still serves the root path",
+			register: []string{"/", "/cnt"},
+			path:     "/",
+			want:     "/",
+		}, {
+			name:     "root still catches the unregistered",
+			register: []string{"/", "/cnt"},
+			path:     "/nowhere",
+			want:     "/",
+		}, {
+			name:     "subtree wildcard loses to its own literal",
+			register: []string{"/files/", "/files/index"},
+			path:     "/files/index",
+			want:     "/files/index",
+		}, {
+			name:     "subtree wildcard keeps the rest",
+			register: []string{"/files/", "/files/index"},
+			path:     "/files/a/b",
+			want:     "/files/",
+		}, {
+			name:     "longer literal prefix wins over shorter subtree",
+			register: []string{"/", "/files/", "/files/a/b"},
+			path:     "/files/a/b",
+			want:     "/files/a/b",
+		}, {
+			name:     "named wildcard loses to the literal it covers",
+			register: []string{"/users/{id}", "/users/me"},
+			path:     "/users/me",
+			want:     "/users/me",
+		}, {
+			name:     "named wildcard keeps everything else",
+			register: []string{"/users/{id}", "/users/me"},
+			path:     "/users/42",
+			want:     "/users/{id}",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var sm MuxSlice
+			sm.Reset(len(test.register))
+			for _, pattern := range test.register {
+				sm.Handle(pattern, func(ex *Exchange) { ex.WriteHeader(200) })
+			}
+			pathVals := make([]PathValue, max(sm.MaxPathValues(), 0))
+			got, handler := sm.LookupHandler(MethGet, []byte(test.path), pathVals)
+			if handler == nil {
+				t.Fatalf("%s matched no handler, want %q", test.path, test.want)
+			}
+			if got != test.want {
+				t.Errorf("%s matched pattern %q, want %q", test.path, got, test.want)
+			}
+		})
+	}
+}
+
 // pathVals sizes the slice SetPathValues writes into, so it must count exactly
 // the wildcards that bind. Counting braces over-reports: "{$}" marks the path's
 // end, an anonymous "{...}" has no name, and a brace inside a literal segment is
