@@ -190,7 +190,7 @@ func FuzzHandleRequest(f *testing.F) {
 				// escaping, not this package's framing.
 				for i := range stage {
 					exch.StageHeader("X-Fuzz", "value")
-					exch.StageHeaderInt("X-Fuzz-Int", int64(i), 10)
+					exch.StageHeaderIntBase("X-Fuzz-Int", int64(i), 10)
 				}
 			}
 			if ops&opReadBody != 0 {

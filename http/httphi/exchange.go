@@ -53,24 +53,28 @@ type Exchange struct {
 // ExchangeConfig is the memory an [Exchange] is fixed to for the rest of its
 // life by [Exchange.Configure]. A [Router] derives one per exchange from its
 // [RouterConfig], which is what bounds the router's memory.
+//
+// Fields open with Required, Conditional or Optional and the constraint in
+// brackets, as in [RouterConfig].
 type ExchangeConfig struct {
-	// RawBuf is the single buffer holding the request header, the response
+	// Required [non-empty] single buffer holding the request header, the response
 	// header and any surplus body. See [Exchange.UnsafeRawBuffer].
 	RawBuf []byte
-	// RequestBufferLim reserves the first bytes of RawBuf for the request
-	// header, the rest being the response. Configure panics if it exceeds RawBuf.
+	// Required [<=len(RawBuf)] bytes of RawBuf reserved for the request header,
+	// the rest being the response. Configure panics if it exceeds RawBuf.
 	RequestBufferLim int
-	// NumHeaderKVCap is how many request header fields may be parsed. A request
-	// carrying more is answered 431, see [httpraw.ErrHeaderTooMany].
+	// Required [>0] request header fields that may be parsed. A request carrying
+	// more is answered 431, see [httpraw.ErrHeaderTooMany].
 	NumHeaderKVCap int
-	// NormalizeOutgoingKeys normalizes staged response header keys as they are
+	// Optional [any] normalization of staged response header keys as they are
 	// written, i.e: "content-type" becomes "Content-Type".
 	NormalizeOutgoingKeys bool
-	// NoRequestBufferGrowth holds the request header to RequestBufferLim rather
-	// than growing it. A header outgrowing it is answered 431, see [httpraw.ErrBufferExhausted].
+	// Optional [any] cap holding the request header to RequestBufferLim rather than
+	// growing it. A header outgrowing it is answered 431, see [httpraw.ErrBufferExhausted].
 	NoRequestBufferGrowth bool
-	// MaxPathValues is how many wildcards a single pattern may bind, read back with
-	// [Exchange.PathValue]. A pattern with more never matches, see [SetPathValues].
+	// Conditional [>=the most wildcards any one registered pattern binds] number of
+	// path values bindable, read back with [Exchange.PathValue]. A pattern binding
+	// more never matches, see [SetPathValues]. Zero suits a mux of literal patterns.
 	MaxPathValues int
 }
 
@@ -201,11 +205,23 @@ func (exch *Exchange) StageHeader(key, value string) (enoughMemory bool) {
 	return true
 }
 
-// StageHeaderInt is [Exchange.StageHeader] with an integer value, i.e: Content-Length.
+// StageHeaderBytes is [Exchange.StageHeader] with a byte slice value, i.e: a
+// field copied out of the request. The value is not retained.
+func (exch *Exchange) StageHeaderBytes(key string, value []byte) (enoughMemory bool) {
+	return exch.StageHeader(key, b2s(value))
+}
+
+// StageHeaderInt is [Exchange.StageHeaderIntBase] in base 10, which is the base
+// every HTTP field value carrying a number uses, i.e: Content-Length.
+func (exch *Exchange) StageHeaderInt(key string, value int64) (enoughMemory bool) {
+	return exch.StageHeaderIntBase(key, value, 10)
+}
+
+// StageHeaderIntBase is [Exchange.StageHeader] with an integer value, i.e: Content-Length.
 // It formats the value directly into the response buffer without allocating.
 // base must be in the range 10..36; lower bases are dropped, no HTTP header
 // field value is written below base 10.
-func (exch *Exchange) StageHeaderInt(key string, value int64, base int) (enoughMemory bool) {
+func (exch *Exchange) StageHeaderIntBase(key string, value int64, base int) (enoughMemory bool) {
 	if exch.headerWritten || base < 10 || base > 36 {
 		return false
 	}
@@ -259,6 +275,42 @@ func (exch *Exchange) WriteHeader(code int) (n int, err error) {
 		n, err = exch.FlushHeader()
 	}
 	return n, err
+}
+
+// Respond writes a complete response in one call: Content-Type, a Content-Length
+// taken from len(body), the status line and the body. An empty contentType
+// stages no Content-Type field, for a code that carries no entity.
+//
+// It also stages "Connection: close", the router serving one exchange per
+// connection, so a peer never waits on a response that is not coming.
+//
+// Returns [Exchange.ResponseError]: staged fields that did not fit and failed
+// writes are both reported there, so a truncated response cannot pass silently.
+func (exch *Exchange) Respond(code int, contentType string, body []byte) error {
+	exch.stageResponse(code, contentType, len(body))
+	exch.WriteBody(body) // Reports through respErr, checked below.
+	return exch.respErr
+}
+
+// RespondString is [Exchange.Respond] with a string body, saving the conversion.
+func (exch *Exchange) RespondString(code int, contentType, body string) error {
+	exch.stageResponse(code, contentType, len(body))
+	exch.WriteBodyString(body) // Reports through respErr, checked below.
+	return exch.respErr
+}
+
+// stageResponse stages the fields and status line a complete response needs.
+// Drops are recorded on respErr by the Stage* calls, so [Exchange.WriteBody]
+// declines to write a partial header afterwards.
+func (exch *Exchange) stageResponse(code int, contentType string, bodyLen int) {
+	if contentType != "" {
+		exch.StageHeader("Content-Type", contentType)
+	}
+	exch.StageHeaderInt("Content-Length", int64(bodyLen))
+	// One exchange per connection today, so the peer is told not to wait for a
+	// second response on it. Revisit once the router loops exchanges.
+	exch.StageHeader("Connection", "close")
+	exch.StageStatus(code)
 }
 
 // ResponseError returns any error encountered during staging of headers or during writing of response.
@@ -368,7 +420,7 @@ func (exch *Exchange) WriteBodyString(buf string) (int, error) {
 	return exch.WriteBody(unsafe.Slice(unsafe.StringData(buf), len(buf)))
 }
 
-// Write writes response body bytes, flushing the header first if the handler
+// WriteBody writes response body bytes, flushing the header first if the handler
 // has not written it yet. Once a write to the connection fails the response is
 // unrecoverable and every later write returns that same error, so a body never
 // reaches the wire without its header.
@@ -464,11 +516,18 @@ func (exch *Exchange) RequestContentLength() (_ int64, present bool, _ error) {
 // [Exchange.RequestQuery] or [Exchange.RequestQueryAppend]. The body is consumed, so
 // call this before [Exchange.ReadBody].
 //
-// A request with no Content-Length has no body, RFC 9112 6.3, and yields an
-// empty form. Use [Exchange.RequestContentLength] to tell that apart from a body
-// that arrived empty.
+// A request with no Content-Length has no body, RFC 9112 6.3, and a request with
+// no Content-Type declares no encoding to parse, RFC 9110 8.3. Both yield an
+// empty form and a nil error, a bodiless POST being legal. Use
+// [Exchange.RequestContentLength] and [Exchange.RequestContentType] to tell
+// either apart from a body that arrived empty. A Content-Type that is present
+// and not form encoded is [errNotFormEncoded], an absent one never is.
 func (exch *Exchange) RequestParseForm(dst *httpraw.Form, buf []byte) error {
-	if !httpraw.MediaTypeIs(exch.RequestContentType(), "application/x-www-form-urlencoded") {
+	contentType := exch.RequestContentType()
+	if contentType == nil {
+		dst.Reset(nil, 0)
+		return nil // No declared encoding is no form, as no length is no body.
+	} else if !httpraw.MediaTypeIs(contentType, "application/x-www-form-urlencoded") {
 		return errNotFormEncoded
 	} else if exch.RequestHeaderRaw().GetFold("Transfer-Encoding") != nil {
 		// Chunked bodies are framed, so reading Content-Length bytes off the

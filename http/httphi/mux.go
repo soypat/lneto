@@ -104,6 +104,8 @@ type Mux interface {
 	// requestPath is a buffer owned by the [Exchange] usually and should not be held after LookupHandler returns.
 	LookupHandler(get Method, requestPath []byte, dstPathVals []PathValue) (matchedPattern string, handler HandlerFunc)
 	// MaxPathValues specifies the required size of dstPathVals in a call to [Mux.LookupHandler].
+	// MaxPathValues should return -1 if no paths have been configured to catch situation
+	// where the Mux has been passed to a [Router.Configuration] before registering paths.
 	MaxPathValues() int
 }
 
@@ -230,6 +232,11 @@ func (sm *MuxSlice) Reset(capacity int) {
 
 // LookupHandler returns the handler registered for request path, or nil if none matches.
 // The first registration matching both method and uri wins.
+//
+// Every method this package does not name is [MethUnknown], so a request with an
+// extension method matches a bare-path registration and any registration naming
+// an extension method, whichever it names. Tell PROPFIND from MKCOL inside the
+// handler with [Exchange.RequestMethodRaw].
 func (sm *MuxSlice) LookupHandler(method Method, path []byte, dstPathVals []PathValue) (matched string, _ HandlerFunc) {
 	for _, endpoint := range sm._handlers {
 		if endpoint.method != MethUndefined && endpoint.method != method {
@@ -238,7 +245,7 @@ func (sm *MuxSlice) LookupHandler(method Method, path []byte, dstPathVals []Path
 		// Method matches. A pattern ending in '/' is a wildcard despite binding no
 		// values: the trailing slash is an anonymous "{...}", so it must go
 		// through the matcher and not a literal compare, see [SetPathValues].
-		if endpoint.pathVals > 0 || strings.HasSuffix(endpoint.path, "/") {
+		if isWildcardPattern(endpoint.path) {
 			if ok, _ := SetPathValues(dstPathVals, endpoint.path, path); ok {
 				return endpoint.path, endpoint.handler
 			}
@@ -251,6 +258,9 @@ func (sm *MuxSlice) LookupHandler(method Method, path []byte, dstPathVals []Path
 
 // MaxPathValues returns the maximum number of path values any endpoint could have.
 func (sm *MuxSlice) MaxPathValues() (maxPathValues int) {
+	if len(sm._handlers) == 0 {
+		return -1 // Signal no handlers registered.
+	}
 	for _, endpoint := range sm._handlers {
 		maxPathValues = max(maxPathValues, endpoint.pathVals)
 	}
@@ -259,20 +269,84 @@ func (sm *MuxSlice) MaxPathValues() (maxPathValues int) {
 
 // Handle registers handler for reg, either a bare path matching any method or a
 // method and path separated by a space, i.e: "/health" or "GET /health".
-// Handle does not check for duplicate registrations: the first one added wins.
+//
+// Handle panics on a registration that could never serve a request: a method
+// token carrying lowercase (methods are case sensitive and uppercase, RFC 9110
+// 9.1, so "Get" matches no GET request), a path not rooted at '/', or an exact
+// duplicate of an earlier registration, which the first one always shadows.
+// Registration is program startup, so a fault belongs there and not in a
+// permanent silent 404.
 func (sm *MuxSlice) Handle(optMethodAndPath string, handler HandlerFunc) {
-	v := internal.SliceReclaim(&sm._handlers)
 	method := MethUndefined
 	methodOrURL, url, methodFound := strings.Cut(optMethodAndPath, " ")
 	if methodFound {
+		if hasLowerASCII(methodOrURL) {
+			panic("httphi: method must be uppercase in registration " + optMethodAndPath)
+		}
 		method = MethodFrom(methodOrURL)
 	} else {
 		url = methodOrURL
 	}
-	v.pathVals = strings.Count(optMethodAndPath, "{")
+	if len(url) == 0 || url[0] != '/' {
+		panic("httphi: path must begin with '/' in registration " + optMethodAndPath)
+	}
+	for _, endpoint := range sm._handlers {
+		if endpoint.method == method && endpoint.path == url {
+			if method == MethUnknown {
+				// Two extension methods are both MethUnknown, so the second is
+				// unreachable. Register one and branch in the handler, see
+				// [MuxSlice.LookupHandler].
+				panic("httphi: extension method already registered on path in " + optMethodAndPath)
+			}
+			panic("httphi: duplicate registration " + optMethodAndPath)
+		}
+	}
+	v := internal.SliceReclaim(&sm._handlers)
+	v.pathVals = countPathValues(url)
 	v.method = method
 	v.path = url
 	v.handler = handler
+}
+
+// countPathValues is how many values pattern can bind, which is what sizes the
+// slice [SetPathValues] writes into. Only a named wildcard segment binds: "{$}"
+// marks the path's end, an anonymous "{...}" has no name to bind under, and a
+// brace inside a literal segment is not a wildcard at all.
+func countPathValues(pattern string) (n int) {
+	if len(pattern) == 0 || pattern[0] != '/' {
+		return 0
+	}
+	pattern = pattern[1:]
+	for len(pattern) > 0 {
+		segment, rest, more := strings.Cut(pattern, "/")
+		if name, _, ok := pathWildcard(segment); ok && name != "" && name != "$" {
+			n++
+		}
+		if !more {
+			break
+		}
+		pattern = rest
+	}
+	return n
+}
+
+// isWildcardPattern reports whether pattern must go through [SetPathValues]
+// rather than a literal comparison. Distinct from the value count: "{$}" and a
+// trailing slash match by walking segments while binding nothing.
+func isWildcardPattern(pattern string) bool {
+	return strings.IndexByte(pattern, '{') >= 0 || strings.HasSuffix(pattern, "/")
+}
+
+// hasLowerASCII reports whether s carries an ASCII lowercase letter, which a
+// method token registered by mistake ("Get") does and a legal extension method
+// ("PROPFIND") does not.
+func hasLowerASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 'a' && s[i] <= 'z' {
+			return true
+		}
+	}
+	return false
 }
 
 // Method is a HTTP request method, parsed by [MethodFrom].

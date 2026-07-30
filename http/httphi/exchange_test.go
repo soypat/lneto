@@ -582,7 +582,7 @@ func TestExchangeSetHeaderInt(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			conn := newConn("")
 			exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 2*256), RequestBufferLim: 256})
-			exch.StageHeaderInt("N", test.value, test.base)
+			exch.StageHeaderIntBase("N", test.value, test.base)
 			exch.WriteHeader(200)
 			got, _ := strings.CutPrefix(conn.ViewWritten(), "HTTP/1.1 200 OK\r\n")
 			if got != test.want {
@@ -596,7 +596,7 @@ func TestExchangeSetHeaderInt(t *testing.T) {
 func TestExchangeSetHeaderIntNoAlloc(t *testing.T) {
 	exch := newExchange(t, newConn(""), ExchangeConfig{RawBuf: make([]byte, 2*256), RequestBufferLim: 256})
 	allocs := testing.AllocsPerRun(100, func() {
-		exch.StageHeaderInt("Content-Length", 1234567890, 10)
+		exch.StageHeaderIntBase("Content-Length", 1234567890, 10)
 	})
 	if allocs != 0 {
 		t.Errorf("SetHeaderInt allocated %v times, want 0", allocs)
@@ -810,10 +810,13 @@ func TestExchangeRequestParseForm(t *testing.T) {
 			contentType: "text/plain",
 			wantErr:     errNotFormEncoded,
 		}, {
+			// An absent field is not a wrong one: no media type is no body, the
+			// same answer "no content length" gets above. Only a type that is
+			// present and not form encoded is an error.
 			name:          "no media type",
 			formVals:      []formPair{{key: "a", value: "1"}},
 			noContentType: true,
-			wantErr:       errNotFormEncoded,
+			wantVals:      []formPair{},
 		}, {
 			// The coding is refused on the field alone, so the body stays off.
 			name:            "chunked",
@@ -1470,5 +1473,106 @@ func TestExchangeRequestParseFormFoldedTransferEncoding(t *testing.T) {
 				t.Fatalf("want %v, got %v with %d pairs %q", errUnsupportedTransferCoding, gotErr, form.Len(), formString(&form))
 			}
 		})
+	}
+}
+
+// StageHeaderInt defaults to base 10, the only base an HTTP field value uses,
+// so callers do not repeat it at every site.
+func TestExchangeStageHeaderIntDefaultsBase10(t *testing.T) {
+	conn := newConn("")
+	exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 256), RequestBufferLim: 128})
+	if !exch.StageHeaderInt("Content-Length", 1234567890) {
+		t.Fatal("want field staged")
+	}
+	exch.WriteHeader(200)
+	const want = "HTTP/1.1 200 OK\r\nContent-Length:1234567890\r\n\r\n"
+	if got := conn.ViewWritten(); got != want {
+		t.Errorf("want %q, got %q", want, got)
+	}
+}
+
+// StageHeaderBytes stages a value already held as bytes without the caller
+// converting it to a string first.
+func TestExchangeStageHeaderBytes(t *testing.T) {
+	conn := newConn("")
+	exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 256), RequestBufferLim: 128})
+	value := []byte("text/html")
+	if !exch.StageHeaderBytes("Content-Type", value) {
+		t.Fatal("want field staged")
+	}
+	// The value must be copied, not aliased: mutating it after staging must not
+	// change what reaches the wire.
+	value[0] = 'X'
+	exch.WriteHeader(200)
+	const want = "HTTP/1.1 200 OK\r\nContent-Type:text/html\r\n\r\n"
+	if got := conn.ViewWritten(); got != want {
+		t.Errorf("want %q, got %q", want, got)
+	}
+}
+
+// Respond replaces the stage/stage/stage/write boilerplate every handler paid,
+// deriving Content-Length from the body so it cannot disagree with what is sent.
+func TestExchangeRespond(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		code        int
+		contentType string
+		body        string
+		want        string
+	}{
+		{
+			name: "html", code: 200, contentType: "text/html", body: "<h1>hi</h1>",
+			want: "HTTP/1.1 200 OK\r\nContent-Type:text/html\r\nContent-Length:11\r\nConnection:close\r\n\r\n<h1>hi</h1>",
+		},
+		{
+			name: "empty body still declares zero length", code: 200, contentType: "text/plain", body: "",
+			want: "HTTP/1.1 200 OK\r\nContent-Type:text/plain\r\nContent-Length:0\r\nConnection:close\r\n\r\n",
+		},
+		{
+			name: "no content type staged when empty", code: 204, contentType: "", body: "",
+			want: "HTTP/1.1 204 No Content\r\nContent-Length:0\r\nConnection:close\r\n\r\n",
+		},
+		{
+			name: "error code carries a body", code: 500, contentType: "text/plain", body: "boom",
+			want: "HTTP/1.1 500 Internal Server Error\r\nContent-Type:text/plain\r\nContent-Length:4\r\nConnection:close\r\n\r\nboom",
+		},
+	} {
+		t.Run(test.name+"/bytes", func(t *testing.T) {
+			conn := newConn("")
+			exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 512), RequestBufferLim: 256})
+			if err := exch.Respond(test.code, test.contentType, []byte(test.body)); err != nil {
+				t.Fatalf("Respond: %s", err)
+			}
+			if got := conn.ViewWritten(); got != test.want {
+				t.Errorf("want %q, got %q", test.want, got)
+			}
+		})
+		t.Run(test.name+"/string", func(t *testing.T) {
+			conn := newConn("")
+			exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 512), RequestBufferLim: 256})
+			if err := exch.RespondString(test.code, test.contentType, test.body); err != nil {
+				t.Fatalf("RespondString: %s", err)
+			}
+			if got := conn.ViewWritten(); got != test.want {
+				t.Errorf("want %q, got %q", test.want, got)
+			}
+		})
+	}
+}
+
+// A response that does not fit must be reported, not shipped truncated: the
+// whole point of folding the boilerplate into one call.
+func TestExchangeRespondReportsOverflow(t *testing.T) {
+	conn := newConn("")
+	exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 64), RequestBufferLim: 32})
+	err := exch.Respond(200, strings.Repeat("t", 200), []byte("body"))
+	if err == nil {
+		t.Fatal("want an error for a response header that cannot fit")
+	}
+	if got := conn.ViewWritten(); got != "" {
+		t.Errorf("nothing must reach the wire, got %q", got)
+	}
+	if exch.ResponseError() == nil {
+		t.Error("want the failure recorded on the exchange too")
 	}
 }

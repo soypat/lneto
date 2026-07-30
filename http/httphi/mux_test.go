@@ -308,3 +308,129 @@ func TestMuxSliceTrailingSlashPattern(t *testing.T) {
 		})
 	}
 }
+
+// A malformed registration is a programming error, and one that otherwise costs
+// a permanent silent 404 at runtime: "Get /x" parses to MethUnknown, which no
+// GET request ever matches but every extension-method request does. Fail at
+// registration, where the stack points at the offending line.
+func TestMuxSliceHandlePanicsOnBadRegistration(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		reg  string
+	}{
+		{name: "lowercase method", reg: "Get /x"},
+		{name: "all lower method", reg: "get /x"},
+		{name: "mixed case method", reg: "pOsT /x"},
+		{name: "no leading slash", reg: "GET x"},
+		{name: "bare path no slash", reg: "x"},
+		{name: "empty path after method", reg: "GET "},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var sm MuxSlice
+			sm.Reset(1)
+			defer func() {
+				if recover() == nil {
+					t.Errorf("want panic registering %q", test.reg)
+				}
+			}()
+			sm.Handle(test.reg, func(ex *Exchange) {})
+		})
+	}
+}
+
+// An exact duplicate is unreachable code: the first registration always wins.
+func TestMuxSliceHandlePanicsOnDuplicate(t *testing.T) {
+	var sm MuxSlice
+	sm.Reset(2)
+	sm.Handle("GET /x", func(ex *Exchange) {})
+	defer func() {
+		if recover() == nil {
+			t.Error("want panic registering the same method and path twice")
+		}
+	}()
+	sm.Handle("GET /x", func(ex *Exchange) {})
+}
+
+// Extension methods are legal and uppercase, so they must still register: only
+// the case-mangled forms are rejected.
+func TestMuxSliceHandleAllowsExtensionMethod(t *testing.T) {
+	var sm MuxSlice
+	sm.Reset(2)
+	sm.Handle("PROPFIND /dav", func(ex *Exchange) {})
+	sm.Handle("/any-method", func(ex *Exchange) {}) // Bare path matches any method.
+	if sm.MaxPathValues() != 0 {
+		t.Errorf("want 0 path values, got %d", sm.MaxPathValues())
+	}
+}
+
+// pathVals sizes the slice SetPathValues writes into, so it must count exactly
+// the wildcards that bind. Counting braces over-reports: "{$}" marks the path's
+// end, an anonymous "{...}" has no name, and a brace inside a literal segment is
+// not a wildcard at all. Each of those binds nothing.
+func TestMuxSliceMaxPathValuesCountsOnlyBindingWildcards(t *testing.T) {
+	for _, test := range []struct {
+		pattern string
+		want    int
+	}{
+		{pattern: "/health", want: 0},
+		{pattern: "/", want: 0},
+		{pattern: "/files/", want: 0},       // Anonymous trailing wildcard.
+		{pattern: "/{$}", want: 0},          // End-of-path marker.
+		{pattern: "/a/{$}", want: 0},        //
+		{pattern: "/b_{bucket}", want: 0},   // Literal: brace not a whole segment.
+		{pattern: "/{...}", want: 0},        // Multi wildcard with no name.
+		{pattern: "/users/{id}", want: 1},   //
+		{pattern: "/files/{p...}", want: 1}, //
+		{pattern: "/{a}/{b}", want: 2},      //
+		{pattern: "/b/{bucket}/o/{obj...}", want: 2},
+	} {
+		t.Run(test.pattern, func(t *testing.T) {
+			var sm MuxSlice
+			sm.Reset(1)
+			sm.Handle(test.pattern, func(ex *Exchange) {})
+			if got := sm.MaxPathValues(); got != test.want {
+				t.Errorf("want %d path values, got %d", test.want, got)
+			}
+		})
+	}
+}
+
+// Sizing and routing are different questions: "{$}" binds no values yet still
+// needs the matcher, so an exact pathVals count must not send it to the literal
+// comparison instead.
+func TestMuxSliceZeroValueWildcardStillMatches(t *testing.T) {
+	for _, test := range []struct {
+		pattern string
+		path    string
+		want    bool
+	}{
+		{pattern: "/{$}", path: "/", want: true},
+		{pattern: "/{$}", path: "/x", want: false},
+		{pattern: "/a/{$}", path: "/a/", want: true},
+		{pattern: "/a/{$}", path: "/a/b", want: false},
+		{pattern: "/{...}", path: "/any/thing", want: true},
+	} {
+		t.Run(test.pattern+"__"+test.path, func(t *testing.T) {
+			var sm MuxSlice
+			sm.Reset(1)
+			var served bool
+			sm.Handle(test.pattern, func(ex *Exchange) { served = true; ex.WriteHeader(200) })
+			exch := new(Exchange)
+			exch.Configure(ExchangeConfig{
+				RawBuf: make([]byte, 2048), RequestBufferLim: 1024,
+				NumHeaderKVCap: defaultNumHeaderKVCap, MaxPathValues: sm.MaxPathValues(),
+			})
+			conn := newConn("GET " + test.path + " HTTP/1.1\r\nHost: h\r\n\r\n")
+			conn.Hangup()
+			if !exch.Acquire(conn) {
+				t.Fatal("acquire")
+			}
+			if err := Handle(exch, &sm, nopBackoff); err != nil {
+				t.Fatal(err)
+			}
+			if served != test.want {
+				t.Errorf("want served=%v, got %v", test.want, served)
+			}
+		})
+	}
+}

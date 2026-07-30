@@ -100,7 +100,7 @@ func homepage(exch *httphi.Exchange) {
 	n += copy(page[n:], htmlTail)
 
 	exch.StageHeader("Content-Type", "text/html")
-	exch.StageHeaderInt("Content-Length", int64(n), 10)
+	exch.StageHeaderInt("Content-Length", int64(n))
 	exch.WriteHeader(int(httphi.StatusOK))
 	exch.WriteBody(page[:n])
 }
