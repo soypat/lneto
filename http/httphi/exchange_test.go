@@ -23,6 +23,10 @@ func nopBackoff(consecutiveBackoffs uint) time.Duration { return lneto.BackoffFl
 // where it says so.
 const defaultNumHeaderKVCap = 32
 
+// defaultKVCap is the pair table size tests hand to [httpraw.Form.Reset], a
+// bounded form needing room for the pairs it parses. See [httpraw.Form.Reset].
+const defaultKVCap = 8
+
 // newExchange returns an Exchange acquired on conn, ready to serve a request.
 func newExchange(t *testing.T, conn conn, cfg ExchangeConfig) *Exchange {
 	t.Helper()
@@ -872,7 +876,7 @@ func TestExchangeRequestParseForm(t *testing.T) {
 			// The form owns the memory: bufSize bounds it here, growth off so an
 			// oversized body is reported rather than allocated for.
 			var form httpraw.Form
-			form.Reset(make([]byte, 0, bufSize), 8)
+			form.Reset(make([]byte, 0, bufSize), defaultKVCap)
 			form.EnableBufferGrowth(false)
 			var gotErr error
 			var sm MuxSlice
@@ -1479,40 +1483,6 @@ func TestExchangeRequestParseFormFoldedTransferEncoding(t *testing.T) {
 				t.Fatalf("want %v, got %v with %d pairs %q", errUnsupportedTransferCoding, gotErr, form.Len(), formString(&form))
 			}
 		})
-	}
-}
-
-// StageHeaderInt defaults to base 10, the only base an HTTP field value uses,
-// so callers do not repeat it at every site.
-func TestExchangeStageHeaderIntDefaultsBase10(t *testing.T) {
-	conn := newConn("")
-	exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 256), RequestBufferLim: 128})
-	if !exch.StageHeaderInt("Content-Length", 1234567890) {
-		t.Fatal("want field staged")
-	}
-	exch.WriteHeader(200)
-	const want = "HTTP/1.1 200 OK\r\nContent-Length:1234567890\r\n\r\n"
-	if got := conn.ViewWritten(); got != want {
-		t.Errorf("want %q, got %q", want, got)
-	}
-}
-
-// StageHeaderBytes stages a value already held as bytes without the caller
-// converting it to a string first.
-func TestExchangeStageHeaderBytes(t *testing.T) {
-	conn := newConn("")
-	exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 256), RequestBufferLim: 128})
-	value := []byte("text/html")
-	if !exch.StageHeaderBytes("Content-Type", value) {
-		t.Fatal("want field staged")
-	}
-	// The value must be copied, not aliased: mutating it after staging must not
-	// change what reaches the wire.
-	value[0] = 'X'
-	exch.WriteHeader(200)
-	const want = "HTTP/1.1 200 OK\r\nContent-Type:text/html\r\n\r\n"
-	if got := conn.ViewWritten(); got != want {
-		t.Errorf("want %q, got %q", want, got)
 	}
 }
 

@@ -148,7 +148,7 @@ func TestFormParseReuseNoAlloc(t *testing.T) {
 		t.Fatal(err)
 	}
 	allocs := testing.AllocsPerRun(100, func() {
-		f.Reset(body, 0)
+		f.Reset(body, 0) // 0 preserves the pair storage warmed up above, the reuse under test.
 		f.Parse()
 	})
 	if allocs != 0 {
@@ -161,7 +161,7 @@ func TestFormParseReuseNoAlloc(t *testing.T) {
 // one. Form.Len is zero until Parse runs and cannot answer that.
 func TestFormBufferUsed(t *testing.T) {
 	var f Form
-	f.Reset(nil, 0)
+	f.Reset(nil, defaultKVCap)
 	if got := f.BufferUsed(); got != 0 {
 		t.Errorf("want 0 on a fresh form, got %d", got)
 	}
@@ -191,7 +191,7 @@ func TestFormBufferUsed(t *testing.T) {
 		t.Errorf("BufferUsed must not change on Parse, got %d", got)
 	}
 	// Reset discards the pairs and the buffered bytes with them.
-	f.Reset(nil, 0)
+	f.Reset(nil, defaultKVCap)
 	if got := f.BufferUsed(); got != 0 {
 		t.Errorf("want 0 after Reset, got %d", got)
 	}

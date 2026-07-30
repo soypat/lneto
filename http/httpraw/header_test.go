@@ -11,7 +11,11 @@ import (
 	"time"
 )
 
-const numHeaderCapacity = 16
+// defaultKVCap is the key/value table size tests hand to Reset. A Reset with 0
+// preserves whatever capacity the value already had, which is what production
+// code wants on reuse but leaves a fresh value unable to hold a single pair when
+// growth is disabled, see [Form.Reset].
+const defaultKVCap = 16
 
 func TestHeaderParseRequest(t *testing.T) {
 	const (
@@ -62,7 +66,7 @@ func TestHeaderParseRequest(t *testing.T) {
 	}
 	var c Cookie
 	cookie := hdr.Get("Cookie")
-	c.Reset(cookie, 0)
+	c.Reset(cookie, defaultKVCap)
 	err = c.Parse()
 	if err != nil {
 		t.Error(err)
@@ -394,7 +398,7 @@ func TestCopyDecodedPercentURLInPlace(t *testing.T) {
 
 func TestHeaderSetOverwrite(t *testing.T) {
 	var h Header
-	h.Reset(nil, numHeaderCapacity)
+	h.Reset(nil, defaultKVCap)
 	h.SetMethod("GET")
 	h.SetRequestTarget("/")
 	h.SetProtocol("HTTP/1.1")
@@ -417,7 +421,7 @@ func TestHeaderSetOverwrite(t *testing.T) {
 
 func TestHeaderSetBytesEmptyValue(t *testing.T) {
 	var h Header
-	h.Reset(nil, numHeaderCapacity)
+	h.Reset(nil, defaultKVCap)
 	h.SetBytes("X-Empty", nil)
 	if got := h.Get("X-Empty"); len(got) != 0 {
 		t.Errorf("want empty value, got %q", got)
@@ -472,7 +476,7 @@ func TestHeader_SplitBeforeColonStillParses(t *testing.T) {
 	const part2 = ": example.com\r\n\r\n"
 
 	var h Header
-	h.Reset(nil, numHeaderCapacity)
+	h.Reset(nil, defaultKVCap)
 	if err := h.ReadFromBytes([]byte(part1)); err != nil {
 		t.Fatal(err)
 	}
@@ -505,7 +509,7 @@ func TestHeader_AppendHeaderExactCapNoPanic(t *testing.T) {
 	const key, value = "K", "V"
 	buf := make([]byte, 0, len(key)+len(value)) // exact cap, no slack.
 	var h Header
-	h.Reset(buf, numHeaderCapacity)
+	h.Reset(buf, defaultKVCap)
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("appendHeader panicked on exact-cap buffer: %v", r)
@@ -522,7 +526,7 @@ func TestHeader_AppendHeaderExactCapNoPanic(t *testing.T) {
 func TestHeader_AddFullBufferNoPanic(t *testing.T) {
 	buf := make([]byte, 0, 40) // Small cap; enough for Reset (len 0) but not the field below.
 	var h Header
-	h.Reset(buf, numHeaderCapacity)
+	h.Reset(buf, defaultKVCap)
 	h.ConfigBufferGrowth(false)
 	h.SetMethod("GET")
 	h.SetRequestTarget("/")
@@ -557,7 +561,7 @@ func TestHeader_SetInt(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var h Header
-			h.Reset(nil, numHeaderCapacity)
+			h.Reset(nil, defaultKVCap)
 			h.SetInt("Content-Length", tc.value, tc.base)
 			if got := string(h.Get("Content-Length")); got != tc.want {
 				t.Fatalf("want %q, got %q", tc.want, got)
@@ -569,7 +573,7 @@ func TestHeader_SetInt(t *testing.T) {
 // SetInt on an existing key must reuse the slot in place (single field, latest value).
 func TestHeader_SetIntOverwrite(t *testing.T) {
 	var h Header
-	h.Reset(nil, numHeaderCapacity)
+	h.Reset(nil, defaultKVCap)
 	h.SetMethod("GET")
 	h.SetRequestTarget("/")
 	h.SetProtocol("HTTP/1.1")
@@ -593,7 +597,7 @@ func TestHeader_SetIntOverwrite(t *testing.T) {
 func TestHeader_SetIntNoAlloc(t *testing.T) {
 	buf := make([]byte, 0, 256)
 	var h Header
-	h.Reset(buf, numHeaderCapacity)
+	h.Reset(buf, defaultKVCap)
 	h.ConfigBufferGrowth(false)
 	h.Add("Content-Length", "0000000000000000000000") // pre-size a reusable slot.
 	allocs := testing.AllocsPerRun(100, func() {
@@ -623,7 +627,7 @@ func TestHeader_FieldTableSizedFromBuffer(t *testing.T) {
 	raw.WriteString("X-Canary: " + wantVal + "\r\n\r\n")
 
 	var h Header
-	h.Reset(make([]byte, 0, 8192), numHeaderCapacity) // Room for the block with plenty to spare.
+	h.Reset(make([]byte, 0, 8192), defaultKVCap) // Room for the block with plenty to spare.
 	err := h.ParseBytes(false, []byte(raw.String()))
 	if err != nil {
 		t.Fatalf("parsing a 42 field request into an 8kB buffer: %s", err)
@@ -646,7 +650,7 @@ func TestHeader_FieldTableFullIsReported(t *testing.T) {
 	}
 	raw.WriteString("\r\n")
 	var h Header
-	h.Reset(make([]byte, 0, 512), numHeaderCapacity)
+	h.Reset(make([]byte, 0, 512), defaultKVCap)
 	h.ConfigBufferGrowth(false)
 	err := h.ParseBytes(false, []byte(raw.String()))
 	if !errors.Is(err, ErrHeaderTooMany) {

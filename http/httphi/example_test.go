@@ -80,7 +80,7 @@ func ExampleMuxSlice_query_forms_multipart() {
 		// Request Body Form. The form owns the memory: hand it a buffer and
 		// forbid growth to bound what a request may spend.
 		var form httpraw.Form
-		form.Reset(make([]byte, 0, 1024), 8)
+		form.Reset(make([]byte, 0, 1024), 8) // Room for 8 pairs.
 		form.EnableBufferGrowth(false)
 		err := ex.RequestParseForm(&form, false, false)
 		if err != nil {
