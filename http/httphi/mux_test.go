@@ -54,7 +54,7 @@ func TestSetPathValues(t *testing.T) {
 		{pattern: "/a/{x}/b", path: "/a//b", match: false},
 	} {
 		t.Run(test.pattern+"__"+test.path, func(t *testing.T) {
-			vals := make([]pathValue, 8)
+			vals := make([]PathValue, 8)
 			match, tooShort := SetPathValues(vals, test.pattern, []byte(test.path))
 			if tooShort {
 				t.Fatal("8 slots must be enough for these patterns")
@@ -76,7 +76,7 @@ func TestSetPathValues(t *testing.T) {
 // exchange owns that memory and a copy would allocate per request.
 func TestSetPathValuesAliasesRequestBuffer(t *testing.T) {
 	path := []byte("/users/42/edit")
-	vals := make([]pathValue, 4)
+	vals := make([]PathValue, 4)
 	match, _ := SetPathValues(vals, "/users/{id}/edit", path)
 	if !match {
 		t.Fatal("want match")
@@ -94,7 +94,7 @@ func TestSetPathValuesAliasesRequestBuffer(t *testing.T) {
 // A destination too small to hold every wildcard must say so rather than bind a
 // partial set or write out of range.
 func TestSetPathValuesSliceTooShort(t *testing.T) {
-	match, tooShort := SetPathValues(make([]pathValue, 1), "/{a}/{b}", []byte("/x/y"))
+	match, tooShort := SetPathValues(make([]PathValue, 1), "/{a}/{b}", []byte("/x/y"))
 	if !tooShort {
 		t.Error("want pathValSliceTooShort for 2 wildcards in 1 slot")
 	}
@@ -112,11 +112,11 @@ func TestSetPathValuesSliceTooShort(t *testing.T) {
 // segment, so "/users/x%2Fy" binds id="x/y" there and id="x%2Fy" here. Matching
 // agrees either way; only the bound bytes differ.
 func TestSetPathValuesEscaping(t *testing.T) {
-	vals := make([]pathValue, 4)
+	vals := make([]PathValue, 4)
 	if match, _ := SetPathValues(vals, "/a%2Fb/{x}", []byte("/a%2Fb/v")); !match {
 		t.Error("want literal escape in pattern to match the same bytes in path")
 	}
-	vals = make([]pathValue, 4)
+	vals = make([]PathValue, 4)
 	match, _ := SetPathValues(vals, "/users/{id}", []byte("/users/x%2Fy"))
 	if !match {
 		t.Fatal("want match")
@@ -128,7 +128,7 @@ func TestSetPathValuesEscaping(t *testing.T) {
 
 // renderPathValues joins the bound pairs for comparison, stopping at the first
 // unused slot.
-func renderPathValues(vals []pathValue) string {
+func renderPathValues(vals []PathValue) string {
 	var sb strings.Builder
 	for _, v := range vals {
 		if v.Key == "" {
@@ -147,7 +147,7 @@ func renderPathValues(vals []pathValue) string {
 // Matching a request must not allocate: keys alias the mux's pattern and values
 // alias the request buffer, so nothing is copied per request.
 func TestSetPathValuesNoAlloc(t *testing.T) {
-	vals := make([]pathValue, 8)
+	vals := make([]PathValue, 8)
 	path := []byte("/b/bk/o/a/b/c")
 	allocs := testing.AllocsPerRun(100, func() {
 		SetPathValues(vals, "/b/{bucket}/o/{obj...}", path)
@@ -164,7 +164,11 @@ type pathValueMux struct {
 	handler HandlerFunc
 }
 
-func (m *pathValueMux) LookupHandler(method Method, path []byte, dst []pathValue) (string, HandlerFunc) {
+func (m *pathValueMux) MaxPathValues() int {
+	return -1
+}
+
+func (m *pathValueMux) LookupHandler(method Method, path []byte, dst []PathValue) (string, HandlerFunc) {
 	if ok, _ := SetPathValues(dst, m.pattern, path); ok {
 		return m.pattern, m.handler
 	}

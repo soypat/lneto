@@ -35,7 +35,7 @@ type Exchange struct {
 	respHeaderOff uint16
 	respHeaderLen uint16
 	reqHdr        httpraw.Header
-	pathValues    []pathValue
+	pathValues    []PathValue
 
 	hijacked bool
 	rw       conn
@@ -253,11 +253,18 @@ func (exch *Exchange) StageStatus(code int) {
 
 // WriteHeader sends the status line for code along with the staged header
 // fields. Only the first call reaches the wire, as in http.ResponseWriter.
-func (exch *Exchange) WriteHeader(code int) {
+func (exch *Exchange) WriteHeader(code int) (n int, err error) {
 	if !exch.headerWritten {
 		exch.StageStatus(code)
-		exch.FlushHeader()
+		n, err = exch.FlushHeader()
 	}
+	return n, err
+}
+
+// ResponseError returns any error encountered during staging of headers or during writing of response.
+// Provides an ergonomic way of checking if one ran out of buffer space after staging all headers with [Exchange.StageHeader].
+func (exch *Exchange) ResponseError() error {
+	return exch.respErr
 }
 
 // FlushHeader writes the status line and staged header fields to the connection
@@ -709,9 +716,13 @@ func (exch *Exchange) PathValueAppend(dst []byte, key string, decoded bool) ([]b
 	return dst[:base+n], nil
 }
 
-// RequestMethod returns the request line's method, i.e: "GET". See
-// [MethodFromBytes] to compare it against a [Method].
-func (exch *Exchange) RequestMethod() []byte {
+// RequestMethod returns the request's [Method] enum.
+func (exch *Exchange) RequestMethod() Method {
+	return MethodFromBytes(exch.RequestMethodRaw())
+}
+
+// RequestMethod returns the request line's method as a []byte view, i.e: "GET".
+func (exch *Exchange) RequestMethodRaw() []byte {
 	return exch.RequestHeaderRaw().Method()
 }
 

@@ -84,8 +84,6 @@ type RouterConfig struct {
 	ResponseHeaderMinBufferSize int
 	// Number of request header key/value pairs to parse before failing and returning [StatusRequestHeaderFieldsTooLarge].
 	RequestNumHeaderKVCap int
-	// Sets maximum number of PathValue pairs that can be set on an exchange. Accessed via [Exchange.PathValue].
-	MaxPathValues int
 
 	// NormalizeOutgoingKeys normalizes response header field keys as they are
 	// staged, i.e: "content-type" becomes "Content-Type".
@@ -186,7 +184,7 @@ func (r *Router) Configure(cfg RouterConfig) error {
 	r.respBuf = cfg.ResponseHeaderMinBufferSize
 	r.mux = cfg.Mux
 	r.log = cfg.Logger
-	r.maxPathValues = cfg.MaxPathValues
+	r.maxPathValues = cfg.Mux.MaxPathValues()
 	r.normalizeKeys = cfg.NormalizeOutgoingKeys
 	// Freelist entries were sized by the outgoing configuration: recycling one
 	// would serve a request with buffer limits cfg never asked for.
@@ -210,6 +208,7 @@ func (r *Router) Configure(cfg RouterConfig) error {
 		r.exchs = r.exchs[:numgoro]
 		rawBuflen := cfg.RequestHeaderBufferSize + cfg.ResponseHeaderMinBufferSize
 		internal.SliceReuse(&r.globbuf, numgoro*rawBuflen)
+		maxPathValues := cfg.Mux.MaxPathValues()
 		for i := range numgoro {
 			// TODO exchange buffer alloc
 			goff := i * rawBuflen
@@ -220,7 +219,7 @@ func (r *Router) Configure(cfg RouterConfig) error {
 				NumHeaderKVCap:        cfg.RequestNumHeaderKVCap,
 				NormalizeOutgoingKeys: cfg.NormalizeOutgoingKeys,
 				NoRequestBufferGrowth: true, // Hard memory limit.
-				MaxPathValues:         cfg.MaxPathValues,
+				MaxPathValues:         maxPathValues,
 			})
 			go r.goroWorker(gen, jobqueue, cfg.Mux)
 		}

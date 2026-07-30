@@ -285,17 +285,17 @@ func (kvb *kvBuffer) getIdx(key string) int {
 
 func (kvb *kvBuffer) getFoldIdx(key string) int {
 	for i, pair := range kvb.kvs {
-		if pair.isValid() && asciiEqualFold(key, b2s(kvb.AtKey(i))) {
+		if pair.isValid() && EqualFoldASCII(key, b2s(kvb.AtKey(i))) {
 			return i
 		}
 	}
 	return -1
 }
 
-// asciiEqualFold reports whether a and b are equal under ASCII case folding.
+// EqualFoldASCII reports whether a and b are equal under ASCII case folding.
 // Unlike strings.EqualFold it does not fold non-ASCII runes, so no multi-byte
 // rune such as U+212A KELVIN SIGN can alias a header key.
-func asciiEqualFold(a, b string) bool {
+func EqualFoldASCII(a, b string) bool {
 	if len(a) != len(b) {
 		return false
 	}

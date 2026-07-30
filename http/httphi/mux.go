@@ -101,22 +101,13 @@ type Mux interface {
 	// LookupHandler matches the requestPath and method to a handler and returns it and the
 	// pattern it matched. dstPathVals are set to non-zero values by Mux and can later be accessed by [Exchange.PathValue]
 	// requestPath is a buffer owned by the [Exchange] usually and should not be held after LookupHandler returns.
-	LookupHandler(get Method, requestPath []byte, dstPathVals []pathValue) (matchedPattern string, handler HandlerFunc)
+	LookupHandler(get Method, requestPath []byte, dstPathVals []PathValue) (matchedPattern string, handler HandlerFunc)
+	// MaxPathValues specifies the required size of dstPathVals in a call to [Mux.LookupHandler].
+	MaxPathValues() int
 }
 
-// MuxSlice is a [Mux] backed by a slice of registered endpoints, matched by
-// exact path. Lookup is linear in the number of registrations.
-type MuxSlice struct {
-	// TODO: binary search worth it?
-	_handlers []struct {
-		method     Method
-		path       string
-		handler    HandlerFunc
-		setPathVal bool
-	}
-}
-
-type pathValue struct {
+// PathValue used to implement [Mux] interface. Stores http.Request.PathValue-like values.
+type PathValue struct {
 	Key   string // owned by mux.
 	Value []byte // points to raw exchange buffer.
 }
@@ -133,7 +124,7 @@ var pathSeparator = []byte{'/'}
 // Unlike ServeMux, segments are compared and bound raw, so "/users/{id}" binds
 // "x%2Fy" and not "x/y". Which paths match is unaffected. Bound values alias
 // requestPath rather than copy it.
-func SetPathValues(dstPathVals []pathValue, pattern string, requestPath []byte) (matched, pathValSliceTooShort bool) {
+func SetPathValues(dstPathVals []PathValue, pattern string, requestPath []byte) (matched, pathValSliceTooShort bool) {
 	if len(pattern) == 0 || pattern[0] != '/' || len(requestPath) == 0 || requestPath[0] != '/' {
 		return false, false
 	}
@@ -160,7 +151,7 @@ func SetPathValues(dstPathVals []pathValue, pattern string, requestPath []byte) 
 				if n >= len(dstPathVals) {
 					return false, true
 				}
-				dstPathVals[n] = pathValue{Key: name, Value: requestPath}
+				dstPathVals[n] = PathValue{Key: name, Value: requestPath}
 				n++
 			}
 			return true, false
@@ -172,7 +163,7 @@ func SetPathValues(dstPathVals []pathValue, pattern string, requestPath []byte) 
 			if n >= len(dstPathVals) {
 				return false, true
 			}
-			dstPathVals[n] = pathValue{Key: name, Value: reqSeg}
+			dstPathVals[n] = PathValue{Key: name, Value: reqSeg}
 			n++
 
 		default:
@@ -205,6 +196,18 @@ func pathWildcard(segment string) (name string, isMulti, ok bool) {
 	return name, false, true
 }
 
+// MuxSlice is a [Mux] implementation backed by a slice of registered endpoints, matched by
+// exact path. Lookup is linear in the number of registrations.
+type MuxSlice struct {
+	// TODO: binary search worth it?
+	_handlers []struct {
+		method   Method
+		path     string
+		handler  HandlerFunc
+		pathVals int
+	}
+}
+
 // Reset discards all registered handlers, reusing the backing array and growing
 // it to fit capacity registrations.
 func (sm *MuxSlice) Reset(capacity int) {
@@ -213,13 +216,13 @@ func (sm *MuxSlice) Reset(capacity int) {
 
 // LookupHandler returns the handler registered for request path, or nil if none matches.
 // The first registration matching both method and uri wins.
-func (sm *MuxSlice) LookupHandler(method Method, path []byte, dstPathVals []pathValue) (matched string, _ HandlerFunc) {
+func (sm *MuxSlice) LookupHandler(method Method, path []byte, dstPathVals []PathValue) (matched string, _ HandlerFunc) {
 	for _, endpoint := range sm._handlers {
 		if endpoint.method != MethUndefined && endpoint.method != method {
 			continue
 		}
 		// Method matches.
-		if endpoint.setPathVal {
+		if endpoint.pathVals > 0 {
 			if ok, _ := SetPathValues(dstPathVals, endpoint.path, path); ok {
 				return endpoint.path, endpoint.handler
 			}
@@ -228,6 +231,14 @@ func (sm *MuxSlice) LookupHandler(method Method, path []byte, dstPathVals []path
 		}
 	}
 	return "", nil
+}
+
+// MaxPathValues returns the maximum number of path values any endpoint could have.
+func (sm *MuxSlice) MaxPathValues() (maxPathValues int) {
+	for _, endpoint := range sm._handlers {
+		maxPathValues = max(maxPathValues, endpoint.pathVals)
+	}
+	return maxPathValues
 }
 
 // Handle registers handler for reg, either a bare path matching any method or a
@@ -242,6 +253,7 @@ func (sm *MuxSlice) Handle(optMethodAndPath string, handler HandlerFunc) {
 	} else {
 		url = methodOrURL
 	}
+	v.pathVals = strings.Count(optMethodAndPath, "{")
 	v.method = method
 	v.path = url
 	v.handler = handler

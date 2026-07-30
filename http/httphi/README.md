@@ -28,7 +28,6 @@ err := router.Configure(httphi.RouterConfig{
 	RequestHeaderBufferSize:     1024,
 	ResponseHeaderMinBufferSize: 32, // Shares the request buffer.
 	RequestNumHeaderKVCap:       32,
-	Backoff:                     func(uint) time.Duration { return time.Millisecond },
 	Mux:                         &mux,
 })
 if err != nil {

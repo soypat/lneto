@@ -196,8 +196,10 @@ func TestRouterRequestVisibleToHandler(t *testing.T) {
 		router Router
 	)
 	var gotMethod, gotURI, gotHost string
+	var gotMethodEnum Method
 	sm.Handle("GET /index.html", func(ex *Exchange) {
-		gotMethod = string(ex.RequestMethod())
+		gotMethod = string(ex.RequestMethodRaw())
+		gotMethodEnum = ex.RequestMethod()
 		gotURI = string(ex.RequestTarget())
 		gotHost = string(ex.RequestHeader("Host"))
 		ex.WriteHeader(200)
@@ -212,6 +214,9 @@ func TestRouterRequestVisibleToHandler(t *testing.T) {
 
 	if gotMethod != "GET" {
 		t.Errorf("want method %q, got %q", "GET", gotMethod)
+	}
+	if gotMethodEnum != MethGet {
+		t.Errorf("want method enum %q, got %q", MethGet, gotMethodEnum)
 	}
 	if gotURI != "/index.html" {
 		t.Errorf("want URI %q, got %q", "/index.html", gotURI)
