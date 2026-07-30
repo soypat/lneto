@@ -251,7 +251,7 @@ func FuzzQueryAndForm(f *testing.F) {
 
 			var form httpraw.Form
 			buf := make([]byte, scratchLen)
-			if err := exch.RequestParseForm(&form, buf); err != nil {
+			if err := exch.RequestParseForm(&form, false, false); err != nil {
 				return
 			}
 			total := 0

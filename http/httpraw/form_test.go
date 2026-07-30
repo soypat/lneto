@@ -155,3 +155,44 @@ func TestFormParseReuseNoAlloc(t *testing.T) {
 		t.Errorf("reused Form allocated %v times, want 0", allocs)
 	}
 }
+
+// BufferUsed reports buffered bytes, not parsed pairs, so a caller appending
+// from several sources can tell whether a separator is needed before the next
+// one. Form.Len is zero until Parse runs and cannot answer that.
+func TestFormBufferUsed(t *testing.T) {
+	var f Form
+	f.Reset(nil, 0)
+	if got := f.BufferUsed(); got != 0 {
+		t.Errorf("want 0 on a fresh form, got %d", got)
+	}
+	if err := f.ReadFromBytes([]byte("a=1")); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.BufferUsed(); got != 3 {
+		t.Errorf("want 3 buffered, got %d", got)
+	}
+	if got := f.Len(); got != 0 {
+		t.Errorf("Len must stay 0 until Parse, got %d", got)
+	}
+	// A second source appended behind a separator.
+	if err := f.ReadFromBytes([]byte("&b=2")); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.BufferUsed(); got != 7 {
+		t.Errorf("want 7 buffered, got %d", got)
+	}
+	if err := f.Parse(); err != nil {
+		t.Fatal(err)
+	}
+	if got := render(&f); got != "a=1|b=2" {
+		t.Errorf("want a=1|b=2, got %q", got)
+	}
+	if got := f.BufferUsed(); got != 7 {
+		t.Errorf("BufferUsed must not change on Parse, got %d", got)
+	}
+	// Reset discards the pairs and the buffered bytes with them.
+	f.Reset(nil, 0)
+	if got := f.BufferUsed(); got != 0 {
+		t.Errorf("want 0 after Reset, got %d", got)
+	}
+}

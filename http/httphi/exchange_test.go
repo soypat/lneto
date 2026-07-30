@@ -824,10 +824,12 @@ func TestExchangeRequestParseForm(t *testing.T) {
 			extraHeaders:    "Transfer-Encoding: chunked\r\n",
 			wantErr:         errUnsupportedTransferCoding,
 		}, {
+			// The form bounds itself now, so an oversized body is the form
+			// refusing to grow rather than a short buffer handed in.
 			name:     "body larger than buffer",
 			formVals: []formPair{{key: "a", value: "1"}, {key: "b", value: "2"}, {key: "c", value: "3"}},
 			bufsize:  4,
-			wantErr:  lneto.ErrShortBuffer,
+			wantErr:  httpraw.ErrBufferExhausted,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -867,12 +869,16 @@ func TestExchangeRequestParseForm(t *testing.T) {
 			builder.WriteString("\r\n")
 			builder.Write(body)
 
+			// The form owns the memory: bufSize bounds it here, growth off so an
+			// oversized body is reported rather than allocated for.
 			var form httpraw.Form
+			form.Reset(make([]byte, 0, bufSize), 8)
+			form.EnableBufferGrowth(false)
 			var gotErr error
 			var sm MuxSlice
 			sm.Reset(1)
 			sm.Handle("/f", func(exch *Exchange) {
-				gotErr = exch.RequestParseForm(&form, make([]byte, bufSize))
+				gotErr = exch.RequestParseForm(&form, false, false)
 				if gotErr == nil && test.callDecode {
 					gotErr = form.Decode()
 				}
@@ -915,7 +921,7 @@ func TestExchangeRequestParseFormSplit(t *testing.T) {
 	var sm MuxSlice
 	sm.Reset(1)
 	sm.Handle("/f", func(exch *Exchange) {
-		gotErr = exch.RequestParseForm(&form, make([]byte, 64))
+		gotErr = exch.RequestParseForm(&form, false, false)
 	})
 	exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 2*1024), RequestBufferLim: 1024})
 	if err := Handle(exch, &sm, nopBackoff); err != nil {
@@ -935,7 +941,7 @@ func TestExchangeRequestParseFormDecode(t *testing.T) {
 	var sm MuxSlice
 	sm.Reset(1)
 	sm.Handle("/f", func(exch *Exchange) {
-		if err := exch.RequestParseForm(&form, make([]byte, 64)); err != nil {
+		if err := exch.RequestParseForm(&form, false, false); err != nil {
 			t.Error(err)
 		} else if err = form.Decode(); err != nil {
 			t.Error(err)
@@ -1435,7 +1441,7 @@ func TestExchangeRequestContentTypeFolded(t *testing.T) {
 			sm.Reset(1)
 			sm.Handle("/f", func(exch *Exchange) {
 				gotType = string(exch.RequestContentType())
-				gotErr = exch.RequestParseForm(&form, make([]byte, 64))
+				gotErr = exch.RequestParseForm(&form, false, false)
 			})
 			serve(t, "POST /f HTTP/1.1\r\nHost: h\r\n"+name+": "+formType+"\r\nContent-Length: 3\r\n\r\na=1", &sm)
 
@@ -1464,7 +1470,7 @@ func TestExchangeRequestParseFormFoldedTransferEncoding(t *testing.T) {
 			var sm MuxSlice
 			sm.Reset(1)
 			sm.Handle("/f", func(exch *Exchange) {
-				gotErr = exch.RequestParseForm(&form, make([]byte, 64))
+				gotErr = exch.RequestParseForm(&form, false, false)
 			})
 			serve(t, "POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: application/x-www-form-urlencoded\r\n"+
 				name+": chunked\r\nContent-Length: "+strconv.Itoa(len(body))+"\r\n\r\n"+body, &sm)
@@ -1574,5 +1580,97 @@ func TestExchangeRespondReportsOverflow(t *testing.T) {
 	}
 	if exch.ResponseError() == nil {
 		t.Error("want the failure recorded on the exchange too")
+	}
+}
+
+// Query and body are read into one form buffer and parsed together, so both
+// sources are present at once and read order decides which value a key resolves
+// to. A key carried by both keeps both pairs, in wire order.
+func TestExchangeRequestParseFormFoldsQuery(t *testing.T) {
+	const body = "cnt=body&only=b"
+	const target = "/f?cnt=query&page=2"
+	for _, test := range []struct {
+		name                    string
+		parseURL, prioritizeURL bool
+		wantCnt                 string
+		wantPage                string
+		wantRendered            string
+	}{
+		{
+			name: "body only", parseURL: false,
+			wantCnt: "body", wantPage: "", wantRendered: "cnt=body|only=b",
+		},
+		{
+			name: "query first wins", parseURL: true, prioritizeURL: true,
+			wantCnt: "query", wantPage: "2", wantRendered: "cnt=query|page=2|cnt=body|only=b",
+		},
+		{
+			name: "body first wins", parseURL: true, prioritizeURL: false,
+			wantCnt: "body", wantPage: "2", wantRendered: "cnt=body|only=b|cnt=query|page=2",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var form httpraw.Form
+			var gotErr error
+			var sm MuxSlice
+			sm.Reset(1)
+			sm.Handle("POST /f", func(exch *Exchange) {
+				gotErr = exch.RequestParseForm(&form, test.parseURL, test.prioritizeURL)
+			})
+			serve(t, "POST "+target+" HTTP/1.1\r\nHost: h\r\n"+
+				"Content-Type: application/x-www-form-urlencoded\r\n"+
+				"Content-Length: "+strconv.Itoa(len(body))+"\r\n\r\n"+body, &sm)
+			if gotErr != nil {
+				t.Fatalf("RequestParseForm: %s", gotErr)
+			}
+			if got := string(form.Get("cnt")); got != test.wantCnt {
+				t.Errorf("want cnt=%q, got %q", test.wantCnt, got)
+			}
+			if got := string(form.Get("page")); got != test.wantPage {
+				t.Errorf("want page=%q, got %q", test.wantPage, got)
+			}
+			if got := formString(&form); got != test.wantRendered {
+				t.Errorf("want pairs %q, got %q", test.wantRendered, got)
+			}
+		})
+	}
+}
+
+// A GET with a query and no body must fold the query alone: no Content-Type
+// means no body to parse, which is not an error.
+func TestExchangeRequestParseFormQueryWithoutBody(t *testing.T) {
+	var form httpraw.Form
+	var gotErr error
+	var sm MuxSlice
+	sm.Reset(1)
+	sm.Handle("GET /f", func(exch *Exchange) {
+		gotErr = exch.RequestParseForm(&form, true, true)
+	})
+	serve(t, "GET /f?a=1&b=2 HTTP/1.1\r\nHost: h\r\n\r\n", &sm)
+	if gotErr != nil {
+		t.Fatalf("want the query parsed with no body, got %s", gotErr)
+	}
+	if got := formString(&form); got != "a=1|b=2" {
+		t.Errorf("want a=1|b=2, got %q", got)
+	}
+}
+
+// The separator must not merge the two sources into one pair: without it the
+// last query pair and the first body pair run together.
+func TestExchangeRequestParseFormSourcesNotMerged(t *testing.T) {
+	var form httpraw.Form
+	var sm MuxSlice
+	sm.Reset(1)
+	sm.Handle("POST /f", func(exch *Exchange) {
+		if err := exch.RequestParseForm(&form, true, true); err != nil {
+			t.Fatal(err)
+		}
+	})
+	const body = "second=2"
+	serve(t, "POST /f?first=1 HTTP/1.1\r\nHost: h\r\n"+
+		"Content-Type: application/x-www-form-urlencoded\r\n"+
+		"Content-Length: "+strconv.Itoa(len(body))+"\r\n\r\n"+body, &sm)
+	if got := formString(&form); got != "first=1|second=2" {
+		t.Errorf("want first=1|second=2, got %q", got)
 	}
 }

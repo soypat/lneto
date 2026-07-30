@@ -36,6 +36,9 @@ type Exchange struct {
 	respHeaderLen uint16
 	reqHdr        httpraw.Header
 	pathValues    []PathValue
+	// bodyRW is the reader handed to [httpraw.Form.ReadLimited], kept here so
+	// boxing it into an io.Reader allocates nothing per request.
+	bodyRW ExchangeRW
 
 	hijacked bool
 	rw       conn
@@ -506,83 +509,64 @@ func (exch *Exchange) RequestContentLength() (_ int64, present bool, _ error) {
 	return exch.RequestHeaderRaw().ContentLength()
 }
 
-func (exch *Exchange) RequestParseForm(dst *httpraw.Form, parseURL, prioritizeURL bool) (err error) {
-	dst.Reset(nil, 0)
-	if parseURL {
-		err = dst.ReadFromBytes(exch.RequestQuery())
-
-	}
-	if !parseURL {
-		cl, ok, err := exch.RequestContentLength()
-		if cl == 0 {
-			return nil
+// RequestParseForm parses "application/x-www-form-urlencoded" pairs into dst
+// from the request body and, when parseURL is set, from the query string as
+// well. Pairs are stored as they arrived, call [httpraw.Form.Decode] to decode
+// them in place.
+//
+// dst owns the memory: both sources are read into its buffer and parsed together
+// once. Hand it a preallocated buffer with [httpraw.Form.Reset] and turn growth
+// off with [httpraw.Form.EnableBufferGrowth] to bound it, which then reports
+// [httpraw.ErrBufferExhausted] instead of allocating. It grows by default.
+//
+// prioritizeURL reads the query ahead of the body, so a key carried by both
+// resolves to the query's value: [httpraw.Form.Get] answers with the first pair
+// holding a key. Both stay readable in wire order through [httpraw.Form.Pair].
+// The body is consumed, so call this before [Exchange.ReadBody].
+//
+// A request with no Content-Length has no body, RFC 9112 6.3, and one with no
+// Content-Type declares no encoding to parse, RFC 9110 8.3. Neither is an error,
+// a bodiless POST being legal, and the query is still parsed when asked for. A
+// Content-Type that is present and not form encoded is [errNotFormEncoded].
+func (exch *Exchange) RequestParseForm(dst *httpraw.Form, parseURL, prioritizeURL bool) error {
+	dst.Reset(nil, 0) // Reuse whatever buffer dst holds, discarding old pairs.
+	if parseURL && prioritizeURL {
+		if err := exch.readQueryForm(dst); err != nil {
+			return err
 		}
-		var rw ExchangeRW
-		exch.ReadWriter(&rw)
-		_, err = dst.ReadLimited(&rw, int(cl))
-
 	}
-
+	if err := exch.readBodyForm(dst); err != nil {
+		return err
+	}
+	if parseURL && !prioritizeURL {
+		if err := exch.readQueryForm(dst); err != nil {
+			return err
+		}
+	}
+	return dst.Parse()
 }
 
-func (exch *Exchange) readQueryForm(dst *httpraw.Form) (n int, err error) {
+// formSeparator joins two sources inside one form buffer. Shared so appending it
+// converts no literal per call.
+var formSeparator = []byte{'&'}
+
+// readQueryForm appends the request's query string to dst's buffer.
+func (exch *Exchange) readQueryForm(dst *httpraw.Form) error {
 	query := exch.RequestQuery()
 	if len(query) == 0 {
-		return 0, nil
-	} else if dst.Len() > 0 {
-		err = dst.ReadFromBytes([]byte{'&'}) // Add separator.
-		if err != nil {
-			return 0, err
-		}
+		return nil
+	} else if err := separateForm(dst); err != nil {
+		return err
 	}
-	err = dst.ReadFromBytes(query)
-	if err != nil {
-		return 0, err
-	}
-	return len(query), nil
+	return dst.ReadFromBytes(query)
 }
 
-func (exch *Exchange) readBodyForm(dst *httpraw.Form) (n int, err error) {
-	cl, _, err := exch.RequestContentLength()
-	if cl <= 0 {
-		return 0, nil
-	}
-	if dst.Len() > 0 {
-		err = dst.ReadFromBytes([]byte{'&'}) // Add separator.
-		if err != nil {
-			return 0, err
-		}
-	}
-	var rw ExchangeRW
-	exch.ReadWriter(&rw)
-	n, err = dst.ReadLimited(&rw, int(cl))
-	if err != nil {
-		return n, err
-	}
-	return n, nil
-}
-
-// RequestParseForm reads the request body into buf and parses it as
-// "application/x-www-form-urlencoded" into dst. buf is the only storage used and
-// the only limit: a body longer than buf is refused with [lneto.ErrBufferFull]
-// before a single byte is read, leaving the caller free to answer 413. Pairs are
-// left as they arrived, call [httpraw.Form.Decode] to decode them in place.
-//
-// Unlike http.Request.ParseForm the query string is not folded in, reach it with
-// [Exchange.RequestQuery] or [Exchange.RequestQueryAppend]. The body is consumed, so
-// call this before [Exchange.ReadBody].
-//
-// A request with no Content-Length has no body, RFC 9112 6.3, and a request with
-// no Content-Type declares no encoding to parse, RFC 9110 8.3. Both yield an
-// empty form and a nil error, a bodiless POST being legal. Use
-// [Exchange.RequestContentLength] and [Exchange.RequestContentType] to tell
-// either apart from a body that arrived empty. A Content-Type that is present
-// and not form encoded is [errNotFormEncoded], an absent one never is.
-func (exch *Exchange) RequestParseForm(dst *httpraw.Form, buf []byte) error {
+// readBodyForm appends the request body to dst's buffer, reading until
+// Content-Length bytes have arrived.
+func (exch *Exchange) readBodyForm(dst *httpraw.Form) error {
 	contentType := exch.RequestContentType()
 	if contentType == nil {
-		dst.Reset(nil, 0)
-		return nil // No declared encoding is no form, as no length is no body.
+		return nil // No declared encoding is no form, RFC 9110 8.3.
 	} else if !httpraw.MediaTypeIs(contentType, "application/x-www-form-urlencoded") {
 		return errNotFormEncoded
 	} else if exch.RequestHeaderRaw().GetFold("Transfer-Encoding") != nil {
@@ -590,31 +574,44 @@ func (exch *Exchange) RequestParseForm(dst *httpraw.Form, buf []byte) error {
 		// wire would parse chunk sizes as form data. httpraw does not decode them.
 		return errUnsupportedTransferCoding
 	}
-
 	length, present, err := exch.RequestContentLength()
-	if !present {
-		dst.Reset(nil, 0)
-		return nil // No length is no body, RFC 9112 6.3.
-	} else if err != nil {
+	if err != nil {
 		return err
-	} else if length > int64(len(buf)) {
-		return lneto.ErrShortBuffer // Refuse before reading, caller may answer 413.
+	} else if !present || length == 0 {
+		return nil // No length is no body, RFC 9112 6.3.
 	}
-	buf = buf[:length]
-	for read := 0; read < len(buf); {
-		n, err := exch.ReadBody(buf[read:])
+	if err = separateForm(dst); err != nil {
+		return err
+	}
+	// Reuse the exchange's own handle: a local would escape when boxed into the
+	// io.Reader [httpraw.Form.ReadLimited] takes, costing an allocation a request.
+	exch.ReadWriter(&exch.bodyRW)
+	// A single read may fall short of the limit, the body arriving a TCP segment
+	// at a time, so read until the declared length is in hand.
+	for read := 0; read < int(length); {
+		n, err := dst.ReadLimited(&exch.bodyRW, int(length)-read)
 		read += n
 		if n == 0 {
 			if err == nil {
 				err = io.ErrNoProgress
 			} else if err == io.EOF {
-				break
+				break // Peer sent less than it declared.
 			}
+			return err
+		} else if err != nil && err != io.EOF {
 			return err
 		}
 	}
-	dst.Reset(buf, 0)
-	return dst.Parse()
+	return nil
+}
+
+// separateForm appends the '&' keeping two sources from merging into one pair,
+// doing nothing while dst holds no bytes yet.
+func separateForm(dst *httpraw.Form) error {
+	if dst.BufferUsed() == 0 {
+		return nil
+	}
+	return dst.ReadFromBytes(formSeparator)
 }
 
 // RequestMultipart returns a parser prepared from the boundary parameter of the

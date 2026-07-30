@@ -23,6 +23,11 @@ func (kvb *kvBuffer) free() int { return cap(kvb.buf) - len(kvb.buf) }
 // Stored pairs alias it, so writing to it mangles them.
 func (kvb *kvBuffer) BufferRaw() []byte { return kvb.buf }
 
+// BufferUsed returns the raw memory used, which is what a caller appending from
+// several sources checks to know whether a separator is needed. Counts buffered
+// bytes and not parsed pairs, so it is set before a Parse and unchanged by one.
+func (kvb *kvBuffer) BufferUsed() int { return len(kvb.buf) }
+
 // EnableBufferGrowth allows the buffer to grow past the memory [kvBuffer.Reset]
 // was handed. The setting outlives Reset; with growth off callers get [ErrBufferExhausted].
 func (kvb *kvBuffer) EnableBufferGrowth(enableGrowth bool) {
