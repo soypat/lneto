@@ -18,11 +18,12 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
-	"github.com/soypat/lneto/http/httpraw"
+	"github.com/soypat/lneto/http/httphi"
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/internet/pcap"
@@ -33,6 +34,23 @@ import (
 
 //go:embed index.html
 var indexhtml string
+
+// Router memory. The router allocates all of it on Configure and never again,
+// so these are the whole cost of serving HTTP over the stack.
+const (
+	// A browser sends around 700 bytes of header on a landing page request.
+	requestHeaderBuffer = 1024
+	// Response headers reuse whatever the request left unused on top of this,
+	// and the status line does not count towards it.
+	responseHeaderBuffer = 256
+	numHeaderFields      = 16
+	// One exchange is allocated per worker, and a worker holds its exchange for
+	// the whole request, so this is what bounds requests served at once.
+	numWorkers = 2
+	// requestTimeout drops a peer that opens a connection and then stalls,
+	// rather than letting it hold one of the workers.
+	requestTimeout = 10 * time.Second
+)
 
 var softRand = time.Now().Unix()
 
@@ -225,6 +243,28 @@ func run() (err error) {
 	svPort := uint16(flagPort)
 	fmt.Printf("Listening on %s:%d\n", ipv4.AppendFormatAddr(nil, stack.Addr4()), svPort)
 
+	// Routes are registered before Configure: the router reads the mux to size
+	// the exchanges it allocates, and refuses a mux with nothing registered.
+	server := httpServer{start: time.Now()}
+	// "{$}" matches the empty path and nothing else, so anything unregistered
+	// gets a 404 rather than the index page.
+	server.handle("GET /{$}", server.index)
+	server.handle("GET /stats", server.stats)
+
+	var router httphi.Router
+	err = router.Configure(httphi.RouterConfig{
+		FixedNumGoroutines:          numWorkers,
+		RequestHeaderBufferSize:     requestHeaderBuffer,
+		ResponseHeaderMinBufferSize: responseHeaderBuffer,
+		RequestNumHeaderKVCap:       numHeaderFields,
+		Mux:                         &server.mux,
+		Logger:                      slog.Default(),
+	})
+	if err != nil {
+		return fmt.Errorf("configuring HTTP router: %w", err)
+	}
+	defer router.Shutdown()
+
 	// Serve connections in a loop.
 	for {
 		var conn tcp.Conn
@@ -254,65 +294,56 @@ func run() (err error) {
 			continue
 		}
 		fmt.Println("connection established from", net.IP(conn.RemoteAddr()).String())
-		go func() {
-			err = handleConnection(&conn)
-			if err != nil {
-				fmt.Println("handle error:", err)
-			}
-		}()
+		// The connection owns the idle policy: a peer that stalls fails its read
+		// instead of holding a worker. conn is declared inside the loop, so the
+		// worker keeps serving this one while the next iteration listens anew.
+		conn.SetDeadline(time.Now().Add(requestTimeout))
+		err = router.Handle(&conn)
+		if err != nil {
+			// Every worker is busy. Dropping is the backpressure that keeps the
+			// stack's memory bounded, see numWorkers.
+			slog.Warn("dropped connection", slog.String("err", err.Error()))
+			conn.Abort()
+		}
 	}
 }
 
-func handleConnection(conn *tcp.Conn) error {
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
+// httpServer holds what the handlers answer with. Routes are registered on its
+// mux before [httphi.Router.Configure] runs, which reads the mux to size the
+// path values every exchange must hold.
+type httpServer struct {
+	mux    httphi.MuxSlice
+	served atomic.Uint64
+	start  time.Time
+}
 
-	// Read HTTP request.
-	var hdr httpraw.HeaderV1
-	var needMore bool = true
-	for needMore {
-		_, err := hdr.ReadFromLimited(conn, 1024)
-		if err != nil {
-			return fmt.Errorf("reading request: %w", err)
-		}
-		const asResponse = false
-		needMore, err = hdr.TryParse(asResponse)
-		if err != nil && !needMore {
-			return fmt.Errorf("parsing request: %w", err)
-		}
-	}
+// handle registers handler and wraps it in the logging and counting every
+// request goes through, i.e: the "< GET /" line this example has always printed.
+func (sv *httpServer) handle(pattern string, handler httphi.HandlerFunc) {
+	sv.mux.Handle(pattern, func(exch *httphi.Exchange) {
+		sv.served.Add(1)
+		fmt.Printf("< %s %s\n", exch.RequestMethodRaw(), exch.RequestTarget())
+		handler(exch)
+	})
+}
 
-	method := string(hdr.Method())
-	uri := string(hdr.RequestTarget())
-	fmt.Printf("< %s %s\n", method, uri)
+// index serves the embedded page. The body goes straight to the connection, so
+// only its header ever sits in the exchange's buffer and the page's size does
+// not enter into how the router is configured.
+func (sv *httpServer) index(exch *httphi.Exchange) {
+	exch.RespondString(httphi.StatusOK, "text/html", indexhtml)
+}
 
-	// Build response body.
-
-	// Build HTTP response.
-	var resp httpraw.HeaderV1
-	resp.SetProtocol("HTTP/1.1")
-	resp.SetStatus("200", "OK")
-	resp.Set("Content-Type", "text/html")
-	resp.Set("Content-Length", strconv.Itoa(len(indexhtml)))
-	resp.Set("Connection", "close")
-	response, err := resp.AppendResponse(nil)
-	if err != nil {
-		return fmt.Errorf("building response: %w", err)
-	}
-	response = append(response, indexhtml...)
-
-	// Send response.
-	_, err = conn.Write(response)
-	if err != nil {
-		return fmt.Errorf("writing response: %w", err)
-	}
-	err = conn.Flush()
-	if err != nil {
-		return fmt.Errorf("flushing response: %w", err)
-	}
-	fmt.Printf("> %d bytes sent\n", len(response))
-
-	conn.Close()
-	return nil
+// stats reports what the stack has served, which is the quickest way to tell a
+// working link from a page that came out of a browser cache.
+func (sv *httpServer) stats(exch *httphi.Exchange) {
+	var buf [128]byte
+	body := append(buf[:0], "requests served: "...)
+	body = strconv.AppendUint(body, sv.served.Load(), 10)
+	body = append(body, "\nuptime: "...)
+	body = append(body, prettyDuration(time.Since(sv.start))...)
+	body = append(body, '\n')
+	exch.Respond(httphi.StatusOK, "text/plain", body)
 }
 
 func clear(buf []byte) {

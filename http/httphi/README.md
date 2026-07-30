@@ -24,7 +24,6 @@ mux.Handle("GET /", func(ex *httphi.Exchange) {
 var router httphi.Router
 err := router.Configure(httphi.RouterConfig{
 	FixedNumGoroutines:          4, // 4 workers, 4 exchanges, allocated here and never again.
-	MaxAwaitingConns:            8, // Queue depth. Full queue drops connections.
 	RequestHeaderBufferSize:     1024,
 	ResponseHeaderMinBufferSize: 32, // Shares the request buffer.
 	RequestNumHeaderKVCap:       32,

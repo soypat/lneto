@@ -390,7 +390,6 @@ func TestRouterHandleAfterTeardown(t *testing.T) {
 	sm.Handle("GET /", staticPage(t, "ok"))
 	err := router.Configure(RouterConfig{
 		FixedNumGoroutines:          2,
-		MaxAwaitingConns:            4,
 		Mux:                         &sm,
 		RequestHeaderBufferSize:     512,
 		RequestNumHeaderKVCap:       16,
@@ -423,7 +422,6 @@ func TestRouterTeardownReleasesQueuedConns(t *testing.T) {
 	sm.Handle("GET /", staticPage(t, "ok"))
 	cfg := RouterConfig{
 		FixedNumGoroutines:          numGoro,
-		MaxAwaitingConns:            4,
 		Mux:                         &sm,
 		RequestHeaderBufferSize:     512,
 		RequestNumHeaderKVCap:       16,
@@ -470,7 +468,6 @@ func TestRouterConfigureDuringWorkerHandle(t *testing.T) {
 	sm.Handle("GET /", staticPage(t, "ok"))
 	cfg := RouterConfig{
 		FixedNumGoroutines:          2,
-		MaxAwaitingConns:            4,
 		Mux:                         &sm,
 		RequestHeaderBufferSize:     512,
 		RequestNumHeaderKVCap:       16,

@@ -91,9 +91,6 @@ type RouterConfig struct {
 	// Optional [any] normalization of response header field keys as they are
 	// staged, i.e: "content-type" becomes "Content-Type".
 	NormalizeOutgoingKeys bool
-	// Conditional [>0 when FixedNumGoroutines>0, unused otherwise] depth of the
-	// queue connections wait in. [Router.Handle] drops connections once it is full.
-	MaxAwaitingConns int
 
 	// Required [non-nil] resolver of each request's method and path to the handler
 	// serving it. Routes must be registered before Configure, see [Mux.MaxPathValues].
@@ -121,7 +118,6 @@ func (cfg RouterConfig) Validate() error {
 	switch {
 	case cfg.Mux == nil,
 		!workerMode && cfg.FixedNumGoroutines != -1,
-		workerMode && cfg.MaxAwaitingConns <= 0,
 		cfg.RequestNumHeaderKVCap <= 0,
 		cfg.RequestHeaderBufferSize < minRequestHeaderBuffer,
 		cfg.ResponseHeaderMinBufferSize < minResponseHeaderBuffer,
@@ -202,7 +198,7 @@ func (r *Router) Configure(cfg RouterConfig) error {
 		return nil
 	}
 	if workerMode {
-		jobqueue := make(chan job, cfg.MaxAwaitingConns)
+		jobqueue := make(chan job, cfg.FixedNumGoroutines)
 		if gen > 1 {
 			// Exchange buffers below are reused: the previous generation must be
 			// done serving before they may be handed to the new one.
