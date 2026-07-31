@@ -77,10 +77,12 @@ func ExampleMuxSlice_query_forms_multipart() {
 	})
 
 	mux.Handle("GET /form", func(ex *httphi.Exchange) {
-		// Request Body Form.
-		formbuf := make([]byte, 1024)
+		// Request Body Form. The form owns the memory: hand it a buffer and
+		// forbid growth to bound what a request may spend.
 		var form httpraw.Form
-		err := ex.RequestParseForm(&form, formbuf)
+		form.Reset(make([]byte, 0, 1024), 8) // Room for 8 pairs.
+		form.EnableBufferGrowth(false)
+		err := ex.RequestParseForm(&form, false, false)
 		if err != nil {
 			ex.WriteHeader(httphi.StatusInternalServerError)
 			return

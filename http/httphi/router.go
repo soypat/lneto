@@ -70,34 +70,32 @@ type job struct {
 }
 
 // RouterConfig configures a [Router]. See [Router.Configure].
+//
+// Each field below opens with Required, Conditional or Optional followed by the
+// constraint in brackets, that being what [RouterConfig.Validate] rejects on.
 type RouterConfig struct {
-	// FixedNumGoroutines must be set to either -1 (freely allocate new goroutines) or to the number of goroutines
-	// to spawn on [Router.Configure] being called.
+	// Required [-1 or >0] number of goroutines to spawn on [Router.Configure],
+	// -1 meaning allocate them freely per connection instead.
 	FixedNumGoroutines int
-	// RequestHeaderBufferSize determines the buffer allocated
-	// for processing request HTTP headers including request-target (URI), protocol and key/value pairs.
+	// Required [>=32, sum with ResponseHeaderMinBufferSize <=65535] buffer for the
+	// request header: request-target (URI), protocol and key/value pairs.
 	RequestHeaderBufferSize int
-	// ResponseHeaderMinBufferSize determines buffer allocated for processing response headers.
-	// Response buffer will reuse unused request memory so this is not a strict limit.
-	// "HTTP/1.1 200 OK\r\n" does not count towards this memory, only actual Headers key/value pairs use this memory.
-	// After memory is fully consumed [Exchange.StageHeader] will not append more headers.
+	// Required [>=2, <=65535] buffer for response headers. Reuses unused request
+	// memory so it is not a strict limit, and the status line does not count
+	// towards it. Once consumed [Exchange.StageHeader] appends no more fields.
 	ResponseHeaderMinBufferSize int
-	// Number of request header key/value pairs to parse before failing and returning [StatusRequestHeaderFieldsTooLarge].
+	// Required [>0] request header key/value pairs to parse before failing with
+	// [StatusRequestHeaderFieldsTooLarge].
 	RequestNumHeaderKVCap int
-	// Sets maximum number of PathValue pairs that can be set on an exchange. Accessed via [Exchange.PathValue].
-	MaxPathValues int
 
-	// NormalizeOutgoingKeys normalizes response header field keys as they are
+	// Optional [any] normalization of response header field keys as they are
 	// staged, i.e: "content-type" becomes "Content-Type".
 	NormalizeOutgoingKeys bool
-	// MaxAwaitingConns is the depth of the queue connections wait in for a free
-	// goroutine. [Router.Handle] drops connections once it is full. Required and
-	// must be non-zero when running a fixed number of goroutines, unused otherwise.
-	MaxAwaitingConns int
 
-	// Mux resolves each request's method and path to the handler serving it. Required.
+	// Required [non-nil] resolver of each request's method and path to the handler
+	// serving it. Routes must be registered before Configure, see [Mux.MaxPathValues].
 	Mux Mux
-	// Logger receives failed exchanges. Optional, nil disables logging.
+	// Optional [nil disables] sink for failed exchanges.
 	Logger *slog.Logger
 }
 
@@ -120,7 +118,6 @@ func (cfg RouterConfig) Validate() error {
 	switch {
 	case cfg.Mux == nil,
 		!workerMode && cfg.FixedNumGoroutines != -1,
-		workerMode && cfg.MaxAwaitingConns <= 0,
 		cfg.RequestNumHeaderKVCap <= 0,
 		cfg.RequestHeaderBufferSize < minRequestHeaderBuffer,
 		cfg.ResponseHeaderMinBufferSize < minResponseHeaderBuffer,
@@ -186,7 +183,11 @@ func (r *Router) Configure(cfg RouterConfig) error {
 	r.respBuf = cfg.ResponseHeaderMinBufferSize
 	r.mux = cfg.Mux
 	r.log = cfg.Logger
-	r.maxPathValues = cfg.MaxPathValues
+	maxPathValues := cfg.Mux.MaxPathValues()
+	if maxPathValues < 0 {
+		return errors.New("Mux paths must be registered before configuring Router")
+	}
+	r.maxPathValues = maxPathValues
 	r.normalizeKeys = cfg.NormalizeOutgoingKeys
 	// Freelist entries were sized by the outgoing configuration: recycling one
 	// would serve a request with buffer limits cfg never asked for.
@@ -197,7 +198,7 @@ func (r *Router) Configure(cfg RouterConfig) error {
 		return nil
 	}
 	if workerMode {
-		jobqueue := make(chan job, cfg.MaxAwaitingConns)
+		jobqueue := make(chan job, cfg.FixedNumGoroutines)
 		if gen > 1 {
 			// Exchange buffers below are reused: the previous generation must be
 			// done serving before they may be handed to the new one.
@@ -210,6 +211,7 @@ func (r *Router) Configure(cfg RouterConfig) error {
 		r.exchs = r.exchs[:numgoro]
 		rawBuflen := cfg.RequestHeaderBufferSize + cfg.ResponseHeaderMinBufferSize
 		internal.SliceReuse(&r.globbuf, numgoro*rawBuflen)
+
 		for i := range numgoro {
 			// TODO exchange buffer alloc
 			goff := i * rawBuflen
@@ -220,7 +222,7 @@ func (r *Router) Configure(cfg RouterConfig) error {
 				NumHeaderKVCap:        cfg.RequestNumHeaderKVCap,
 				NormalizeOutgoingKeys: cfg.NormalizeOutgoingKeys,
 				NoRequestBufferGrowth: true, // Hard memory limit.
-				MaxPathValues:         cfg.MaxPathValues,
+				MaxPathValues:         maxPathValues,
 			})
 			go r.goroWorker(gen, jobqueue, cfg.Mux)
 		}
@@ -306,7 +308,7 @@ func (r *Router) goroWorker(gen uint32, queue chan job, mux Mux) {
 	for job := range queue {
 		exch := job.exch
 		if exch == nil {
-			panic("httplo: unreachable nil job")
+			panic("httphi: unreachable nil job")
 		} else if gen != r.gen.Load() {
 			// Not released with freeExch since generation torn down,
 			// new buffer may have been allocated for Exchanges.

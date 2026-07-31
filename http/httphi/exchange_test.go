@@ -23,6 +23,10 @@ func nopBackoff(consecutiveBackoffs uint) time.Duration { return lneto.BackoffFl
 // where it says so.
 const defaultNumHeaderKVCap = 32
 
+// defaultKVCap is the pair table size tests hand to [httpraw.Form.Reset], a
+// bounded form needing room for the pairs it parses. See [httpraw.Form.Reset].
+const defaultKVCap = 8
+
 // newExchange returns an Exchange acquired on conn, ready to serve a request.
 func newExchange(t *testing.T, conn conn, cfg ExchangeConfig) *Exchange {
 	t.Helper()
@@ -214,7 +218,7 @@ func TestHandleRequestFields(t *testing.T) {
 			var sm MuxSlice
 			route, _, _ := strings.Cut(test.wantURI, "?") // Mux matches on path.
 			sm.Handle(route, func(ex *Exchange) {
-				gotMethod = string(ex.RequestMethod())
+				gotMethod = string(ex.RequestMethodRaw())
 				gotURI = string(ex.RequestTarget())
 				gotHost = string(ex.RequestHeader("Host"))
 				ex.WriteHeader(200)
@@ -317,7 +321,9 @@ func TestHandleHTTP10Served(t *testing.T) {
 // No registered handler must yield 404, not an empty response.
 func TestHandleNoHandler(t *testing.T) {
 	var sm MuxSlice
-	sm.Handle("GET /", func(ex *Exchange) { t.Error("handler must not run") })
+	// "/{$}" is the root and nothing else; a bare "/" is a catch-all that would
+	// match /nowhere too, see [SetPathValues].
+	sm.Handle("GET /{$}", func(ex *Exchange) { t.Error("handler must not run") })
 	conn := serve(t, "GET /nowhere HTTP/1.1\r\nHost: h\r\n\r\n", &sm)
 	const want = "HTTP/1.1 404 Not Found\r\n\r\n"
 	if got := conn.ViewWritten(); got != want {
@@ -580,7 +586,7 @@ func TestExchangeSetHeaderInt(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			conn := newConn("")
 			exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 2*256), RequestBufferLim: 256})
-			exch.StageHeaderInt("N", test.value, test.base)
+			exch.StageHeaderIntBase("N", test.value, test.base)
 			exch.WriteHeader(200)
 			got, _ := strings.CutPrefix(conn.ViewWritten(), "HTTP/1.1 200 OK\r\n")
 			if got != test.want {
@@ -594,7 +600,7 @@ func TestExchangeSetHeaderInt(t *testing.T) {
 func TestExchangeSetHeaderIntNoAlloc(t *testing.T) {
 	exch := newExchange(t, newConn(""), ExchangeConfig{RawBuf: make([]byte, 2*256), RequestBufferLim: 256})
 	allocs := testing.AllocsPerRun(100, func() {
-		exch.StageHeaderInt("Content-Length", 1234567890, 10)
+		exch.StageHeaderIntBase("Content-Length", 1234567890, 10)
 	})
 	if allocs != 0 {
 		t.Errorf("SetHeaderInt allocated %v times, want 0", allocs)
@@ -808,10 +814,13 @@ func TestExchangeRequestParseForm(t *testing.T) {
 			contentType: "text/plain",
 			wantErr:     errNotFormEncoded,
 		}, {
+			// An absent field is not a wrong one: no media type is no body, the
+			// same answer "no content length" gets above. Only a type that is
+			// present and not form encoded is an error.
 			name:          "no media type",
 			formVals:      []formPair{{key: "a", value: "1"}},
 			noContentType: true,
-			wantErr:       errNotFormEncoded,
+			wantVals:      []formPair{},
 		}, {
 			// The coding is refused on the field alone, so the body stays off.
 			name:            "chunked",
@@ -819,10 +828,12 @@ func TestExchangeRequestParseForm(t *testing.T) {
 			extraHeaders:    "Transfer-Encoding: chunked\r\n",
 			wantErr:         errUnsupportedTransferCoding,
 		}, {
+			// The form bounds itself now, so an oversized body is the form
+			// refusing to grow rather than a short buffer handed in.
 			name:     "body larger than buffer",
 			formVals: []formPair{{key: "a", value: "1"}, {key: "b", value: "2"}, {key: "c", value: "3"}},
 			bufsize:  4,
-			wantErr:  lneto.ErrShortBuffer,
+			wantErr:  httpraw.ErrBufferExhausted,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -862,12 +873,16 @@ func TestExchangeRequestParseForm(t *testing.T) {
 			builder.WriteString("\r\n")
 			builder.Write(body)
 
+			// The form owns the memory: bufSize bounds it here, growth off so an
+			// oversized body is reported rather than allocated for.
 			var form httpraw.Form
+			form.Reset(make([]byte, 0, bufSize), defaultKVCap)
+			form.EnableBufferGrowth(false)
 			var gotErr error
 			var sm MuxSlice
 			sm.Reset(1)
 			sm.Handle("/f", func(exch *Exchange) {
-				gotErr = exch.RequestParseForm(&form, make([]byte, bufSize))
+				gotErr = exch.RequestParseForm(&form, false, false)
 				if gotErr == nil && test.callDecode {
 					gotErr = form.Decode()
 				}
@@ -910,7 +925,7 @@ func TestExchangeRequestParseFormSplit(t *testing.T) {
 	var sm MuxSlice
 	sm.Reset(1)
 	sm.Handle("/f", func(exch *Exchange) {
-		gotErr = exch.RequestParseForm(&form, make([]byte, 64))
+		gotErr = exch.RequestParseForm(&form, false, false)
 	})
 	exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 2*1024), RequestBufferLim: 1024})
 	if err := Handle(exch, &sm, nopBackoff); err != nil {
@@ -930,7 +945,7 @@ func TestExchangeRequestParseFormDecode(t *testing.T) {
 	var sm MuxSlice
 	sm.Reset(1)
 	sm.Handle("/f", func(exch *Exchange) {
-		if err := exch.RequestParseForm(&form, make([]byte, 64)); err != nil {
+		if err := exch.RequestParseForm(&form, false, false); err != nil {
 			t.Error(err)
 		} else if err = form.Decode(); err != nil {
 			t.Error(err)
@@ -1267,7 +1282,7 @@ func TestHandleBrowserSizedRequest(t *testing.T) {
 	sm.Reset(1)
 	sm.Handle("GET /echo", func(exch *Exchange) {
 		gotMode = string(exch.RequestHeader("X-Mode"))
-		exch.RequestHeaderRaw().ForEach(func(key, value []byte) bool {
+		exch.RequestHeaderV1Raw().ForEach(func(key, value []byte) bool {
 			fields++
 			return true
 		})
@@ -1430,7 +1445,7 @@ func TestExchangeRequestContentTypeFolded(t *testing.T) {
 			sm.Reset(1)
 			sm.Handle("/f", func(exch *Exchange) {
 				gotType = string(exch.RequestContentType())
-				gotErr = exch.RequestParseForm(&form, make([]byte, 64))
+				gotErr = exch.RequestParseForm(&form, false, false)
 			})
 			serve(t, "POST /f HTTP/1.1\r\nHost: h\r\n"+name+": "+formType+"\r\nContent-Length: 3\r\n\r\na=1", &sm)
 
@@ -1459,7 +1474,7 @@ func TestExchangeRequestParseFormFoldedTransferEncoding(t *testing.T) {
 			var sm MuxSlice
 			sm.Reset(1)
 			sm.Handle("/f", func(exch *Exchange) {
-				gotErr = exch.RequestParseForm(&form, make([]byte, 64))
+				gotErr = exch.RequestParseForm(&form, false, false)
 			})
 			serve(t, "POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: application/x-www-form-urlencoded\r\n"+
 				name+": chunked\r\nContent-Length: "+strconv.Itoa(len(body))+"\r\n\r\n"+body, &sm)
@@ -1468,5 +1483,164 @@ func TestExchangeRequestParseFormFoldedTransferEncoding(t *testing.T) {
 				t.Fatalf("want %v, got %v with %d pairs %q", errUnsupportedTransferCoding, gotErr, form.Len(), formString(&form))
 			}
 		})
+	}
+}
+
+// Respond replaces the stage/stage/stage/write boilerplate every handler paid,
+// deriving Content-Length from the body so it cannot disagree with what is sent.
+func TestExchangeRespond(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		code        int
+		contentType string
+		body        string
+		want        string
+	}{
+		{
+			name: "html", code: 200, contentType: "text/html", body: "<h1>hi</h1>",
+			want: "HTTP/1.1 200 OK\r\nContent-Type:text/html\r\nContent-Length:11\r\nConnection:close\r\n\r\n<h1>hi</h1>",
+		},
+		{
+			name: "empty body still declares zero length", code: 200, contentType: "text/plain", body: "",
+			want: "HTTP/1.1 200 OK\r\nContent-Type:text/plain\r\nContent-Length:0\r\nConnection:close\r\n\r\n",
+		},
+		{
+			name: "no content type staged when empty", code: 204, contentType: "", body: "",
+			want: "HTTP/1.1 204 No Content\r\nContent-Length:0\r\nConnection:close\r\n\r\n",
+		},
+		{
+			name: "error code carries a body", code: 500, contentType: "text/plain", body: "boom",
+			want: "HTTP/1.1 500 Internal Server Error\r\nContent-Type:text/plain\r\nContent-Length:4\r\nConnection:close\r\n\r\nboom",
+		},
+	} {
+		t.Run(test.name+"/bytes", func(t *testing.T) {
+			conn := newConn("")
+			exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 512), RequestBufferLim: 256})
+			if err := exch.Respond(test.code, test.contentType, []byte(test.body)); err != nil {
+				t.Fatalf("Respond: %s", err)
+			}
+			if got := conn.ViewWritten(); got != test.want {
+				t.Errorf("want %q, got %q", test.want, got)
+			}
+		})
+		t.Run(test.name+"/string", func(t *testing.T) {
+			conn := newConn("")
+			exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 512), RequestBufferLim: 256})
+			if err := exch.RespondString(test.code, test.contentType, test.body); err != nil {
+				t.Fatalf("RespondString: %s", err)
+			}
+			if got := conn.ViewWritten(); got != test.want {
+				t.Errorf("want %q, got %q", test.want, got)
+			}
+		})
+	}
+}
+
+// A response that does not fit must be reported, not shipped truncated: the
+// whole point of folding the boilerplate into one call.
+func TestExchangeRespondReportsOverflow(t *testing.T) {
+	conn := newConn("")
+	exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 64), RequestBufferLim: 32})
+	err := exch.Respond(200, strings.Repeat("t", 200), []byte("body"))
+	if err == nil {
+		t.Fatal("want an error for a response header that cannot fit")
+	}
+	if got := conn.ViewWritten(); got != "" {
+		t.Errorf("nothing must reach the wire, got %q", got)
+	}
+	if exch.ResponseError() == nil {
+		t.Error("want the failure recorded on the exchange too")
+	}
+}
+
+// Query and body are read into one form buffer and parsed together, so both
+// sources are present at once and read order decides which value a key resolves
+// to. A key carried by both keeps both pairs, in wire order.
+func TestExchangeRequestParseFormFoldsQuery(t *testing.T) {
+	const body = "cnt=body&only=b"
+	const target = "/f?cnt=query&page=2"
+	for _, test := range []struct {
+		name                    string
+		parseURL, prioritizeURL bool
+		wantCnt                 string
+		wantPage                string
+		wantRendered            string
+	}{
+		{
+			name: "body only", parseURL: false,
+			wantCnt: "body", wantPage: "", wantRendered: "cnt=body|only=b",
+		},
+		{
+			name: "query first wins", parseURL: true, prioritizeURL: true,
+			wantCnt: "query", wantPage: "2", wantRendered: "cnt=query|page=2|cnt=body|only=b",
+		},
+		{
+			name: "body first wins", parseURL: true, prioritizeURL: false,
+			wantCnt: "body", wantPage: "2", wantRendered: "cnt=body|only=b|cnt=query|page=2",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var form httpraw.Form
+			var gotErr error
+			var sm MuxSlice
+			sm.Reset(1)
+			sm.Handle("POST /f", func(exch *Exchange) {
+				gotErr = exch.RequestParseForm(&form, test.parseURL, test.prioritizeURL)
+			})
+			serve(t, "POST "+target+" HTTP/1.1\r\nHost: h\r\n"+
+				"Content-Type: application/x-www-form-urlencoded\r\n"+
+				"Content-Length: "+strconv.Itoa(len(body))+"\r\n\r\n"+body, &sm)
+			if gotErr != nil {
+				t.Fatalf("RequestParseForm: %s", gotErr)
+			}
+			if got := string(form.Get("cnt")); got != test.wantCnt {
+				t.Errorf("want cnt=%q, got %q", test.wantCnt, got)
+			}
+			if got := string(form.Get("page")); got != test.wantPage {
+				t.Errorf("want page=%q, got %q", test.wantPage, got)
+			}
+			if got := formString(&form); got != test.wantRendered {
+				t.Errorf("want pairs %q, got %q", test.wantRendered, got)
+			}
+		})
+	}
+}
+
+// A GET with a query and no body must fold the query alone: no Content-Type
+// means no body to parse, which is not an error.
+func TestExchangeRequestParseFormQueryWithoutBody(t *testing.T) {
+	var form httpraw.Form
+	var gotErr error
+	var sm MuxSlice
+	sm.Reset(1)
+	sm.Handle("GET /f", func(exch *Exchange) {
+		gotErr = exch.RequestParseForm(&form, true, true)
+	})
+	serve(t, "GET /f?a=1&b=2 HTTP/1.1\r\nHost: h\r\n\r\n", &sm)
+	if gotErr != nil {
+		t.Fatalf("want the query parsed with no body, got %s", gotErr)
+	}
+	if got := formString(&form); got != "a=1|b=2" {
+		t.Errorf("want a=1|b=2, got %q", got)
+	}
+}
+
+// The separator must not merge the two sources into one pair: without it the
+// last query pair and the first body pair run together.
+func TestExchangeRequestParseFormSourcesNotMerged(t *testing.T) {
+	var form httpraw.Form
+	var sm MuxSlice
+	sm.Reset(1)
+	sm.Handle("POST /f", func(exch *Exchange) {
+		if err := exch.RequestParseForm(&form, true, true); err != nil {
+			t.Fatal(err)
+		}
+	})
+	const body = "second=2"
+	serve(t, "POST /f?first=1 HTTP/1.1\r\nHost: h\r\n"+
+		"Content-Type: application/x-www-form-urlencoded\r\n"+
+		"Content-Length: "+strconv.Itoa(len(body))+"\r\n\r\n"+body, &sm)
+	if got := formString(&form); got != "first=1|second=2" {
+		t.Errorf("want first=1|second=2, got %q", got)
 	}
 }

@@ -24,11 +24,9 @@ mux.Handle("GET /", func(ex *httphi.Exchange) {
 var router httphi.Router
 err := router.Configure(httphi.RouterConfig{
 	FixedNumGoroutines:          4, // 4 workers, 4 exchanges, allocated here and never again.
-	MaxAwaitingConns:            8, // Queue depth. Full queue drops connections.
 	RequestHeaderBufferSize:     1024,
 	ResponseHeaderMinBufferSize: 32, // Shares the request buffer.
 	RequestNumHeaderKVCap:       32,
-	Backoff:                     func(uint) time.Duration { return time.Millisecond },
 	Mux:                         &mux,
 })
 if err != nil {
@@ -49,3 +47,8 @@ for {
 
 Runnable server over raw Linux sockets, plus query, form and multipart handlers:
 [`example_test.go`](./example_test.go).
+
+
+## Naming
+
+Gonna be honest with y'all. I initially wanted it to be named `httplo` until I saw I could write `httphi.MethHead` with a small change.

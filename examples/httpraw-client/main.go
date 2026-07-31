@@ -25,7 +25,7 @@ func run() error {
 	flag.IntVar(&port, "lport", 13337, "Local port over which to hit server")
 	flag.Parse()
 	// Prepare GET request.
-	var hdr httpraw.Header
+	var hdr httpraw.HeaderV1
 	hdr.SetMethod("GET")
 	hdr.SetRequestTarget("/")
 	hdr.SetProtocol("HTTP/1.1")

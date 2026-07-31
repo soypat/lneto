@@ -41,8 +41,8 @@ func run() error {
 	defer ln.Close()
 	print("listening on http://localhost:", listenPort, "\n")
 
-	var mux httphi.MuxSlice
-	mux.Handle("GET /", homepage)
+	var server Server
+	server.Handle("GET /", server.homepage)
 
 	var router httphi.Router
 	err = router.Configure(httphi.RouterConfig{
@@ -50,8 +50,7 @@ func run() error {
 		RequestHeaderBufferSize:     bufferSizes,
 		RequestNumHeaderKVCap:       numHeaderFields,
 		ResponseHeaderMinBufferSize: bufferSizes,
-		MaxAwaitingConns:            256,
-		Mux:                         &mux,
+		Mux:                         &server.mux,
 		Logger:                      slog.Default(),
 	})
 	if err != nil {
@@ -89,18 +88,28 @@ const (
 	maxPage = len(htmlHead) + 20 + len(htmlTail)
 )
 
-// visits counts served requests. Handlers run on the router's goroutines, so
-// every visitor gets their own number.
-var visits atomic.Uint64
+type Server struct {
+	// visits counts served requests.
+	Visits atomic.Uint64
+	mux    httphi.MuxSlice
+}
 
-func homepage(exch *httphi.Exchange) {
+func (sv *Server) Handle(pattern string, handler httphi.HandlerFunc) {
+	// Middleware for all incoming requests declared here.
+	sv.mux.Handle(pattern, func(exch *httphi.Exchange) {
+		println(exch.RequestMethod().String(), exch.MuxPattern())
+		handler(exch)
+	})
+}
+
+func (sv *Server) homepage(exch *httphi.Exchange) {
 	var page [maxPage]byte
 	n := copy(page[:], htmlHead)
-	n += len(strconv.AppendUint(page[n:n], visits.Add(1), 10))
+	n += len(strconv.AppendUint(page[n:n], sv.Visits.Add(1), 10))
 	n += copy(page[n:], htmlTail)
+	exch.Respond(200, "text/html", page[:n])
+}
 
-	exch.StageHeader("Content-Type", "text/html")
-	exch.StageHeaderInt("Content-Length", int64(n), 10)
-	exch.WriteHeader(int(httphi.StatusOK))
-	exch.WriteBody(page[:n])
+func (sv *Server) form(exch *httphi.Exchange) {
+
 }

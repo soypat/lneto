@@ -10,10 +10,10 @@ func TestAppendFormatAddr(t *testing.T) {
 		addr [4]byte
 		want string
 	}{
-		{addr: [4]byte{0, 0, 0, 0}, want: "0.0.0.0"},
+		{addr: UnspecifiedAddr(), want: "0.0.0.0"},
+		{addr: BroadcastAddr(), want: "255.255.255.255"},
 		{addr: [4]byte{127, 0, 0, 1}, want: "127.0.0.1"},
 		{addr: [4]byte{192, 168, 1, 1}, want: "192.168.1.1"},
-		{addr: [4]byte{255, 255, 255, 255}, want: "255.255.255.255"},
 		{addr: [4]byte{10, 0, 0, 1}, want: "10.0.0.1"},
 		{addr: [4]byte{1, 2, 3, 4}, want: "1.2.3.4"},
 		{addr: [4]byte{100, 99, 9, 0}, want: "100.99.9.0"},

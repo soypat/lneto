@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"sync/atomic"
+	"unsafe"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/http/httpraw"
@@ -33,8 +34,11 @@ type Exchange struct {
 	rawbuf        []byte
 	respHeaderOff uint16
 	respHeaderLen uint16
-	reqHdr        httpraw.Header
-	pathValues    []pathValue
+	reqHdr        httpraw.HeaderV1
+	pathValues    []PathValue
+	// bodyRW is the reader handed to [httpraw.Form.ReadLimited], kept here so
+	// boxing it into an io.Reader allocates nothing per request.
+	bodyRW ExchangeRW
 
 	hijacked bool
 	rw       conn
@@ -52,24 +56,28 @@ type Exchange struct {
 // ExchangeConfig is the memory an [Exchange] is fixed to for the rest of its
 // life by [Exchange.Configure]. A [Router] derives one per exchange from its
 // [RouterConfig], which is what bounds the router's memory.
+//
+// Fields open with Required, Conditional or Optional and the constraint in
+// brackets, as in [RouterConfig].
 type ExchangeConfig struct {
-	// RawBuf is the single buffer holding the request header, the response
+	// Required [non-empty] single buffer holding the request header, the response
 	// header and any surplus body. See [Exchange.UnsafeRawBuffer].
 	RawBuf []byte
-	// RequestBufferLim reserves the first bytes of RawBuf for the request
-	// header, the rest being the response. Configure panics if it exceeds RawBuf.
+	// Required [<=len(RawBuf)] bytes of RawBuf reserved for the request header,
+	// the rest being the response. Configure panics if it exceeds RawBuf.
 	RequestBufferLim int
-	// NumHeaderKVCap is how many request header fields may be parsed. A request
-	// carrying more is answered 431, see [httpraw.ErrHeaderTooMany].
+	// Required [>0] request header fields that may be parsed. A request carrying
+	// more is answered 431, see [httpraw.ErrHeaderTooMany].
 	NumHeaderKVCap int
-	// NormalizeOutgoingKeys normalizes staged response header keys as they are
+	// Optional [any] normalization of staged response header keys as they are
 	// written, i.e: "content-type" becomes "Content-Type".
 	NormalizeOutgoingKeys bool
-	// NoRequestBufferGrowth holds the request header to RequestBufferLim rather
-	// than growing it. A header outgrowing it is answered 431, see [httpraw.ErrBufferExhausted].
+	// Optional [any] cap holding the request header to RequestBufferLim rather than
+	// growing it. A header outgrowing it is answered 431, see [httpraw.ErrBufferExhausted].
 	NoRequestBufferGrowth bool
-	// MaxPathValues is how many wildcards a single pattern may bind, read back with
-	// [Exchange.PathValue]. A pattern with more never matches, see [SetPathValues].
+	// Conditional [>=the most wildcards any one registered pattern binds] number of
+	// path values bindable, read back with [Exchange.PathValue]. A pattern binding
+	// more never matches, see [SetPathValues]. Zero suits a mux of literal patterns.
 	MaxPathValues int
 }
 
@@ -163,12 +171,17 @@ func (exch *Exchange) Release() {
 // written to and used without modifying the staged response first line.
 //
 // Staging headers will write to this buffer so use mindfully.
-// To access only the request header buffer portion use [httpraw.Header.BufferRaw] limited
-// to [httpraw.Header.BufferParsed] as returned by [Exchange.RequestHeaderRaw].
+// To access only the request header buffer portion use [httpraw.HeaderV1.BufferRaw] limited
+// to [httpraw.HeaderV1.BufferParsed] as returned by [Exchange.requestHeaderRaw].
 // Writing to this section will not change the contents read by [Exchange.ReadBody].
 //
 // In [Router] context, the size of this buffer is influenced directly by [RouterConfig] HeaderBufferSize fields.
 func (exch *Exchange) UnsafeRawBuffer() []byte { return exch.rawbuf }
+
+// RequestHeaderV1Raw returns the parsed request header for access beyond the
+// Request* methods, such as [httpraw.HeaderV1.ForEach]. Valid until the exchange
+// is released, and writing to it corrupts the response.
+func (exch *Exchange) RequestHeaderV1Raw() *httpraw.HeaderV1 { return &exch.reqHdr }
 
 // StageHeader stages a response header field, written on the first
 // [Exchange.FlushHeader], [Exchange.WriteHeader] or [Exchange.WriteBody].
@@ -200,11 +213,23 @@ func (exch *Exchange) StageHeader(key, value string) (enoughMemory bool) {
 	return true
 }
 
-// StageHeaderInt is [Exchange.StageHeader] with an integer value, i.e: Content-Length.
+// StageHeaderBytes is [Exchange.StageHeader] with a byte slice value, i.e: a
+// field copied out of the request. The value is not retained.
+func (exch *Exchange) StageHeaderBytes(key string, value []byte) (enoughMemory bool) {
+	return exch.StageHeader(key, b2s(value))
+}
+
+// StageHeaderInt is [Exchange.StageHeaderIntBase] in base 10, which is the base
+// every HTTP field value carrying a number uses, i.e: Content-Length.
+func (exch *Exchange) StageHeaderInt(key string, value int64) (enoughMemory bool) {
+	return exch.StageHeaderIntBase(key, value, 10)
+}
+
+// StageHeaderIntBase is [Exchange.StageHeader] with an integer value, i.e: Content-Length.
 // It formats the value directly into the response buffer without allocating.
 // base must be in the range 10..36; lower bases are dropped, no HTTP header
 // field value is written below base 10.
-func (exch *Exchange) StageHeaderInt(key string, value int64, base int) (enoughMemory bool) {
+func (exch *Exchange) StageHeaderIntBase(key string, value int64, base int) (enoughMemory bool) {
 	if exch.headerWritten || base < 10 || base > 36 {
 		return false
 	}
@@ -252,11 +277,54 @@ func (exch *Exchange) StageStatus(code int) {
 
 // WriteHeader sends the status line for code along with the staged header
 // fields. Only the first call reaches the wire, as in http.ResponseWriter.
-func (exch *Exchange) WriteHeader(code int) {
+func (exch *Exchange) WriteHeader(code int) (n int, err error) {
 	if !exch.headerWritten {
 		exch.StageStatus(code)
-		exch.FlushHeader()
+		n, err = exch.FlushHeader()
 	}
+	return n, err
+}
+
+// Respond writes a complete response in one call: Content-Type, a Content-Length
+// taken from len(body), the status line and the body. An empty contentType
+// stages no Content-Type field, for a code that carries no entity.
+//
+// It also stages "Connection: close", the router serving one exchange per
+// connection, so a peer never waits on a response that is not coming.
+//
+// Returns [Exchange.ResponseError]: staged fields that did not fit and failed
+// writes are both reported there, so a truncated response cannot pass silently.
+func (exch *Exchange) Respond(code int, contentType string, body []byte) error {
+	exch.stageResponse(code, contentType, len(body))
+	exch.WriteBody(body) // Reports through respErr, checked below.
+	return exch.respErr
+}
+
+// RespondString is [Exchange.Respond] with a string body, saving the conversion.
+func (exch *Exchange) RespondString(code int, contentType, body string) error {
+	exch.stageResponse(code, contentType, len(body))
+	exch.WriteBodyString(body) // Reports through respErr, checked below.
+	return exch.respErr
+}
+
+// stageResponse stages the fields and status line a complete response needs.
+// Drops are recorded on respErr by the Stage* calls, so [Exchange.WriteBody]
+// declines to write a partial header afterwards.
+func (exch *Exchange) stageResponse(code int, contentType string, bodyLen int) {
+	if contentType != "" {
+		exch.StageHeader("Content-Type", contentType)
+	}
+	exch.StageHeaderInt("Content-Length", int64(bodyLen))
+	// One exchange per connection today, so the peer is told not to wait for a
+	// second response on it. Revisit once the router loops exchanges.
+	exch.StageHeader("Connection", "close")
+	exch.StageStatus(code)
+}
+
+// ResponseError returns any error encountered during staging of headers or during writing of response.
+// Provides an ergonomic way of checking if one ran out of buffer space after staging all headers with [Exchange.StageHeader].
+func (exch *Exchange) ResponseError() error {
+	return exch.respErr
 }
 
 // FlushHeader writes the status line and staged header fields to the connection
@@ -319,6 +387,14 @@ func (rw *ExchangeRW) Write(buf []byte) (int, error) {
 	return rw.exch.WriteBody(buf)
 }
 
+// WriteString wraps [Exchange.WriteBodyString]. Fails if handle no longer valid.
+func (rw *ExchangeRW) WriteString(s string) (int, error) {
+	if err := rw.validate(); err != nil {
+		return 0, err
+	}
+	return rw.exch.WriteBodyString(s)
+}
+
 // Read reads request body bytes. See [Exchange.ReadBody].
 // Fails with [net.ErrClosed] once the handle is no longer valid.
 func (rw *ExchangeRW) Read(buf []byte) (int, error) {
@@ -346,7 +422,13 @@ func (exch *Exchange) ReadWriter(dst *ExchangeRW) {
 	dst.exch = exch
 }
 
-// Write writes response body bytes, flushing the header first if the handler
+// WriteBodyString implements [io.StringWriter] by unsafe conversion.
+// Most underlying [io.Writer] implementations are TCP transport and not modify/own the underlying buffer.
+func (exch *Exchange) WriteBodyString(buf string) (int, error) {
+	return exch.WriteBody(unsafe.Slice(unsafe.StringData(buf), len(buf)))
+}
+
+// WriteBody writes response body bytes, flushing the header first if the handler
 // has not written it yet. Once a write to the connection fails the response is
 // unrecoverable and every later write returns that same error, so a body never
 // reaches the wire without its header.
@@ -401,13 +483,6 @@ func (exch *Exchange) MuxPattern() string {
 	return exch.matchedPattern
 }
 
-// RequestHeaderRaw returns the parsed request header for access beyond the
-// Request* methods, such as [httpraw.Header.ForEach]. Valid until the exchange
-// is released, and writing to it corrupts the response.
-func (exch *Exchange) RequestHeaderRaw() *httpraw.Header {
-	return &exch.reqHdr
-}
-
 // RequestParseCookie parses the request's key header field into dst, i.e:
 // "Cookie". The caller owns dst and its buffer, so it may be reused between
 // requests.
@@ -422,62 +497,119 @@ func (exch *Exchange) RequestParseCookie(dst *httpraw.Cookie, key string) error 
 func (exch *Exchange) RequestContentType() []byte {
 	// Folded: field names are case insensitive and HTTP/2 mandates lowercase, so
 	// a proxy translating h2 to h1 sends "content-type", RFC 9110 5.1.
-	return exch.RequestHeaderRaw().GetFold("Content-Type")
+	return exch.RequestHeaderV1Raw().GetFold("Content-Type")
 }
 
 // RequestContentLength returns the body length declared by the request's
 // Content-Length field. An absent field is signalled with present=false and no error.
-// See [httpraw.Header.ContentLength].
+// See [httpraw.HeaderV1.ContentLength].
 func (exch *Exchange) RequestContentLength() (_ int64, present bool, _ error) {
-	return exch.RequestHeaderRaw().ContentLength()
+	return exch.RequestHeaderV1Raw().ContentLength()
 }
 
-// RequestParseForm reads the request body into buf and parses it as
-// "application/x-www-form-urlencoded" into dst. buf is the only storage used and
-// the only limit: a body longer than buf is refused with [lneto.ErrBufferFull]
-// before a single byte is read, leaving the caller free to answer 413. Pairs are
-// left as they arrived, call [httpraw.Form.Decode] to decode them in place.
+// RequestParseForm parses "application/x-www-form-urlencoded" pairs into dst
+// from the request body and, when parseURL is set, from the query string as
+// well. Pairs are stored as they arrived, call [httpraw.Form.Decode] to decode
+// them in place.
 //
-// Unlike http.Request.ParseForm the query string is not folded in, reach it with
-// [Exchange.RequestQuery] or [Exchange.RequestQueryAppend]. The body is consumed, so
-// call this before [Exchange.ReadBody].
+// dst owns the memory: both sources are read into its buffer and parsed together
+// once. Hand it a preallocated buffer with [httpraw.Form.Reset] and turn growth
+// off with [httpraw.Form.EnableBufferGrowth] to bound it, which then reports
+// [httpraw.ErrBufferExhausted] instead of allocating. It grows by default.
 //
-// A request with no Content-Length has no body, RFC 9112 6.3, and yields an
-// empty form. Use [Exchange.RequestContentLength] to tell that apart from a body
-// that arrived empty.
-func (exch *Exchange) RequestParseForm(dst *httpraw.Form, buf []byte) error {
-	if !httpraw.MediaTypeIs(exch.RequestContentType(), "application/x-www-form-urlencoded") {
+// prioritizeURL reads the query ahead of the body, so a key carried by both
+// resolves to the query's value: [httpraw.Form.Get] answers with the first pair
+// holding a key. Both stay readable in wire order through [httpraw.Form.Pair].
+// The body is consumed, so call this before [Exchange.ReadBody].
+//
+// A request with no Content-Length has no body, RFC 9112 6.3, and one with no
+// Content-Type declares no encoding to parse, RFC 9110 8.3. Neither is an error,
+// a bodiless POST being legal, and the query is still parsed when asked for. A
+// Content-Type that is present and not form encoded is [errNotFormEncoded].
+func (exch *Exchange) RequestParseForm(dst *httpraw.Form, parseURL, prioritizeURL bool) error {
+	dst.Reset(nil, 0) // Reuse whatever buffer dst holds, discarding old pairs.
+	if parseURL && prioritizeURL {
+		if err := exch.readQueryForm(dst); err != nil {
+			return err
+		}
+	}
+	if err := exch.readBodyForm(dst); err != nil {
+		return err
+	}
+	if parseURL && !prioritizeURL {
+		if err := exch.readQueryForm(dst); err != nil {
+			return err
+		}
+	}
+	return dst.Parse()
+}
+
+// formSeparator joins two sources inside one form buffer. Shared so appending it
+// converts no literal per call.
+var formSeparator = []byte{'&'}
+
+// readQueryForm appends the request's query string to dst's buffer.
+func (exch *Exchange) readQueryForm(dst *httpraw.Form) error {
+	query := exch.RequestQuery()
+	if len(query) == 0 {
+		return nil
+	} else if err := separateForm(dst); err != nil {
+		return err
+	}
+	return dst.ReadFromBytes(query)
+}
+
+// readBodyForm appends the request body to dst's buffer, reading until
+// Content-Length bytes have arrived.
+func (exch *Exchange) readBodyForm(dst *httpraw.Form) error {
+	contentType := exch.RequestContentType()
+	if contentType == nil {
+		return nil // No declared encoding is no form, RFC 9110 8.3.
+	} else if !httpraw.MediaTypeIs(contentType, "application/x-www-form-urlencoded") {
 		return errNotFormEncoded
-	} else if exch.RequestHeaderRaw().GetFold("Transfer-Encoding") != nil {
+	} else if exch.RequestHeaderV1Raw().GetFold("Transfer-Encoding") != nil {
 		// Chunked bodies are framed, so reading Content-Length bytes off the
 		// wire would parse chunk sizes as form data. httpraw does not decode them.
 		return errUnsupportedTransferCoding
 	}
-
 	length, present, err := exch.RequestContentLength()
-	if !present {
-		dst.Reset(nil, 0)
-		return nil // No length is no body, RFC 9112 6.3.
-	} else if err != nil {
+	if err != nil {
 		return err
-	} else if length > int64(len(buf)) {
-		return lneto.ErrShortBuffer // Refuse before reading, caller may answer 413.
+	} else if !present || length == 0 {
+		return nil // No length is no body, RFC 9112 6.3.
 	}
-	buf = buf[:length]
-	for read := 0; read < len(buf); {
-		n, err := exch.ReadBody(buf[read:])
+	if err = separateForm(dst); err != nil {
+		return err
+	}
+	// Reuse the exchange's own handle: a local would escape when boxed into the
+	// io.Reader [httpraw.Form.ReadLimited] takes, costing an allocation a request.
+	exch.ReadWriter(&exch.bodyRW)
+	// A single read may fall short of the limit, the body arriving a TCP segment
+	// at a time, so read until the declared length is in hand.
+	for read := 0; read < int(length); {
+		n, err := dst.ReadLimited(&exch.bodyRW, int(length)-read)
 		read += n
 		if n == 0 {
 			if err == nil {
 				err = io.ErrNoProgress
 			} else if err == io.EOF {
-				break
+				break // Peer sent less than it declared.
 			}
+			return err
+		} else if err != nil && err != io.EOF {
 			return err
 		}
 	}
-	dst.Reset(buf, 0)
-	return dst.Parse()
+	return nil
+}
+
+// separateForm appends the '&' keeping two sources from merging into one pair,
+// doing nothing while dst holds no bytes yet.
+func separateForm(dst *httpraw.Form) error {
+	if dst.BufferUsed() == 0 {
+		return nil
+	}
+	return dst.ReadFromBytes(formSeparator)
 }
 
 // RequestMultipart returns a parser prepared from the boundary parameter of the
@@ -589,26 +721,26 @@ func (exch *Exchange) ReadMultiparts(dst []MultipartSink, buf []byte, newSink fu
 // RequestHeader returns the value of the first request header field matching
 // key, or nil if absent. Key matching is case sensitive.
 func (exch *Exchange) RequestHeader(key string) []byte {
-	header := exch.RequestHeaderRaw()
+	header := exch.RequestHeaderV1Raw()
 	return header.Get(key)
 }
 
 // RequestTarget returns the request-target (URI) of the request line, i.e:
-// "/search?q=go". See [httpraw.Header.RequestTarget].
+// "/search?q=go". See [httpraw.HeaderV1.RequestTarget].
 func (exch *Exchange) RequestTarget() []byte {
-	return exch.RequestHeaderRaw().RequestTarget()
+	return exch.RequestHeaderV1Raw().RequestTarget()
 }
 
 // RequestPath returns the request-target (URI) up to the query string. This is
 // what the [Mux] matches on, i.e: "/search" for a request to "/search?q=go".
 func (exch *Exchange) RequestPath() []byte {
-	return exch.RequestHeaderRaw().RequestPath()
+	return exch.RequestHeaderV1Raw().RequestPath()
 }
 
 // RequestQuery returns the request's query string as it appears on the wire.
-// Iterate it with [httpraw.NextQueryPair]. See [httpraw.Header.RequestQuery].
+// Iterate it with [httpraw.NextQueryPair]. See [httpraw.HeaderV1.RequestQuery].
 func (exch *Exchange) RequestQuery() []byte {
-	return exch.RequestHeaderRaw().RequestQuery()
+	return exch.RequestHeaderV1Raw().RequestQuery()
 }
 
 // RequestQueryValue returns an undecoded view of the first query parameter
@@ -694,14 +826,18 @@ func (exch *Exchange) PathValueAppend(dst []byte, key string, decoded bool) ([]b
 	return dst[:base+n], nil
 }
 
-// RequestMethod returns the request line's method, i.e: "GET". See
-// [MethodFromBytes] to compare it against a [Method].
-func (exch *Exchange) RequestMethod() []byte {
-	return exch.RequestHeaderRaw().Method()
+// RequestMethod returns the request's [Method] enum.
+func (exch *Exchange) RequestMethod() Method {
+	return MethodFromBytes(exch.RequestMethodRaw())
+}
+
+// RequestMethod returns the request line's method as a []byte view, i.e: "GET".
+func (exch *Exchange) RequestMethodRaw() []byte {
+	return exch.RequestHeaderV1Raw().Method()
 }
 
 // RequestConnectionClose returns true if the client asked for the connection to
 // be closed after this exchange with a "Connection: close" header field.
 func (exch *Exchange) RequestConnectionClose() bool {
-	return exch.RequestHeaderRaw().ConnectionClose()
+	return exch.RequestHeaderV1Raw().ConnectionClose()
 }

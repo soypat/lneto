@@ -196,8 +196,10 @@ func TestRouterRequestVisibleToHandler(t *testing.T) {
 		router Router
 	)
 	var gotMethod, gotURI, gotHost string
+	var gotMethodEnum Method
 	sm.Handle("GET /index.html", func(ex *Exchange) {
-		gotMethod = string(ex.RequestMethod())
+		gotMethod = string(ex.RequestMethodRaw())
+		gotMethodEnum = ex.RequestMethod()
 		gotURI = string(ex.RequestTarget())
 		gotHost = string(ex.RequestHeader("Host"))
 		ex.WriteHeader(200)
@@ -212,6 +214,9 @@ func TestRouterRequestVisibleToHandler(t *testing.T) {
 
 	if gotMethod != "GET" {
 		t.Errorf("want method %q, got %q", "GET", gotMethod)
+	}
+	if gotMethodEnum != MethGet {
+		t.Errorf("want method enum %q, got %q", MethGet, gotMethodEnum)
 	}
 	if gotURI != "/index.html" {
 		t.Errorf("want URI %q, got %q", "/index.html", gotURI)
@@ -242,7 +247,9 @@ func TestRouterMux(t *testing.T) {
 				sm     MuxSlice
 				router Router
 			)
-			sm.Handle("GET /", staticPage(t, "root"))
+			// "/{$}" is the root alone: a bare "/" is a catch-all and would serve
+			// "root" for /page and /nowhere as well, see [SetPathValues].
+			sm.Handle("GET /{$}", staticPage(t, "root"))
 			sm.Handle("GET /page", staticPage(t, "page"))
 			sm.Handle("/any", staticPage(t, "any")) // No method: matches any.
 			configSynchronousRouter(t, &router, bufferSize, &sm)
@@ -383,7 +390,6 @@ func TestRouterHandleAfterTeardown(t *testing.T) {
 	sm.Handle("GET /", staticPage(t, "ok"))
 	err := router.Configure(RouterConfig{
 		FixedNumGoroutines:          2,
-		MaxAwaitingConns:            4,
 		Mux:                         &sm,
 		RequestHeaderBufferSize:     512,
 		RequestNumHeaderKVCap:       16,
@@ -416,7 +422,6 @@ func TestRouterTeardownReleasesQueuedConns(t *testing.T) {
 	sm.Handle("GET /", staticPage(t, "ok"))
 	cfg := RouterConfig{
 		FixedNumGoroutines:          numGoro,
-		MaxAwaitingConns:            4,
 		Mux:                         &sm,
 		RequestHeaderBufferSize:     512,
 		RequestNumHeaderKVCap:       16,
@@ -463,7 +468,6 @@ func TestRouterConfigureDuringWorkerHandle(t *testing.T) {
 	sm.Handle("GET /", staticPage(t, "ok"))
 	cfg := RouterConfig{
 		FixedNumGoroutines:          2,
-		MaxAwaitingConns:            4,
 		Mux:                         &sm,
 		RequestHeaderBufferSize:     512,
 		RequestNumHeaderKVCap:       16,

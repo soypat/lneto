@@ -35,7 +35,7 @@ var (
 )
 
 type PacketBreakdown struct {
-	hdr  httpraw.Header
+	hdr  httpraw.HeaderV1
 	dmsg dns.Message
 	vld  lneto.Validator
 	// SubfieldLimit will limit the number of captured subfields to the value it has.

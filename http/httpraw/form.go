@@ -1,6 +1,9 @@
 package httpraw
 
-import "bytes"
+import (
+	"bytes"
+	"io"
+)
 
 // Form holds "application/x-www-form-urlencoded" key-value pairs, the encoding
 // HTML forms use for POST bodies and query strings alike. Methods function
@@ -19,9 +22,23 @@ func (f *Form) EnableBufferGrowth(enableGrowth bool) { f.kv.EnableBufferGrowth(e
 
 // Reset discards parsed pairs and sets the buffer to parse in place.
 // If buf is nil the current buffer is reused.
+//
+// capKV sizes the pair table. With growth disabled it is a hard limit, so a
+// capKV of 0 leaves no room for a single pair and [Form.Parse] answers
+// [ErrBufferExhausted]; size it to the pairs expected.
 func (f *Form) Reset(buf []byte, capKV int) {
 	f.kv.Reset(buf, capKV)
 }
+
+// ReadFromBytes appends buf to the underlying buffer, accumulating data to parse. Returns ErrBufferExhausted when buf does not fit and growth is disabled.
+func (f *Form) ReadFromBytes(b []byte) error { return f.kv.ReadFromBytes(b) }
+
+// BufferUsed returns bytes accumulated by the Read* methods and awaiting a
+// [Form.Parse]. See [kvBuffer.BufferUsed].
+func (f *Form) BufferUsed() int { return f.kv.BufferUsed() }
+
+// ReadLimited appends at most limit bytes read from r to the underlying buffer. A read returning data alongside io.EOF reports a nil error, later ones io.EOF.
+func (f *Form) ReadLimited(r io.Reader, limit int) (int, error) { return f.kv.ReadLimited(r, limit) }
 
 // ParseBytes copies the argument bytes to the Form's underlying buffer and parses them.
 func (f *Form) ParseBytes(b []byte) error {

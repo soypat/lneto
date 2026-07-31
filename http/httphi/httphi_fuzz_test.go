@@ -64,7 +64,7 @@ const (
 
 // segSizes are the chunk sizes a request may be delivered in, index 0 meaning
 // "all at once". Splitting a request mid-CRLF or before a colon is what drives
-// [httpraw.Header.TryParse]'s resumption path. Entries may be appended, never
+// [httpraw.HeaderV1.TryParse]'s resumption path. Entries may be appended, never
 // changed: an existing index must keep splitting exactly as it does today.
 var segSizes = [16]int{0, 1, 2, 3, 5, 7, 11, 16, 23, 37, 64, 101, 173, 256, 509, 1024}
 
@@ -152,7 +152,7 @@ func checkResponse(t *testing.T, written string) {
 	if !strings.Contains(written, "\r\n\r\n") {
 		t.Fatalf("header block never terminated: %q", written)
 	}
-	var resp httpraw.Header
+	var resp httpraw.HeaderV1
 	const asResponse = true
 	if err := resp.ParseBytes(asResponse, []byte(written)); err != nil {
 		t.Fatalf("response does not parse back: %s in %q", err, written)
@@ -190,7 +190,7 @@ func FuzzHandleRequest(f *testing.F) {
 				// escaping, not this package's framing.
 				for i := range stage {
 					exch.StageHeader("X-Fuzz", "value")
-					exch.StageHeaderInt("X-Fuzz-Int", int64(i), 10)
+					exch.StageHeaderIntBase("X-Fuzz-Int", int64(i), 10)
 				}
 			}
 			if ops&opReadBody != 0 {
@@ -251,7 +251,7 @@ func FuzzQueryAndForm(f *testing.F) {
 
 			var form httpraw.Form
 			buf := make([]byte, scratchLen)
-			if err := exch.RequestParseForm(&form, buf); err != nil {
+			if err := exch.RequestParseForm(&form, false, false); err != nil {
 				return
 			}
 			total := 0

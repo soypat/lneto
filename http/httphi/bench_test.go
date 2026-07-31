@@ -68,7 +68,7 @@ func BenchmarkHandle(b *testing.B) {
 			request: "GET /?abc=123 HTTP/1.1\r\nHost: tinygo.org\r\nUser-Agent: bench\r\nAccept: */*\r\nConnection: close\r\n\r\n",
 			handler: func(ex *Exchange) {
 				ex.StageHeader("Content-Type", "text/plain")
-				ex.StageHeaderInt("Content-Length", int64(len(benchBody)), 10)
+				ex.StageHeaderIntBase("Content-Length", int64(len(benchBody)), 10)
 				data, present := ex.RequestQueryAppend(buf[:0], "abc", true)
 				if !present || !internal.BytesEqual(data, expect) {
 					panic("invalid result")
@@ -112,10 +112,13 @@ func BenchmarkRequestParseForm(b *testing.B) {
 	const request = "POST /f HTTP/1.1\r\nHost: tinygo.org\r\n" +
 		"Content-Type: application/x-www-form-urlencoded\r\nContent-Length: 27\r\n\r\n" +
 		"user=gopher&msg=hello+world"
-	buf := make([]byte, 64)
+	// The form owns its memory now, so pre-size it and forbid growth: an
+	// allocation on this path is the failure the benchmark is watching for.
+	benchForm.Reset(make([]byte, 0, 64), 2)
+	benchForm.EnableBufferGrowth(false)
 	var mux MuxSlice
 	mux.Handle("POST /f", func(ex *Exchange) {
-		err := ex.RequestParseForm(&benchForm, buf)
+		err := ex.RequestParseForm(&benchForm, false, false)
 		if err != nil || benchForm.Len() != 2 {
 			panic("invalid result")
 		}
