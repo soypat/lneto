@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/ipv4"
 )
 
 func TestARPLocal(t *testing.T) {
@@ -20,7 +21,7 @@ func TestARPLocal(t *testing.T) {
 	addr2 := netip.AddrPortFrom(netip.AddrFrom4(s2.Addr4()), 80)   // listener, server.
 	err := s1.AssimilateDHCPResults(&DHCPResults{
 		Router:        netip.AddrFrom4([4]byte{10, 0, 0, 255}),
-		BroadcastAddr: netip.AddrFrom4([4]byte{255, 255, 255, 255}),
+		BroadcastAddr: netip.AddrFrom4(ipv4.BroadcastAddr()),
 		AssignedAddr4: s1.Addr4(),
 		Subnet:        netip.PrefixFrom(netip.AddrFrom4(s2.Addr4()), 24), // Subnet containing s2 will force an ARP on s1.
 		TRenewal:      1000,

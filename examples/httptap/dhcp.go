@@ -168,7 +168,7 @@ func (d *dhcpInterceptor) buildDHCPResponse(buf []byte) (int, error) {
 	// DHCP responses must be broadcast since the client doesn't have
 	// an IP configured yet and the stack would drop unicast packets.
 	*efrm.DestinationHardwareAddr() = ethernet.BroadcastAddr()
-	*ifrm.DestinationAddr() = [4]byte{255, 255, 255, 255}
+	*ifrm.DestinationAddr() = ipv4.BroadcastAddr()
 	ifrm.SetTotalLength(totalIPLen)
 	ufrm.SetLength(udpLen)
 	// Source and destination IPs already set by dhcpv4.Server.Encapsulate.
