@@ -113,3 +113,12 @@ func AppendFormatAddr(dst []byte, addr [4]byte) []byte {
 	}
 	return dst
 }
+
+// String returns the dotted-decimal text representation of an IPv4 address.
+func String(addr [4]byte) string {
+	// See net/netip's (Addr).string4 pattern.
+	var buf [maxAddrStringLen]byte
+	return string(AppendFormatAddr(buf[:0], addr))
+}
+
+const maxAddrStringLen = len("255.255.255.255")
