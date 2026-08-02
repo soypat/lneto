@@ -45,12 +45,11 @@ func run() error {
 	server.Handle("GET /", server.homepage)
 
 	var router httphi.Router
-	err = router.Configure(httphi.RouterConfig{
+	err = router.Configure(&server.mux, httphi.RouterConfig{
 		FixedNumGoroutines:          numGoroutines,
 		RequestHeaderBufferSize:     bufferSizes,
 		RequestNumHeaderKVCap:       numHeaderFields,
 		ResponseHeaderMinBufferSize: bufferSizes,
-		Mux:                         &server.mux,
 		Logger:                      slog.Default(),
 	})
 	if err != nil {

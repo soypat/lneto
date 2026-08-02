@@ -84,12 +84,11 @@ func run() error {
 	server.Handle("/echo", server.echo) // No method: any method matches.
 
 	var router httphi.Router
-	err = router.Configure(httphi.RouterConfig{
+	err = router.Configure(&server.mux, httphi.RouterConfig{
 		FixedNumGoroutines:          *flagThreads,
 		RequestHeaderBufferSize:     bufferSizes,
 		RequestNumHeaderKVCap:       numHeaderFields,
 		ResponseHeaderMinBufferSize: bufferSizes,
-		Mux:                         &server.mux,
 		Logger:                      slog.Default(),
 	})
 	if err != nil {

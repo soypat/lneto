@@ -183,7 +183,7 @@ func TestExchangePathValueClearedBetweenRequests(t *testing.T) {
 	exch := new(Exchange)
 	exch.Configure(ExchangeConfig{
 		RawBuf: make([]byte, 2048), RequestBufferLim: 1024,
-		NumHeaderKVCap: defaultNumHeaderKVCap, MaxPathValues: 4,
+		NumHeaderKVCap: defaultNumHeaderKVCap, PathValuesBuf: make([]PathValue, 4),
 	})
 
 	// First request binds id=42 off a wildcard pattern.
@@ -243,7 +243,7 @@ func TestMuxSliceNoStaleBindingsAcrossCandidates(t *testing.T) {
 	exch := new(Exchange)
 	exch.Configure(ExchangeConfig{
 		RawBuf: make([]byte, 2048), RequestBufferLim: 1024,
-		NumHeaderKVCap: defaultNumHeaderKVCap, MaxPathValues: sm.MaxPathValues(),
+		NumHeaderKVCap: defaultNumHeaderKVCap, PathValuesBuf: make([]PathValue, sm.MaxPathValues()),
 	})
 	conn := newConn("GET /a/1/b HTTP/1.1\r\nHost: h\r\n\r\n")
 	conn.Hangup()
@@ -292,7 +292,7 @@ func TestMuxSliceTrailingSlashPattern(t *testing.T) {
 			exch := new(Exchange)
 			exch.Configure(ExchangeConfig{
 				RawBuf: make([]byte, 2048), RequestBufferLim: 1024,
-				NumHeaderKVCap: defaultNumHeaderKVCap, MaxPathValues: sm.MaxPathValues(),
+				NumHeaderKVCap: defaultNumHeaderKVCap, PathValuesBuf: make([]PathValue, sm.MaxPathValues()),
 			})
 			conn := newConn("GET " + test.path + " HTTP/1.1\r\nHost: h\r\n\r\n")
 			conn.Hangup()
@@ -497,7 +497,7 @@ func TestMuxSliceZeroValueWildcardStillMatches(t *testing.T) {
 			exch := new(Exchange)
 			exch.Configure(ExchangeConfig{
 				RawBuf: make([]byte, 2048), RequestBufferLim: 1024,
-				NumHeaderKVCap: defaultNumHeaderKVCap, MaxPathValues: sm.MaxPathValues(),
+				NumHeaderKVCap: defaultNumHeaderKVCap, PathValuesBuf: make([]PathValue, sm.MaxPathValues()),
 			})
 			conn := newConn("GET " + test.path + " HTTP/1.1\r\nHost: h\r\n\r\n")
 			conn.Hangup()

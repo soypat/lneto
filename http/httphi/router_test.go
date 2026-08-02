@@ -150,9 +150,8 @@ func (r *rwconn) ViewWritten() string {
 var _ Mux = (*MuxSlice)(nil)
 
 func configSynchronousRouter(t *testing.T, router *Router, bufferSize int, mux Mux) {
-	err := router.Configure(RouterConfig{
+	err := router.Configure(mux, RouterConfig{
 		FixedNumGoroutines:          -1,
-		Mux:                         mux,
 		RequestHeaderBufferSize:     bufferSize,
 		RequestNumHeaderKVCap:       16,
 		ResponseHeaderMinBufferSize: bufferSize,
@@ -388,9 +387,8 @@ func TestRouterHandleAfterTeardown(t *testing.T) {
 		router Router
 	)
 	sm.Handle("GET /", staticPage(t, "ok"))
-	err := router.Configure(RouterConfig{
+	err := router.Configure(&sm, RouterConfig{
 		FixedNumGoroutines:          2,
-		Mux:                         &sm,
 		RequestHeaderBufferSize:     512,
 		RequestNumHeaderKVCap:       16,
 		ResponseHeaderMinBufferSize: 512,
@@ -422,7 +420,6 @@ func TestRouterTeardownReleasesQueuedConns(t *testing.T) {
 	sm.Handle("GET /", staticPage(t, "ok"))
 	cfg := RouterConfig{
 		FixedNumGoroutines:          numGoro,
-		Mux:                         &sm,
 		RequestHeaderBufferSize:     512,
 		RequestNumHeaderKVCap:       16,
 		ResponseHeaderMinBufferSize: 512,
@@ -436,7 +433,7 @@ func TestRouterTeardownReleasesQueuedConns(t *testing.T) {
 		// generation drops its connections, but it must not outlive it.
 		var err error
 		for range 100 {
-			if err = router.Configure(cfg); err == nil {
+			if err = router.Configure(&sm, cfg); err == nil {
 				break
 			}
 			time.Sleep(time.Millisecond)
@@ -468,12 +465,11 @@ func TestRouterConfigureDuringWorkerHandle(t *testing.T) {
 	sm.Handle("GET /", staticPage(t, "ok"))
 	cfg := RouterConfig{
 		FixedNumGoroutines:          2,
-		Mux:                         &sm,
 		RequestHeaderBufferSize:     512,
 		RequestNumHeaderKVCap:       16,
 		ResponseHeaderMinBufferSize: 512,
 	}
-	if err := router.Configure(cfg); err != nil {
+	if err := router.Configure(&sm, cfg); err != nil {
 		t.Fatal(err)
 	}
 	defer router.Shutdown()
@@ -495,7 +491,7 @@ func TestRouterConfigureDuringWorkerHandle(t *testing.T) {
 		for range 20 {
 			// errBusyExchanges is legitimate backpressure: the previous
 			// generation was still serving when the buffers were needed.
-			if err := router.Configure(cfg); err != nil && err != errBusyExchanges {
+			if err := router.Configure(&sm, cfg); err != nil && err != errBusyExchanges {
 				t.Error(err)
 				return
 			}

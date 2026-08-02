@@ -252,12 +252,11 @@ func run() (err error) {
 	server.handle("GET /stats", server.stats)
 
 	var router httphi.Router
-	err = router.Configure(httphi.RouterConfig{
+	err = router.Configure(&server.mux, httphi.RouterConfig{
 		FixedNumGoroutines:          numWorkers,
 		RequestHeaderBufferSize:     requestHeaderBuffer,
 		ResponseHeaderMinBufferSize: responseHeaderBuffer,
 		RequestNumHeaderKVCap:       numHeaderFields,
-		Mux:                         &server.mux,
 		Logger:                      slog.Default(),
 	})
 	if err != nil {

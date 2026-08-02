@@ -462,6 +462,12 @@ type pairKV struct {
 	value view // value start >0 means value is present.
 }
 
+// SizeKV is the heap cost of a single key/value field slot, as reserved by the
+// numHeaderCapacity argument to [HeaderV1.Reset] and by [Form.Reset]. Callers
+// budgeting a fixed memory pool up front, such as a Router sizing its
+// exchanges, multiply it by the pair capacity to account the field table.
+const SizeKV = int(unsafe.Sizeof(pairKV{}))
+
 // isValid is for stores parsed in place, where offset 0 is the first key so
 // only length can signal presence. Empty keys are valid: see valueless cookies.
 func (pair pairKV) isValid() bool {

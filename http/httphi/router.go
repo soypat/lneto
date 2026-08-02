@@ -58,6 +58,7 @@ type Router struct {
 	mux             Mux
 
 	globbuf  []byte
+	globpath []PathValue
 	exchs    []Exchange
 	freeList *Exchange
 
@@ -87,37 +88,19 @@ type RouterConfig struct {
 	// Required [>0] request header key/value pairs to parse before failing with
 	// [StatusRequestHeaderFieldsTooLarge].
 	RequestNumHeaderKVCap int
-
 	// Optional [any] normalization of response header field keys as they are
 	// staged, i.e: "content-type" becomes "Content-Type".
 	NormalizeOutgoingKeys bool
-
-	// Required [non-nil] resolver of each request's method and path to the handler
-	// serving it. Routes must be registered before Configure, see [Mux.MaxPathValues].
-	Mux Mux
 	// Optional [nil disables] sink for failed exchanges.
 	Logger *slog.Logger
 }
-
-const (
-	// minRequestHeaderBuffer is the smallest request buffer [httpraw.Header]
-	// accepts with buffer growth disabled, which is how exchanges are configured.
-	minRequestHeaderBuffer = 32
-	// minResponseHeaderBuffer is the room [Exchange.FlushHeader] needs for the
-	// CRLF closing the header block, written even when no field was staged.
-	minResponseHeaderBuffer = len("\r\n")
-	// maxExchangeBuffer bounds an exchange's whole buffer: [Exchange] indexes it
-	// with uint16 offsets, so a larger one would be addressed truncated.
-	maxExchangeBuffer = math.MaxUint16
-)
 
 // Validate returns a non-nil error if the configuration cannot be used to
 // configure a [Router].
 func (cfg RouterConfig) Validate() error {
 	workerMode := cfg.workerMode()
 	switch {
-	case cfg.Mux == nil,
-		!workerMode && cfg.FixedNumGoroutines != -1,
+	case !workerMode && cfg.FixedNumGoroutines != -1,
 		cfg.RequestNumHeaderKVCap <= 0,
 		cfg.RequestHeaderBufferSize < minRequestHeaderBuffer,
 		cfg.ResponseHeaderMinBufferSize < minResponseHeaderBuffer,
@@ -167,7 +150,7 @@ func (r *Router) shutdownLocked() {
 // Configure may be called on a serving router, but since the exchange buffers
 // are reused it waits for connections in flight to finish and fails with a
 // non-nil error rather than reconfigure buffers still being served from.
-func (r *Router) Configure(cfg RouterConfig) error {
+func (r *Router) Configure(mux Mux, cfg RouterConfig) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -181,9 +164,9 @@ func (r *Router) Configure(cfg RouterConfig) error {
 	r.reqNumHeaderCap = cfg.RequestNumHeaderKVCap
 	r.reqBuf = cfg.RequestHeaderBufferSize
 	r.respBuf = cfg.ResponseHeaderMinBufferSize
-	r.mux = cfg.Mux
+	r.mux = mux
 	r.log = cfg.Logger
-	maxPathValues := cfg.Mux.MaxPathValues()
+	maxPathValues := mux.MaxPathValues()
 	if maxPathValues < 0 {
 		return errors.New("Mux paths must be registered before configuring Router")
 	}
@@ -211,20 +194,20 @@ func (r *Router) Configure(cfg RouterConfig) error {
 		r.exchs = r.exchs[:numgoro]
 		rawBuflen := cfg.RequestHeaderBufferSize + cfg.ResponseHeaderMinBufferSize
 		internal.SliceReuse(&r.globbuf, numgoro*rawBuflen)
+		internal.SliceReuse(&r.globpath, numgoro*maxPathValues)
 
 		for i := range numgoro {
-			// TODO exchange buffer alloc
 			goff := i * rawBuflen
-			// r.globbuf[goff:goff+rawBuflen], cfg.RequestHeaderBufferSize, cfg.RequestNumHeaderCap, cfg.NormalizeOutgoingKeys
+			poff := i * maxPathValues
 			r.exchs[i].Configure(ExchangeConfig{
 				RawBuf:                r.globbuf[goff : goff+rawBuflen],
 				RequestBufferLim:      cfg.RequestHeaderBufferSize,
 				NumHeaderKVCap:        cfg.RequestNumHeaderKVCap,
 				NormalizeOutgoingKeys: cfg.NormalizeOutgoingKeys,
 				NoRequestBufferGrowth: true, // Hard memory limit.
-				MaxPathValues:         maxPathValues,
+				PathValuesBuf:         r.globpath[poff : poff+maxPathValues],
 			})
-			go r.goroWorker(gen, jobqueue, cfg.Mux)
+			go r.goroWorker(gen, jobqueue, mux)
 		}
 		r.pendingConns = jobqueue
 		r.numGoro = numgoro
@@ -388,7 +371,7 @@ func (r *Router) getExchLocked(conn conn) (exch *Exchange) {
 			NumHeaderKVCap:        r.reqNumHeaderCap,
 			NormalizeOutgoingKeys: r.normalizeKeys,
 			NoRequestBufferGrowth: true,
-			MaxPathValues:         r.maxPathValues,
+			PathValuesBuf:         make([]PathValue, r.maxPathValues),
 		})
 		exch.Acquire(conn) // Fresh exchange, CAS cannot fail.
 		return exch

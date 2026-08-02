@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"log/slog"
 	"net"
 	"os"
 
@@ -15,23 +14,15 @@ import (
 // ExampleRouter_linux goes over how to setup a linux server using raw linux connections.
 // See [ExampleMuxSlice_query_forms_multipart] on how to define handlers for common HTTP processing.
 func ExampleRouter() {
-	// Chrome tends to send ~700 bytes on a typical landing page request.
-	const requestBuffer = 1024
-	const numHeaderKV = requestBuffer / 32 //
+	const numWorkers = 8
+	const memoryPerConn = 2048
 	var mux httphi.MuxSlice
 	mux.Handle("GET /", func(ex *httphi.Exchange) {
 		ex.WriteBody([]byte("hello world"))
 	})
 	var router httphi.Router
-	err := router.Configure(httphi.RouterConfig{
-		FixedNumGoroutines:          -1, // Unbounded goroutines and allocations.
-		RequestHeaderBufferSize:     requestBuffer,
-		ResponseHeaderMinBufferSize: 32, // Shared buffer with Request, not strictly necessary, especially if not sending headers.
-		RequestNumHeaderKVCap:       numHeaderKV,
-		NormalizeOutgoingKeys:       true,
-		Mux:                         &mux,
-		Logger:                      slog.Default(),
-	})
+	cfg := httphi.DefaultRouterConfig(numWorkers, memoryPerConn, mux.MaxPathValues())
+	err := router.Configure(&mux, cfg)
 	if err != nil {
 		log.Fatal(err)
 	}

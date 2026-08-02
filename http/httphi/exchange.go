@@ -75,10 +75,8 @@ type ExchangeConfig struct {
 	// Optional [any] cap holding the request header to RequestBufferLim rather than
 	// growing it. A header outgrowing it is answered 431, see [httpraw.ErrBufferExhausted].
 	NoRequestBufferGrowth bool
-	// Conditional [>=the most wildcards any one registered pattern binds] number of
-	// path values bindable, read back with [Exchange.PathValue]. A pattern binding
-	// more never matches, see [SetPathValues]. Zero suits a mux of literal patterns.
-	MaxPathValues int
+	// Conditional [len >=[Mux.MaxPathValues]] written to during [Mux.LookupHandler] in [Handle].
+	PathValuesBuf []PathValue
 }
 
 // HijackRaw is a low-level implementation of http.Hijacker interface.
@@ -124,8 +122,7 @@ func (exch *Exchange) Configure(cfg ExchangeConfig) {
 	exch.reqHdr.Reset(cfg.RawBuf[:0:cfg.RequestBufferLim], cfg.NumHeaderKVCap)
 	exch.reqHdr.ConfigBufferGrowth(!cfg.NoRequestBufferGrowth)
 	exch.normalizeKeys = cfg.NormalizeOutgoingKeys
-	internal.SliceReuse(&exch.pathValues, cfg.MaxPathValues)
-	exch.pathValues = exch.pathValues[:cfg.MaxPathValues]
+	exch.pathValues = cfg.PathValuesBuf
 }
 
 // Acquire claims the exchange for conn and resets it to serve a new request,
