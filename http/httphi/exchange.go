@@ -716,10 +716,10 @@ func (exch *Exchange) ReadMultiparts(dst []MultipartSink, buf []byte, newSink fu
 }
 
 // RequestHeader returns the value of the first request header field matching
-// key, or nil if absent. Key matching is case sensitive.
+// key, or nil if absent. Matching is not case sensitive.
 func (exch *Exchange) RequestHeader(key string) []byte {
 	header := exch.RequestHeaderV1Raw()
-	return header.Get(key)
+	return header.GetFold(key)
 }
 
 // RequestTarget returns the request-target (URI) of the request line, i.e:
