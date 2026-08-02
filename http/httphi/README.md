@@ -22,13 +22,8 @@ mux.Handle("GET /", func(ex *httphi.Exchange) {
 })
 
 var router httphi.Router
-err := router.Configure(httphi.RouterConfig{
-	FixedNumGoroutines:          4, // 4 workers, 4 exchanges, allocated here and never again.
-	RequestHeaderBufferSize:     1024,
-	ResponseHeaderMinBufferSize: 32, // Shares the request buffer.
-	RequestNumHeaderKVCap:       32,
-	Mux:                         &mux,
-})
+cfg := httphi.DefaultRouterConfig(numWorkers, memoryPerConn, mux.MaxPathValues())
+err := router.Configure(&mux, cfg)
 if err != nil {
 	log.Fatal(err)
 }
