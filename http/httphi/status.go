@@ -3,7 +3,7 @@ package httphi
 // StatusText returns a text for the HTTP status code. It returns the empty
 // string if the code is unknown.
 func StatusText(code int) string {
-	switch status(code) {
+	switch code {
 	case StatusContinue:
 		return "Continue"
 	case StatusSwitchingProtocols:
@@ -132,10 +132,6 @@ func StatusText(code int) string {
 		return ""
 	}
 }
-
-const ()
-
-type status int
 
 // HTTP status codes as registered with IANA.
 // See: https://www.iana.org/assignments/http-status-codes/http-status-codes.xhtml
