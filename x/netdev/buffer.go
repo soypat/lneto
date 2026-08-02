@@ -107,9 +107,30 @@ func (bs *bufferSelect) numFree() (numFree int) {
 }
 
 // getRx returns the oldest published Rx frame, or nil if none is pending.
+//
+// The slot scan is not a consistent snapshot: goroPutRx may publish a frame
+// into an already-scanned slot while this scan is in progress. Because the
+// producer publishes frames in seq (arrival) order, any such straggler carries
+// a lower seq than the candidate and must be delivered first to preserve
+// arrival order. A confirming re-scan detects it; the loop retries until no
+// older frame is observed, which terminates because the candidate seq strictly
+// decreases and is bounded below by the true oldest pending frame.
 func (bs *bufferSelect) getRx() []byte {
-	oldest := -1
-	var oldestSeq uint32
+	for {
+		oldest, oldestSeq := bs.scanOldest()
+		if oldest < 0 {
+			return nil
+		}
+		if !bs.hasPendingOlderThan(oldestSeq) {
+			return bs.bufs[oldest].buf[:bs.bufs[oldest].lenAcquire.Load()]
+		}
+	}
+}
+
+// scanOldest returns the index and seq of the pending Rx frame with the lowest
+// arrival seq, or -1 if none is pending.
+func (bs *bufferSelect) scanOldest() (oldest int, oldestSeq uint32) {
+	oldest = -1
 	for i := range bs.bufs {
 		n := bs.bufs[i].lenAcquire.Load()
 		if n > 0 && bs.bufs[i].isRx.Load() &&
@@ -118,10 +139,19 @@ func (bs *bufferSelect) getRx() []byte {
 			oldestSeq = bs.bufs[i].seq
 		}
 	}
-	if oldest < 0 {
-		return nil
+	return oldest, oldestSeq
+}
+
+// hasPendingOlderThan reports whether any pending Rx frame has a seq strictly
+// less than seq, i.e. a frame that should be delivered before it.
+func (bs *bufferSelect) hasPendingOlderThan(seq uint32) bool {
+	for i := range bs.bufs {
+		n := bs.bufs[i].lenAcquire.Load()
+		if n > 0 && bs.bufs[i].isRx.Load() && lessThan(bs.bufs[i].seq, seq) {
+			return true
+		}
 	}
-	return bs.bufs[oldest].buf[:bs.bufs[oldest].lenAcquire.Load()]
+	return false
 }
 
 func (bs *bufferSelect) release(buf []byte) {
