@@ -167,27 +167,20 @@ func (exch *Exchange) Release() {
 // Does not return the buffer used for the response first line so can be safely
 // written to and used without modifying the staged response first line.
 //
-// Staging headers will write to this buffer so use mindfully.
 // To access only the request header buffer portion use [httpraw.HeaderV1.BufferRaw] limited
 // to [httpraw.HeaderV1.BufferParsed] as returned by [Exchange.requestHeaderRaw].
-// Writing to this section will not change the contents read by [Exchange.ReadBody].
+// Writing to this aforementioned section will not change the contents read by [Exchange.ReadBody].
 //
 // In [Router] context, the size of this buffer is influenced directly by [RouterConfig] HeaderBufferSize fields.
 func (exch *Exchange) UnsafeRawBuffer() []byte { return exch.rawbuf }
 
-// RequestHeaderV1Raw returns the parsed request header for access beyond the
-// Request* methods, such as [httpraw.HeaderV1.ForEach]. Valid until the exchange
-// is released, and writing to it corrupts the response.
+// RequestHeaderV1Raw returns the internal [Exchange] data structure used for HTTP/1.x requests.
 func (exch *Exchange) RequestHeaderV1Raw() *httpraw.HeaderV1 { return &exch.reqHdr }
 
 // StageHeader stages a response header field, written on the first
 // [Exchange.FlushHeader], [Exchange.WriteHeader] or [Exchange.WriteBody].
 // Returns false and drops the field if the response buffer cannot fit it.
-// Has no effect once the header has been written.
 func (exch *Exchange) StageHeader(key, value string) (enoughMemory bool) {
-	if exch.headerWritten {
-		return false
-	}
 	off := int(exch.respHeaderOff) + int(exch.respHeaderLen)
 	free := len(exch.rawbuf) - off
 	// Field costs key+':'+value+CRLF, plus the CRLF [Exchange.FlushHeader]
@@ -227,7 +220,7 @@ func (exch *Exchange) StageHeaderInt(key string, value int64) (enoughMemory bool
 // base must be in the range 10..36; lower bases are dropped, no HTTP header
 // field value is written below base 10.
 func (exch *Exchange) StageHeaderIntBase(key string, value int64, base int) (enoughMemory bool) {
-	if exch.headerWritten || base < 10 || base > 36 {
+	if base < 10 || base > 36 {
 		return false
 	}
 	off := int(exch.respHeaderOff) + int(exch.respHeaderLen)
@@ -252,9 +245,9 @@ func (exch *Exchange) StageHeaderIntBase(key string, value int64, base int) (eno
 
 // StageStatus prepares the status line for the given code without writing
 // it, i.e: "HTTP/1.1 404 Not Found". Codes with no [StatusText] get an empty
-// reason phrase. Has no effect once the header has been written.
+// reason phrase.
 func (exch *Exchange) StageStatus(code int) {
-	if code >= 1000 || exch.headerWritten {
+	if code >= 1000 {
 		return
 	} else if code == 200 {
 		// Common case.
@@ -275,11 +268,8 @@ func (exch *Exchange) StageStatus(code int) {
 // WriteHeader sends the status line for code along with the staged header
 // fields. Only the first call reaches the wire, as in http.ResponseWriter.
 func (exch *Exchange) WriteHeader(code int) (n int, err error) {
-	if !exch.headerWritten {
-		exch.StageStatus(code)
-		n, err = exch.FlushHeader()
-	}
-	return n, err
+	exch.StageStatus(code)
+	return exch.FlushHeader()
 }
 
 // Respond writes a complete response in one call: Content-Type, a Content-Length
