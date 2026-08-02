@@ -312,7 +312,7 @@ type httpServer struct {
 func (sv *httpServer) handle(pattern string, handler httphi.HandlerFunc) {
 	sv.mux.Handle(pattern, func(exch *httphi.Exchange) {
 		sv.served.Add(1)
-		fmt.Printf("< %s %s\n", exch.RequestMethodRaw(), exch.RequestTarget())
+		fmt.Printf("< %s %s\n", exch.RequestMethodBytes(), exch.RequestTarget())
 		handler(exch)
 	})
 }

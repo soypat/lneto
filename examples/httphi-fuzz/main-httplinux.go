@@ -425,7 +425,7 @@ func (sv *Server) upload(exch *httphi.Exchange) {
 func (sv *Server) echo(exch *httphi.Exchange) {
 	s := sv.acquireScratch()
 	defer sv.releaseScratch(s)
-	body := append(s.out[:0], exch.RequestMethodRaw()...)
+	body := append(s.out[:0], exch.RequestMethodBytes()...)
 	body = append(body, ' ')
 	body = append(body, exch.RequestTarget()...)
 	body = append(body, '\n')

@@ -252,7 +252,7 @@ func (sm *MuxSlice) Reset(capacity int) {
 // Every method this package does not name is [MethUnknown], so a request with an
 // extension method matches a bare-path registration and any registration naming
 // an extension method, whichever it names. Tell PROPFIND from MKCOL inside the
-// handler with [Exchange.RequestMethodRaw].
+// handler with [Exchange.RequestMethodBytes].
 func (sm *MuxSlice) LookupHandler(method Method, path []byte, dstPathVals []PathValue) (matched string, _ HandlerFunc) {
 	best := -1
 	bestSpec := 0
@@ -423,9 +423,12 @@ func hasLowerASCII(s string) bool {
 }
 
 // Method is a HTTP request method, parsed by [MethodFrom].
+// Method can only take standardized values and is set to [MethUnknown] for non-standard methods.
 type Method uint8
 
 const (
+	// MethUndefined returned by [MethodFrom] on an empty/missing method.
+	// Used by [MuxSlice] to denote an unset method kind for a request pattern.
 	MethUndefined Method = iota // undefined
 	MethGet                     // GET
 	// lol.
@@ -438,6 +441,7 @@ const (
 	MethConnect // CONNECT
 	MethOptions // OPTIONS
 	MethTrace   // TRACE
+	// MethUnknown returned by [MethodFrom] on an non-standard method kind i.e: "get" and "FROBNICATE".
 	MethUnknown // unknown
 )
 
@@ -475,9 +479,6 @@ func MethodFrom(meth string) (res Method) {
 
 // MethodFromBytes is a [MethodFrom] wrapper with bytes argument instead of string.
 func MethodFromBytes(meth []byte) (res Method) {
-	if len(meth) == 0 {
-		return MethUndefined
-	}
 	return MethodFrom(b2s(meth))
 }
 

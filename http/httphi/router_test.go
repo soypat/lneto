@@ -197,7 +197,7 @@ func TestRouterRequestVisibleToHandler(t *testing.T) {
 	var gotMethod, gotURI, gotHost string
 	var gotMethodEnum Method
 	sm.Handle("GET /index.html", func(ex *Exchange) {
-		gotMethod = string(ex.RequestMethodRaw())
+		gotMethod = string(ex.RequestMethodBytes())
 		gotMethodEnum = ex.RequestMethod()
 		gotURI = string(ex.RequestTarget())
 		gotHost = string(ex.RequestHeader("Host"))

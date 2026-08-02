@@ -484,7 +484,7 @@ func (exch *Exchange) RequestParseCookie(dst *httpraw.Cookie, key string) error 
 func (exch *Exchange) RequestContentType() []byte {
 	// Folded: field names are case insensitive and HTTP/2 mandates lowercase, so
 	// a proxy translating h2 to h1 sends "content-type", RFC 9110 5.1.
-	return exch.RequestHeaderV1Raw().GetFold("Content-Type")
+	return exch.RequestHeader("Content-Type")
 }
 
 // RequestContentLength returns the body length declared by the request's
@@ -725,7 +725,7 @@ func (exch *Exchange) RequestPath() []byte {
 }
 
 // RequestQuery returns the request's query string as it appears on the wire.
-// Iterate it with [httpraw.NextQueryPair]. See [httpraw.HeaderV1.RequestQuery].
+// Iterate it with [httpraw.NextQueryPair].
 func (exch *Exchange) RequestQuery() []byte {
 	return exch.RequestHeaderV1Raw().RequestQuery()
 }
@@ -815,11 +815,11 @@ func (exch *Exchange) PathValueAppend(dst []byte, key string, decoded bool) ([]b
 
 // RequestMethod returns the request's [Method] enum.
 func (exch *Exchange) RequestMethod() Method {
-	return MethodFromBytes(exch.RequestMethodRaw())
+	return MethodFromBytes(exch.RequestMethodBytes())
 }
 
-// RequestMethod returns the request line's method as a []byte view, i.e: "GET".
-func (exch *Exchange) RequestMethodRaw() []byte {
+// RequestMethodBytes returns the request line's method as a []byte view, i.e: "GET".
+func (exch *Exchange) RequestMethodBytes() []byte {
 	return exch.RequestHeaderV1Raw().Method()
 }
 
