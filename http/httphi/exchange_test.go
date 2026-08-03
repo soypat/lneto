@@ -218,7 +218,7 @@ func TestHandleRequestFields(t *testing.T) {
 			var sm MuxSlice
 			route, _, _ := strings.Cut(test.wantURI, "?") // Mux matches on path.
 			sm.Handle(route, func(ex *Exchange) {
-				gotMethod = string(ex.RequestMethodRaw())
+				gotMethod = string(ex.RequestMethodBytes())
 				gotURI = string(ex.RequestTarget())
 				gotHost = string(ex.RequestHeader("Host"))
 				ex.WriteHeader(200)

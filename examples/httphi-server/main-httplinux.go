@@ -14,15 +14,11 @@ import (
 )
 
 const (
-	kB          = 1 << 10
-	listenPort  = 8080
-	bufferSizes = 2 * kB
-	// A browser sends around twenty header fields; a request carrying more
-	// than this is answered 431 rather than parsed into memory it was not
-	// given. Each field costs 8 bytes of table.
-	numHeaderFields = 32
-	numGoroutines   = 4
-	readTimeout     = 2 * time.Second
+	kB            = 1 << 10
+	listenPort    = 8080
+	connMemoryUse = 4 * kB
+	numGoroutines = 4
+	readTimeout   = 2 * time.Second
 )
 
 func main() {
@@ -45,14 +41,8 @@ func run() error {
 	server.Handle("GET /", server.homepage)
 
 	var router httphi.Router
-	err = router.Configure(httphi.RouterConfig{
-		FixedNumGoroutines:          numGoroutines,
-		RequestHeaderBufferSize:     bufferSizes,
-		RequestNumHeaderKVCap:       numHeaderFields,
-		ResponseHeaderMinBufferSize: bufferSizes,
-		Mux:                         &server.mux,
-		Logger:                      slog.Default(),
-	})
+	cfg := httphi.DefaultRouterConfig(numGoroutines, connMemoryUse, server.mux.MaxPathValues())
+	err = router.Configure(&server.mux, cfg)
 	if err != nil {
 		return err
 	}

@@ -18,14 +18,10 @@ import (
 )
 
 const (
-	kB          = 1 << 10
-	listenPort  = 8080
-	bufferSizes = 2 * kB
-	// A browser sends around twenty header fields; a request carrying more
-	// than this is answered 431 rather than parsed into memory it was not
-	// given. Each field costs 8 bytes of table.
-	numHeaderFields = 32
-	readTimeout     = 2 * time.Second
+	kB            = 1 << 10
+	listenPort    = 8080
+	memoryPerConn = 4 * kB
+	readTimeout   = 2 * time.Second
 )
 
 // Credentials the endpoints check. They are in the source on purpose: this is a
@@ -84,14 +80,8 @@ func run() error {
 	server.Handle("/echo", server.echo) // No method: any method matches.
 
 	var router httphi.Router
-	err = router.Configure(httphi.RouterConfig{
-		FixedNumGoroutines:          *flagThreads,
-		RequestHeaderBufferSize:     bufferSizes,
-		RequestNumHeaderKVCap:       numHeaderFields,
-		ResponseHeaderMinBufferSize: bufferSizes,
-		Mux:                         &server.mux,
-		Logger:                      slog.Default(),
-	})
+	cfg := httphi.DefaultRouterConfig(*flagThreads, memoryPerConn, server.mux.MaxPathValues())
+	err = router.Configure(&server.mux, cfg)
 	if err != nil {
 		return err
 	}
@@ -435,7 +425,7 @@ func (sv *Server) upload(exch *httphi.Exchange) {
 func (sv *Server) echo(exch *httphi.Exchange) {
 	s := sv.acquireScratch()
 	defer sv.releaseScratch(s)
-	body := append(s.out[:0], exch.RequestMethodRaw()...)
+	body := append(s.out[:0], exch.RequestMethodBytes()...)
 	body = append(body, ' ')
 	body = append(body, exch.RequestTarget()...)
 	body = append(body, '\n')

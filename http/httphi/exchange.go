@@ -75,10 +75,8 @@ type ExchangeConfig struct {
 	// Optional [any] cap holding the request header to RequestBufferLim rather than
 	// growing it. A header outgrowing it is answered 431, see [httpraw.ErrBufferExhausted].
 	NoRequestBufferGrowth bool
-	// Conditional [>=the most wildcards any one registered pattern binds] number of
-	// path values bindable, read back with [Exchange.PathValue]. A pattern binding
-	// more never matches, see [SetPathValues]. Zero suits a mux of literal patterns.
-	MaxPathValues int
+	// Conditional [len >=[Mux.MaxPathValues]] written to during [Mux.LookupHandler] in [Handle].
+	PathValuesBuf []PathValue
 }
 
 // HijackRaw is a low-level implementation of http.Hijacker interface.
@@ -124,8 +122,7 @@ func (exch *Exchange) Configure(cfg ExchangeConfig) {
 	exch.reqHdr.Reset(cfg.RawBuf[:0:cfg.RequestBufferLim], cfg.NumHeaderKVCap)
 	exch.reqHdr.ConfigBufferGrowth(!cfg.NoRequestBufferGrowth)
 	exch.normalizeKeys = cfg.NormalizeOutgoingKeys
-	internal.SliceReuse(&exch.pathValues, cfg.MaxPathValues)
-	exch.pathValues = exch.pathValues[:cfg.MaxPathValues]
+	exch.pathValues = cfg.PathValuesBuf
 }
 
 // Acquire claims the exchange for conn and resets it to serve a new request,
@@ -170,27 +167,20 @@ func (exch *Exchange) Release() {
 // Does not return the buffer used for the response first line so can be safely
 // written to and used without modifying the staged response first line.
 //
-// Staging headers will write to this buffer so use mindfully.
 // To access only the request header buffer portion use [httpraw.HeaderV1.BufferRaw] limited
 // to [httpraw.HeaderV1.BufferParsed] as returned by [Exchange.requestHeaderRaw].
-// Writing to this section will not change the contents read by [Exchange.ReadBody].
+// Writing to this aforementioned section will not change the contents read by [Exchange.ReadBody].
 //
 // In [Router] context, the size of this buffer is influenced directly by [RouterConfig] HeaderBufferSize fields.
 func (exch *Exchange) UnsafeRawBuffer() []byte { return exch.rawbuf }
 
-// RequestHeaderV1Raw returns the parsed request header for access beyond the
-// Request* methods, such as [httpraw.HeaderV1.ForEach]. Valid until the exchange
-// is released, and writing to it corrupts the response.
+// RequestHeaderV1Raw returns the internal [Exchange] data structure used for HTTP/1.x requests.
 func (exch *Exchange) RequestHeaderV1Raw() *httpraw.HeaderV1 { return &exch.reqHdr }
 
 // StageHeader stages a response header field, written on the first
 // [Exchange.FlushHeader], [Exchange.WriteHeader] or [Exchange.WriteBody].
 // Returns false and drops the field if the response buffer cannot fit it.
-// Has no effect once the header has been written.
 func (exch *Exchange) StageHeader(key, value string) (enoughMemory bool) {
-	if exch.headerWritten {
-		return false
-	}
 	off := int(exch.respHeaderOff) + int(exch.respHeaderLen)
 	free := len(exch.rawbuf) - off
 	// Field costs key+':'+value+CRLF, plus the CRLF [Exchange.FlushHeader]
@@ -230,7 +220,7 @@ func (exch *Exchange) StageHeaderInt(key string, value int64) (enoughMemory bool
 // base must be in the range 10..36; lower bases are dropped, no HTTP header
 // field value is written below base 10.
 func (exch *Exchange) StageHeaderIntBase(key string, value int64, base int) (enoughMemory bool) {
-	if exch.headerWritten || base < 10 || base > 36 {
+	if base < 10 || base > 36 {
 		return false
 	}
 	off := int(exch.respHeaderOff) + int(exch.respHeaderLen)
@@ -255,9 +245,9 @@ func (exch *Exchange) StageHeaderIntBase(key string, value int64, base int) (eno
 
 // StageStatus prepares the status line for the given code without writing
 // it, i.e: "HTTP/1.1 404 Not Found". Codes with no [StatusText] get an empty
-// reason phrase. Has no effect once the header has been written.
+// reason phrase.
 func (exch *Exchange) StageStatus(code int) {
-	if code >= 1000 || exch.headerWritten {
+	if code >= 1000 {
 		return
 	} else if code == 200 {
 		// Common case.
@@ -278,11 +268,8 @@ func (exch *Exchange) StageStatus(code int) {
 // WriteHeader sends the status line for code along with the staged header
 // fields. Only the first call reaches the wire, as in http.ResponseWriter.
 func (exch *Exchange) WriteHeader(code int) (n int, err error) {
-	if !exch.headerWritten {
-		exch.StageStatus(code)
-		n, err = exch.FlushHeader()
-	}
-	return n, err
+	exch.StageStatus(code)
+	return exch.FlushHeader()
 }
 
 // Respond writes a complete response in one call: Content-Type, a Content-Length
@@ -497,7 +484,7 @@ func (exch *Exchange) RequestParseCookie(dst *httpraw.Cookie, key string) error 
 func (exch *Exchange) RequestContentType() []byte {
 	// Folded: field names are case insensitive and HTTP/2 mandates lowercase, so
 	// a proxy translating h2 to h1 sends "content-type", RFC 9110 5.1.
-	return exch.RequestHeaderV1Raw().GetFold("Content-Type")
+	return exch.RequestHeader("Content-Type")
 }
 
 // RequestContentLength returns the body length declared by the request's
@@ -719,10 +706,10 @@ func (exch *Exchange) ReadMultiparts(dst []MultipartSink, buf []byte, newSink fu
 }
 
 // RequestHeader returns the value of the first request header field matching
-// key, or nil if absent. Key matching is case sensitive.
+// key, or nil if absent. Matching is not case sensitive.
 func (exch *Exchange) RequestHeader(key string) []byte {
 	header := exch.RequestHeaderV1Raw()
-	return header.Get(key)
+	return header.GetFold(key)
 }
 
 // RequestTarget returns the request-target (URI) of the request line, i.e:
@@ -738,7 +725,7 @@ func (exch *Exchange) RequestPath() []byte {
 }
 
 // RequestQuery returns the request's query string as it appears on the wire.
-// Iterate it with [httpraw.NextQueryPair]. See [httpraw.HeaderV1.RequestQuery].
+// Iterate it with [httpraw.NextQueryPair].
 func (exch *Exchange) RequestQuery() []byte {
 	return exch.RequestHeaderV1Raw().RequestQuery()
 }
@@ -828,11 +815,11 @@ func (exch *Exchange) PathValueAppend(dst []byte, key string, decoded bool) ([]b
 
 // RequestMethod returns the request's [Method] enum.
 func (exch *Exchange) RequestMethod() Method {
-	return MethodFromBytes(exch.RequestMethodRaw())
+	return MethodFromBytes(exch.RequestMethodBytes())
 }
 
-// RequestMethod returns the request line's method as a []byte view, i.e: "GET".
-func (exch *Exchange) RequestMethodRaw() []byte {
+// RequestMethodBytes returns the request line's method as a []byte view, i.e: "GET".
+func (exch *Exchange) RequestMethodBytes() []byte {
 	return exch.RequestHeaderV1Raw().Method()
 }
 

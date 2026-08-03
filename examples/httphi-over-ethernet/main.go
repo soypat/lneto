@@ -38,12 +38,7 @@ var indexhtml string
 // Router memory. The router allocates all of it on Configure and never again,
 // so these are the whole cost of serving HTTP over the stack.
 const (
-	// A browser sends around 700 bytes of header on a landing page request.
-	requestHeaderBuffer = 1024
-	// Response headers reuse whatever the request left unused on top of this,
-	// and the status line does not count towards it.
-	responseHeaderBuffer = 256
-	numHeaderFields      = 16
+	httpConnMemoryUse = 4 * 1024
 	// One exchange is allocated per worker, and a worker holds its exchange for
 	// the whole request, so this is what bounds requests served at once.
 	numWorkers = 2
@@ -252,14 +247,9 @@ func run() (err error) {
 	server.handle("GET /stats", server.stats)
 
 	var router httphi.Router
-	err = router.Configure(httphi.RouterConfig{
-		FixedNumGoroutines:          numWorkers,
-		RequestHeaderBufferSize:     requestHeaderBuffer,
-		ResponseHeaderMinBufferSize: responseHeaderBuffer,
-		RequestNumHeaderKVCap:       numHeaderFields,
-		Mux:                         &server.mux,
-		Logger:                      slog.Default(),
-	})
+	cfg := httphi.DefaultRouterConfig(numWorkers, httpConnMemoryUse, server.mux.MaxPathValues())
+	cfg.Logger = slog.Default()
+	err = router.Configure(&server.mux, cfg)
 	if err != nil {
 		return fmt.Errorf("configuring HTTP router: %w", err)
 	}
@@ -322,7 +312,7 @@ type httpServer struct {
 func (sv *httpServer) handle(pattern string, handler httphi.HandlerFunc) {
 	sv.mux.Handle(pattern, func(exch *httphi.Exchange) {
 		sv.served.Add(1)
-		fmt.Printf("< %s %s\n", exch.RequestMethodRaw(), exch.RequestTarget())
+		fmt.Printf("< %s %s\n", exch.RequestMethodBytes(), exch.RequestTarget())
 		handler(exch)
 	})
 }
