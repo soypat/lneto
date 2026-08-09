@@ -106,6 +106,7 @@ const (
 	ExtMaxFragmentLength          ExtensionType = 1     // max_fragment_length
 	ExtStatusRequest              ExtensionType = 5     // status_request
 	ExtSupportedGroups            ExtensionType = 10    // supported_groups
+	ExtECPointFormats             ExtensionType = 11    // ec_point_formats
 	ExtSignatureAlgorithms        ExtensionType = 13    // signature_algorithms
 	ExtALPN                       ExtensionType = 16    // application_layer_protocol_negotiation
 	ExtSignedCertificateTimestamp ExtensionType = 18    // signed_certificate_timestamp
