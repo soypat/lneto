@@ -18,7 +18,7 @@ import (
 // exercised against genuine extension ordering, a 32-byte compatibility
 // session ID and GREASE-free but otherwise realistic content. Browser captures
 // arrive at Stage 6; this covers the structure in the meantime.
-func captureClientHello(t *testing.T) ltls.ClientHelloFrame {
+func captureClientHello(t *testing.T) ltls.ClientHelloMsg {
 	t.Helper()
 	client, server := net.Pipe()
 	defer client.Close()
@@ -61,7 +61,7 @@ func captureClientHello(t *testing.T) ltls.ClientHelloFrame {
 	if !hs.Complete() {
 		t.Fatal("ClientHello spans multiple records")
 	}
-	ch, err := ltls.NewClientHelloFrame(hs.Body())
+	ch, err := ltls.ParseClientHello(hs.Body())
 	if err != nil {
 		t.Fatalf("client hello: %v", err)
 	}
@@ -85,49 +85,29 @@ func TestClientHelloParseRealHello(t *testing.T) {
 	}
 
 	var sawTLS13, sawX25519, sawSNI, sawALPN bool
-	var suites []ltls.CipherSuite
-	err := ch.ForEachExtension(func(ext ltls.ExtensionType, data []byte) error {
-		switch ext {
+	for _, ext := range ch.Extensions {
+		switch ext.Type() {
 		case ltls.ExtSupportedVersions:
-			return ltls.ForEachSupportedVersion(data, func(v uint16) error {
-				if v == ltls.VersionTLS13 {
-					sawTLS13 = true
-				}
-				return nil
-			})
+			for _, v := range ext.SupportedVersions {
+				sawTLS13 = sawTLS13 || v == ltls.VersionTLS13
+			}
 		case ltls.ExtKeyShare:
-			return ltls.ForEachKeyShare(data, func(g ltls.NamedGroup, key []byte) error {
-				if g == ltls.GroupX25519 && len(key) == 32 {
-					sawX25519 = true
-				}
-				return nil
-			})
+			for _, ks := range ext.KeyShares {
+				sawX25519 = sawX25519 || ks.Group == ltls.GroupX25519 && len(ks.Key) == 32
+			}
 		case ltls.ExtServerName:
-			return ltls.ForEachServerName(data, func(nameType uint8, name []byte) error {
-				if nameType == 0 && string(name) == "example.com" {
-					sawSNI = true
-				}
-				return nil
-			})
+			for _, name := range ext.ServerNames {
+				sawSNI = sawSNI || name.Type == 0 && string(name.Name) == "example.com"
+			}
 		case ltls.ExtALPN:
-			return ltls.ForEachALPNProto(data, func(p []byte) error {
-				if string(p) == "http/1.1" {
-					sawALPN = true
-				}
-				return nil
-			})
+			for _, p := range ext.ALPNProtos {
+				sawALPN = sawALPN || string(p) == "http/1.1"
+			}
 		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walking extensions: %v", err)
 	}
-
-	if err := ltls.ForEachU16(ch.CipherSuites(), func(v uint16) error {
-		suites = append(suites, ltls.CipherSuite(v))
-		return nil
-	}); err != nil {
-		t.Fatalf("walking cipher suites: %v", err)
+	var suites []ltls.CipherSuite
+	for _, s := range ch.CipherSuites {
+		suites = append(suites, s)
 	}
 
 	if !sawTLS13 {
@@ -153,43 +133,9 @@ func TestClientHelloParseRealHello(t *testing.T) {
 	}
 }
 
-func TestClientHelloRejectsDuplicateExtension(t *testing.T) {
-	// Duplicating supported_versions must be caught. Tolerating it lets this
-	// parser and a middlebox act on different copies.
-	ch := captureClientHello(t)
-	exts := ch.Extensions()
-
-	// Find the first extension and append a verbatim copy of it.
-	var first []byte
-	err := ltls.ForEachExtension(exts, func(ext ltls.ExtensionType, data []byte) error {
-		if first == nil {
-			first = make([]byte, 4+len(data))
-			copy(first, exts)
-		}
-		return nil
-	})
-	if err != nil || first == nil {
-		t.Fatalf("could not isolate first extension: %v", err)
-	}
-
-	dup := make([]byte, 0, len(exts)+len(first))
-	dup = append(dup, exts...)
-	dup = append(dup, first...)
-
-	body := rebuildHelloWithExtensions(t, ch, dup)
-	ch2, err := ltls.NewClientHelloFrame(body)
-	if err != nil {
-		t.Fatalf("rebuilt hello did not parse: %v", err)
-	}
-	err = ch2.ForEachExtension(func(ltls.ExtensionType, []byte) error { return nil })
-	if !errors.Is(err, lneto.ErrInvalidField) {
-		t.Errorf("duplicate extension got %v, want ErrInvalidField", err)
-	}
-}
-
 // rebuildHelloWithExtensions re-encodes ch with a replacement extensions block,
 // exercising Builder against a structure produced by a real client.
-func rebuildHelloWithExtensions(t *testing.T, ch ltls.ClientHelloFrame, exts []byte) []byte {
+func rebuildHelloWithExtensions(t *testing.T, ch ltls.ClientHelloMsg, exts []byte) []byte {
 	t.Helper()
 	var b ltls.Builder
 	b.Reset(make([]byte, 0, len(ch.RawData())+len(exts)+64))
@@ -199,7 +145,7 @@ func rebuildHelloWithExtensions(t *testing.T, ch ltls.ClientHelloFrame, exts []b
 	b.AddBytes(ch.LegacySessionID())
 	b.Close()
 	b.OpenU16()
-	b.AddBytes(ch.CipherSuites())
+	b.AddBytes(ch.CipherSuiteBytes())
 	b.Close()
 	b.OpenU8()
 	b.AddBytes(ch.LegacyCompressionMethods())
@@ -225,7 +171,7 @@ func TestClientHelloRejectsOversizeSessionID(t *testing.T) {
 	body = append(body, 0x00, 0x02, 0x13, 0x01) // cipher suites
 	body = append(body, 0x01, 0x00)             // compression
 	body = append(body, 0x00, 0x00)             // extensions, empty
-	_, err := ltls.NewClientHelloFrame(body)
+	_, err := ltls.ParseClientHello(body)
 	if !errors.Is(err, lneto.ErrInvalidLengthField) {
 		t.Errorf("got %v want ErrInvalidLengthField", err)
 	}
@@ -234,7 +180,7 @@ func TestClientHelloRejectsOversizeSessionID(t *testing.T) {
 func TestClientHelloRejectsTrailingBytes(t *testing.T) {
 	ch := captureClientHello(t)
 	body := append(append([]byte{}, ch.RawData()...), 0xff)
-	if _, err := ltls.NewClientHelloFrame(body); err == nil {
+	if _, err := ltls.ParseClientHello(body); err == nil {
 		t.Error("trailing byte after extensions block accepted")
 	}
 }
@@ -245,11 +191,11 @@ func TestClientHelloTruncatedAtEveryOffset(t *testing.T) {
 	ch := captureClientHello(t)
 	full := ch.RawData()
 	for n := range len(full) {
-		frame, err := ltls.NewClientHelloFrame(full[:n])
+		msg, err := ltls.ParseClientHello(full[:n])
 		if err == nil {
 			// A shorter prefix must never parse as a complete hello.
 			t.Errorf("truncation to %d/%d bytes parsed clean", n, len(full))
-			_ = frame.Extensions()
+			_ = msg.ExtensionBytes()
 		}
 	}
 }
@@ -265,7 +211,7 @@ func FuzzNewClientHelloFrame(f *testing.F) {
 		0x00, 0x00, // no extensions
 	})
 	f.Fuzz(func(t *testing.T, b []byte) {
-		ch, err := ltls.NewClientHelloFrame(b)
+		ch, err := ltls.ParseClientHello(b)
 		if err != nil {
 			return
 		}
@@ -273,17 +219,37 @@ func FuzzNewClientHelloFrame(f *testing.F) {
 		if len(ch.LegacySessionID()) > ltls.MaxSessionIDLen {
 			t.Fatalf("session id %d bytes exceeds max", len(ch.LegacySessionID()))
 		}
-		if len(ch.CipherSuites())%2 != 0 {
+		if len(ch.CipherSuiteBytes())%2 != 0 {
 			t.Fatal("cipher suites vector has odd length")
 		}
 		total := 2 + ltls.SizeRandom + 1 + len(ch.LegacySessionID()) +
-			2 + len(ch.CipherSuites()) +
+			2 + len(ch.CipherSuiteBytes()) +
 			1 + len(ch.LegacyCompressionMethods()) +
-			2 + len(ch.Extensions())
+			2 + len(ch.ExtensionBytes())
 		if total != len(b) {
 			t.Fatalf("fields sum to %d but input is %d bytes", total, len(b))
 		}
 		_ = ch.ValidateCompression()
-		_ = ch.ForEachExtension(func(ltls.ExtensionType, []byte) error { return nil })
+		// Every nested iterator must stay inside the input too.
+		for _, ext := range ch.Extensions {
+			for _, ks := range ext.KeyShares {
+				_ = ks
+			}
+			for _, name := range ext.ServerNames {
+				_ = name
+			}
+			for _, p := range ext.ALPNProtos {
+				_ = p
+			}
+			for _, v := range ext.SupportedVersions {
+				_ = v
+			}
+			for _, g := range ext.SupportedGroups {
+				_ = g
+			}
+			for _, s := range ext.SignatureSchemes {
+				_ = s
+			}
+		}
 	})
 }

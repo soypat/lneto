@@ -18,8 +18,8 @@ func buildSupportedVersions(b *tls.Builder) {
 }
 
 func TestBuilderRoundTripThroughParser(t *testing.T) {
-	// Build an extensions block, then walk it back with the parser. Agreement
-	// between the two is the property that matters.
+	// Build a ServerHello extensions block, then walk it back with the parser.
+	// Agreement between the two is the property that matters.
 	var b tls.Builder
 	buf := make([]byte, 64)
 	b.Reset(buf)
@@ -27,11 +27,9 @@ func TestBuilderRoundTripThroughParser(t *testing.T) {
 	buildSupportedVersions(&b)
 	b.AddU16(uint16(tls.ExtKeyShare))
 	b.OpenU16()
-	b.OpenU16() // client_shares
-	b.AddU16(uint16(tls.GroupX25519))
+	b.AddU16(uint16(tls.GroupX25519)) // server form: one entry, no list prefix
 	b.OpenU16()
 	b.AddBytes(make([]byte, 8))
-	b.Close()
 	b.Close()
 	b.Close()
 	b.Close()
@@ -40,7 +38,7 @@ func TestBuilderRoundTripThroughParser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Strip the outer block length the way ClientHelloFrame.Extensions does.
+	// Strip the outer block length the way ServerHelloMsg.ExtensionBytes does.
 	if len(out) < 2 {
 		t.Fatal("output too short")
 	}
@@ -49,21 +47,21 @@ func TestBuilderRoundTripThroughParser(t *testing.T) {
 		t.Fatalf("outer length %d != %d", int(out[0])<<8|int(out[1]), len(exts))
 	}
 
-	var seen []tls.ExtensionType
-	err = tls.ForEachExtension(exts, func(ext tls.ExtensionType, data []byte) error {
-		seen = append(seen, ext)
-		if ext == tls.ExtKeyShare {
-			return tls.ForEachKeyShare(data, func(g tls.NamedGroup, key []byte) error {
-				if g != tls.GroupX25519 || len(key) != 8 {
-					t.Errorf("key share got %v len %d", g, len(key))
-				}
-				return nil
-			})
-		}
-		return nil
-	})
+	list, err := tls.ParseServerExtensions(exts, 0)
 	if err != nil {
 		t.Fatal(err)
+	}
+	var seen []tls.ExtensionType
+	for _, ext := range list.All {
+		seen = append(seen, ext.Type())
+		if ext.Type() != tls.ExtKeyShare {
+			continue
+		}
+		for _, ks := range ext.KeyShares {
+			if ks.Group != tls.GroupX25519 || len(ks.Key) != 8 {
+				t.Errorf("key share got %v len %d", ks.Group, len(ks.Key))
+			}
+		}
 	}
 	if len(seen) != 2 || seen[0] != tls.ExtSupportedVersions || seen[1] != tls.ExtKeyShare {
 		t.Errorf("walked %v", seen)

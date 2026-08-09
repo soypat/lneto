@@ -14,9 +14,26 @@ const SizeRandom = 32
 // compatibility mode and the server must echo it verbatim.
 const MaxSessionIDLen = 32
 
-// ClientHelloFrame provides zero-copy access to a ClientHello body
-// (RFC 8446 4.1.2). The frame wraps the handshake message *body*, that is the
-// bytes returned by [HandshakeFrame.Body], not the handshake header.
+// Span is the position and length of a field within a message body.
+type Span struct {
+	Off int
+	Len int
+}
+
+// HelloSpans locates the fields of a ClientHello or ServerHello body. Packet
+// decoders need a field's wire position, which the slice returning accessors
+// cannot give.
+type HelloSpans struct {
+	Random       Span
+	SessionID    Span
+	CipherSuites Span // ServerHello: the single selected suite.
+	Compression  Span
+	Extensions   Span
+}
+
+// ClientHelloMsg provides zero-copy access to a ClientHello body
+// (RFC 8446 4.1.2), wrapping the handshake message body returned by
+// [HandshakeFrame.Body], not the handshake header.
 //
 //	struct {
 //	    ProtocolVersion legacy_version = 0x0303;
@@ -27,28 +44,30 @@ const MaxSessionIDLen = 32
 //	    Extension extensions<8..2^16-1>;
 //	} ClientHello;
 //
-// Every variable-length field is bounds-checked once by
-// [NewClientHelloFrame], so the accessors cannot slice out of range.
-type ClientHelloFrame struct {
-	buf []byte
-	// Offsets of each variable-length field's contents, resolved once at
-	// construction so accessors stay branch-free.
+// Unlike a [RecordFrame] or [HandshakeFrame], whose fields sit at fixed offsets,
+// a hello's fields are length-prefixed and its extensions may arrive in any
+// order. [ParseClientHello] resolves every offset once so accessors and
+// iterators need no bounds checks and cannot fail.
+type ClientHelloMsg struct {
+	buf  []byte
+	exts ExtensionList
+	// Offsets of each variable-length field's contents, resolved at parse time.
 	sessionIDOff, sessionIDLen int
 	suitesOff, suitesLen       int
 	compOff, compLen           int
-	extsOff, extsLen           int
 }
 
-// NewClientHelloFrame parses the structure of a ClientHello body, validating
-// that every length prefix is consistent with the buffer. It performs no
-// policy checks: version negotiation, cipher suite selection and extension
-// validation are the handshake state machine's job.
+// ParseClientHello parses a ClientHello body, validating that every length
+// prefix is consistent with the buffer, down to the lists inside the extensions
+// this package recognizes. It performs no policy checks: version negotiation,
+// cipher suite selection and extension validation are the handshake state
+// machine's job.
 //
 // Trailing bytes after the extensions block are rejected. A sender and parser
 // that disagree about where a structure ends is the ambiguity that
 // parser-differential attacks are built on.
-func NewClientHelloFrame(body []byte) (ClientHelloFrame, error) {
-	var ch ClientHelloFrame
+func ParseClientHello(body []byte) (ClientHelloMsg, error) {
+	var ch ClientHelloMsg
 	// legacy_version(2) + random(32) + session_id length(1)
 	const fixed = 2 + SizeRandom + 1
 	if len(body) < fixed {
@@ -103,20 +122,23 @@ func NewClientHelloFrame(body []byte) (ClientHelloFrame, error) {
 	} else if extsLen != len(body)-off {
 		return ch, errTrailingBytes
 	}
-	ch.extsOff, ch.extsLen = off, extsLen
-
+	exts, err := ParseClientExtensions(body[off:off+extsLen], off)
+	if err != nil {
+		return ClientHelloMsg{}, err
+	}
+	ch.exts = exts
 	ch.buf = body
 	return ch, nil
 }
 
 // LegacyVersion returns the legacy_version field, which TLS 1.3 pins to
 // 0x0303 regardless of the version actually negotiated.
-func (ch ClientHelloFrame) LegacyVersion() uint16 {
+func (ch ClientHelloMsg) LegacyVersion() uint16 {
 	return binary.BigEndian.Uint16(ch.buf[0:2])
 }
 
 // Random returns the 32-byte client_random.
-func (ch ClientHelloFrame) Random() *[SizeRandom]byte {
+func (ch ClientHelloMsg) Random() *[SizeRandom]byte {
 	return (*[SizeRandom]byte)(ch.buf[2 : 2+SizeRandom])
 }
 
@@ -124,54 +146,67 @@ func (ch ClientHelloFrame) Random() *[SizeRandom]byte {
 // server must echo this verbatim in its ServerHello; a non-empty value means
 // the client is using middlebox compatibility mode and expects a dummy
 // ChangeCipherSpec record.
-func (ch ClientHelloFrame) LegacySessionID() []byte {
+func (ch ClientHelloMsg) LegacySessionID() []byte {
 	return ch.buf[ch.sessionIDOff : ch.sessionIDOff+ch.sessionIDLen]
 }
 
-// CipherSuites returns the cipher_suites vector with its length prefix
-// stripped, ready for [ForEachU16]. The list includes GREASE values.
-func (ch ClientHelloFrame) CipherSuites() []byte {
+// CipherSuites iterates the offered suites in wire order, keyed by each suite's
+// offset within the body. The list includes GREASE values.
+func (ch ClientHelloMsg) CipherSuites(yield func(off int, suite CipherSuite) bool) {
+	suites := ch.CipherSuiteBytes()
+	for off := 0; off+2 <= len(suites); off += 2 {
+		if !yield(ch.suitesOff+off, CipherSuite(binary.BigEndian.Uint16(suites[off:off+2]))) {
+			return
+		}
+	}
+}
+
+// CipherSuiteBytes returns the cipher_suites vector with its length prefix
+// stripped.
+func (ch ClientHelloMsg) CipherSuiteBytes() []byte {
 	return ch.buf[ch.suitesOff : ch.suitesOff+ch.suitesLen]
 }
 
 // LegacyCompressionMethods returns the legacy_compression_methods vector
 // contents. For a TLS 1.3 hello this must be exactly one zero byte; see
-// [ClientHelloFrame.ValidateCompression].
-func (ch ClientHelloFrame) LegacyCompressionMethods() []byte {
+// [ClientHelloMsg.ValidateCompression].
+func (ch ClientHelloMsg) LegacyCompressionMethods() []byte {
 	return ch.buf[ch.compOff : ch.compOff+ch.compLen]
 }
 
-// Extensions returns the extensions block contents with the outer length
-// prefix stripped, ready for [ForEachExtension].
-func (ch ClientHelloFrame) Extensions() []byte {
-	return ch.buf[ch.extsOff : ch.extsOff+ch.extsLen]
+// Extensions iterates this hello's extensions in wire order, keyed by the
+// offset of each extension's data within the body. Duplicates were rejected at
+// parse time, so the walk needs no bookkeeping.
+func (ch ClientHelloMsg) Extensions(yield func(off int, ext ExtensionFrame) bool) {
+	ch.exts.All(yield)
 }
 
-// RawData returns the whole ClientHello body.
-func (ch ClientHelloFrame) RawData() []byte { return ch.buf }
+// ExtensionList returns the validated extensions block, for passing the block
+// itself around rather than ranging over it here.
+func (ch ClientHelloMsg) ExtensionList() ExtensionList { return ch.exts }
 
-// ForEachExtension walks this hello's extensions, rejecting a repeated known
-// extension type with [lneto.ErrInvalidField]. RFC 8446 4.2 forbids duplicates,
-// and tolerating them invites parser-differential attacks in which this parser
-// and a middlebox act on different copies of the same extension.
-//
-// Unknown and GREASE extension types are passed through without duplicate
-// checking, since they are skipped rather than acted upon. Prefer this over
-// the bare [ForEachExtension] when parsing an untrusted hello.
-func (ch ClientHelloFrame) ForEachExtension(fn func(ExtensionType, []byte) error) error {
-	var seen extSeen
-	return ForEachExtension(ch.Extensions(), func(ext ExtensionType, data []byte) error {
-		if seen.mark(ext) {
-			return lneto.ErrInvalidField
-		}
-		return fn(ext, data)
-	})
+// ExtensionBytes returns the extensions block contents with the outer length
+// prefix stripped.
+func (ch ClientHelloMsg) ExtensionBytes() []byte { return ch.exts.Bytes() }
+
+// RawData returns the whole ClientHello body.
+func (ch ClientHelloMsg) RawData() []byte { return ch.buf }
+
+// Spans locates this hello's fields inside [ClientHelloMsg.RawData].
+func (ch ClientHelloMsg) Spans() HelloSpans {
+	return HelloSpans{
+		Random:       Span{Off: 2, Len: SizeRandom},
+		SessionID:    Span{Off: ch.sessionIDOff, Len: ch.sessionIDLen},
+		CipherSuites: Span{Off: ch.suitesOff, Len: ch.suitesLen},
+		Compression:  Span{Off: ch.compOff, Len: ch.compLen},
+		Extensions:   Span{Off: ch.exts.base, Len: len(ch.exts.buf)},
+	}
 }
 
 // ValidateSize adds an error to v if the ClientHello is structurally invalid.
-// Since [NewClientHelloFrame] already rejects every inconsistent length, this
-// only re-checks that the frame was successfully constructed.
-func (ch ClientHelloFrame) ValidateSize(v *lneto.Validator) {
+// Since [ParseClientHello] already rejects every inconsistent length, this only
+// re-checks that the message was successfully parsed.
+func (ch ClientHelloMsg) ValidateSize(v *lneto.Validator) {
 	if ch.buf == nil {
 		v.AddError(lneto.ErrTruncatedFrame)
 	}
@@ -181,8 +216,137 @@ func (ch ClientHelloFrame) ValidateSize(v *lneto.Validator) {
 // the single null method TLS 1.3 mandates (RFC 8446 4.1.2). Anything else must
 // be rejected with an illegal_parameter alert: a client offering real
 // compression methods is either pre-1.3 or attempting a downgrade.
-func (ch ClientHelloFrame) ValidateCompression() bool {
+func (ch ClientHelloMsg) ValidateCompression() bool {
 	return ch.compLen == 1 && ch.buf[ch.compOff] == 0
+}
+
+// ServerHelloMsg provides zero-copy access to a ServerHello body
+// (RFC 8446 4.1.3). Like [ClientHelloMsg] it wraps the handshake message body.
+//
+//	struct {
+//	    ProtocolVersion legacy_version = 0x0303;
+//	    Random random;                              // 32 bytes
+//	    opaque legacy_session_id_echo<0..32>;
+//	    CipherSuite cipher_suite;                   // 2 bytes
+//	    uint8 legacy_compression_method = 0;
+//	    Extension extensions<6..2^16-1>;
+//	} ServerHello;
+//
+// A HelloRetryRequest has this same structure; it is told apart by its random
+// being the special value of RFC 8446 4.1.3, which is policy, not framing.
+type ServerHelloMsg struct {
+	buf                        []byte
+	exts                       ExtensionList
+	sessionIDOff, sessionIDLen int
+	suiteOff                   int
+}
+
+// ParseServerHello parses a ServerHello body. Like [ParseClientHello] it
+// validates framing only, rejects trailing bytes, and validates the lists
+// inside recognized extensions, in their server forms.
+func ParseServerHello(body []byte) (ServerHelloMsg, error) {
+	var sh ServerHelloMsg
+	const fixed = 2 + SizeRandom + 1
+	if len(body) < fixed {
+		return sh, lneto.ErrTruncatedFrame
+	}
+	off := 2 + SizeRandom
+
+	sidLen := int(body[off])
+	off++
+	if sidLen > MaxSessionIDLen {
+		return sh, lneto.ErrInvalidLengthField
+	} else if sidLen > len(body)-off {
+		return sh, lneto.ErrTruncatedFrame
+	}
+	sh.sessionIDOff, sh.sessionIDLen = off, sidLen
+	off += sidLen
+
+	// cipher_suite(2) + legacy_compression_method(1)
+	if len(body)-off < 3 {
+		return sh, lneto.ErrTruncatedFrame
+	}
+	sh.suiteOff = off
+	off += 3
+
+	if len(body)-off < 2 {
+		return sh, lneto.ErrTruncatedFrame
+	}
+	extsLen := int(binary.BigEndian.Uint16(body[off : off+2]))
+	off += 2
+	if extsLen > len(body)-off {
+		return sh, lneto.ErrTruncatedFrame
+	} else if extsLen != len(body)-off {
+		return sh, errTrailingBytes
+	}
+	exts, err := ParseServerExtensions(body[off:off+extsLen], off)
+	if err != nil {
+		return ServerHelloMsg{}, err
+	}
+	sh.exts = exts
+	sh.buf = body
+	return sh, nil
+}
+
+// LegacyVersion returns the legacy_version field, pinned to 0x0303 by TLS 1.3.
+func (sh ServerHelloMsg) LegacyVersion() uint16 {
+	return binary.BigEndian.Uint16(sh.buf[0:2])
+}
+
+// Random returns the 32-byte server_random.
+func (sh ServerHelloMsg) Random() *[SizeRandom]byte {
+	return (*[SizeRandom]byte)(sh.buf[2 : 2+SizeRandom])
+}
+
+// LegacySessionIDEcho returns the client's legacy_session_id as echoed back. A
+// client in middlebox compatibility mode requires it to match what it sent.
+func (sh ServerHelloMsg) LegacySessionIDEcho() []byte {
+	return sh.buf[sh.sessionIDOff : sh.sessionIDOff+sh.sessionIDLen]
+}
+
+// CipherSuite returns the selected cipher suite.
+func (sh ServerHelloMsg) CipherSuite() CipherSuite {
+	return CipherSuite(binary.BigEndian.Uint16(sh.buf[sh.suiteOff : sh.suiteOff+2]))
+}
+
+// LegacyCompressionMethod returns the legacy_compression_method, which TLS 1.3
+// requires to be zero.
+func (sh ServerHelloMsg) LegacyCompressionMethod() uint8 {
+	return sh.buf[sh.suiteOff+2]
+}
+
+// Extensions iterates this hello's extensions in wire order, keyed by the
+// offset of each extension's data within the body.
+func (sh ServerHelloMsg) Extensions(yield func(off int, ext ExtensionFrame) bool) {
+	sh.exts.All(yield)
+}
+
+// ExtensionList returns the validated extensions block.
+func (sh ServerHelloMsg) ExtensionList() ExtensionList { return sh.exts }
+
+// ExtensionBytes returns the extensions block contents with the outer length
+// prefix stripped.
+func (sh ServerHelloMsg) ExtensionBytes() []byte { return sh.exts.Bytes() }
+
+// RawData returns the whole ServerHello body.
+func (sh ServerHelloMsg) RawData() []byte { return sh.buf }
+
+// Spans locates this hello's fields inside [ServerHelloMsg.RawData].
+func (sh ServerHelloMsg) Spans() HelloSpans {
+	return HelloSpans{
+		Random:       Span{Off: 2, Len: SizeRandom},
+		SessionID:    Span{Off: sh.sessionIDOff, Len: sh.sessionIDLen},
+		CipherSuites: Span{Off: sh.suiteOff, Len: 2},
+		Compression:  Span{Off: sh.suiteOff + 2, Len: 1},
+		Extensions:   Span{Off: sh.exts.base, Len: len(sh.exts.buf)},
+	}
+}
+
+// ValidateSize adds an error to v if the ServerHello was not parsed.
+func (sh ServerHelloMsg) ValidateSize(v *lneto.Validator) {
+	if sh.buf == nil {
+		v.AddError(lneto.ErrTruncatedFrame)
+	}
 }
 
 // extSeen tracks which known extension types have already been encountered in
@@ -259,6 +423,8 @@ func extBit(ext ExtensionType) (extSeen, bool) {
 		i = 21
 	case ExtRenegotiationInfo:
 		i = 22
+	case ExtECPointFormats:
+		i = 23
 	default:
 		return 0, false
 	}

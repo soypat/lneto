@@ -200,9 +200,9 @@ func (pc *PacketBreakdown) captureTLSHandshake(dst []Frame, pkt []byte, bitOffse
 		}
 		switch mtype {
 		case tls.HandshakeTypeClientHello:
-			pc.captureTLSHello(finfo, body, true)
+			pc.captureTLSClientHello(finfo, body)
 		case tls.HandshakeTypeServerHello:
-			pc.captureTLSHello(finfo, body, false)
+			pc.captureTLSServerHello(finfo, body)
 		default:
 			if len(body) > 0 {
 				finfo.Fields = append(finfo.Fields, FrameField{
@@ -218,212 +218,190 @@ func (pc *PacketBreakdown) captureTLSHandshake(dst []Frame, pkt []byte, bitOffse
 	return dst
 }
 
-// captureTLSHello appends the fields of a ClientHello (isClient) or ServerHello
-// body to finfo. The two differ only in that the client offers vectors of
-// cipher suites and compression methods where the server names exactly one of
-// each. Offsets are relative to the start of the handshake message, so the
-// handshake header size is added throughout.
-//
-// The walk is deliberately more permissive than [tls.NewClientHelloFrame]: a
-// capture must show what a malformed hello contains, so it reports the fields
-// it did decode and stops at the first inconsistent length instead of
-// discarding the message.
-func (pc *PacketBreakdown) captureTLSHello(finfo *Frame, body []byte, isClient bool) {
-	const hdr = tls.SizeHeaderHandshake
-	const fixed = 2 + tls.SizeRandom + 1 // legacy_version + random + session id length
-	if len(body) < fixed {
-		finfo.Errors = append(finfo.Errors, lneto.ErrTruncatedFrame)
+// captureTLSClientHello appends the fields of a ClientHello body to finfo.
+// Field positions come from the parsed message, so the only arithmetic here is
+// shifting past the handshake header.
+func (pc *PacketBreakdown) captureTLSClientHello(finfo *Frame, body []byte) {
+	msg, err := tls.ParseClientHello(body)
+	if err != nil {
+		appendTLSHelloError(finfo, body, err)
 		return
 	}
+	sp := msg.Spans()
+	appendTLSHelloHead(finfo, sp)
+	pc.appendTLSCipherSuites(finfo, msg, sp.CipherSuites)
 	finfo.Fields = append(finfo.Fields, FrameField{
-		// Pinned to 0x0303 by TLS 1.3 whatever version is really negotiated;
-		// the real version travels in the supported_versions extension.
+		Name:           "compression methods",
+		Class:          FieldClassOptions,
+		FrameBitOffset: helloBitOffset(sp.Compression.Off),
+		BitLength:      sp.Compression.Len * octet,
+		Flags:          FlagLegacy,
+	})
+	pc.appendTLSExtensions(finfo, msg.ExtensionList(), sp.Extensions)
+}
+
+// captureTLSServerHello appends the fields of a ServerHello body to finfo. It
+// differs from the client's in naming one suite and one compression method
+// where the client offers a list of each.
+func (pc *PacketBreakdown) captureTLSServerHello(finfo *Frame, body []byte) {
+	msg, err := tls.ParseServerHello(body)
+	if err != nil {
+		appendTLSHelloError(finfo, body, err)
+		return
+	}
+	sp := msg.Spans()
+	appendTLSHelloHead(finfo, sp)
+	finfo.Fields = append(finfo.Fields, FrameField{
+		Name:           msg.CipherSuite().StringConst(),
+		Class:          FieldClassType,
+		FrameBitOffset: helloBitOffset(sp.CipherSuites.Off),
+		BitLength:      sp.CipherSuites.Len * octet,
+	}, FrameField{
+		Name:           "compression method",
+		Class:          FieldClassOptions,
+		FrameBitOffset: helloBitOffset(sp.Compression.Off),
+		BitLength:      sp.Compression.Len * octet,
+		Flags:          FlagLegacy,
+	})
+	pc.appendTLSExtensions(finfo, msg.ExtensionList(), sp.Extensions)
+}
+
+// helloBitOffset converts an offset within a hello body to one within the
+// handshake message frame.
+func helloBitOffset(bodyOff int) int {
+	return (tls.SizeHeaderHandshake + bodyOff) * octet
+}
+
+// appendTLSHelloHead appends the fields both hellos begin with.
+func appendTLSHelloHead(finfo *Frame, sp tls.HelloSpans) {
+	finfo.Fields = append(finfo.Fields, FrameField{
+		// legacy_version. TLS 1.3 pins it to 0x0303 and carries the real version
+		// in supported_versions.
 		Class:          FieldClassVersion,
-		FrameBitOffset: hdr * octet,
+		FrameBitOffset: helloBitOffset(0),
 		BitLength:      2 * octet,
 		Flags:          FlagLegacy,
 	}, FrameField{
 		Name:           "Random",
 		Class:          FieldClassID,
-		FrameBitOffset: (hdr + 2) * octet,
-		BitLength:      tls.SizeRandom * octet,
+		FrameBitOffset: helloBitOffset(sp.Random.Off),
+		BitLength:      sp.Random.Len * octet,
 	})
-
-	off := 2 + tls.SizeRandom
-	sidLen := int(body[off])
-	off++
-	if sidLen > len(body)-off {
-		finfo.Errors = append(finfo.Errors, lneto.ErrTruncatedFrame)
-		return
-	}
-	if sidLen > 0 {
-		// TLS 1.3 has no session resumption by ID; a non-empty value means
+	if sp.SessionID.Len > 0 {
+		// TLS 1.3 has no resumption by session ID; a non-empty value means
 		// middlebox compatibility mode, echoed verbatim by the server.
 		finfo.Fields = append(finfo.Fields, FrameField{
 			Name:           "Session ID",
 			Class:          FieldClassID,
-			FrameBitOffset: (hdr + off) * octet,
-			BitLength:      sidLen * octet,
+			FrameBitOffset: helloBitOffset(sp.SessionID.Off),
+			BitLength:      sp.SessionID.Len * octet,
 		})
 	}
-	off += sidLen
+}
 
-	if isClient {
-		if len(body)-off < 2 {
-			finfo.Errors = append(finfo.Errors, lneto.ErrTruncatedFrame)
-			return
-		}
-		suitesLen := int(binary.BigEndian.Uint16(body[off:]))
-		off += 2
-		if suitesLen > len(body)-off {
-			finfo.Errors = append(finfo.Errors, lneto.ErrTruncatedFrame)
-			return
-		}
-		pc.appendTLSCipherSuites(finfo, body[off:off+suitesLen], hdr+off)
-		off += suitesLen
-
-		compLen := int(body[off])
-		off++
-		if compLen > len(body)-off {
-			finfo.Errors = append(finfo.Errors, lneto.ErrTruncatedFrame)
-			return
-		}
-		finfo.Fields = append(finfo.Fields, FrameField{
-			Name:           "compression methods",
-			Class:          FieldClassOptions,
-			FrameBitOffset: (hdr + off) * octet,
-			BitLength:      compLen * octet,
-			Flags:          FlagLegacy,
-		})
-		off += compLen
-	} else {
-		if len(body)-off < 3 {
-			finfo.Errors = append(finfo.Errors, lneto.ErrTruncatedFrame)
-			return
-		}
-		suite := tls.CipherSuite(binary.BigEndian.Uint16(body[off:]))
-		finfo.Fields = append(finfo.Fields, FrameField{
-			Name:           suite.StringConst(),
-			Class:          FieldClassType,
-			FrameBitOffset: (hdr + off) * octet,
-			BitLength:      2 * octet,
-		}, FrameField{
-			Name:           "compression method",
-			Class:          FieldClassOptions,
-			FrameBitOffset: (hdr + off + 2) * octet,
-			BitLength:      octet,
-			Flags:          FlagLegacy,
-		})
-		off += 3
-	}
-
-	if len(body)-off < 2 {
-		return // No extensions block. Not a legal 1.3 hello, but not a framing error either.
-	}
-	extsLen := int(binary.BigEndian.Uint16(body[off:]))
-	off += 2
-	if extsLen > len(body)-off {
-		finfo.Errors = append(finfo.Errors, lneto.ErrTruncatedFrame)
-		extsLen = len(body) - off
-	}
-	pc.appendTLSExtensions(finfo, body[off:off+extsLen], hdr+off)
+// appendTLSHelloError reports a hello that did not parse. The parsers reject a
+// whole message on any inconsistent length, which is what makes their iterators
+// error-free, so there are no field offsets to show: the error and the raw bytes
+// are all a capture can say.
+func appendTLSHelloError(finfo *Frame, body []byte, err error) {
+	finfo.Errors = append(finfo.Errors, err)
+	finfo.Fields = append(finfo.Fields, FrameField{
+		Class:          FieldClassPayload,
+		FrameBitOffset: helloBitOffset(0),
+		BitLength:      len(body) * octet,
+	})
 }
 
 // appendTLSCipherSuites appends a cipher_suites container field whose subfields
-// name each offered suite. base is the byte offset of suites within the frame.
-// GREASE values show up as their numeric type, which is what a capture should
-// display: they carry no meaning and are not an error.
-func (pc *PacketBreakdown) appendTLSCipherSuites(finfo *Frame, suites []byte, base int) {
+// name each offered suite. GREASE values show up as such, which is what a
+// capture should display: they carry no meaning and are not an error.
+func (pc *PacketBreakdown) appendTLSCipherSuites(finfo *Frame, msg tls.ClientHelloMsg, sp tls.Span) {
 	// Reclaim from the Fields backing array to reuse its SubFields backing array.
 	sfield := internal.SliceReclaim(&finfo.Fields)
 	*sfield = FrameField{
 		Name:           "cipher suites",
 		Class:          FieldClassOptions,
 		SubFields:      sfield.SubFields[:0],
-		FrameBitOffset: base * octet,
-		BitLength:      len(suites) * octet,
+		FrameBitOffset: helloBitOffset(sp.Off),
+		BitLength:      sp.Len * octet,
 	}
 	if pc.SubfieldLimit <= 0 {
 		return
 	}
-	for off := 0; off+2 <= len(suites); off += 2 {
+	for off, suite := range msg.CipherSuites {
 		if len(sfield.SubFields) >= pc.SubfieldLimit {
 			finfo.Errors = append(finfo.Errors, ErrLimitExceeded)
 			return
 		}
-		suite := tls.CipherSuite(binary.BigEndian.Uint16(suites[off:]))
 		sfield.SubFields = append(sfield.SubFields, FrameField{
 			Name:           suite.StringConst(),
 			Class:          FieldClassType,
-			FrameBitOffset: (base + off) * octet,
+			FrameBitOffset: helloBitOffset(off),
 			BitLength:      2 * octet,
 		})
 	}
 }
 
 // appendTLSExtensions appends an extensions container field whose subfields are
-// the individual extensions. base is the byte offset of exts within the frame.
-func (pc *PacketBreakdown) appendTLSExtensions(finfo *Frame, exts []byte, base int) {
+// the individual extensions.
+func (pc *PacketBreakdown) appendTLSExtensions(finfo *Frame, exts tls.ExtensionList, sp tls.Span) {
 	extfield := internal.SliceReclaim(&finfo.Fields)
 	*extfield = FrameField{
 		Name:           "extensions",
 		Class:          FieldClassOptions,
 		SubFields:      extfield.SubFields[:0],
-		FrameBitOffset: base * octet,
-		BitLength:      len(exts) * octet,
+		FrameBitOffset: helloBitOffset(sp.Off),
+		BitLength:      sp.Len * octet,
 	}
 	if pc.SubfieldLimit <= 0 {
 		return
 	}
-	for off := 0; off+4 <= len(exts); {
-		ext := tls.ExtensionType(binary.BigEndian.Uint16(exts[off:]))
-		n := int(binary.BigEndian.Uint16(exts[off+2:]))
-		off += 4
-		if n > len(exts)-off {
-			finfo.Errors = append(finfo.Errors, lneto.ErrTruncatedFrame)
-			return
-		}
+	for off, ext := range exts.All {
 		if len(extfield.SubFields) >= pc.SubfieldLimit {
 			finfo.Errors = append(finfo.Errors, ErrLimitExceeded)
 			return
 		}
-		extfield.SubFields = append(extfield.SubFields, tlsExtensionField(ext, exts[off:off+n], base+off))
-		off += n
+		extfield.SubFields = append(extfield.SubFields, tlsExtensionField(ext, off))
 	}
 }
 
 // tlsExtensionField describes a single hello extension. Extensions carrying a
-// human readable value point at that value instead of at the whole extension
-// body, and the bulky opaque ones are classed as payload so that a
+// human readable value point at that value, located by the extension's own
+// iterators, and the bulky opaque ones are classed as payload so that a
 // [Formatter.FilterClasses] can drop them without losing the rest of the hello.
-func tlsExtensionField(ext tls.ExtensionType, data []byte, base int) FrameField {
+func tlsExtensionField(ext tls.ExtensionFrame, dataOff int) FrameField {
 	field := FrameField{
-		Name:           ext.StringConst(),
+		Name:           ext.Type().StringConst(),
 		Class:          FieldClassOptions,
-		FrameBitOffset: base * octet,
-		BitLength:      len(data) * octet,
+		FrameBitOffset: helloBitOffset(dataOff),
+		BitLength:      len(ext.Data()) * octet,
 	}
-	switch ext {
+	switch ext.Type() {
 	case tls.ExtServerName:
-		// server_name_list(2) + name_type(1) + HostName length(2), then the name.
-		// Only host_name(0) is defined, and no client has ever sent a second entry.
-		const nameOff = 5
-		if len(data) >= nameOff && data[2] == 0 {
-			n := int(binary.BigEndian.Uint16(data[3:5]))
-			if n <= len(data)-nameOff {
-				field.Class = FieldClassText
-				field.FrameBitOffset = (base + nameOff) * octet
-				field.BitLength = n * octet
+		for off, name := range ext.ServerNames {
+			if name.Type != 0 {
+				continue // Only host_name is defined.
 			}
+			field.Class = FieldClassText
+			field.FrameBitOffset = helloBitOffset(off)
+			field.BitLength = len(name.Name) * octet
+			break
 		}
 
 	case tls.ExtALPN:
-		// Each protocol name is length prefixed. Quoting the whole list keeps
-		// every name visible, with the length bytes showing up as escapes.
-		if len(data) >= 2 {
+		// Span the first name through the last so every offered protocol stays
+		// visible; the length bytes between them show up as escapes.
+		first, end := -1, 0
+		for off, proto := range ext.ALPNProtos {
+			if first < 0 {
+				first = off
+			}
+			end = off + len(proto)
+		}
+		if first >= 0 {
 			field.Class = FieldClassText
-			field.FrameBitOffset = (base + 2) * octet
-			field.BitLength = (len(data) - 2) * octet
+			field.FrameBitOffset = helloBitOffset(first)
+			field.BitLength = (end - first) * octet
 		}
 
 	case tls.ExtKeyShare, tls.ExtPreSharedKey, tls.ExtPadding, tls.ExtSessionTicket,
