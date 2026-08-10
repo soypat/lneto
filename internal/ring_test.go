@@ -661,3 +661,40 @@ func TestRingPeekWriteRejects(t *testing.T) {
 		t.Error("Commit beyond free must error")
 	}
 }
+
+// TestRingPeekWriteSurvivesEmptyRead checks bytes staged with [Ring.PeekWrite]
+// survive the ring being read empty, an event the stager does not control.
+func TestRingPeekWriteSurvivesEmptyRead(t *testing.T) {
+	r := &Ring{Buf: make([]byte, 16)}
+	if _, err := r.Write([]byte("AAAA")); err != nil {
+		t.Fatal("first write:", err)
+	}
+	// Stage "CCCC" one 4-byte gap past the write position.
+	if !r.PeekWrite([]byte("CCCC"), 4) {
+		t.Fatal("PeekWrite should fit")
+	}
+	// Drain everything readable: ring goes empty, staged bytes still pending.
+	got := make([]byte, 16)
+	n, err := r.Read(got)
+	if err != nil || string(got[:n]) != "AAAA" {
+		t.Fatalf("drain read %q (%v), want AAAA", got[:n], err)
+	}
+	if !r.IsEmpty() {
+		t.Fatal("ring should be empty after draining")
+	}
+	// Fill the gap and commit the staged tail.
+	if _, err := r.Write([]byte("BBBB")); err != nil {
+		t.Fatal("gap write:", err)
+	}
+	if err := r.Commit(4); err != nil {
+		t.Fatal("commit:", err)
+	}
+	n, err = r.Read(got)
+	if err != nil {
+		t.Fatal("read:", err)
+	}
+	if string(got[:n]) != "BBBBCCCC" {
+		t.Fatalf("read %q, want BBBBCCCC: the staged bytes were committed from the wrong offset", got[:n])
+	}
+	testRingSanity(t, r)
+}
