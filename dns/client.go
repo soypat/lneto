@@ -38,7 +38,7 @@ func (c *Client) StartResolve(localPort, txid uint16, cfg ResolveConfig) error {
 		return lneto.ErrInvalidConfig
 	}
 	c.reset(localPort, txid, CQueryPending, cfg.EnableRecursion)
-	c.msg.LimitResourceDecoding(uint16(nd), uint16(nd), 0, 0)
+	c.msg.LimitResourceDecoding(uint16(nd), 4, 0, 0)
 	c.msg.AddQuestions(cfg.Questions)
 	c.msg.AddAdditionals(cfg.Additional)
 	return nil

@@ -243,76 +243,99 @@ func TestClient_ReceivesDNSResponse(t *testing.T) {
 	const hostname = "example.com"
 	const txid = uint16(12345)
 	const clientPort = uint16(54321)
-	wantIP := [4]byte{93, 184, 216, 34}
-
-	// Build a DNS response message.
-	name := MustNewName(hostname)
-	responseMsg := Message{
-		Questions: []Question{{
-			Name:  name,
-			Type:  TypeA,
-			Class: ClassINET,
-		}},
-		Answers: []Resource{
-			NewResource(name, TypeA, ClassINET, 300, wantIP[:]),
-		},
+	const maxAnswers = 4
+	allIPs := [5][4]byte{
+		{192, 0, 2, 1},
+		{192, 0, 2, 2},
+		{192, 0, 2, 3},
+		{192, 0, 2, 4},
+		{192, 0, 2, 5},
 	}
-
-	// Response flags: QR=1 (response), RD=1, RA=1.
-	responseFlags := HeaderFlags(1<<15 | 1<<8 | 1<<7)
-
-	var buf [512]byte
-	dnsPayload, err := responseMsg.AppendTo(buf[:0], txid, responseFlags)
-	if err != nil {
-		t.Fatal("failed to build DNS response:", err)
+	tests := []struct {
+		name        string
+		responseIPs [][4]byte
+		wantAnswers int
+	}{
+		{name: "single_answer", responseIPs: allIPs[:1], wantAnswers: 1},
+		{name: "multiple_answers", responseIPs: allIPs[:4], wantAnswers: 4},
+		{name: "answer_limit", responseIPs: allIPs[:5], wantAnswers: maxAnswers},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			name := MustNewName(hostname)
+			responseMsg := Message{
+				Questions: []Question{{
+					Name:  name,
+					Type:  TypeA,
+					Class: ClassINET,
+				}},
+				Answers: make([]Resource, len(tt.responseIPs)),
+			}
+			for i := range tt.responseIPs {
+				responseMsg.Answers[i] = NewResource(name, TypeA, ClassINET, 300, tt.responseIPs[i][:])
+			}
 
-	// Set up the DNS client.
-	var client Client
-	client.StartResolve(clientPort, txid, ResolveConfig{
-		Questions: []Question{{
-			Name:  MustNewName(hostname),
-			Type:  TypeA,
-			Class: ClassINET,
-		}},
-		EnableRecursion: true,
-	})
+			// Response flags: QR=1 (response), RD=1, RA=1.
+			responseFlags := HeaderFlags(1<<15 | 1<<8 | 1<<7)
+			var responseBuf [512]byte
+			dnsPayload, err := responseMsg.AppendTo(responseBuf[:0], txid, responseFlags)
+			if err != nil {
+				t.Fatal("failed to build DNS response:", err)
+			}
 
-	// Simulate sending by calling Encapsulate (changes state to AwaitResponse).
-	var dummy [512]byte
-	client.Encapsulate(dummy[:], 0, 0)
+			var client Client
+			err = client.StartResolve(clientPort, txid, ResolveConfig{
+				Questions: []Question{{
+					Name:  name,
+					Type:  TypeA,
+					Class: ClassINET,
+				}},
+				EnableRecursion: true,
+			})
+			if err != nil {
+				t.Fatal("failed to start DNS resolve:", err)
+			}
 
-	// Call Demux with DNS payload.
-	err = client.Demux(dnsPayload, 0)
-	if err != nil {
-		t.Fatal("Client Demux error:", err)
-	}
+			// Encapsulate the query to move the client into the outstanding state.
+			var queryBuf [512]byte
+			_, err = client.Encapsulate(queryBuf[:], 0, 0)
+			if err != nil {
+				t.Fatal("failed to encapsulate DNS query:", err)
+			}
+			if err := client.Demux(dnsPayload, 0); err != nil {
+				t.Fatal("failed to demux DNS response:", err)
+			}
 
-	// Check the client received the answer.
-	var addrs [4]netip.Addr
-	answers, err := client.ResponseAnswerLookup(addrs[:], hostname)
-	if answers != 1 {
-		t.Fatalf("expected 1 answer, got %d", answers)
-	}
-	addr := addrs[0]
-	if !addr.Is4() {
-		t.Fatalf("expected 4 bytes in answer, got %d", addr.BitLen()/8)
-	}
-	if addr.As4() != wantIP {
-		t.Errorf("expected IP %v, got %v", wantIP, addr.String())
-	}
+			var addrs [maxAnswers]netip.Addr
+			answers, err := client.ResponseAnswerLookup(addrs[:], hostname)
+			if err != nil {
+				t.Fatal("failed to look up DNS response answers:", err)
+			}
+			if answers != uint16(tt.wantAnswers) {
+				t.Fatalf("expected %d answers, got %d", tt.wantAnswers, answers)
+			}
+			for i := 0; i < tt.wantAnswers; i++ {
+				addr := addrs[i]
+				if !addr.Is4() {
+					t.Errorf("answer %d: expected IPv4 address, got %v", i, addr)
+					continue
+				}
+				if addr.As4() != tt.responseIPs[i] {
+					t.Errorf("answer %d: expected IP %v, got %v", i, tt.responseIPs[i], addr)
+				}
+			}
 
-	// Test MessageCopyTo as well.
-	var lookup Message
-	lookup.LimitResourceDecoding(1, 1, 0, 0)
-	done, err := client.ResponseCopyTo(&lookup)
-	if err != nil {
-		t.Fatal("MessageCopyTo error:", err)
-	}
-	if !done {
-		t.Fatal("expected done=true")
-	}
-	if len(lookup.Answers) != 1 {
-		t.Fatalf("MessageCopyTo: expected 1 answer, got %d", len(lookup.Answers))
+			var lookup Message
+			done, err := client.ResponseCopyTo(&lookup)
+			if err != nil {
+				t.Fatal("failed to copy DNS response:", err)
+			}
+			if !done {
+				t.Fatal("expected done=true")
+			}
+			if len(lookup.Answers) != tt.wantAnswers {
+				t.Fatalf("expected %d copied answers, got %d", tt.wantAnswers, len(lookup.Answers))
+			}
+		})
 	}
 }
