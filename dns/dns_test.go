@@ -290,7 +290,8 @@ func TestClient_ReceivesDNSResponse(t *testing.T) {
 					Type:  TypeA,
 					Class: ClassINET,
 				}},
-				EnableRecursion: true,
+				EnableRecursion:    true,
+				MaxResponseAnswers: maxAnswers,
 			})
 			if err != nil {
 				t.Fatal("failed to start DNS resolve:", err)

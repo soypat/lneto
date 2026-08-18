@@ -629,7 +629,8 @@ func (s *StackAsync) StartLookupIPType(host string, qtype dns.Type) error {
 		Additional: []dns.Resource{
 			s.ednsopt,
 		},
-		EnableRecursion: true,
+		EnableRecursion:    true,
+		MaxResponseAnswers: uint16(len(s.addrbufnip)),
 	})
 	if err != nil {
 		return err
