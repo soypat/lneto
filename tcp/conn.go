@@ -76,14 +76,14 @@ type ConnConfig struct {
 	// Logger sets the [Conn] logger.
 	// Lower level logging available at [Handler.SetLoggers] via [Conn.InternalHandler].
 	Logger *slog.Logger
-	// LossRecovery is the optional packet-loss recovery algorithm (RTO,
+	// Policy is the optional packet-loss recovery algorithm (RTO,
 	// congestion control, ...) for the connection. If set, Nanotime must also be
 	// set (else Configure returns an error). Leaving it nil disables loss
-	// recovery. See [LossRecovery].
-	LossRecovery LossRecovery
+	// recovery. See [Policy].
+	Policy Policy
 	// Nanotime is the monotonic time source in nanoseconds (the func() int64
-	// convention used across lneto) that drives LossRecovery. It is required when
-	// LossRecovery is set and unused otherwise. The tcp package reads it only to
+	// convention used across lneto) that drives Policy. It is required when
+	// Policy is set and unused otherwise. The tcp package reads it only to
 	// stamp the loss-recovery hooks; it holds no clock itself.
 	Nanotime func() int64
 }
@@ -93,7 +93,7 @@ func (conn *Conn) Configure(config ConnConfig) (err error) {
 	if config.RWBackoff == nil {
 		return lneto.ErrMissingHALConfig
 	}
-	if config.LossRecovery != nil && config.Nanotime == nil {
+	if config.Policy != nil && config.Nanotime == nil {
 		// The tcp package holds no clock: a loss-recovery algorithm cannot run without it.
 		return lneto.ErrInvalidConfig
 	}
@@ -105,7 +105,7 @@ func (conn *Conn) Configure(config ConnConfig) (err error) {
 	}
 	conn._backoff = config.RWBackoff
 	conn.logger.log = config.Logger
-	conn.h.SetLossRecovery(config.LossRecovery, config.Nanotime)
+	conn.h.SetPolicy(config.Policy, config.Nanotime)
 	return nil
 }
 
@@ -137,6 +137,15 @@ func (conn *Conn) RequeueControl() {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	conn.h.RequeueControl()
+}
+
+// NextDeadline returns the monotonic-nanosecond instant at which this connection
+// must next be given a chance to transmit, or 0 when it has no such deadline.
+// See [Handler.NextDeadline].
+func (conn *Conn) NextDeadline() int64 {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.h.NextDeadline()
 }
 
 // RemoteAddr returns the address of the peer Conn is exchanging data with.
@@ -465,7 +474,15 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 		return lneto.ErrMismatch
 	}
 	conn.trace("tcpconn.Recv", slog.Uint64("lport", uint64(conn.h.LocalPort())), slog.Uint64("rport", uint64(conn.h.remotePort)))
-	err = conn.h.Recv(buf[off:])
+	// Congestion is signalled in the IP header, which the handler is not given, so
+	// the codepoint is read here where the header is in hand. An unreadable one is
+	// treated as no mark rather than failing the segment: a lost congestion signal
+	// costs performance, and a dropped segment costs correctness.
+	ecn, ecnErr := internal.GetIPECN(buf[:off])
+	if ecnErr != nil {
+		ecn = ECNNotECT
+	}
+	err = conn.h.RecvWithECN(buf[off:], ecn)
 	if err != nil {
 		return err
 	}
@@ -501,6 +518,14 @@ func (conn *Conn) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 	err = internal.SetIPAddrs(ipFrame, conn.ipID, nil, conn.remoteAddr)
 	if err != nil {
 		return 0, err
+	}
+	// Mark the packet ECN-capable once ECN is negotiated, so a congested router
+	// marks it instead of dropping it. Set after the addresses and before the
+	// stack computes the header checksum.
+	if ecn := conn.h.ECNCodepoint(); ecn != ECNNotECT {
+		if err = internal.SetIPECN(ipFrame, ecn); err != nil {
+			return 0, err
+		}
 	}
 	conn.ipID++
 	return n, nil

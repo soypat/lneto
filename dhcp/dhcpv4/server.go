@@ -13,6 +13,8 @@ import (
 var errOptionNotFit = errors.New("DHCPv4: options dont fit")
 
 type Server struct {
+	lneto.NoDeadline // no time-driven work
+
 	connID       uint64
 	nextAddr     [4]byte
 	subnet       ipv4.Prefix

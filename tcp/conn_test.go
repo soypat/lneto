@@ -168,3 +168,42 @@ func TestConn_ImplementsNetConn(t *testing.T) {
 func backoffYield(consecutiveBackoffs uint) time.Duration {
 	return lneto.BackoffFlagGosched
 }
+
+// TestConn_NextDeadline verifies the connection reports the transmit deadline of
+// its loss-recovery policy, and reports none when it has no policy. This is the
+// leaf of the deadline aggregation an embedder walks to decide when it must next
+// give the stack a chance to transmit.
+func TestConn_NextDeadline(t *testing.T) {
+	conn := newConfiguredConn(t)
+	if got := conn.NextDeadline(); got != 0 {
+		t.Errorf("NextDeadline=%d without a policy, want 0", got)
+	}
+
+	const deadline = int64(12345)
+	var conn2 Conn
+	err := conn2.Configure(ConnConfig{
+		RxBuf:             make([]byte, 512),
+		TxBuf:             make([]byte, 512),
+		TxPacketQueueSize: 4,
+		RWBackoff:         backoffYield,
+		Policy:            fixedDeadlineLoss(deadline),
+		Nanotime:          func() int64 { return 1 },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := conn2.NextDeadline(); got != deadline {
+		t.Errorf("NextDeadline=%d, want the policy's %d", got, deadline)
+	}
+}
+
+// fixedDeadlineLoss is a Policy that only ever reports one deadline.
+type fixedDeadlineLoss int64
+
+func (fixedDeadlineLoss) Reset()                            {}
+func (d fixedDeadlineLoss) NextDeadline() int64             { return int64(d) }
+func (fixedDeadlineLoss) PreRx(RxMeta) RxDirective          { return RxDirective{Keep: true} }
+func (fixedDeadlineLoss) PreTx(TxIntent) TxDirective        { return TxDirective{} }
+func (fixedDeadlineLoss) WriteOptions(TxPlan, []byte) uint8 { return 0 }
+func (fixedDeadlineLoss) PostTx(Segment, int64)             {}
+func (fixedDeadlineLoss) PostRx(RxEvent)                    {}

@@ -82,7 +82,7 @@ func (op OptionCodec) PutOption16(dst []byte, kind OptionKind, v uint16) (int, e
 }
 
 func (op OptionCodec) PutOption32(dst []byte, kind OptionKind, v uint32) (int, error) {
-	return op.PutOption(dst, kind, byte(v>>24), byte(v>>16), byte(v>>7), byte(v))
+	return op.PutOption(dst, kind, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
 }
 
 func (op OptionCodec) PutOption(dst []byte, kind OptionKind, data ...byte) (int, error) {

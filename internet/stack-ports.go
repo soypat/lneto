@@ -50,6 +50,10 @@ func (ps *StackPorts) Protocol() uint64 { return uint64(ps.protocol) }
 
 func (ps *StackPorts) ConnectionID() *uint64 { return &ps.connID }
 
+// NextDeadline returns the earliest deadline of the registered ports, or 0 when
+// none has one. It implements [lneto.StackNode].
+func (ps *StackPorts) NextDeadline() int64 { return ps.handlers.nextDeadline() }
+
 func (ps *StackPorts) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (n int, err error) {
 	if int(ps.dstPortOff)+offsetToFrame+2 > len(carrierData) {
 		return 0, io.ErrShortBuffer
@@ -102,6 +106,10 @@ func (ps *StackPorts) Register(h lneto.StackNode) error {
 type StackPortsMACFiltered struct {
 	sp StackPorts
 }
+
+// NextDeadline returns the earliest deadline of the registered ports, or 0 when
+// none has one. It implements [lneto.StackNode].
+func (mfsp *StackPortsMACFiltered) NextDeadline() int64 { return mfsp.sp.NextDeadline() }
 
 func (mfsp *StackPortsMACFiltered) RegisterMACFiltered(h lneto.StackNode, macAddr []byte) error {
 	// TODO(soypat): We can likely constrain memory and the slice lifetime if StackPortsMACFiltered owns it

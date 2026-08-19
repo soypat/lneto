@@ -21,6 +21,7 @@ var (
 	errInvalidState              = errors.New("invalid state")
 	errConnNotExist              = errors.New("connection does not exist")
 	errConnectionClosing         = errors.New("connection closing")
+	errOptionOverflow            = errors.New("loss recovery wrote more TCP options than the space offered")
 	errExpectedSYN               = errors.New("seqs:expected SYN")
 	errBadSegack                 = errors.New("seqs:bad segack")
 	errFinwaitExpectedACK        = errors.New("seqs:finwait1 expected ACK")
@@ -69,7 +70,7 @@ func (seg *Segment) Last() Value {
 }
 
 func (seg Segment) isFirstSYN() bool {
-	return seg.Flags == FlagSYN && seg.ACK == 0 && seg.DATALEN == 0 && seg.WND > 0
+	return seg.Flags&^flagECN == FlagSYN && seg.ACK == 0 && seg.DATALEN == 0 && seg.WND > 0
 }
 
 func (seg Segment) String() string {
@@ -164,6 +165,13 @@ const (
 	FlagCWR                   // FlagCWR - Congestion Window Reduced.
 	FlagNS                    // FlagNS  - Nonce Sum flag (see RFC 3540).
 )
+
+// flagECN are the flags RFC 3168 uses to negotiate ECN and to signal congestion.
+// They ride on segments whose control flags are otherwise compared exactly — an
+// ECN-setup SYN is SYN|ECE|CWR and an ECN-setup SYN-ACK is SYN|ACK|ECE — so those
+// comparisons mask them out. Matching a SYN exactly would silently fail to recognise
+// one from any ECN-capable peer.
+const flagECN = FlagECE | FlagCWR
 
 const flagMask = 0x01ff
 

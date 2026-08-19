@@ -148,7 +148,7 @@ func sendDataFull(t *testing.T, client, server *Handler, data, packetBuf []byte)
 	}
 }
 
-func newHandler(t *testing.T, mtu, mintaxpackets int) *Handler {
+func newHandler(t testing.TB, mtu, mintaxpackets int) *Handler {
 	h := new(Handler)
 	err := h.SetBuffers(make([]byte, mtu), make([]byte, mtu), mintaxpackets)
 	if err != nil {
@@ -157,7 +157,7 @@ func newHandler(t *testing.T, mtu, mintaxpackets int) *Handler {
 	return h
 }
 
-func setupClientServer(t *testing.T, rng *rand.Rand, client, server *Handler) {
+func setupClientServer(t testing.TB, rng *rand.Rand, client, server *Handler) {
 	// Ensure buffer sizes are OK with reused buffers.
 	err := client.SetBuffers(nil, nil, 0)
 	if err != nil {
@@ -183,7 +183,7 @@ func setupClientServer(t *testing.T, rng *rand.Rand, client, server *Handler) {
 	}
 }
 
-func establish(t *testing.T, client, server *Handler, packetBuf []byte) {
+func establish(t testing.TB, client, server *Handler, packetBuf []byte) {
 	if client.State() != StateClosed {
 		t.Fatal("client in wrong state")
 	} else if server.State() != StateListen {
@@ -1028,39 +1028,48 @@ func TestChallengeACKWithBufferedData(t *testing.T) {
 		WND:   1024,
 	}, 5)
 
-	// Server receives the out-of-order segment. This sets challengeAck=true
-	// and returns an error (errRequireSequential), which is expected.
+	// Server receives the out-of-order segment. It queues an acknowledgement and
+	// returns an error (errRequireSequential), which is expected. The acknowledgement
+	// is an ordinary duplicate one rather than a challenge: the segment is in window,
+	// so the two sides agree on the sequence space, and a duplicate acknowledgement is
+	// also what lets the sender count toward a fast retransmit.
 	err = server.Recv(rawbuf[:sizeHeaderTCP])
 	if err == nil {
 		t.Fatal("expected error from out-of-order segment")
 	}
-	if !server.scb.pendingChallengeAck() {
-		t.Fatal("challengeAck flag not set after out-of-order segment")
+	if server.scb.pending[0]&FlagACK == 0 && !server.scb.pendingChallengeAck() {
+		t.Fatal("no acknowledgement queued after out-of-order segment")
 	}
 	if server.State() != StateEstablished {
 		t.Fatal("server should remain ESTABLISHED, got:", server.State())
 	}
 
-	// First Send: should emit the challenge ACK without panicking.
-	// The bug causes MakePacket to be called with zero-length buffer here.
-	clear(rawbuf[:])
-	n, err = server.Send(rawbuf[:])
-	if err != nil {
-		t.Fatal("server send 1 (challenge ACK):", err)
+	// Both sends must complete without panicking, and the buffered data must get out.
+	// The bug this pins called MakePacket with a zero-length buffer on the first send
+	// and then panicked in AddPacket on the second, over a degenerate sentlist entry.
+	// Which send carries the data is not the point: the acknowledgement may travel
+	// with it in one segment rather than ahead of it in two.
+	payloadSent := 0
+	for i := range 2 {
+		clear(rawbuf[:])
+		n, err = server.Send(rawbuf[:])
+		if err != nil {
+			t.Fatalf("server send %d: %s", i+1, err)
+		}
+		if n == 0 {
+			continue
+		}
+		if n < sizeHeaderTCP {
+			t.Fatalf("server send %d produced %d octets, less than a header", i+1, n)
+		}
+		frame, err := NewFrame(rawbuf[:n])
+		if err != nil {
+			t.Fatalf("server send %d: %s", i+1, err)
+		}
+		payloadSent += len(frame.Payload())
 	}
-	if n < sizeHeaderTCP {
-		t.Fatal("expected challenge ACK packet")
-	}
-
-	// Second Send: should send the buffered data without panicking.
-	// The bug panics here in AddPacket due to the degenerate sentlist entry.
-	clear(rawbuf[:])
-	n, err = server.Send(rawbuf[:])
-	if err != nil {
-		t.Fatal("server send 2 (data):", err)
-	}
-	if n <= sizeHeaderTCP {
-		t.Fatal("expected data packet, got header-only")
+	if payloadSent != len(responseData) {
+		t.Errorf("server transmitted %d octets of buffered data, want %d", payloadSent, len(responseData))
 	}
 }
 

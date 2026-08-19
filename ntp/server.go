@@ -21,6 +21,8 @@ type ServerConfig struct {
 //
 // Server is not safe for concurrent use.
 type Server struct {
+	lneto.NoDeadline // no time-driven work
+
 	connID  uint64
 	_now    func() time.Time
 	stratum Stratum

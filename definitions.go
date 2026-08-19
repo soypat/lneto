@@ -33,9 +33,31 @@ type StackNode interface {
 	// registering a [StackNode]. When the value changes this means the registered [StackNode]
 	// should be discarded since its lifetime has terminated.
 	ConnectionID() *uint64
+	// NextDeadline returns the monotonic-nanosecond instant at which this
+	// [StackNode] must next be given a chance to encapsulate, or 0 when it has no
+	// such deadline. Stacks report the earliest non-zero deadline of their nodes,
+	// so an embedder driving egress knows when to call again rather than polling.
+	//
+	// Nodes without time-driven work return 0, as does a node whose timing depends
+	// on a clock it was not given. Returning 0 is always safe: it means the node
+	// asks for nothing and is serviced whenever egress next runs.
+	NextDeadline() int64
 	// TODO(pato,ddirect): Do we eventually want to trigger writes to buffers asynchronously?
 	// SetFlagPending(flagPending func(numPendingEncapsulations int))
 }
+
+// NoDeadline is embedded by [StackNode] implementations that have no
+// time-driven work, supplying [StackNode.NextDeadline] with a value reporting
+// no deadline. A node whose timing depends on a clock it was not given embeds
+// this too: reporting no deadline is always safe, meaning the node asks for
+// nothing and is serviced whenever egress next runs.
+//
+// It is a zero-size field, so embedding it costs no memory and the promoted
+// method folds to a constant, leaving deadline aggregation free for such nodes.
+type NoDeadline struct{}
+
+// NextDeadline reports no deadline. See [NoDeadline].
+func (NoDeadline) NextDeadline() int64 { return 0 }
 
 // IPProto represents the IP protocol number.
 type IPProto uint8

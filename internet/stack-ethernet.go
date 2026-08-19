@@ -124,6 +124,10 @@ func (ls *StackEthernet) MTU() int { return int(ls.mtu) }
 
 func (ls *StackEthernet) ConnectionID() *uint64 { return &ls.connID }
 
+// NextDeadline returns the earliest deadline of the registered link-layer
+// handlers, or 0 when none has one. It implements [lneto.StackNode].
+func (ls *StackEthernet) NextDeadline() int64 { return ls.handlers.nextDeadline() }
+
 func (ls *StackEthernet) LocalPort() uint16 { return 0 }
 
 func (ls *StackEthernet) Protocol() uint64 { return 1 }

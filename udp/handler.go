@@ -76,7 +76,12 @@ func (h *Handler) Recv(buf []byte) error {
 		return lneto.ErrMismatch
 	}
 	// Header size validation.
-	// No CRC validation at this level.
+	// No CRC validation at this level: the UDP checksum covers a pseudo-header of
+	// addresses this layer cannot see, so it belongs to whoever owns them. The
+	// IPv4 and IPv6 stacks in package internet reject a bad checksum before demux
+	// and compute it on transmit, including the RFC 768 rule that a zero result is
+	// sent as 0xFFFF. A Handler driven directly, without those stacks, receives no
+	// checksum protection.
 	ul := ufrm.Length()
 	if ul < sizeHeader {
 		return lneto.ErrInvalidLengthField

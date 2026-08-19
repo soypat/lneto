@@ -75,6 +75,8 @@ type MuxConfig struct {
 
 // muxHandler
 type muxHandler struct {
+	lneto.NoDeadline // no time-driven work
+
 	connid uint64
 	// filterLPorts stores rx port ranges over which Handler can receive data.
 	// If not set will not filter UDP data.
@@ -175,7 +177,7 @@ func (mh *muxHandler) Demux(carrierData []byte, frameOffset int) error {
 	}
 
 	// Header size validation.
-	// No CRC validation at this level.
+	// No CRC validation at this level; see [Handler.Recv] for why.
 	ul := ufrm.Length()
 	if ul < sizeHeader {
 		return lneto.ErrInvalidLengthField

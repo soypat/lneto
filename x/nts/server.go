@@ -29,6 +29,8 @@ type ServerConfig struct {
 //
 // Server is NOT safe for concurrent use.
 type Server struct {
+	lneto.NoDeadline // no time-driven work
+
 	connID   uint64
 	cfg      ServerConfig
 	ntpState ntp.Server

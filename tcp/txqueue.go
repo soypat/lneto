@@ -117,23 +117,26 @@ func (rtx *ringTx) Write(b []byte) (n int, err error) {
 // MakePacket reads from the unsent data ring buffer and generates a new packet segment.
 // It fails if the sent packet queue is full.
 func (rtx *ringTx) MakePacket(b []byte, currentSeq Value) (int, error) {
-	free := rtx.slist.Free()
-	if free == 0 {
-		return 0, lneto.ErrBufferFull
-	}
 	endSeq, ok := rtx.sentEndSeq()
 	if ok && currentSeq.LessThan(endSeq) {
 		// maybe retransmit. Look for exact match.
 		for i := range rtx.slist.pkts {
 			pkt := &rtx.slist.pkts[i]
 			if pkt.seq == currentSeq {
-				// This packet to be retransmit.
+				// This packet to be retransmit. Resending a packet the queue already
+				// tracks needs no new entry, so it is not subject to the queue being
+				// full — which is exactly the state a stalled connection is in when it
+				// most needs to retransmit.
 				data := rtx.ring(pkt.off, pkt.end)
 				return data.Read(b)
 			}
 		}
 		internal.LogAttrs(nil, slog.LevelError, "txqueue:seq<endseq", slog.Uint64("seq", uint64(currentSeq)), slog.Uint64("endseq", uint64(endSeq)))
 		return 0, lneto.ErrBug
+	}
+	if rtx.slist.Free() == 0 {
+		// New data needs an entry to track it by.
+		return 0, lneto.ErrBufferFull
 	}
 	// Reading unsent ring consumes unsent and converts it to "sent".
 	unsent, _ := rtx.unsentRing()
@@ -215,30 +218,27 @@ func (rtx *ringTx) ring(off, end int) internal.Ring {
 // Result of addEnd will never be 0 unless arguments are (0,0).
 func (rtx *ringTx) addEnd(a, b int) int { return addEnd(a, b, len(rtx.rawbuf)) }
 
-// RetransmitFromUNA rewinds the transmit queue so that all sent-but-unacked
-// data becomes unsent again. The next MakePacket call will re-send starting
-// from snd.UNA. This is the smoltcp-style pointer-rewind approach: no extra
-// mode flag, Send() has a single code path.
+// retransmitBoundary reports the sequence number a retransmission asking to resume
+// at start must actually resume at, which is the boundary of the queued packet
+// containing start.
 //
-// Implements "send the segment at the front of the retransmission queue"
-// per RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
-func (rtx *ringTx) RetransmitFromUNA() {
-	oldest := rtx.slist.Oldest()
-	if oldest == nil {
-		return // Nothing in the retransmission queue.
-	}
-	unaSeq := oldest.seq
-	if rtx.sentend != 0 {
-		// Merge sent region [sentoff, sentend) back into unsent.
-		rtx.unsentoff = rtx.sentoff
-		if rtx.unsentend == 0 {
-			rtx.unsentend = rtx.sentend
+// The queue tracks whole packets and [ringTx.MakePacket] resends one by its exact
+// starting sequence, so a request landing inside a packet is clamped down to that
+// packet's first octet: the returned sequence is at or before start. Resending a few
+// octets the peer already has is always valid on the wire, whereas splitting a
+// queued packet would misreport what was sent. A selective acknowledgement names
+// ranges the peer chose, not ranges this side sent, so an interior sequence is the
+// normal case rather than an error.
+//
+// ok is false when start is not in the queued range [snd.UNA, snd.NXT), which
+// includes the case of an empty retransmission queue. The queue is not modified.
+func (rtx *ringTx) retransmitBoundary(start Value) (boundary Value, ok bool) {
+	for i := range rtx.slist.pkts {
+		if pkt := &rtx.slist.pkts[i]; start.InWindow(pkt.seq, pkt.size) {
+			return pkt.seq, true
 		}
-		rtx.sentoff = 0
-		rtx.sentend = 0
 	}
-	// Clear packet metadata; sequence tracking restarts from UNA.
-	rtx.slist.Reset(cap(rtx.slist.pkts), unaSeq)
+	return 0, false // Not in the retransmission queue.
 }
 
 func (rtx *ringTx) consolidateBufs() {
@@ -316,15 +316,6 @@ func (sl sentlist) Oldest() *ringidx {
 		return nil
 	}
 	return &sl.pkts[0]
-}
-
-func (sl *sentlist) EndSeq() Value {
-	seq := sl.ssn
-	lastPkt := sl.Newest()
-	if lastPkt != nil {
-		seq = lastPkt.endSeq()
-	}
-	return seq
 }
 
 func (sl *sentlist) Free() int {

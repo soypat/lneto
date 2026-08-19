@@ -17,7 +17,18 @@ const (
 	// maxChallengeRejects is the number of consecutive challenge ACKs sent without
 	// a successful Recv before aborting. Prevents infinite ACK ping-pong when both
 	// sides have diverged state (e.g. after packet mutation).
+	//
+	// Only segments outside the receive window count toward it, since only those are
+	// evidence of divergence. A segment in window that merely cannot be taken yet —
+	// arriving ahead of rcv.NXT, or against a closed window — is ordinary traffic and
+	// is acknowledged without counting, or loss and flow control would abort healthy
+	// connections.
 	maxChallengeRejects = 8
+	// maxWindShift is the largest window scale shift RFC 7323 §2.3 permits, giving
+	// a maximum window just under 1 GiB.
+	maxWindShift = 14
+	// sizeOptionWindowScale is the wire size of the Window Scale option.
+	sizeOptionWindowScale = 3
 )
 
 // ControlBlock is a partial Transmission Control Block (TCB) implementation as
@@ -62,6 +73,16 @@ type ControlBlock struct {
 	rcv recvSpace
 	// When FlagRST is set in pending flags rstPtr will contain the sequence number of the RST segment to make it "believable" (See RFC9293)
 	rstPtr Value
+	// rtxPtr is where retransmission resumes, held separately from snd.NXT so that
+	// resending does not forget how far the stream has been sent. snd.NXT is the
+	// high-water mark of data given to the network, which is what bounds a
+	// retransmission and what new data continues from; a scheme that rewinds it to
+	// resend loses both. RFC 6675 keeps the same two pointers apart for the same
+	// reason. Only meaningful while rtxActive.
+	rtxPtr    Value
+	rtxActive bool
+	// ecn holds the RFC 3168 Explicit Congestion Notification state. See [ecnState].
+	ecn ecnState
 	logger
 
 	// pending is the queue of pending flags to be sent in the next 2 segments.
@@ -79,6 +100,23 @@ type ControlBlock struct {
 	dupack uint8
 	// nRetransmit counts number of retransmits sent since last UNA update.
 	nRetransmit uint8
+
+	// Window scale state, RFC 7323 §2. sndWindShift is applied to windows the peer
+	// advertises and rcvWindShift to the window advertised back. rcv.WND and
+	// snd.WND always hold true octet counts; the shifts are applied only where a
+	// window crosses the wire, so a scaled window may exceed the 16-bit header
+	// field while the field itself never does.
+	//
+	// Both shifts stay zero unless each side saw the option in the other's SYN,
+	// because scaling is only permitted when both offered it. The offer and what
+	// the peer offered are tracked separately since a passive open sees the peer's
+	// SYN before it sends its own option, and an active open the reverse.
+	sndWindShift   uint8
+	rcvWindShift   uint8
+	windShiftOffer uint8
+	windScaleSent  bool
+	peerWindShift  uint8
+	peerWindScale  bool
 }
 
 // State returns the current state of the TCP connection. See [State].
@@ -114,6 +152,71 @@ func (tcb *ControlBlock) SetRecvWindow(wnd Size) {
 	tcb.rcv.WND = wnd
 }
 
+// advertisedWindow converts a true receive-window octet count into the value that
+// goes in the 16-bit header field, applying the negotiated window scale
+// (RFC 7323 §2). Windows are held in true octets everywhere inside the connection
+// and shifted only here and where an incoming window is read, so a scaled window
+// may exceed 65535 while the field carrying it never does.
+//
+// A window that does not divide evenly by the shift is rounded down, never up:
+// advertising more space than exists would invite an overrun.
+func (tcb *ControlBlock) advertisedWindow(wnd Size) Size {
+	wnd >>= tcb.rcvWindShift
+	if wnd > math.MaxUint16 {
+		// Only reachable if the scale is too small for the buffer, which
+		// resetWindowScale prevents; clamp rather than truncate into a tiny window.
+		wnd = math.MaxUint16
+	}
+	return wnd
+}
+
+// sentWindowScale records that this side put a Window Scale option carrying shift
+// in its SYN or SYN-ACK.
+func (tcb *ControlBlock) sentWindowScale(shift uint8) {
+	tcb.windShiftOffer = shift
+	tcb.windScaleSent = true
+	tcb.enableWindowScale()
+}
+
+// recvWindowScale records the shift the peer offered in its SYN. Shifts above the
+// RFC 7323 §2.3 maximum are clamped rather than rejected, which is what the RFC
+// asks of a receiver seeing an oversized value.
+func (tcb *ControlBlock) recvWindowScale(shift uint8) {
+	if shift > maxWindShift {
+		shift = maxWindShift
+	}
+	tcb.peerWindShift = shift
+	tcb.peerWindScale = true
+	tcb.enableWindowScale()
+}
+
+// enableWindowScale activates scaling once both sides have offered it. Until then
+// windows are exchanged unscaled, which is also the permanent state when talking
+// to a peer that does not implement the option.
+func (tcb *ControlBlock) enableWindowScale() {
+	if !tcb.windScaleSent || !tcb.peerWindScale {
+		return
+	}
+	tcb.sndWindShift = tcb.peerWindShift
+	tcb.rcvWindShift = tcb.windShiftOffer
+}
+
+// windowScaleFor returns the smallest shift that lets wnd be advertised in the
+// 16-bit window field, or zero when it already fits.
+func windowScaleFor(wnd Size) (shift uint8) {
+	for wnd>>shift > math.MaxUint16 && shift < maxWindShift {
+		shift++
+	}
+	return shift
+}
+
+// WindowScales reports the shifts negotiated for the peer's advertised window and
+// for this side's, per RFC 7323 §2. Both are zero when the option was not
+// negotiated, in which case windows are exchanged unscaled.
+func (tcb *ControlBlock) WindowScales() (send, recv uint8) {
+	return tcb.sndWindShift, tcb.rcvWindShift
+}
+
 // SetLogger sets the logger to be used by the ControlBlock.
 func (tcb *ControlBlock) SetLogger(log *slog.Logger) {
 	tcb.logger = logger{log: log}
@@ -123,7 +226,7 @@ func (tcb *ControlBlock) SetLogger(log *slog.Logger) {
 // Segments which are keepalives should not be passed into Recv or Send methods.
 func (tcb *ControlBlock) IncomingIsKeepalive(incomingSegment Segment) bool {
 	return incomingSegment.SEQ == tcb.rcv.NXT-1 &&
-		incomingSegment.Flags == FlagACK &&
+		incomingSegment.Flags&^flagECN == FlagACK &&
 		incomingSegment.ACK == tcb.snd.NXT && incomingSegment.DATALEN == 0
 }
 
@@ -141,7 +244,7 @@ func (tcb *ControlBlock) MakeKeepalive() Segment {
 		SEQ:     tcb.snd.NXT - 1,
 		ACK:     tcb.rcv.NXT,
 		Flags:   FlagACK,
-		WND:     tcb.rcv.WND,
+		WND:     tcb.advertisedWindow(tcb.rcv.WND),
 		DATALEN: 0,
 	}
 }
@@ -165,7 +268,7 @@ func (tcb *ControlBlock) MakeDupACK() Segment {
 		SEQ:     tcb.snd.UNA,
 		ACK:     tcb.rcv.NXT,
 		Flags:   FlagACK,
-		WND:     tcb.rcv.WND,
+		WND:     tcb.advertisedWindow(tcb.rcv.WND),
 		DATALEN: 0,
 	}
 }
@@ -176,11 +279,11 @@ func (tcb *ControlBlock) MakeDupACK() Segment {
 // consume sequence space, or carry a payload.
 func (tcb *ControlBlock) MakeChallengeACK() Segment {
 	return Segment{
-		SEQ:     tcb.snd.NXT, // Current sequence number (no data)
-		ACK:     tcb.rcv.NXT, // Acknowledging expected next byte
-		Flags:   FlagACK,     // Pure ACK, no SYN/FIN/RST
-		WND:     tcb.rcv.WND, // Current receive window size
-		DATALEN: 0,           // No payload
+		SEQ:     tcb.snd.NXT,                       // Current sequence number (no data)
+		ACK:     tcb.rcv.NXT,                       // Acknowledging expected next byte
+		Flags:   FlagACK,                           // Pure ACK, no SYN/FIN/RST
+		WND:     tcb.advertisedWindow(tcb.rcv.WND), // Current receive window size
+		DATALEN: 0,                                 // No payload
 	}
 }
 
@@ -224,7 +327,7 @@ func (tcb *ControlBlock) Open(iss Value, wnd Size) (err error) {
 	switch {
 	case tcb._state != StateClosed && tcb._state != StateTimeWait:
 		err = errNeedClosedTCBToOpen
-	case wnd > math.MaxUint16:
+	case wnd > math.MaxUint16<<maxWindShift:
 		err = errWindowTooLarge
 	}
 	if err != nil {
@@ -247,7 +350,10 @@ func (tcb *ControlBlock) prepareToHandshake(iss Value, wnd Size, newState State)
 
 // HasPending returns true if there is a pending control segment to send. Calls to Send will advance the pending queue.
 func (tcb *ControlBlock) HasPending() bool {
-	return tcb.pending[0] != 0 || tcb.pendingChallengeAck() || tcb.HasPendingRetransmit()
+	// A retransmission in progress is pending work even when the application has
+	// queued nothing: the data to resend has already been sent once, so it is not
+	// counted as unsent and nothing else would prompt the transmit path.
+	return tcb.pending[0] != 0 || tcb.pendingChallengeAck() || tcb.HasPendingRetransmit() || tcb.rtxActive
 }
 
 // HasPending returns true if the control block is pending a retransmit according to simple optmist
@@ -257,14 +363,91 @@ func (tcb *ControlBlock) HasPendingRetransmit() bool {
 	return tcb._state.TxDataOpen() && tcb.dupack >= retransmitAfterDupacks && tcb.nRetransmit <= tcb.dupack-retransmitAfterDupacks
 }
 
-// RetransmitAll rewinds snd.NXT back to snd.UNA so the next PendingSegment and
-// Send calls retransmit all unacknowledged data from the oldest sequence number
-// (go-back-N). It must be paired with ringTx.RetransmitFromUNA to rewind the
-// transmit buffer. Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
-func (tcb *ControlBlock) RetransmitAll() {
-	tcb.snd.NXT = tcb.snd.UNA
-	tcb.dupack = 0
-	tcb.nRetransmit = 0
+// RetransmitAt directs the next segments to resend already-sent data starting at
+// seq, without disturbing how far the stream has been sent. It returns the
+// sequence retransmission will actually resume at and whether anything will be
+// retransmitted at all.
+//
+// Holding the resume point apart from snd.NXT is what makes a selective
+// retransmission expressible. Rewinding snd.NXT to resend, as this once did, resends
+// everything from that point onward and cannot skip a range the peer has already
+// acknowledged, because snd.NXT is then simultaneously the resume point and the
+// record of how far the stream has gone (RFC 6675 §2).
+//
+// seq is clamped into [snd.UNA, snd.NXT): retransmitting before snd.UNA would
+// resend acknowledged data, and there is nothing at or past snd.NXT to resend. A
+// request outside that range reports ok false and changes nothing rather than
+// being an error, since a policy's view of the send space can lag the connection's.
+//
+// One request resends one segment: the pointer is cleared once a segment has gone out
+// at it, so the data after the range asked for stays sent and new data continues from
+// snd.NXT. Resending more is a matter for the next request, which a policy derives
+// from what the peer has reported by then. It must be paired with ringTx.MakePacket at
+// the same sequence to read the data back out of the transmit queue.
+func (tcb *ControlBlock) RetransmitAt(seq Value) (resumeAt Value, ok bool) {
+	if !tcb._state.TxDataOpen() {
+		return 0, false
+	}
+	if seq.LessThan(tcb.snd.UNA) {
+		seq = tcb.snd.UNA
+	}
+	if !seq.LessThan(tcb.snd.NXT) {
+		return 0, false // Nothing sent from seq onward to resend.
+	}
+	tcb.rtxPtr, tcb.rtxActive = seq, true
+	return seq, true
+}
+
+// RetransmitPointer reports where retransmission will resume and whether one is in
+// progress. It is the read side of [ControlBlock.RetransmitAt].
+func (tcb *ControlBlock) RetransmitPointer() (Value, bool) { return tcb.rtxPtr, tcb.rtxActive }
+
+// ZeroWindowProbe returns a zero-length probe segment to elicit a window update
+// from a peer that has closed its receive window, or ok=false when it is not yet
+// time to probe. Callers use it when [ControlBlock.PendingSegment] declines to
+// produce a segment while data is still queued for transmission.
+//
+// Without a probe the connection can stall permanently: the peer sends a window
+// update once its application reads, but that update is a bare ACK and is never
+// retransmitted, so losing it leaves the sender waiting forever. RFC 9293
+// §3.8.6.1 requires a persist timer for exactly this reason. It applies only
+// when nothing is outstanding; while data is unacknowledged the retransmission
+// timer already forces the peer to respond.
+//
+// One probe per stall is enough and no timer is needed to space them out, which
+// is what lets this work in a package that holds no clock. The probe leaves an
+// octet unacknowledged, so the stall is no longer unprobeable: from then on the
+// retransmission timer resends that octet with real exponential backoff, which
+// is the periodic probing RFC 9293 §3.8.6.1 asks for. Without a [Policy]
+// installed there is no such timer and the single probe is all that is sent.
+//
+// Like PendingSegment this does not modify the ControlBlock.
+func (tcb *ControlBlock) ZeroWindowProbe() (_ Segment, ok bool) {
+	if tcb.snd.WND != 0 || !tcb._state.TxDataOpen() || tcb.snd.UNA != tcb.snd.NXT {
+		// Three things disqualify a probe. A non-zero window is not a stall at
+		// all, merely a full one awaiting acknowledgements. A state that cannot
+		// send data has no window to probe. And outstanding data means a
+		// retransmission is already due, which doubles as a probe because the peer
+		// must acknowledge it; injecting probes there would fragment the stream
+		// into single octets and starve the transmit queue.
+		return Segment{}, false
+	}
+	// The probe carries one octet, because a bare ACK draws no reply: an
+	// acknowledgement needs no acknowledgement, so the peer would process it and
+	// stay silent. One octet the peer cannot accept forces it to respond with an
+	// ACK reporting its current window (RFC 9293 §3.10.7.4).
+	return Segment{SEQ: tcb.snd.NXT, DATALEN: 1, ACK: tcb.rcv.NXT, WND: tcb.advertisedWindow(tcb.rcv.WND), Flags: FlagACK}, true
+}
+
+// TriggerWindowUpdate queues a bare ACK so that a peer whose segment could not
+// be accepted learns the current receive window. RFC 9293 §3.10.7.4 requires an
+// acknowledgement in reply to a segment that is not acceptable; dropping it in
+// silence leaves the peer unable to tell a lost segment from a closed window,
+// and leaves a zero-window probe unanswered.
+func (tcb *ControlBlock) TriggerWindowUpdate() {
+	if tcb._state.RxDataOpen() {
+		tcb.pending[0] |= FlagACK // |= preserves any pending FIN.
+	}
 }
 
 // PendingSegment calculates a suitable next segment to send from a payload length.
@@ -275,9 +458,25 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 		// Do not clear challengeAck here: PendingSegment is documented as read-only.
 		// The flag is consumed in Send when the ACK segment is actually transmitted.
 		return tcb.MakeChallengeACK(), true
+	} else if !pending.HasAny(flagctl) && tcb.rtxActive {
+		// A retransmission is in progress at rtxPtr. It is bounded by snd.NXT: only
+		// data already given to the network is resent, never new data, so the
+		// high-water mark is untouched and the peer's window needs no consulting —
+		// this data was inside it when it first went out.
+		remaining := Sizeof(tcb.rtxPtr, tcb.snd.NXT)
+		if payloadLen > int(remaining) {
+			payloadLen = int(remaining)
+		}
+		if tcb.snd.MSS > 0 && payloadLen > int(tcb.snd.MSS) {
+			payloadLen = int(tcb.snd.MSS)
+		}
+		if payloadLen == 0 {
+			return Segment{}, false // No room offered for the resend; try again later.
+		}
+		return Segment{SEQ: tcb.rtxPtr, DATALEN: Size(payloadLen), ACK: tcb.rcv.NXT, WND: tcb.advertisedWindow(tcb.rcv.WND), Flags: FlagACK}, true
 	} else if !pending.HasAny(flagctl) && tcb.HasPendingRetransmit() {
 		// Optimist Strategy: retransmit oldest data once.
-		return Segment{SEQ: tcb.snd.UNA, DATALEN: Size(payloadLen), ACK: tcb.rcv.NXT, WND: tcb.rcv.WND, Flags: FlagACK}, true
+		return Segment{SEQ: tcb.snd.UNA, DATALEN: Size(payloadLen), ACK: tcb.rcv.NXT, WND: tcb.advertisedWindow(tcb.rcv.WND), Flags: FlagACK}, true
 	}
 	established := tcb._state == StateEstablished
 	canSendData := established || tcb._state == StateCloseWait
@@ -324,7 +523,7 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 	seg := Segment{
 		SEQ:     seq,
 		ACK:     ack,
-		WND:     tcb.rcv.WND,
+		WND:     tcb.advertisedWindow(tcb.rcv.WND),
 		Flags:   pending,
 		DATALEN: Size(payloadLen),
 	}
@@ -400,8 +599,13 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	// Within that, duplicate ACKs (non-advancing) may only open the window, never shrink it.
 	wlUnset := tcb.snd.WL1 == 0 && tcb.snd.WL2 == 0
 	if wlUnset || tcb.snd.WL1.LessThan(seg.SEQ) || (tcb.snd.WL1 == seg.SEQ && tcb.snd.WL2.LessThanEq(seg.ACK)) {
-		if tcb.snd.UNA.LessThan(seg.ACK) || seg.WND > tcb.snd.WND {
-			tcb.snd.WND = seg.WND
+		// The window arrives as a 16-bit wire field and is scaled up to the true
+		// octet count. A SYN's window is never scaled (RFC 7323 §2.2), and the
+		// shift is recorded from that same SYN's options after this call, so its
+		// window is correctly taken unscaled here.
+		wnd := seg.WND << tcb.sndWindShift
+		if tcb.snd.UNA.LessThan(seg.ACK) || wnd > tcb.snd.WND {
+			tcb.snd.WND = wnd
 		}
 		tcb.snd.WL1 = seg.SEQ
 		tcb.snd.WL2 = seg.ACK
@@ -416,8 +620,17 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 			tcb.snd.UNA = seg.ACK
 			tcb.dupack = 0
 			tcb.nRetransmit = 0
+			if tcb.rtxActive && tcb.rtxPtr.LessThan(tcb.snd.UNA) {
+				// The peer acknowledged past where the resend was going to resume, so
+				// what it was going to resend has arrived. Continuing would resend
+				// acknowledged data.
+				tcb.rtxPtr = tcb.snd.UNA
+				tcb.rtxActive = tcb.rtxPtr.LessThan(tcb.snd.NXT)
+			}
 		}
 	}
+
+	tcb.ecnRecvFlags(seg)
 
 	seglen := seg.LEN()
 	tcb.rcv.NXT.UpdateForward(seglen)
@@ -445,7 +658,7 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 	var newPending Flags
 	switch tcb._state {
 	case StateClosed:
-		if seg.Flags == FlagSYN {
+		if seg.Flags&^flagECN == FlagSYN {
 			tcb.prepareToHandshake(seg.SEQ, seg.WND, StateSynSent)
 			tcb.trace("tcb:open-client")
 		}
@@ -484,11 +697,25 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 		if tcb.nRetransmit < 255-retransmitMaxQueued-retransmitAfterDupacks {
 			tcb.nRetransmit++
 		}
+		if tcb.rtxActive && seg.SEQ == tcb.rtxPtr {
+			// One request, one segment. Holding the request open until it reached
+			// snd.NXT would resend everything after the range asked for, which is the
+			// go-back-N this pointer exists to avoid; and RFC 6298 §5.4 asks for the
+			// earliest unacknowledged segment on a timeout, not for all of them.
+			// Anything more is requested by the next directive, which is derived from
+			// what the peer has reported by then rather than from what was true when
+			// this request was made.
+			tcb.rtxPtr, tcb.rtxActive = 0, false
+		}
 	} else {
 		tcb.snd.NXT.UpdateForward(seglen)
 	}
 
-	tcb.rcv.WND = seg.WND
+	tcb.ecnSent(seg)
+
+	// seg.WND is the 16-bit value that goes on the wire; record the true window it
+	// stands for. See [ControlBlock.advertisedWindow].
+	tcb.rcv.WND = seg.WND << tcb.rcvWindShift
 	if tcb.logenabled(internal.LevelTrace) {
 		tcb.traceSnd("tcb:snd")
 		tcb.traceSeg("tcb:snd", seg)
@@ -502,8 +729,9 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	isFirst := tcb._state == StateClosed && seg.isFirstSYN()
 	checkSeq := !isFirst && !seg.Flags.HasAny(FlagRST)
 	seglast := seg.Last()
-	// Extra check for when send Window is zero and no data is being sent.
-	zeroWindowOK := tcb.snd.WND == 0 && seg.DATALEN == 0 && seg.SEQ == tcb.snd.NXT
+	// Extra check for when send Window is zero and no data, or a single octet of
+	// zero-window probe, is being sent. See [ControlBlock.ZeroWindowProbe].
+	zeroWindowOK := tcb.snd.WND == 0 && seg.DATALEN <= 1 && seg.SEQ == tcb.snd.NXT
 	outOfWindow := checkSeq && !seg.SEQ.InWindow(tcb.snd.NXT, tcb.snd.WND) &&
 		!zeroWindowOK
 	isRetransmit := checkSeq && seg.SEQ.InRange(tcb.snd.UNA, tcb.snd.NXT)
@@ -525,7 +753,7 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	case seg.DATALEN > 0 && (tcb._state == StateFinWait1 || tcb._state == StateFinWait2):
 		err = errConnectionClosing // Case 1: No further SENDs from the user will be accepted by the TCP implementation.
 
-	case checkSeq && tcb.snd.WND == 0 && seg.DATALEN > 0 && seg.SEQ == tcb.snd.NXT:
+	case checkSeq && tcb.snd.WND == 0 && seg.DATALEN > 1 && seg.SEQ == tcb.snd.NXT:
 		err = errZeroWindow
 
 	case checkSeq && !seglast.InWindow(tcb.snd.NXT, tcb.snd.WND) && !zeroWindowOK && !isRetransmit:
@@ -571,13 +799,35 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	if err != nil {
 		// RFC 9293 §3.4: If segment not acceptable, send ACK (unless RST).
 		switch err {
-		case errSeqNotInWindow, errLastNotInWindow, errRequireSequential, errZeroWindow:
+		case errSeqNotInWindow, errLastNotInWindow:
+			// Outside the window altogether, which is evidence the two sides no
+			// longer agree on the sequence space. Left alone the peers acknowledge
+			// each other forever, so these are counted toward the abort.
 			if !flags.HasAny(FlagRST) {
 				if tcb.tooManyChallengeAcks() {
 					tcb.Abort()
 					return net.ErrClosed
 				}
 				tcb.triggerChallengeAckEmit()
+			}
+		case errRequireSequential, errZeroWindow:
+			// In window, so the two sides do agree; this segment simply cannot be
+			// taken yet. Both cases are ordinary traffic on a working connection and
+			// must not count toward an abort.
+			//
+			// A segment ahead of rcv.NXT is what every lossy or reordering path
+			// produces, and specifically what arrives behind a dropped segment, so
+			// counting it means loss tears the connection down instead of being
+			// recovered. A segment against a closed window is a zero-window probe,
+			// which deliberately carries an octet that cannot be accepted in order to
+			// draw the window update that unblocks the sender; counting those means a
+			// connection stalled by a slow application is destroyed by the mechanism
+			// meant to recover it, the sooner the more patiently the peer probes.
+			//
+			// Both are still acknowledged, since RFC 9293 §3.10.7.4 requires it and
+			// the acknowledgement is what tells the peer where this side is.
+			if !flags.HasAny(FlagRST) {
+				tcb.TriggerWindowUpdate()
 			}
 		}
 		return err
@@ -672,12 +922,6 @@ func (tcb *ControlBlock) rstJump() Value {
 	return 100
 }
 
-// Retransmit resets snd.NXT back to snd.UNA, allowing the next PendingSegment
-// and Send calls to retransmit unacknowledged data. Must be paired with
-// ringTx.RetransmitFromUNA to rewind the transmit buffer.
-// Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
-// func (tcb *ControlBlock) Retransmit() { tcb.snd.NXT = tcb.snd.UNA }
-
 // Abort sets ControlBlock state to Closed and resets all sequence numbers and pending flag.
 // No more data can be sent nor received after the connection is aborted until opened again.
 // An abort call prepares the connection for opening an active connection via a
@@ -690,6 +934,9 @@ func (tcb *ControlBlock) Abort() {
 func (tcb *ControlBlock) reset() {
 	*tcb = ControlBlock{
 		logger: tcb.logger,
+		// Whether ECN is offered is configuration and survives, as the logger does;
+		// everything negotiated about it does not.
+		ecn: ecnState{requested: tcb.ecn.requested},
 	}
 }
 
