@@ -52,11 +52,12 @@ type PacketBreakdown struct {
 //	0: Ethernet (3 base + VLAN tag = 4)
 //	1: L3 max(IPv4=12, ARP=9, IPv6=8) = 12
 //	2: L4 max(TCP=10, ICMP=8, UDP=4) = 10
-//	3: App max(DHCP=15, NTP=13, HTTP=2, DNS=1) = 16
-//	4-5: overflow/remaining = 2
+//	3: App max(DHCP=15, NTP=13, HTTP=2, DNS=1, TLS record=4) = 16
+//	4: TLS handshake message (ClientHello=8) = 8
+//	5-7: extra TLS records/overflow/remaining = 4,2,2
 func (pc *PacketBreakdown) initFrames() []Frame {
-	const nframes = 6
-	var fieldCaps = [nframes]int{4, 12, 10, 16, 2, 2}
+	const nframes = 8
+	var fieldCaps = [nframes]int{4, 12, 10, 16, 8, 4, 2, 2}
 	frames := make([]Frame, nframes)
 	for i := range frames {
 		frames[i].Fields = make([]FrameField, 0, fieldCaps[i])
@@ -328,9 +329,18 @@ func (pc *PacketBreakdown) CaptureTCP(dst []Frame, pkt []byte, bitOffset int) ([
 	}
 	payload := tfrm.Payload()
 	if len(payload) > 0 {
-		debuglog("pcap:tcp:http-start")
-		dst, err = pc.CaptureHTTP(dst, pkt, end)
-		debuglog("pcap:tcp:http-done")
+		// Application protocol is picked by inspecting the payload rather than
+		// by port, so that TLS on a port other than 443 and HTTP on a port
+		// other than 80 are both broken down correctly.
+		if payloadIsTLS(payload) {
+			debuglog("pcap:tcp:tls-start")
+			dst, err = pc.CaptureTLS(dst, pkt, end)
+			debuglog("pcap:tcp:tls-done")
+		} else {
+			debuglog("pcap:tcp:http-start")
+			dst, err = pc.CaptureHTTP(dst, pkt, end)
+			debuglog("pcap:tcp:http-done")
+		}
 		if err != nil {
 			reclaimRemainingFrame(&dst, unknownPayloadProto, FieldClassPayload, end, octet*len(pkt))
 		}
@@ -840,10 +850,13 @@ const (
 	// FlagContainer is used for [FrameField]s whose SubFields represent
 	// the entirety of the FrameField's data. i.e: DNS Questions/Answers.
 	FlagContainer
+	// FlagEncrypted marks fields whose bytes are ciphertext. i.e: TLS application_data fragment.
+	FlagEncrypted
 )
 
 func (ff Flags) IsLegacy() bool       { return ff&FlagLegacy != 0 }
 func (ff Flags) IsRightAligned() bool { return ff&FlagRightAligned != 0 }
+func (ff Flags) IsEncrypted() bool    { return ff&FlagEncrypted != 0 }
 
 type Frame struct {
 	PacketBitOffset int
@@ -1014,6 +1027,9 @@ func (frm Frame) LenBits() (totalBitlen int) {
 
 func (ff FrameField) String() string {
 	if ff.Class == FieldClassPayload {
+		if ff.Flags.IsEncrypted() {
+			return "Encrypted len=" + strconv.Itoa(ff.BitLength/8)
+		}
 		return "Payload len=" + strconv.Itoa(ff.BitLength/8)
 	}
 	if ff.Name != "" {
