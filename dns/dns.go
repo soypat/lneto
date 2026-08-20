@@ -48,6 +48,7 @@ type Question struct {
 type Resource struct {
 	header ResourceHeader
 	data   []byte
+	target Name
 }
 
 // A ResourceHeader is the header of a DNS resource record. There are
@@ -300,22 +301,45 @@ func (m *Message) AppendTo(buf []byte, txid uint16, flags HeaderFlags) (_ []byte
 }
 
 func (m *Message) WriteAnswers(dst []netip.Addr, host string) (n uint16, err error) {
-	for i := range m.Answers {
-		if int(n) >= len(dst) {
-			return n, lneto.ErrExhausted
+	var alias Name
+	// Each pass follows at most one alias hop
+	// The pass limit also bounds CNAME cycles in malformed responses.
+	for range m.Answers {
+		var next Name
+		n = 0
+		for i := range m.Answers {
+			if int(n) >= len(dst) {
+				break
+			}
+			ans := &m.Answers[i]
+			hdr := ans.Header()
+			matched := alias.Len() == 0 && hdr.Name.EqualString(host) ||
+				alias.Len() != 0 && NamesEqual(hdr.Name, alias)
+			if !matched {
+				continue
+			}
+			switch hdr.Type {
+			case TypeA, TypeAAAA:
+				var ok bool
+				dst[n], ok = netip.AddrFromSlice(ans.RawData())
+				if !ok {
+					err = lneto.ErrInvalidAddr
+					continue
+				} else {
+					n++
+				}
+			case TypeCNAME:
+				if ans.target.Len() != 0 {
+					next = ans.target
+				}
+			}
 		}
-		ans := &m.Answers[i]
-		hdr := ans.Header()
-		if !hdr.Name.EqualString(host) {
-			continue
+		if next.Len() == 0 || n > 0 {
+			// Either no new alias was found or addresses were resolved for
+			// the current name; a name cannot alias and hold records at once.
+			break
 		}
-		var ok bool
-		dst[n], ok = netip.AddrFromSlice(ans.RawData())
-		if !ok {
-			err = lneto.ErrInvalidAddr
-		} else {
-			n++
-		}
+		alias = next
 	}
 	return n, err
 }
@@ -399,6 +423,7 @@ func (h *ResourceHeader) String() string {
 func (r *Resource) Reset() {
 	r.header.Reset()
 	r.data = r.data[:0]
+	r.target.Reset()
 }
 
 func (r *Resource) Header() ResourceHeader { return r.header }
@@ -459,6 +484,14 @@ func (r *Resource) Decode(b []byte, off uint16) (uint16, error) {
 	}
 	if r.header.Length > uint16(len(b[off:])) {
 		return off, errResourceLen
+	}
+	if r.header.Type == TypeCNAME {
+		_, err = r.target.Decode(b, off)
+		if err != nil {
+			r.target.Reset() // Tolerate undecodable target; CNAME chain lookup skips it.
+		}
+	} else {
+		r.target.Reset()
 	}
 	r.data = append(r.data[:0], b[off:off+r.header.Length]...)
 	return off + r.header.Length, nil
@@ -775,6 +808,7 @@ func (dst *Question) CopyFrom(q Question) {
 func (dst *Resource) CopyFrom(r Resource) {
 	dst.header.CopyFrom(r.header)
 	dst.data = append(dst.data[:0], r.data...)
+	dst.target.CopyFrom(r.target)
 }
 
 // SetA sets an A (IPv4 address) resource record, reusing internal buffers.

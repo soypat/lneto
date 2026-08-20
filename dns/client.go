@@ -24,9 +24,8 @@ type ResolveConfig struct {
 	Questions       []Question
 	Additional      []Resource
 	EnableRecursion bool
-	// MaxResponseAnswers limits how many answer records are decoded from the
-	// DNS response. If zero it defaults to the number of Questions.
-	MaxResponseAnswers uint16
+	MaxIPs          uint16
+	MaxCNAMEs       uint16
 }
 
 func (sudp *Client) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
@@ -37,13 +36,18 @@ func (sudp *Client) ConnectionID() *uint64 { return &sudp.connID }
 
 func (c *Client) StartResolve(localPort, txid uint16, cfg ResolveConfig) error {
 	nd := len(cfg.Questions)
-	if nd > math.MaxUint16 {
+	if nd > math.MaxUint16 || nd == 0 {
 		return lneto.ErrInvalidConfig
 	}
-	maxAns := cfg.MaxResponseAnswers
-	if maxAns == 0 {
-		maxAns = uint16(nd)
+	maxIPs := cfg.MaxIPs
+	if maxIPs == 0 {
+		maxIPs = uint16(nd)
 	}
+	maxCNAMEs := cfg.MaxCNAMEs
+	if maxCNAMEs == 0 {
+		maxCNAMEs = 16
+	}
+	maxAns := maxIPs + maxCNAMEs
 	c.reset(localPort, txid, CQueryPending, cfg.EnableRecursion)
 	c.msg.LimitResourceDecoding(uint16(nd), maxAns, 0, 0)
 	c.msg.AddQuestions(cfg.Questions)
