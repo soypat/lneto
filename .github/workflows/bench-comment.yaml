@@ -1,8 +1,8 @@
-name: Benchmark Comment
+name: Binary Size Comment
 
 # Rationale: This more privileged workflow runs in the base repo's
 # context (with a write token) only after the 'untrusted' CI workflow finishes.
-# It does NOT check out or execute PR code; it only consumes the benchmark
+# It does NOT check out or execute PR code; it only consumes the binary-size
 # report artifact as inert, validated data.
 on:
   workflow_run:
@@ -23,7 +23,7 @@ jobs:
       contents: read
       pull-requests: write # needed to comment
     steps:
-      - name: Download generated benchmark report
+      - name: Download generated size report
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.1
         with:
           name: bench-report
@@ -50,11 +50,11 @@ jobs:
           test -f "$report"
           size="$(wc -c < "$report")"
           if [ "$size" -le 0 ] || [ "$size" -gt 1000000 ]; then
-            echo "::error::benchmark report has unexpected size: ${size} bytes"
+            echo "::error::binary-size report has unexpected size: ${size} bytes"
             exit 1
           fi
           if ! grep -qF "$marker" "$report"; then
-            echo "::error::benchmark report missing marker ${marker}"
+            echo "::error::binary-size report missing marker ${marker}"
             exit 1
           fi
 
