@@ -95,6 +95,12 @@ func (tcb *ControlBlock) RecvWindow() Size { return tcb.rcv.WND }
 // ISS returns the initial sequence number of the connection that was defined on a call to Open by user.
 func (tcb *ControlBlock) ISS() Value { return tcb.snd.ISS }
 
+// SendUNA returns snd.UNA, the oldest sequence number not yet acked by the remote.
+func (tcb *ControlBlock) SendUNA() Value { return tcb.snd.UNA }
+
+// SendNext returns snd.NXT, one past the highest sequence number sent.
+func (tcb *ControlBlock) SendNext() Value { return tcb.snd.NXT }
+
 // MaxInFlightData returns the maximum size of a segment that can be sent by taking into account
 // the send window size and the unacked data. Returns 0 before StateSynRcvd.
 func (tcb *ControlBlock) MaxInFlightData() Size {
@@ -257,8 +263,20 @@ func (tcb *ControlBlock) HasPendingRetransmit() bool {
 	return tcb._state.TxDataOpen() && tcb.dupack >= retransmitAfterDupacks && tcb.nRetransmit <= tcb.dupack-retransmitAfterDupacks
 }
 
+// RetransmitFrom rewinds snd.NXT back to newNxt so the next PendingSegment and
+// Send calls retransmit unacknowledged data from that sequence number onwards.
+// It must be paired with ringTx.RetransmitFrom to rewind the transmit buffer to
+// the same point. Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
+//
+// It reports false and changes nothing when newNxt falls outside the
+// unacknowledged range [snd.UNA, snd.NXT] or the connection cannot send data, so
+// a misbehaving [Policy] cannot corrupt the send sequence space.
 func (tcb *ControlBlock) RetransmitFrom(newNxt Value) bool {
-	panic("not yet implemented")
+	if !tcb._state.TxDataOpen() {
+		return false
+	} else if newNxt.LessThan(tcb.snd.UNA) || tcb.snd.NXT.LessThan(newNxt) {
+		return false
+	}
 	tcb.snd.NXT = newNxt
 	tcb.dupack = 0
 	tcb.nRetransmit = 0

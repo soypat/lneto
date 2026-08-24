@@ -21,25 +21,42 @@ func ackSeg(ack uint32) tcp.Segment {
 
 func newRTO() *Timer {
 	var r Timer
-	r.Reset()
+	if err := r.Configure(func() int64 { return 0 }); err != nil {
+		panic(err)
+	}
 	return &r
 }
 
-// rxAt builds the minimal tcp.RxMeta for driving PreRx directly.
-func rxAt(seg tcp.Segment, now int64) tcp.RxMeta { return tcp.RxMeta{Segment: seg, Now: now} }
-
-// acceptedAt builds the event for a segment the connection accepted, which is what
-// drives the estimator. Timing state is only allowed to move for those.
-func acceptedAt(seg tcp.Segment, now int64) tcp.RxEvent {
-	return tcp.RxEvent{Segment: seg, Now: now, Accepted: true}
+// frameOf renders a segment as the wire frame the [tcp.Policy] hooks receive.
+func frameOf(t *testing.T, s tcp.Segment) tcp.Frame {
+	t.Helper()
+	frm, err := tcp.NewFrame(make([]byte, 20+int(s.DATALEN)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frm.SetSegment(s, 5)
+	return frm
 }
 
-// txAt builds the minimal tcp.TxIntent for driving Timer.PreTx directly: the timer
-// tracks the send sequence itself via PostTx and only reads the clock.
-func txAt(now int64) tcp.TxIntent { return tcp.TxIntent{Now: now} }
+func TestRTO_Configure(t *testing.T) {
+	var r Timer
+	if err := r.Configure(nil); err == nil {
+		t.Error("Configure must reject a nil clock")
+	}
+	if err := r.Configure(func() int64 { return 0 }); err != nil {
+		t.Fatal(err)
+	}
+	if r.nanotime == nil {
+		t.Fatal("clock not stored")
+	}
+	r.Reset()
+	if r.nanotime == nil {
+		t.Error("Reset must preserve the configured clock")
+	}
+}
 
 func TestRTO_Reset(t *testing.T) {
-	var r Timer
+	r := newRTO()
 	r.Reset()
 	if r.rto != rtoInitial {
 		t.Errorf("initial rto=%v, want %v", r.rto, rtoInitial)
@@ -61,7 +78,7 @@ func TestRTO_ArmOnSendSampleOnAck(t *testing.T) {
 	r := newRTO()
 	const iss = uint32(1000)
 
-	r.PostTx(dataSeg(iss, 100), 0)
+	r.postTx(dataSeg(iss, 100), 0)
 	if !r.Running() {
 		t.Fatal("timer must arm after sending data")
 	}
@@ -70,10 +87,10 @@ func TestRTO_ArmOnSendSampleOnAck(t *testing.T) {
 	}
 
 	// ACK arrives one RTT (40ms) later covering all sent data.
-	if !r.PreRx(rxAt(ackSeg(iss+100), 40*rtoMs)).Keep {
+	if !r.PreRx(nil, frameOf(t, ackSeg(iss+100))) {
 		t.Error("PreRx must keep the segment")
 	}
-	r.PostRx(acceptedAt(ackSeg(iss+100), 40*rtoMs))
+	r.postRx(ackSeg(iss+100), 40*rtoMs)
 	if r.Running() {
 		t.Error("timer must stop once all data is acknowledged")
 	}
@@ -87,23 +104,26 @@ func TestRTO_ArmOnSendSampleOnAck(t *testing.T) {
 func TestRTO_RetransmitOnTimeout(t *testing.T) {
 	r := newRTO()
 	const iss = uint32(1000)
-	r.PostTx(dataSeg(iss, 100), 0)
+	r.postTx(dataSeg(iss, 100), 0)
 
-	if r.PreTx(txAt(int64(rtoInitial) - 1)).Retransmit {
+	if _, rtx, _ := r.preTx(int64(rtoInitial)-1, tcp.Value(iss)); rtx {
 		t.Fatal("must not retransmit before the deadline")
 	}
-	dir := r.PreTx(tcp.TxIntent{Now: int64(rtoInitial), UNA: tcp.Value(iss), NXT: tcp.Value(iss + 100)})
-	if !dir.Retransmit {
+	from, rtx, hold := r.preTx(int64(rtoInitial), tcp.Value(iss))
+	if !rtx {
 		t.Fatal("RTO must fire at the deadline with data outstanding")
 	}
-	if dir.RetransmitFrom != tcp.Value(iss) {
-		t.Errorf("retransmit from %d, want snd.UNA=%d", dir.RetransmitFrom, iss)
+	if hold {
+		t.Error("the estimator never holds new data back")
+	}
+	if from != tcp.Value(iss) {
+		t.Errorf("retransmit from %d, want snd.UNA=%d", from, iss)
 	}
 	if r.CurrentRTO() != 2*rtoInitial {
 		t.Errorf("rto=%v after one backoff, want %v", r.CurrentRTO(), 2*rtoInitial)
 	}
-	// The connection resends from snd.UNA; PostTx sees a retransmission.
-	r.PostTx(dataSeg(iss, 100), int64(rtoInitial))
+	// The connection resends from snd.UNA; postTx sees a retransmission.
+	r.postTx(dataSeg(iss, 100), int64(rtoInitial))
 	if r.timing {
 		t.Error("retransmitted segment must not be RTT-sampled (Karn)")
 	}
@@ -114,12 +134,12 @@ func TestRTO_RetransmitOnTimeout(t *testing.T) {
 func TestRTO_KarnNoSampleOnRetransmittedAck(t *testing.T) {
 	r := newRTO()
 	const iss = uint32(1000)
-	r.PostTx(dataSeg(iss, 100), 0)
+	r.postTx(dataSeg(iss, 100), 0)
 	// Timeout and retransmit.
-	r.PreTx(txAt(int64(rtoInitial)))
-	r.PostTx(dataSeg(iss, 100), int64(rtoInitial))
+	r.preTx(int64(rtoInitial), tcp.Value(iss))
+	r.postTx(dataSeg(iss, 100), int64(rtoInitial))
 	// ACK now arrives; no sample should be taken since timing was discarded.
-	r.PostRx(acceptedAt(ackSeg(iss+100), int64(rtoInitial)+10*rtoMs))
+	r.postRx(ackSeg(iss+100), int64(rtoInitial)+10*rtoMs)
 	if r.haveRTT {
 		t.Error("no RTT sample should exist after a retransmission (Karn)")
 	}
@@ -130,10 +150,10 @@ func TestRTO_KarnNoSampleOnRetransmittedAck(t *testing.T) {
 func TestRTO_TimerRestartsWhilePartiallyAcked(t *testing.T) {
 	r := newRTO()
 	const iss = uint32(1000)
-	r.PostTx(dataSeg(iss, 100), 0)
-	r.PostTx(dataSeg(iss+100, 100), 0) // 200 octets outstanding, iss..iss+200.
+	r.postTx(dataSeg(iss, 100), 0)
+	r.postTx(dataSeg(iss+100, 100), 0) // 200 octets outstanding, iss..iss+200.
 
-	r.PostRx(acceptedAt(ackSeg(iss+100), 40*rtoMs)) // acks first 100 only.
+	r.postRx(ackSeg(iss+100), 40*rtoMs) // acks first 100 only.
 	if !r.Running() {
 		t.Fatal("timer must remain armed while data is still in flight")
 	}
@@ -146,7 +166,7 @@ func TestRTO_TimerRestartsWhilePartiallyAcked(t *testing.T) {
 // nor start an RTT sample.
 func TestRTO_NoArmWithoutData(t *testing.T) {
 	r := newRTO()
-	r.PostTx(tcp.Segment{SEQ: 1000, Flags: tcp.FlagACK}, 0) // pure ACK, DATALEN==0.
+	r.postTx(tcp.Segment{SEQ: 1000, Flags: tcp.FlagACK}, 0) // pure ACK, DATALEN==0.
 	if r.Running() || r.timing {
 		t.Error("pure control segment must not arm the timer or start a sample")
 	}
@@ -157,15 +177,15 @@ func TestRTO_NoArmWithoutData(t *testing.T) {
 func TestRTO_BackoffCollapsesOnValidSample(t *testing.T) {
 	r := newRTO()
 	const iss = uint32(1000)
-	r.PostTx(dataSeg(iss, 100), 0)
-	r.PreTx(txAt(int64(rtoInitial)))               // one timeout: backoff=1.
-	r.PostTx(dataSeg(iss, 100), int64(rtoInitial)) // retransmit (no sample).
+	r.postTx(dataSeg(iss, 100), 0)
+	r.preTx(int64(rtoInitial), tcp.Value(iss))     // one timeout: backoff=1.
+	r.postTx(dataSeg(iss, 100), int64(rtoInitial)) // retransmit (no sample).
 	if r.backoff != 1 {
 		t.Fatalf("backoff=%d, want 1 after a timeout", r.backoff)
 	}
 	// New data sent and freshly sampled, then acked.
-	r.PostTx(dataSeg(iss+100, 100), int64(rtoInitial)+rtoMs)
-	r.PostRx(acceptedAt(ackSeg(iss+200), int64(rtoInitial)+30*rtoMs))
+	r.postTx(dataSeg(iss+100, 100), int64(rtoInitial)+rtoMs)
+	r.postRx(ackSeg(iss+200), int64(rtoInitial)+30*rtoMs)
 	if r.backoff != 0 {
 		t.Errorf("backoff=%d, want 0 after a valid RTT sample", r.backoff)
 	}
@@ -173,8 +193,7 @@ func TestRTO_BackoffCollapsesOnValidSample(t *testing.T) {
 
 // TestRTO_Clamped verifies CurrentRTO is clamped to [rtoMin, rtoMax].
 func TestRTO_Clamped(t *testing.T) {
-	var r Timer
-	r.Reset()
+	r := newRTO()
 	r.rto = time.Nanosecond
 	if got := r.CurrentRTO(); got != rtoMin {
 		t.Errorf("CurrentRTO=%v, want floor %v", got, rtoMin)
@@ -188,8 +207,7 @@ func TestRTO_Clamped(t *testing.T) {
 // TestRTO_UpdateRTTFirstSample verifies the first-measurement initialization of
 // SRTT/RTTVAR (RFC 6298 §2.2).
 func TestRTO_UpdateRTTFirstSample(t *testing.T) {
-	var r Timer
-	r.Reset()
+	r := newRTO()
 	r.updateRTT(100 * time.Millisecond)
 	if r.srtt != 100*time.Millisecond {
 		t.Errorf("srtt=%v, want 100ms", r.srtt)
@@ -203,53 +221,61 @@ func TestRTO_UpdateRTTFirstSample(t *testing.T) {
 	}
 }
 
-// TestRTO_ImplementsPolicy exercises Timer through the [tcp.Policy]
-// interface: sending data arms a deadline and a full ACK disarms it.
-func TestRTO_ImplementsPolicy(t *testing.T) {
-	var lr tcp.Policy = newRTO()
-	lr.Reset()
-	lr.PostTx(dataSeg(1000, 100), 0)
-	if lr.NextDeadline() == 0 {
-		t.Error("expected an armed deadline after sending data")
+// TestRTO_PolicyHooksDeriveFromFrame exercises Timer through the [tcp.Policy]
+// hooks, verifying it reads the segment out of the frame it is handed: sending
+// data arms a deadline and a full ACK disarms it and yields the RTT sample.
+func TestRTO_PolicyHooksDeriveFromFrame(t *testing.T) {
+	var clock int64
+	var r Timer
+	if err := r.Configure(func() int64 { return clock }); err != nil {
+		t.Fatal(err)
 	}
-	if !lr.PreRx(rxAt(ackSeg(1100), 10*rtoMs)).Keep {
+	var pol tcp.Policy = &r
+	pol.Reset()
+
+	pol.PostTx(nil, frameOf(t, dataSeg(1000, 100)))
+	if r.NextDeadline() == 0 {
+		t.Fatal("expected an armed deadline after sending data")
+	}
+	clock = 10 * rtoMs
+	if !pol.PreRx(nil, frameOf(t, ackSeg(1100))) {
 		t.Error("PreRx must keep")
 	}
-	lr.PostRx(acceptedAt(ackSeg(1100), 10*rtoMs))
-	if lr.NextDeadline() != 0 {
+	pol.PostRx(nil, tcp.StateEstablished, frameOf(t, ackSeg(1100)))
+	if r.NextDeadline() != 0 {
 		t.Error("expected disarmed timer after full ack")
+	}
+	if r.SmoothedRTT() != 10*time.Millisecond {
+		t.Errorf("srtt=%v, want 10ms sampled through the hooks", r.SmoothedRTT())
 	}
 }
 
-// TestRTO_IgnoresRejectedSegment verifies the estimator does not act on a segment
-// the connection refused. PreRx runs before the state machine has judged the
-// segment, so an acknowledgement for data never sent would otherwise collapse the
-// backoff and take a bogus round-trip sample.
-func TestRTO_IgnoresRejectedSegment(t *testing.T) {
+// TestRTO_PreRxNeverDrops verifies the estimator keeps every segment and records
+// nothing at PreRx time. Dropping is not its business, and the connection has not
+// yet judged the segment: an acknowledgement for data never sent would otherwise
+// collapse the backoff and take a bogus round-trip sample. Only accepted segments
+// reach PostRx, which the Handler guarantees.
+func TestRTO_PreRxNeverDrops(t *testing.T) {
 	r := newRTO()
 	const iss = uint32(1000)
-	r.PostTx(dataSeg(iss, 100), 0)
+	r.postTx(dataSeg(iss, 100), 0)
 	armed := r.NextDeadline()
 	if armed == 0 {
 		t.Fatal("timer must be armed after sending data")
 	}
 
-	// An acknowledgement far beyond anything sent, refused by the connection.
-	bogus := ackSeg(iss + 100000)
-	if !r.PreRx(rxAt(bogus, 40*rtoMs)).Keep {
+	// An acknowledgement far beyond anything sent, which the connection refuses.
+	if !r.PreRx(nil, frameOf(t, ackSeg(iss+100000))) {
 		t.Error("PreRx must keep: dropping is not the estimator's business")
 	}
-	r.PostRx(tcp.RxEvent{Segment: bogus, Now: 40 * rtoMs, Accepted: false})
-
 	if r.NextDeadline() != armed {
-		t.Errorf("deadline moved to %d on a refused segment, want it left at %d",
-			r.NextDeadline(), armed)
+		t.Errorf("deadline moved to %d at PreRx, want it left at %d", r.NextDeadline(), armed)
 	}
 	if r.SmoothedRTT() != 0 {
-		t.Errorf("took an RTT sample of %v from a refused segment", r.SmoothedRTT())
+		t.Errorf("took an RTT sample of %v at PreRx", r.SmoothedRTT())
 	}
 	if !r.Running() {
-		t.Error("timer disarmed by a refused acknowledgement")
+		t.Error("timer disarmed at PreRx")
 	}
 }
 
@@ -262,25 +288,24 @@ func TestRTO_RetransmitsZeroWindowProbe(t *testing.T) {
 	r := newRTO()
 	const iss = uint32(5000)
 	probe := dataSeg(iss, 1) // The one-octet probe.
-	r.PostTx(probe, 0)
+	r.postTx(probe, 0)
 
 	now := int64(rtoInitial)
 	prevRTO := r.CurrentRTO()
 	for attempt := 1; attempt <= 4; attempt++ {
-		dir := r.PreTx(tcp.TxIntent{Now: now, UNA: tcp.Value(iss), NXT: tcp.Value(iss + 1)})
-		if !dir.Retransmit {
+		from, rtx, _ := r.preTx(now, tcp.Value(iss))
+		if !rtx {
 			t.Fatalf("attempt %d: timer did not fire; the probe would never be resent", attempt)
 		}
-		if dir.RetransmitFrom != tcp.Value(iss) {
-			t.Errorf("attempt %d: retransmit from %d, want the probe octet at %d",
-				attempt, dir.RetransmitFrom, iss)
+		if from != tcp.Value(iss) {
+			t.Errorf("attempt %d: retransmit from %d, want the probe octet at %d", attempt, from, iss)
 		}
 		if got := r.CurrentRTO(); got <= prevRTO {
 			t.Errorf("attempt %d: rto %v did not back off past %v", attempt, got, prevRTO)
 		}
 		prevRTO = r.CurrentRTO()
 		// The peer still cannot accept the octet, so it stays unacknowledged.
-		r.PostTx(probe, now)
+		r.postTx(probe, now)
 		now += int64(prevRTO)
 	}
 }
