@@ -23,7 +23,7 @@ func newRetransmitQueue(t *testing.T, bufsize, maxPkts, npkt, pktlen, unsent int
 	}
 	seq := iss
 	scratch := make([]byte, pktlen)
-	for i := 0; i < npkt; i++ {
+	for i := range npkt {
 		n, err := rtx.MakePacket(scratch, seq)
 		if err != nil {
 			t.Fatalf("packet %d: %v", i, err)
@@ -186,7 +186,7 @@ func TestRingTx_RetransmitWrapped(t *testing.T) {
 	// Push the queue most of the way around the ring, acking as we go.
 	seq := iss
 	scratch := make([]byte, pktlen)
-	for round := 0; round < 3; round++ {
+	for round := range 3 {
 		chunk := make([]byte, pktlen)
 		for i := range chunk {
 			chunk[i] = byte(round*pktlen + i + 1)
