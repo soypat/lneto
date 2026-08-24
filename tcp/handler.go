@@ -31,13 +31,8 @@ type Handler struct {
 	optcodec OptionCodec
 	// reasm tracks out-of-order segments staged in bufRx's free region. Always
 	// enabled once buffers are set (see [Handler.SetBuffers]).
-	reasm reassembly
-	// loss is the optional packet-loss recovery algorithm (RTO, congestion
-	// control, ...) driven from the rx/tx hooks. nil disables loss recovery, in
-	// which case the connection behaves as if no timing existed. nanotime is the
-	// monotonic time source (nanoseconds) passed to those hooks; it is non-nil
-	// whenever loss is non-nil (enforced by [Conn.Configure]). See [LossRecovery].
-	loss     LossRecovery
+	reasm    reassembly
+	policy   Policy
 	nanotime func() int64
 
 	closing    bool
@@ -79,27 +74,10 @@ func (h *Handler) SetBuffers(txbuf, rxbuf []byte, packets int) error {
 	return h.bufTx.ResetOrReuse(txbuf, packets, 0)
 }
 
-// SetLossRecovery installs the packet-loss recovery algorithm and the monotonic
-// time source (nanoseconds, the func() int64 convention used across lneto) that
-// drives it. The tcp package keeps no clock of its own; nanotime is read only to
-// stamp the rx/tx hooks (see [LossRecovery]). Passing loss == nil disables loss
-// recovery. It should be set before the connection is opened.
-func (h *Handler) SetLossRecovery(loss LossRecovery, nanotime func() int64) {
-	h.loss = loss
-	h.nanotime = nanotime
+func (h *Handler) SetPolicy(policy Policy) {
+	h.policy = policy
 }
-
-func (h *Handler) lossEnabled() bool { return h.loss != nil }
-
-// NextDeadline returns the monotonic-nanosecond instant at which the connection
-// must next be serviced by a transmit attempt (e.g. an RTO expiry), or 0 when
-// there is no deadline or no loss recovery is configured. See [LossRecovery].
-func (h *Handler) NextDeadline() int64 {
-	if h.loss == nil {
-		return 0
-	}
-	return h.loss.NextDeadline()
-}
+func (h *Handler) policyEnabled() bool { return h.policy != nil }
 
 // LocalPort returns the local port of the connection. Returns 0 if the connection is closed and uninitialized.
 func (h *Handler) LocalPort() uint16 {
@@ -165,7 +143,7 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 		shutdownRx: false,
 		// Persist configuration across reopen:
 		validator: h.validator,
-		loss:      h.loss,
+		policy:    h.policy,
 		nanotime:  h.nanotime,
 		logger:    h.logger,
 		// persist memory across repoen:
@@ -173,8 +151,8 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 		bufRx: h.bufRx,
 		reasm: h.reasm,
 	}
-	if h.lossEnabled() {
-		h.loss.Reset()
+	if h.policyEnabled() {
+		h.policy.Reset()
 	}
 	h.reasm.clear() // preserve metadata capacity across reopen, drop held segments.
 	h.bufTx.ResetOrReuse(nil, 0, iss)
@@ -212,9 +190,7 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		return nil
 	}
 
-	// Notify loss recovery of the received segment (RTT sampling, timer
-	// management) and let it drop the segment before processing if it asks to.
-	if h.lossEnabled() && !h.loss.PreRx(segIncoming, h.nanotime()).Keep {
+	if h.policyEnabled() && !h.policy.PreRx(h, tfrm) {
 		return nil
 	}
 
@@ -380,16 +356,18 @@ func (h *Handler) Send(b []byte) (int, error) {
 	if h.IsTxOver() {
 		return 0, net.ErrClosed
 	}
-	var now int64
-	if h.lossEnabled() {
-		now = h.nanotime()
-		if h.loss.PreTx(now).RetransmitAll {
+	if h.policyEnabled() {
+		tfrm, err := NewFrame(b)
+		if err != nil {
+			return 0, err
+		}
+		rtxFrom, doRtx, _ := h.policy.PreTx(h, tfrm)
+		if doRtx {
 			// Go-back-N retransmission directed by loss recovery: rewind the
 			// send sequence and transmit buffer so unacknowledged data is resent
 			// from snd.UNA. Done before the early short-circuit below so an
 			// expired RTO retransmits even with no new data queued.
-			h.scb.RetransmitAll()
-			h.bufTx.RetransmitFromUNA()
+			h.scb.RetransmitFrom(rtxFrom)
 		}
 	}
 	awaitingSyn := h.AwaitingSynSend()
@@ -474,8 +452,8 @@ func (h *Handler) Send(b []byte) (int, error) {
 	} else if prevState != h.scb.State() && h.logenabled(slog.LevelInfo) {
 		h.info("tcp.Handler:tx-statechange", slog.Uint64("port", uint64(h.localPort)), slog.String("oldState", prevState.String()), slog.String("newState", h.scb.State().String()), slog.String("txflags", segment.Flags.String()))
 	}
-	if h.lossEnabled() {
-		h.loss.PostTx(segment, now)
+	if h.policyEnabled() {
+		h.policy.PostTx(h, tfrm)
 	}
 	h.requeueControl = false
 	tfrm.SetSourcePort(h.localPort)
