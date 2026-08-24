@@ -31,9 +31,8 @@ type Handler struct {
 	optcodec OptionCodec
 	// reasm tracks out-of-order segments staged in bufRx's free region. Always
 	// enabled once buffers are set (see [Handler.SetBuffers]).
-	reasm    reassembly
-	policy   Policy
-	nanotime func() int64
+	reasm  reassembly
+	policy Policy
 
 	closing    bool
 	shutdownRx bool
@@ -74,10 +73,16 @@ func (h *Handler) SetBuffers(txbuf, rxbuf []byte, packets int) error {
 	return h.bufTx.ResetOrReuse(txbuf, packets, 0)
 }
 
+// SetPolicy installs the transmit-steering algorithm. nil disables it.
+// It should be set before the connection is opened. See [Policy].
 func (h *Handler) SetPolicy(policy Policy) {
 	h.policy = policy
 }
 func (h *Handler) policyEnabled() bool { return h.policy != nil }
+
+// ControlBlock returns the state machine underlying the Handler, mainly so a
+// [Policy] can read the sequence spaces. Not for modification.
+func (h *Handler) ControlBlock() *ControlBlock { return &h.scb }
 
 // LocalPort returns the local port of the connection. Returns 0 if the connection is closed and uninitialized.
 func (h *Handler) LocalPort() uint16 {
@@ -144,7 +149,6 @@ func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 		// Persist configuration across reopen:
 		validator: h.validator,
 		policy:    h.policy,
-		nanotime:  h.nanotime,
 		logger:    h.logger,
 		// persist memory across repoen:
 		bufTx: h.bufTx,
@@ -220,6 +224,9 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 	}
 	if prevState != h.scb.State() {
 		h.info("tcp.Handler:rx-statechange", slog.Uint64("port", uint64(h.localPort)), slog.String("old", prevState.String()), slog.String("new", h.scb.State().String()), slog.String("rxflags", segIncoming.Flags.String()))
+	}
+	if h.policyEnabled() {
+		h.policy.PostRx(h, prevState, tfrm)
 	}
 	if segIncoming.DATALEN != 0 && h.shutdownRx && (h.scb.State() == StateFinWait1 || h.scb.State() == StateFinWait2) {
 		// soypat/lneto#50: the application is done in both directions — read side
@@ -356,18 +363,28 @@ func (h *Handler) Send(b []byte) (int, error) {
 	if h.IsTxOver() {
 		return 0, net.ErrClosed
 	}
+	tfrm, err := NewFrame(b)
+	if err != nil {
+		return 0, err
+	}
+	offset := uint8(5)
+	var holdNew bool
 	if h.policyEnabled() {
-		tfrm, err := NewFrame(b)
-		if err != nil {
-			return 0, err
+		// Hand the Policy a defined frame: zeroed header at the minimum offset.
+		// It may append options and raise the offset, which is read back below.
+		tfrm.ClearHeader()
+		tfrm.SetOffsetAndFlags(offset, 0)
+		rtxFrom, doRtx, hold := h.policy.PreTx(h, tfrm)
+		holdNew = hold
+		if doRtx && h.scb.RetransmitFrom(rtxFrom) {
+			// Retransmission directed by the Policy: rewind the transmit buffer
+			// to match the send sequence so unacknowledged data is resent. Done
+			// before the early short-circuit below so an expired RTO
+			// retransmits even with no new data queued.
+			h.bufTx.RetransmitFrom(rtxFrom)
 		}
-		rtxFrom, doRtx, _ := h.policy.PreTx(h, tfrm)
-		if doRtx {
-			// Go-back-N retransmission directed by loss recovery: rewind the
-			// send sequence and transmit buffer so unacknowledged data is resent
-			// from snd.UNA. Done before the early short-circuit below so an
-			// expired RTO retransmits even with no new data queued.
-			h.scb.RetransmitFrom(rtxFrom)
+		if o, _ := tfrm.OffsetAndFlags(); o > offset && int(o)*4 < len(b) {
+			offset = o
 		}
 	}
 	awaitingSyn := h.AwaitingSynSend()
@@ -383,29 +400,27 @@ func (h *Handler) Send(b []byte) (int, error) {
 		// Early nop short circuit.
 		return 0, nil
 	}
-	tfrm, err := NewFrame(b)
-	if err != nil {
-		return 0, err
-	}
 	if buffered == 0 && h.closing && (h.scb.State() != StateCloseWait || !h.scb.HasPending()) {
 		// If Close called and no more data to be sent, terminate connection.
 		// In CLOSE-WAIT: wait until the pending ACK is sent first, since scb.Close()
 		// overwrites pending with [FIN|ACK] (unlike ESTABLISHED which merges via bitmask).
 		h.closing = false
-		err = h.scb.Close()
+		err := h.scb.Close()
 		if err != nil {
 			h.logerr("tcp.Handler.Close", slog.String("err", errstr(err)), slog.String("state", h.State().String()))
 			h.Abort()
 			return 0, io.EOF
 		}
 	}
-	offset := uint8(5)
-	mss := uint16(len(b) - sizeHeaderTCP)
+	// optHead is where the Handler's own options begin: after the fixed header
+	// and after any options the Policy already wrote, so neither clobbers the other.
+	optHead := int(offset) * 4
+	mss := uint16(len(b) - optHead)
 	var segment Segment
 	if awaitingSyn || requeueControl && h.scb.State() == StateSynSent {
 		// Handling init syn segment.
 		segment = ClientSynSegment(h.bufTx.iss, Size(h.bufRx.Size()))
-		h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
+		h.optcodec.PutOption16(b[optHead:], OptMaxSegmentSize, mss)
 		offset++
 		if requeueControl {
 			h.info("tcp.Handler:requeue-syn", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("rport", uint64(h.remotePort)))
@@ -417,7 +432,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 			WND:   Size(h.bufRx.Free()),
 			Flags: synack,
 		}
-		h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
+		h.optcodec.PutOption16(b[optHead:], OptMaxSegmentSize, mss)
 		offset++
 		h.info("tcp.Handler:requeue-synack", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("rport", uint64(h.remotePort)))
 	} else if requeueControl {
@@ -425,17 +440,22 @@ func (h *Handler) Send(b []byte) (int, error) {
 		return 0, nil
 	} else {
 		var ok bool
-		maxPayload := len(b) - sizeHeaderTCP
+		maxPayload := len(b) - optHead
+		if holdNew && !h.nextSegmentIsRetransmit() {
+			// Policy is holding new data back (congestion window exhausted).
+			// A retransmission it directed in this same call still proceeds.
+			maxPayload = 0
+		}
 		segment, ok = h.scb.PendingSegment(maxPayload)
 		segment.WND = h.recvWindow()
 		if !ok {
 			// No pending control segment or data to send. Yield.
 			return 0, nil
 		} else if segment.Flags == synack {
-			h.optcodec.PutOption16(b[sizeHeaderTCP:], OptMaxSegmentSize, mss)
+			h.optcodec.PutOption16(b[optHead:], OptMaxSegmentSize, mss)
 			offset++
 		} else if segment.DATALEN > 0 {
-			n, err := h.bufTx.MakePacket(b[sizeHeaderTCP:sizeHeaderTCP+segment.DATALEN], segment.SEQ)
+			n, err := h.bufTx.MakePacket(b[optHead:optHead+int(segment.DATALEN)], segment.SEQ)
 			if err != nil {
 				return 0, err
 			}
@@ -452,15 +472,19 @@ func (h *Handler) Send(b []byte) (int, error) {
 	} else if prevState != h.scb.State() && h.logenabled(slog.LevelInfo) {
 		h.info("tcp.Handler:tx-statechange", slog.Uint64("port", uint64(h.localPort)), slog.String("oldState", prevState.String()), slog.String("newState", h.scb.State().String()), slog.String("txflags", segment.Flags.String()))
 	}
-	if h.policyEnabled() {
-		h.policy.PostTx(h, tfrm)
-	}
 	h.requeueControl = false
 	tfrm.SetSourcePort(h.localPort)
 	tfrm.SetDestinationPort(h.remotePort)
 	tfrm.SetSegment(segment, offset)
 	tfrm.SetUrgentPtr(0)
 	datalen := int(offset)*4 + int(segment.DATALEN)
+	if h.policyEnabled() {
+		// Frame trimmed to what is actually emitted so the Policy's Payload()
+		// is the segment data and nothing more.
+		if sent, err := NewFrame(b[:datalen]); err == nil {
+			h.policy.PostTx(h, sent)
+		}
+	}
 	closedSuccess := prevState == StateTimeWait && segment.Flags.HasAny(FlagACK)
 	if closedSuccess {
 		h.reset(0, 0, 0)
@@ -470,6 +494,14 @@ func (h *Handler) Send(b []byte) (int, error) {
 		h.Abort()
 	}
 	return datalen, nil
+}
+
+// nextSegmentIsRetransmit reports whether the next data segment would resend
+// already-transmitted bytes rather than open new sequence space. Used to let a
+// retransmission through while a [Policy] holds new data back.
+func (h *Handler) nextSegmentIsRetransmit() bool {
+	endSeq, hasSent := h.bufTx.sentEndSeq()
+	return hasSent && h.scb.snd.NXT.LessThan(endSeq)
 }
 
 // Write implements [io.Writer] by copying b to a internal buffer to be sent over the network on the next

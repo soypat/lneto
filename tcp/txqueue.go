@@ -227,18 +227,39 @@ func (rtx *ringTx) RetransmitFromUNA() {
 	if oldest == nil {
 		return // Nothing in the retransmission queue.
 	}
-	unaSeq := oldest.seq
-	if rtx.sentend != 0 {
-		// Merge sent region [sentoff, sentend) back into unsent.
-		rtx.unsentoff = rtx.sentoff
-		if rtx.unsentend == 0 {
-			rtx.unsentend = rtx.sentend
-		}
-		rtx.sentoff = 0
-		rtx.sentend = 0
+	rtx.RetransmitFrom(oldest.seq)
+}
+
+// RetransmitFrom rewinds the transmit queue so sent-but-unacked data at and
+// after seq becomes unsent again; the next MakePacket calls re-send it. seq is
+// snapped down to the start of the packet containing it — the retransmission
+// queue tracks whole packets, so sub-packet rewind is not representable. It is
+// a no-op when seq is not covered by any queued packet (nothing to resend).
+//
+// Callers must pair this with [ControlBlock.RetransmitFrom] using the same seq
+// so the send sequence space and the transmit buffer rewind together.
+func (rtx *ringTx) RetransmitFrom(seq Value) {
+	pkt := rtx.slist.packetContaining(seq)
+	if pkt == nil {
+		return // seq not in the retransmission queue.
 	}
-	// Clear packet metadata; sequence tracking restarts from UNA.
-	rtx.slist.Reset(cap(rtx.slist.pkts), unaSeq)
+	rewindOff, rewindSeq := pkt.off, pkt.seq
+	// The write position is unsentend, except when the unsent region is empty
+	// (unsentend==0) in which case data ends where the sent region ends. Capture
+	// it before reopening the unsent region over the rewound packets.
+	writeEnd := rtx.unsentend
+	if writeEnd == 0 {
+		writeEnd = rtx.sentend
+	}
+	if rewindOff == rtx.sentoff {
+		rtx.sentoff = 0 // Whole queue rewound: sent region becomes empty.
+		rtx.sentend = 0
+	} else {
+		rtx.sentend = rewindOff
+	}
+	rtx.unsentoff = rewindOff
+	rtx.unsentend = writeEnd
+	rtx.slist.truncateFrom(rewindSeq)
 }
 
 func (rtx *ringTx) consolidateBufs() {
@@ -329,6 +350,36 @@ func (sl *sentlist) EndSeq() Value {
 
 func (sl *sentlist) Free() int {
 	return cap(sl.pkts) - len(sl.pkts)
+}
+
+// packetContaining returns the queued packet whose sequence range covers seq, or
+// nil when no packet does. It is the floor lookup a retransmission rewind needs:
+// seq lands inside a packet and the whole packet is resent.
+func (sl *sentlist) packetContaining(seq Value) *ringidx {
+	for i := range sl.pkts {
+		pkt := &sl.pkts[i]
+		if pkt.seq.LessThanEq(seq) && seq.LessThan(pkt.endSeq()) {
+			return pkt
+		}
+	}
+	return nil
+}
+
+// truncateFrom drops the packet starting at seq and every packet sent after it,
+// so their data can be re-queued as unsent. seq must be a packet start sequence
+// (see [sentlist.packetContaining]). When no packet survives, the auxiliary
+// sequence counter is rewound to seq so [sentlist.EndSeq] keeps reporting where
+// the next packet begins.
+func (sl *sentlist) truncateFrom(seq Value) {
+	for i := range sl.pkts {
+		if sl.pkts[i].seq == seq {
+			sl.pkts = sl.pkts[:i]
+			if i == 0 {
+				sl.ssn = seq
+			}
+			return
+		}
+	}
 }
 
 func (sl *sentlist) AddPacket(datalen, off, bufsize int, seq Value) *ringidx {
