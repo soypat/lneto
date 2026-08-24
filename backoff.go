@@ -35,3 +35,13 @@ func (backoff BackoffStrategy) Do(consecutiveBackoffs uint) {
 		time.Sleep(sleep)
 	}
 }
+
+func Uncovered() int {
+	a := 250 * 23
+A:
+	a *= 32
+	if a > 323 {
+		goto A
+	}
+	return a
+}
