@@ -115,6 +115,9 @@ jobs:
           set -euo pipefail
           go test -bench=. -benchmem -count=1 -shuffle=on -run='^$' -timeout=15m ./... | tee bench-results.txt
 
+      # Allocation tracking is Go-only for now: TinyGo 0.41.1 does not implement
+      # testing.B.Loop (which every benchmark here uses), so `tinygo test -bench`
+      # cannot run them. Revisit once TinyGo supports it to also gate TinyGo allocs.
       - name: Reject benchmark allocations
         run: |
           awk '
@@ -163,35 +166,54 @@ jobs:
           tinygo-version: "0.41.1"
           install-binaryen: "false"
 
-      - name: Build main revision
-        working-directory: main/examples/min-working-example
-        run: tinygo build -target=pico -o /tmp/main.bin .
-
-      - name: Build current revision
-        working-directory: current/examples/min-working-example
-        run: tinygo build -target=pico -o /tmp/current.bin .
-
-      - name: Compare TinyGo binary size
+      # The example is built with both toolchains: a pattern that is heapless
+      # under one can allocate under the other, so tracking both sizes is what
+      # catches a TinyGo-only regression the normal Go build would miss.
+      - name: Build binaries
         run: |
-          main_size=$(wc -c < /tmp/main.bin)
-          current_size=$(wc -c < /tmp/current.bin)
-          delta=$((current_size - main_size))
+          set -euo pipefail
+          for rev in main current; do
+            (
+              cd "$rev/examples/min-working-example"
+              go build -o "/tmp/$rev-go" .
+              tinygo build -target=pico -o "/tmp/$rev-pico.bin" .
+            )
+          done
+
+      - name: Compare binary sizes
+        run: |
+          set -euo pipefail
           {
             printf '<!-- lneto-bench -->\n\n'
-            printf '### TinyGo binary size\n\n'
+            printf '### Binary size\n\n'
             printf '| Target | Main | PR | Diff |\n'
             printf '|---|---:|---:|---:|\n'
-            printf '| Pico | %d bytes | %d bytes | %+d bytes |\n' "$main_size" "$current_size" "$delta"
           } > bench-report.md
+          # mode "gate" fails the job on growth; "report" only records the number.
+          # Only the embedded (TinyGo) target is gated: the amd64 Go binary is
+          # large and drifts with unrelated base-vs-head changes, so failing on it
+          # would be noisy. Its size is still tracked for visibility.
+          regressed=0
+          for target in "amd64 Go:go:report" "Pico TinyGo:pico.bin:gate"; do
+            IFS=: read -r label file mode <<<"$target"
+            main_size=$(wc -c < "/tmp/main-$file")
+            current_size=$(wc -c < "/tmp/current-$file")
+            delta=$((current_size - main_size))
+            printf '| %s | %d bytes | %d bytes | %+d bytes |\n' \
+              "$label" "$main_size" "$current_size" "$delta" >> bench-report.md
+            if [ "$mode" = gate ] && [ "$delta" -gt 0 ]; then
+              printf '::error::%s binary grew by %d bytes\n' "$label" "$delta"
+              regressed=1
+            fi
+          done
           cat bench-report.md >> "$GITHUB_STEP_SUMMARY"
-          if [ "$delta" -gt 0 ]; then
-            printf '::error::Pico binary grew by %d bytes\n' "$delta"
-            exit 1
-          fi
+          exit "$regressed"
 
       - name: Upload generated size report
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bench-report
           path: bench-report.md
+          if-no-files-found: ignore
           retention-days: 30
