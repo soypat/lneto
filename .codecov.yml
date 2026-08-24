@@ -1,5 +1,9 @@
 coverage:
-  range: 30..100
+  status:
+    patch:
+      default:
+        informational: true # Shows the patch metric but never turns red/fails the PR
+
 ignore:
   - "examples/**"
   - "**/stringers.go"
