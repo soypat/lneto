@@ -1,6 +1,10 @@
-package tcp
+package rto
 
-import "time"
+import (
+	"time"
+
+	"github.com/soypat/lneto/tcp"
+)
 
 // RFC 6298 retransmission-timeout (RTO) parameters. The algorithm keeps a
 // single retransmission timer per connection (RFC 6298 §5): the timer is
@@ -30,61 +34,67 @@ const (
 	backoffMax = 12
 )
 
-// RTO implements the RFC 6298 round-trip-time estimator and the single
-// retransmission timer as a [LossRecovery]. Construct it with new(RTO) and hand
-// it to [ConnConfig.LossRecovery]; the connection calls [RTO.Reset] on open, so
+// Timer implements the RFC 6298 round-trip-time estimator and the single
+// retransmission timer as a [tcp.Policy]. Construct it with new(Timer) and hand
+// it to [tcp.ConnConfig.Policy]; the connection calls [Timer.Reset] on open, so
 // the zero value is ready to use.
 //
-// RTO is a pure, reactive state machine: it observes the segments a connection
-// sends and receives (via the LossRecovery hooks) and the monotonic time handed
+// Timer is a pure, reactive state machine: it observes the segments a connection
+// sends and receives (via the tcp.Policy hooks) and the monotonic time handed
 // in at each hook, and from those alone derives RTT estimates and retransmission
 // decisions. It holds no clock and allocates nothing, which keeps it
 // deterministic for unit testing (see issue #140).
 //
-// RTO tracks its own shadow of the send sequence space purely from the segments
-// it observes: [RTO.PostTx] advances the highest sequence sent and [RTO.PreRx]
+// Timer tracks its own shadow of the send sequence space purely from the segments
+// it observes: [Timer.PostTx] advances the highest sequence sent and [Timer.PreRx]
 // advances the highest sequence acknowledged. This is what lets it manage the
 // timer (RFC 6298 §5.2/§5.3) without reaching into the tcp state machine, and it
 // is also how retransmissions are distinguished for Karn's algorithm — a segment
 // whose sequence space is not beyond the shadow snd.NXT is a retransmission and
 // is never RTT-sampled.
-type RTO struct {
+type Timer struct {
 	srtt    time.Duration // smoothed round-trip time (SRTT).
 	rttvar  time.Duration // round-trip-time variation (RTTVAR).
 	rto     time.Duration // current retransmission timeout.
 	haveRTT bool          // false until the first RTT sample is taken.
 
 	// Shadow of the send sequence space, derived from observed segments.
-	haveSeq bool  // false until the first data segment is observed.
-	sndUNA  Value // highest acknowledged sequence number seen on the wire.
-	sndNXT  Value // one past the highest sequence number sent.
+	haveSeq bool      // false until the first data segment is observed.
+	sndUNA  tcp.Value // highest acknowledged sequence number seen on the wire.
+	sndNXT  tcp.Value // one past the highest sequence number sent.
 
 	// RTT sampling state (Karn's algorithm, RFC 6298 §3): at most one segment is
 	// timed at a time and retransmitted segments are never sampled.
 	timing   bool
-	timedSeq Value // ACK at or beyond this value completes the sample.
-	timedAt  int64 // send time (monotonic ns) of the timed segment.
+	timedSeq tcp.Value // ACK at or beyond this value completes the sample.
+	timedAt  int64     // send time (monotonic ns) of the timed segment.
 
 	// Retransmission timer state.
 	running  bool
 	deadline int64 // time (monotonic ns) at which the timer expires.
 	backoff  uint8 // consecutive timeouts, for exponential backoff.
+
+	// expirations counts timeouts since Reset. It exists so a policy sharing this
+	// timer can notice a timeout it did not itself drive: a congestion controller
+	// must collapse its window on one, and when the timer is a peer in a
+	// [tcp.Composite] the controller never sees the timer's directive.
+	expirations uint32
 }
 
-var _ LossRecovery = (*RTO)(nil)
+var _ tcp.Policy = (*Timer)(nil)
 
 // Reset returns the estimator to its pre-connection state with the initial RTO.
-// It implements [LossRecovery] and is called when the connection opens or aborts
+// It implements [tcp.Policy] and is called when the connection opens or aborts
 // so the estimator can be reused across connection reuse.
-func (r *RTO) Reset() { *r = RTO{rto: rtoInitial} }
+func (r *Timer) Reset() { *r = Timer{rto: rtoInitial} }
 
 // SmoothedRTT returns the current smoothed round-trip time (SRTT), or zero
 // before the first RTT measurement. It is concrete-type introspection and is
-// intentionally not part of [LossRecovery].
-func (r *RTO) SmoothedRTT() time.Duration { return r.srtt }
+// intentionally not part of [tcp.Policy].
+func (r *Timer) SmoothedRTT() time.Duration { return r.srtt }
 
 // CurrentRTO returns the timeout currently in effect, clamped to [rtoMin, rtoMax].
-func (r *RTO) CurrentRTO() time.Duration {
+func (r *Timer) CurrentRTO() time.Duration {
 	rto := r.rto
 	if rto < rtoMin {
 		rto = rtoMin
@@ -95,23 +105,41 @@ func (r *RTO) CurrentRTO() time.Duration {
 }
 
 // Running reports whether the retransmission timer is currently armed.
-func (r *RTO) Running() bool { return r.running }
+func (r *Timer) Running() bool { return r.running }
+
+// Expirations returns how many times the retransmission timer has expired since
+// [Timer.Reset]. A policy that shares this timer rather than driving it watches
+// this for a change to learn that a timeout happened, since it never sees the
+// timer's own directive. It is concrete-type introspection and is intentionally
+// not part of [tcp.Policy].
+func (r *Timer) Expirations() uint32 { return r.expirations }
 
 // NextDeadline returns the monotonic-nanosecond instant at which the timer
-// expires, or 0 when it is not armed. It implements [LossRecovery].
-func (r *RTO) NextDeadline() int64 {
+// expires, or 0 when it is not armed. It implements [tcp.Policy].
+func (r *Timer) NextDeadline() int64 {
 	if !r.running {
 		return 0
 	}
 	return r.deadline
 }
 
-// PreRx samples the RTT and manages the retransmission timer from a received
-// segment (RFC 6298 §5.2/§5.3). It implements [LossRecovery] and always keeps
-// the segment (the estimator never drops traffic).
-func (r *RTO) PreRx(incoming Segment, now int64) RxDirective {
-	if !r.haveSeq || !incoming.Flags.HasAny(FlagACK) {
-		return RxDirective{Keep: true}
+// PreRx keeps every segment: the estimator never drops traffic and records
+// nothing before the connection has decided whether the segment counts. It
+// implements [tcp.Policy].
+func (r *Timer) PreRx(rx tcp.RxMeta) tcp.RxDirective {
+	return tcp.RxDirective{Keep: true}
+}
+
+// PostRx samples the RTT and manages the retransmission timer from a segment the
+// connection accepted (RFC 6298 §5.2/§5.3). It implements [tcp.Policy].
+//
+// A refused segment is ignored. Acting on one would let an acknowledgement the
+// state machine rejected, for data never sent, collapse the backoff and take a
+// bogus RTT sample.
+func (r *Timer) PostRx(event tcp.RxEvent) {
+	incoming, now := event.Segment, event.Now
+	if !event.Accepted || !r.haveSeq || !incoming.Flags.HasAny(tcp.FlagACK) {
+		return
 	}
 	ack := incoming.ACK
 	if r.timing && !ack.LessThan(r.timedSeq) {
@@ -132,18 +160,23 @@ func (r *RTO) PreRx(incoming Segment, now int64) RxDirective {
 		r.running = true
 		r.deadline = now + int64(r.CurrentRTO())
 	}
-	return RxDirective{Keep: true}
 }
+
+// WriteOptions adds no TCP options: retransmission timing needs none of its
+// own. It implements [tcp.Policy].
+func (r *Timer) WriteOptions(plan tcp.TxPlan, opts []byte) uint8 { return 0 }
 
 // PreTx reports whether the retransmission timer has expired and, if so, applies
 // the RFC 6298 §5.4–§5.6 timeout response — discard the outstanding RTT sample
 // (Karn), back the RTO off exponentially and restart the timer — returning a
 // directive that asks the connection to retransmit from snd.UNA (go-back-N). It
-// implements [LossRecovery].
-func (r *RTO) PreTx(now int64) TxDirective {
+// implements [tcp.Policy].
+func (r *Timer) PreTx(intent tcp.TxIntent) tcp.TxDirective {
+	now := intent.Now
 	if !r.running || now < r.deadline || r.sndUNA == r.sndNXT {
-		return TxDirective{}
+		return tcp.TxDirective{}
 	}
+	r.expirations++
 	r.timing = false // §5.4: do not sample a retransmitted segment.
 	if r.backoff < backoffMax {
 		r.backoff++
@@ -151,27 +184,27 @@ func (r *RTO) PreTx(now int64) TxDirective {
 	}
 	r.running = true
 	r.deadline = now + int64(r.CurrentRTO())
-	return TxDirective{RetransmitAll: true}
+	return tcp.TxDirective{Retransmit: true, RetransmitFrom: intent.UNA}
 }
 
 // PostTx records an emitted segment: it advances the shadow send sequence,
 // begins timing newly transmitted data (RFC 6298 §3) and arms the timer (§5.1).
 // Segments that do not extend the send sequence are retransmissions and are
 // never RTT-sampled (Karn's algorithm). Control-only segments (no data) are
-// ignored. It implements [LossRecovery].
-func (r *RTO) PostTx(outgoing Segment, now int64) {
+// ignored. It implements [tcp.Policy].
+func (r *Timer) PostTx(outgoing tcp.Segment, now int64) {
 	if outgoing.DATALEN == 0 {
 		return // only data segments are timed / arm the RTO.
 	}
 	segStart := outgoing.SEQ
-	segEnd := segStart + Value(outgoing.LEN())
+	segEnd := segStart + tcp.Value(outgoing.LEN())
 	if !r.haveSeq {
 		r.haveSeq = true
 		r.sndUNA = segStart
 		r.sndNXT = segStart
 	}
 	if !r.sndNXT.LessThan(segEnd) {
-		// Segment does not extend the send sequence: it is a retransmission.
+		// tcp.Segment does not extend the send sequence: it is a retransmission.
 		// Discard any outstanding RTT sample per Karn's algorithm. The timer was
 		// already (re)armed by PreTx on the timeout that triggered this resend.
 		r.timing = false
@@ -189,9 +222,20 @@ func (r *RTO) PostTx(outgoing Segment, now int64) {
 	}
 }
 
+// ObserveRTT folds a round-trip measurement taken by other means into the
+// estimator, for a policy that composes this timer and can measure the round trip
+// more accurately than acknowledgement timing allows. The RFC 7323 timestamp echo
+// is the case this exists for.
+//
+// Unlike the timer's own sampling this does not apply Karn's algorithm, because a
+// sample derived from an echoed timestamp is unambiguous even when the segment
+// carrying it was a retransmission (RFC 7323 §4.1). Non-positive samples are
+// ignored.
+func (r *Timer) ObserveRTT(rtt time.Duration) { r.updateRTT(rtt) }
+
 // updateRTT folds a round-trip measurement into SRTT/RTTVAR/RTO using the
 // integer-shift form of RFC 6298 §2.2/§2.3.
-func (r *RTO) updateRTT(sample time.Duration) {
+func (r *Timer) updateRTT(sample time.Duration) {
 	if sample <= 0 {
 		return
 	}

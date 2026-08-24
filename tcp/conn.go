@@ -80,7 +80,7 @@ type ConnConfig struct {
 	// congestion control, ...) for the connection. If set, Nanotime must also be
 	// set (else Configure returns an error). Leaving it nil disables loss
 	// recovery. See [LossRecovery].
-	LossRecovery LossRecovery
+	LossRecovery Policy
 	// Nanotime is the monotonic time source in nanoseconds (the func() int64
 	// convention used across lneto) that drives LossRecovery. It is required when
 	// LossRecovery is set and unused otherwise. The tcp package reads it only to
@@ -105,7 +105,7 @@ func (conn *Conn) Configure(config ConnConfig) (err error) {
 	}
 	conn._backoff = config.RWBackoff
 	conn.logger.log = config.Logger
-	conn.h.SetLossRecovery(config.LossRecovery, config.Nanotime)
+	conn.h.SetPolicy(config.LossRecovery)
 	return nil
 }
 
