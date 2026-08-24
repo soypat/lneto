@@ -1196,3 +1196,39 @@ func TestEgressIP_TCPMSSAdvertisesMTU(t *testing.T) {
 		t.Errorf("advertised MSS = %d, want %d (MTU %d - 40)", gotMSS, wantMSS, mtu)
 	}
 }
+
+// TestEphemeralPortSequence checks no ephemeral port is reused before the whole
+// 16384-port dynamic range has cycled, which is what keeps a redial off the
+// teardown state (TIME-WAIT, NAT flow entries) of the conversation before it.
+func TestEphemeralPortSequence(t *testing.T) {
+	s := new(StackAsync)
+	err := s.Reset(StackConfig{
+		Hostname:          "eph",
+		RandSeed:          42,
+		StaticAddress4:    [4]byte{10, 0, 0, 50},
+		MaxActiveTCPPorts: 1,
+		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 50},
+		MTU:               ethernet.MaxMTU,
+		ICMPQueueLimit:    2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const cycle = 16384
+	var seen [cycle]bool
+	for i := 0; i < cycle; i++ {
+		port := s.ephemeralPort()
+		if port < 49152 {
+			t.Fatalf("port %d below dynamic range (RFC 6335)", port)
+		}
+		idx := port - 49152
+		if seen[idx] {
+			t.Fatalf("port %d reused after only %d allocations (want full %d cycle)", port, i, cycle)
+		}
+		seen[idx] = true
+	}
+	// The cycle is exhausted: the next allocation may legitimately reuse.
+	if got := s.ephemeralPort(); got < 49152 {
+		t.Fatalf("post-cycle port %d below dynamic range", got)
+	}
+}

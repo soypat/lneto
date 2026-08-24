@@ -102,8 +102,9 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 	isDial := raddr.IsValid() && !raddr.Addr().IsUnspecified()
 	if laddr.Port() == 0 {
 		// Auto-assign an ephemeral port for both outbound dials and for listeners
-		// that did not request a fixed port.
-		laddr = netip.AddrPortFrom(laddr.Addr(), uint16(49152+s.blk.async.Prand32()%16384))
+		// that did not request a fixed port. Sequential, not random: see
+		// [StackAsync.ephemeralPort] for why random selection breaks dial churn.
+		laddr = netip.AddrPortFrom(laddr.Addr(), s.blk.async.ephemeralPort())
 	}
 	if laddr.Addr().IsUnspecified() {
 		// Fill in the stack's configured address for the requested family.
