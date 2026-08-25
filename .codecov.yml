@@ -2,7 +2,7 @@ coverage:
   status:
     project:
       default:
-        informational: true
+        target: 62% # Ensure we don't accumulate too much debt.
     patch:
       default:
         informational: true # Shows the patch metric but never turns red/fails the PR
