@@ -31,10 +31,10 @@ func TestHandlerStreamIntegrityUnderReorder(t *testing.T) {
 	var want, got []byte
 	rb := make([]byte, mtu)
 	letter := byte('A')
-	for round := 0; round < rounds; round++ {
+	for round := range rounds {
 		// Capture this round's segments on the wire, one segment per write.
 		segs := make([][]byte, 0, nsegs)
-		for i := 0; i < nsegs; i++ {
+		for range nsegs {
 			payload := make([]byte, segSize)
 			for j := range payload {
 				payload[j] = letter

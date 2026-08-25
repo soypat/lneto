@@ -1216,7 +1216,7 @@ func TestEphemeralPortSequence(t *testing.T) {
 	}
 	const cycle = 16384
 	var seen [cycle]bool
-	for i := 0; i < cycle; i++ {
+	for i := range cycle {
 		port := s.ephemeralPort()
 		if port < 49152 {
 			t.Fatalf("port %d below dynamic range (RFC 6335)", port)
