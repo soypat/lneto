@@ -631,6 +631,7 @@ func (s *StackAsync) StartLookupIPType(host string, qtype dns.Type) error {
 		},
 		EnableRecursion: true,
 		MaxIPs:          uint16(len(s.addrbufnip)),
+		MaxCNAMEs:       8,
 	})
 	if err != nil {
 		return err

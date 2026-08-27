@@ -43,11 +43,7 @@ func (c *Client) StartResolve(localPort, txid uint16, cfg ResolveConfig) error {
 	if maxIPs == 0 {
 		maxIPs = uint16(nd)
 	}
-	maxCNAMEs := cfg.MaxCNAMEs
-	if maxCNAMEs == 0 {
-		maxCNAMEs = 16
-	}
-	maxAns := maxIPs + maxCNAMEs
+	maxAns := maxIPs + cfg.MaxCNAMEs
 	c.reset(localPort, txid, CQueryPending, cfg.EnableRecursion)
 	c.msg.LimitResourceDecoding(uint16(nd), maxAns, 0, 0)
 	c.msg.AddQuestions(cfg.Questions)
