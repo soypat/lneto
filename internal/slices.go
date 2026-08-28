@@ -14,6 +14,40 @@ func BytesEqual(a, b []byte) bool {
 	return unsafe.String(&a[0], len(a)) == unsafe.String(&b[0], len(b))
 }
 
+// EqualFoldASCII reports whether a and b are equal under ASCII case folding.
+// Unlike [strings.EqualFold] it does not fold non-ASCII runes, so no multi-byte
+// rune such as U+212A KELVIN SIGN can alias an ASCII key.
+func EqualFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	const asciiCapDiff = 'a' - 'A'
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if ca >= 'A' && ca <= 'Z' {
+			ca += asciiCapDiff
+		}
+		if cb >= 'A' && cb <= 'Z' {
+			cb += asciiCapDiff
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
+}
+
+// BytesEqualFoldASCII is the []byte form of [EqualFoldASCII]. Like [BytesEqual]
+// it is heapless in tinygo, unlike [bytes.EqualFold] which also folds non-ASCII.
+func BytesEqualFoldASCII(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	} else if len(a) == 0 {
+		return true
+	}
+	return EqualFoldASCII(unsafe.String(&a[0], len(a)), unsafe.String(&b[0], len(b)))
+}
+
 // IsZeroed returns true if all arguments are set to their zero value.
 func IsZeroed[T comparable](a ...T) bool {
 	var z T

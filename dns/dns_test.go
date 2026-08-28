@@ -268,9 +268,8 @@ func TestClient_CNAMEResponse(t *testing.T) {
 			Type:  TypeA,
 			Class: ClassINET,
 		}},
-		EnableRecursion: true,
-		MaxIPs:          4,
-		MaxCNAMEs:       2,
+		EnableRecursion:    true,
+		MaxResponseAnswers: 6,
 	})
 	if err != nil {
 		t.Fatal("failed to start DNS resolve:", err)
@@ -342,6 +341,24 @@ func TestMessage_WriteAnswers(t *testing.T) {
 			},
 			want: nil,
 		},
+		{
+			name: "CNAME target case differs from owner name",
+			host: "a.com",
+			// A server picks the case of both the CNAME target and the owner
+			// name of the record it aliases, and may randomize it (DNS 0x20),
+			// so the two must compare under ASCII case folding.
+			response: []byte{
+				// Header: txid 0xabcd, QR|RD|RA, QD=1 AN=2 NS=0 AR=0.
+				0xab, 0xcd, 0x81, 0x80, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00,
+				// Question: a.com A IN.
+				0x01, 'a', 0x03, 'c', 'o', 'm', 0x00, 0x00, 0x01, 0x00, 0x01,
+				// Answer 1: a.com CNAME B.CoM.
+				0x01, 'a', 0x03, 'c', 'o', 'm', 0x00, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x07, 0x01, 'B', 0x03, 'C', 'o', 'M', 0x00,
+				// Answer 2: b.com A IN ttl=10 rdlen=4 1.2.3.4.
+				0x01, 'b', 0x03, 'c', 'o', 'm', 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x04, 0x01, 0x02, 0x03, 0x04,
+			},
+			want: []netip.Addr{netip.AddrFrom4([4]byte{1, 2, 3, 4})},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -372,7 +389,7 @@ func TestClient_ReceivesDNSResponse(t *testing.T) {
 	const hostname = "example.com"
 	const txid = uint16(12345)
 	const clientPort = uint16(54321)
-	const maxIPs = 4
+	const maxAnswers = 4
 	allIPs := [5][4]byte{
 		{192, 0, 2, 1},
 		{192, 0, 2, 2},
@@ -387,7 +404,7 @@ func TestClient_ReceivesDNSResponse(t *testing.T) {
 	}{
 		{name: "single_answer", responseIPs: allIPs[:1], wantAnswers: 1},
 		{name: "multiple_answers", responseIPs: allIPs[:4], wantAnswers: 4},
-		{name: "answer_limit", responseIPs: allIPs[:5], wantAnswers: maxIPs},
+		{name: "answer_limit", responseIPs: allIPs[:5], wantAnswers: maxAnswers},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -419,9 +436,8 @@ func TestClient_ReceivesDNSResponse(t *testing.T) {
 					Type:  TypeA,
 					Class: ClassINET,
 				}},
-				EnableRecursion: true,
-				MaxIPs:          maxIPs,
-				MaxCNAMEs:       0, // No CNAME records in this response.
+				EnableRecursion:    true,
+				MaxResponseAnswers: maxAnswers,
 			})
 			if err != nil {
 				t.Fatal("failed to start DNS resolve:", err)
@@ -437,7 +453,7 @@ func TestClient_ReceivesDNSResponse(t *testing.T) {
 				t.Fatal("failed to demux DNS response:", err)
 			}
 
-			var addrs [maxIPs]netip.Addr
+			var addrs [maxAnswers]netip.Addr
 			answers, err := client.ResponseAnswerLookup(addrs[:], hostname)
 			if err != nil {
 				t.Fatal("failed to look up DNS response answers:", err)

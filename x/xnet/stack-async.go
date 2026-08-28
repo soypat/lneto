@@ -630,8 +630,9 @@ func (s *StackAsync) StartLookupIPType(host string, qtype dns.Type) error {
 			s.ednsopt,
 		},
 		EnableRecursion: true,
-		MaxIPs:          uint16(len(s.addrbufnip)),
-		MaxCNAMEs:       8,
+		// Leave headroom above the address buffer for CNAME records, which
+		// occupy answer slots before the addresses they alias.
+		MaxResponseAnswers: uint16(len(s.addrbufnip)) + 8,
 	})
 	if err != nil {
 		return err

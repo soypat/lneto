@@ -300,25 +300,7 @@ func (kvb *kvBuffer) getFoldIdx(key string) int {
 // EqualFoldASCII reports whether a and b are equal under ASCII case folding.
 // Unlike strings.EqualFold it does not fold non-ASCII runes, so no multi-byte
 // rune such as U+212A KELVIN SIGN can alias a header key.
-func EqualFoldASCII(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	const asciiCapDiff = 'a' - 'A'
-	for i := 0; i < len(a); i++ {
-		ca, cb := a[i], b[i]
-		if ca >= 'A' && ca <= 'Z' {
-			ca += asciiCapDiff
-		}
-		if cb >= 'A' && cb <= 'Z' {
-			cb += asciiCapDiff
-		}
-		if ca != cb {
-			return false
-		}
-	}
-	return true
-}
+func EqualFoldASCII(a, b string) bool { return internal.EqualFoldASCII(a, b) }
 
 // reserve ensures need free bytes are available in the buffer, growing it when
 // permitted. It accounts for the byte-0 reservation on an empty buffer (see
