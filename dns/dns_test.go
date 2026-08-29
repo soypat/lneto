@@ -239,6 +239,152 @@ func TestDecodeMessage(t *testing.T) {
 	}
 }
 
+// Regression test for CNAME-following: a response for www.yahoo.co.jp
+// contains a CNAME record to edge12.g.yimg.jp (with compressed labels in its
+// RDATA) followed by the A record for the canonical name. The CNAME RDATA
+// must not be interpreted as an IP address and the A record must be returned.
+func TestClient_CNAMEResponse(t *testing.T) {
+	const hostname = "www.yahoo.co.jp"
+	const txid = uint16(0x1234)
+	const clientPort = uint16(54321)
+	response := []byte{
+		// Header: txid 0x1234, QR|RD|RA, QD=1 AN=2 NS=0 AR=0.
+		0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00,
+		// Question: www.yahoo.co.jp A IN.
+		0x03, 'w', 'w', 'w', 0x05, 'y', 'a', 'h', 'o', 'o', 0x02, 'c', 'o', 0x02, 'j', 'p', 0x00,
+		0x00, 0x01, 0x00, 0x01,
+		// Answer 1: (ptr to question) CNAME IN ttl=842 rdlen=16
+		// rdata: edge12.g.yimg.jp with "jp" as compression pointer to offset 0x19.
+		0xc0, 0x0c, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00, 0x03, 0x4a, 0x00, 0x10,
+		0x06, 'e', 'd', 'g', 'e', '1', '2', 0x01, 'g', 0x04, 'y', 'i', 'm', 'g', 0xc0, 0x19,
+		// Answer 2: (ptr into CNAME rdata) A IN ttl=36 rdlen=4 182.22.23.124.
+		0xc0, 0x2d, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x24, 0x00, 0x04, 0xb6, 0x16, 0x17, 0x7c,
+	}
+	name := MustNewName(hostname)
+	var client Client
+	err := client.StartResolve(clientPort, txid, ResolveConfig{
+		Questions: []Question{{
+			Name:  name,
+			Type:  TypeA,
+			Class: ClassINET,
+		}},
+		EnableRecursion:    true,
+		MaxResponseAnswers: 6,
+	})
+	if err != nil {
+		t.Fatal("failed to start DNS resolve:", err)
+	}
+	var queryBuf [512]byte
+	_, err = client.Encapsulate(queryBuf[:], 0, 0)
+	if err != nil {
+		t.Fatal("failed to encapsulate DNS query:", err)
+	}
+	if err := client.Demux(response, 0); err != nil {
+		t.Fatal("failed to demux DNS response:", err)
+	}
+	var addrs [4]netip.Addr
+	n, err := client.ResponseAnswerLookup(addrs[:], hostname)
+	if err != nil {
+		t.Fatal("failed to look up DNS response answers:", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 answer, got %d: %v", n, addrs[:n])
+	}
+	if addrs[0] != (netip.AddrFrom4([4]byte{182, 22, 23, 124})) {
+		t.Fatalf("expected 182.22.23.124, got %v", addrs[0])
+	}
+}
+
+// Table-driven tests for Message.WriteAnswers covering answer reordering
+// and cyclic CNAME aliases.
+func TestMessage_WriteAnswers(t *testing.T) {
+	tests := []struct {
+		name     string
+		host     string
+		response []byte
+		want     []netip.Addr
+	}{
+		{
+			name: "A record before its CNAME",
+			host: "www.yahoo.co.jp",
+			// Answer 1 is the A record for edge12.g.yimg.jp, spelled out with
+			// a trailing compression pointer to "jp" in the question. Answer 2
+			// is the CNAME from www.yahoo.co.jp whose RDATA is a single
+			// backward compression pointer to answer 1's owner name.
+			response: []byte{
+				// Header: txid 0x1234, QR|RD|RA, QD=1 AN=2 NS=0 AR=0.
+				0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00,
+				// Question: www.yahoo.co.jp A IN.
+				0x03, 'w', 'w', 'w', 0x05, 'y', 'a', 'h', 'o', 'o', 0x02, 'c', 'o', 0x02, 'j', 'p', 0x00,
+				0x00, 0x01, 0x00, 0x01,
+				// Answer 1: edge12.g.yimg.jp A IN ttl=36 rdlen=4 182.22.23.124.
+				0x06, 'e', 'd', 'g', 'e', '1', '2', 0x01, 'g', 0x04, 'y', 'i', 'm', 'g', 0xc0, 0x19,
+				0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x24, 0x00, 0x04, 0xb6, 0x16, 0x17, 0x7c,
+				// Answer 2: (ptr to question) CNAME IN ttl=842 rdlen=2, target
+				// is a pointer to answer 1's owner name at offset 0x21.
+				0xc0, 0x0c, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00, 0x03, 0x4a, 0x00, 0x02, 0xc0, 0x21,
+			},
+			want: []netip.Addr{netip.AddrFrom4([4]byte{182, 22, 23, 124})},
+		},
+		{
+			name: "CNAME cycle terminates",
+			host: "a.com",
+			response: []byte{
+				// Header: txid 0xabcd, QR|RD|RA, QD=1 AN=2 NS=0 AR=0.
+				0xab, 0xcd, 0x81, 0x80, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00,
+				// Question: a.com A IN.
+				0x01, 'a', 0x03, 'c', 'o', 'm', 0x00, 0x00, 0x01, 0x00, 0x01,
+				// Answer 1: a.com CNAME b.com.
+				0x01, 'a', 0x03, 'c', 'o', 'm', 0x00, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x07, 0x01, 'b', 0x03, 'c', 'o', 'm', 0x00,
+				// Answer 2: b.com CNAME a.com.
+				0x01, 'b', 0x03, 'c', 'o', 'm', 0x00, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x07, 0x01, 'a', 0x03, 'c', 'o', 'm', 0x00,
+			},
+			want: nil,
+		},
+		{
+			name: "CNAME target case differs from owner name",
+			host: "a.com",
+			// A server picks the case of both the CNAME target and the owner
+			// name of the record it aliases, and may randomize it (DNS 0x20),
+			// so the two must compare under ASCII case folding.
+			response: []byte{
+				// Header: txid 0xabcd, QR|RD|RA, QD=1 AN=2 NS=0 AR=0.
+				0xab, 0xcd, 0x81, 0x80, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00,
+				// Question: a.com A IN.
+				0x01, 'a', 0x03, 'c', 'o', 'm', 0x00, 0x00, 0x01, 0x00, 0x01,
+				// Answer 1: a.com CNAME B.CoM.
+				0x01, 'a', 0x03, 'c', 'o', 'm', 0x00, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x07, 0x01, 'B', 0x03, 'C', 'o', 'M', 0x00,
+				// Answer 2: b.com A IN ttl=10 rdlen=4 1.2.3.4.
+				0x01, 'b', 0x03, 'c', 'o', 'm', 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x04, 0x01, 0x02, 0x03, 0x04,
+			},
+			want: []netip.Addr{netip.AddrFrom4([4]byte{1, 2, 3, 4})},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var msg Message
+			msg.LimitResourceDecoding(1, 4, 0, 0)
+			_, incomplete, err := msg.Decode(tt.response)
+			if incomplete || err != nil {
+				t.Fatal("decode:", incomplete, err)
+			}
+			var addrs [4]netip.Addr
+			n, err := msg.WriteAnswers(addrs[:], tt.host)
+			if err != nil {
+				t.Fatal("write answers:", err)
+			}
+			if n != uint16(len(tt.want)) {
+				t.Fatalf("expected %d addresses, got %d: %v", len(tt.want), n, addrs[:n])
+			}
+			for i, want := range tt.want {
+				if addrs[i] != want {
+					t.Errorf("address %d: expected %v, got %v", i, want, addrs[i])
+				}
+			}
+		})
+	}
+}
+
 func TestClient_ReceivesDNSResponse(t *testing.T) {
 	const hostname = "example.com"
 	const txid = uint16(12345)
@@ -254,7 +400,7 @@ func TestClient_ReceivesDNSResponse(t *testing.T) {
 	tests := []struct {
 		name        string
 		responseIPs [][4]byte
-		wantAnswers int
+		wantAnswers int // Addresses returned by ResponseAnswerLookup and copied by ResponseCopyTo.
 	}{
 		{name: "single_answer", responseIPs: allIPs[:1], wantAnswers: 1},
 		{name: "multiple_answers", responseIPs: allIPs[:4], wantAnswers: 4},
@@ -312,7 +458,7 @@ func TestClient_ReceivesDNSResponse(t *testing.T) {
 			if err != nil {
 				t.Fatal("failed to look up DNS response answers:", err)
 			}
-			if answers != uint16(tt.wantAnswers) {
+			if int(answers) != tt.wantAnswers {
 				t.Fatalf("expected %d answers, got %d", tt.wantAnswers, answers)
 			}
 			for i := 0; i < tt.wantAnswers; i++ {

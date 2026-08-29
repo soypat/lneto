@@ -99,6 +99,12 @@ func NamesEqual(a, b Name) bool {
 	return internal.BytesEqual(a.data, b.data)
 }
 
+// NamesEqualFold reports whether two DNS names are equal under ASCII case
+// folding, which is how DNS labels compare per RFC 1035 section 2.3.3.
+func NamesEqualFold(a, b Name) bool {
+	return internal.BytesEqualFoldASCII(a.data, b.data)
+}
+
 type ZFlags uint16
 
 func NewResource(name Name, typ Type, class Class, ttl uint32, data []byte) Resource {
@@ -299,25 +305,55 @@ func (m *Message) AppendTo(buf []byte, txid uint16, flags HeaderFlags) (_ []byte
 	return buf, nil
 }
 
+// WriteAnswers writes the addresses answering host into dst, following the
+// CNAME chain rooted at host. It returns the number of addresses written.
 func (m *Message) WriteAnswers(dst []netip.Addr, host string) (n uint16, err error) {
-	for i := range m.Answers {
-		if int(n) >= len(dst) {
-			return n, lneto.ErrExhausted
+	// Each round resolves one CNAME, which consumes an answer. Bounding the
+	// walk by the answer count is thus enough to reach the addresses, and
+	// terminates on cyclic chains.
+	var alias Name // Canonical name reached so far; zero means host itself.
+	for range m.Answers {
+		var next Name
+		for i := range m.Answers {
+			ans := &m.Answers[i]
+			if !ans.header.ownedBy(alias, host) {
+				continue
+			}
+			switch {
+			case ans.header.Type.IsIPAddr():
+				if int(n) >= len(dst) {
+					return n, lneto.ErrExhausted
+				}
+				addr, ok := netip.AddrFromSlice(ans.RawData())
+				if !ok {
+					err = lneto.ErrInvalidAddr
+					continue
+				}
+				dst[n] = addr
+				n++
+			case ans.header.Type == TypeCNAME:
+				if cname := ans.CNAMEView(); cname.Len() != 0 {
+					next = cname
+				}
+			}
 		}
-		ans := &m.Answers[i]
-		hdr := ans.Header()
-		if !hdr.Name.EqualString(host) {
-			continue
+		if n > 0 || next.Len() == 0 {
+			break
 		}
-		var ok bool
-		dst[n], ok = netip.AddrFromSlice(ans.RawData())
-		if !ok {
-			err = lneto.ErrInvalidAddr
-		} else {
-			n++
-		}
+		alias = next
 	}
 	return n, err
+}
+
+// ownedBy reports whether the record's owner name is the name being resolved:
+// the alias reached by following CNAMEs, or host at the root of the chain.
+func (h *ResourceHeader) ownedBy(alias Name, host string) bool {
+	if alias.Len() == 0 {
+		return h.Name.EqualString(host)
+	}
+	// Fold: the server chooses the case of both the CNAME target and the owner
+	// name of the records it aliases, and may randomize it (DNS 0x20).
+	return NamesEqualFold(h.Name, alias)
 }
 
 func (m *Message) Len() uint16 {
@@ -411,6 +447,15 @@ func (r *Resource) RawData() []byte {
 	return r.data[:length]
 }
 
+// CNAMEView returns the canonical name held by a CNAME record, aliasing the
+// Resource's buffer. It returns a zero Name for any other record type.
+func (r *Resource) CNAMEView() Name {
+	if r.header.Type != TypeCNAME {
+		return Name{}
+	}
+	return Name{data: r.RawData()}
+}
+
 func (q *Question) Reset() {
 	q.Name.Reset()
 	*q = Question{Name: q.Name} // Reuse Name's buffer.
@@ -460,8 +505,19 @@ func (r *Resource) Decode(b []byte, off uint16) (uint16, error) {
 	if r.header.Length > uint16(len(b[off:])) {
 		return off, errResourceLen
 	}
-	r.data = append(r.data[:0], b[off:off+r.header.Length]...)
-	return off + r.header.Length, nil
+	end := off + r.header.Length
+	if r.header.Type == TypeCNAME {
+		// CNAME data is a name which may use message compression. Expand it now
+		// since r.data is detached from b, leaving pointers unresolvable later.
+		cname := Name{data: r.data[:0]}
+		if _, derr := cname.Decode(b, off); derr == nil {
+			r.data = cname.data
+			r.header.Length = uint16(len(r.data))
+			return end, nil
+		}
+	}
+	r.data = append(r.data[:0], b[off:end]...)
+	return end, nil
 }
 
 func (r *Resource) appendTo(buf []byte) (_ []byte, err error) {

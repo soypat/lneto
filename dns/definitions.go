@@ -197,6 +197,8 @@ const (
 	TypeALL   Type = 255 // ALL
 )
 
+func (tp Type) IsIPAddr() bool { return tp == TypeA || tp == TypeAAAA }
+
 // A Class is a type of network.
 type Class uint16
 
