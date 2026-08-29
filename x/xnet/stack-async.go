@@ -680,6 +680,11 @@ func (s *StackAsync) ResultLookupIP(host string) ([]netip.Addr, bool, error) {
 	if n == 0 && err == nil {
 		err = errDNSNoAns
 	}
+	if n > 0 && errors.Is(err, lneto.ErrExhausted) {
+		// addrbufnip holds a fixed number of addresses. Filling it is a
+		// success, so addresses decoded past its capacity are dropped.
+		err = nil
+	}
 	return s.addrbufnip[:n], true, err
 }
 

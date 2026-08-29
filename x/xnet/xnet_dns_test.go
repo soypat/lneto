@@ -239,6 +239,87 @@ func buildDNSMsgResponsePacket(t *testing.T, txid uint16, dstPort uint16, msg dn
 	return pkt, nil
 }
 
+// TestDNS_TooManyAddrs verifies that a response carrying more A records than
+// fit in the address buffer (addrbufnip) still resolves successfully with the
+// surplus addresses dropped, instead of failing with lneto.ErrExhausted.
+func TestDNS_TooManyAddrs(t *testing.T) {
+	const seed = 9876
+	const MTU = ethernet.MaxMTU
+
+	client := new(StackAsync)
+	dnsServerAddr := netip.AddrFrom4([4]byte{8, 8, 8, 8})
+	clientAddr := netip.AddrFrom4([4]byte{10, 0, 0, 100})
+	clientMAC := [6]byte{0xde, 0xad, 0xbe, 0xef, 0x00, 0x01}
+	dnsServerMAC := [6]byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}
+
+	err := client.Reset(StackConfig{
+		Hostname:        "DNSClient",
+		RandSeed:        seed,
+		StaticAddress4:  clientAddr.As4(),
+		DNSServer:       dnsServerAddr,
+		HardwareAddress: clientMAC,
+		MTU:             uint16(MTU),
+	})
+	if err != nil {
+		t.Fatal("client Reset failed:", err)
+	}
+	client.SetGatewayHardwareAddr(dnsServerMAC)
+
+	const hostname = "www.google.com"
+	const nAnswers = 8 // More A records than addrbufnip can hold.
+
+	err = client.StartLookupIP(hostname)
+	if err != nil {
+		t.Fatal("StartLookupIP failed:", err)
+	}
+
+	const carrierDataSize = ethernet.MaxFrameLength
+	var buf [carrierDataSize]byte
+	n, err := client.EgressEthernet(buf[:])
+	if err != nil || n == 0 {
+		t.Fatal("expected DNS query packet from client:", err, n)
+	}
+	txid, clientPort, err := extractDNSTxIDAndPort(buf[:n])
+	if err != nil {
+		t.Fatal("failed to extract DNS txid:", err)
+	}
+
+	// Respond with more A records owned by hostname than fit in the
+	// address buffer, as CDNs serving www.google.com do.
+	owner, err := dns.NewName(hostname)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answers := make([]dns.Resource, nAnswers)
+	for i := range answers {
+		addr := netip.AddrFrom4([4]byte{142, 251, 150, byte(100 + i)})
+		answers[i] = dns.NewResource(owner, dns.TypeA, dns.ClassINET, 300, addr.AsSlice())
+	}
+	msg := dns.Message{
+		Questions: []dns.Question{{Name: owner, Type: dns.TypeA, Class: dns.ClassINET}},
+		Answers:   answers,
+	}
+	responsePkt, err := buildDNSMsgResponsePacket(t, txid, clientPort, msg,
+		dnsServerAddr, dnsServerMAC, clientAddr, clientMAC, buf[:])
+	if err != nil {
+		t.Fatal("failed to build response packet:", err)
+	}
+	if err = client.IngressEthernet(responsePkt); err != nil {
+		t.Fatal("client Demux failed:", err)
+	}
+
+	addrs, done, err := client.ResultLookupIP(hostname)
+	if err != nil {
+		t.Fatal("ResultLookupIP error:", err)
+	}
+	if !done {
+		t.Fatal("DNS lookup not done after receiving response")
+	}
+	if len(addrs) != len(client.addrbufnip) {
+		t.Errorf("expected %d addresses, got %d: %v", len(client.addrbufnip), len(addrs), addrs)
+	}
+}
+
 var errBaseLenDNS = func() error {
 	_, err := dns.NewFrame(nil)
 	return err
