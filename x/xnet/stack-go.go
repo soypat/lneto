@@ -182,6 +182,10 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 				RxBuf:             make([]byte, s.plcfg.RxBufSize),
 				TxPacketQueueSize: s.plcfg.QueueSize,
 				RWBackoff:         s.plcfg.NewBackoff(),
+				// A dialed connection needs a retransmission timer as much as a
+				// pooled one. See [NewTCPPool].
+				LossRecovery: new(tcp.RTO),
+				Nanotime:     s.blk.nanotime,
 			})
 			if err != nil {
 				return nil, err
