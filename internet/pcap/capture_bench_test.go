@@ -9,6 +9,7 @@ import (
 	"github.com/soypat/lneto/dns"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/ipv4"
+	"github.com/soypat/lneto/tcp"
 	"github.com/soypat/lneto/udp"
 )
 
@@ -106,6 +107,39 @@ func buildDNSPacket(b testing.TB) []byte {
 	return pkt
 }
 
+// buildTLSPacket builds an Ethernet+IPv4+TCP packet carrying a real
+// ClientHello record, exercising the string-heavy TLS path: cipher suite and
+// extension subfields, SNI and ALPN text.
+func buildTLSPacket(b testing.TB) []byte {
+	const (
+		ethSize  = 14
+		ipv4Size = 20
+		tcpSize  = 20
+	)
+	hello := captureClientHelloRecord(b, "example.com", []string{"h2", "http/1.1"})
+	pkt := make([]byte, ethSize+ipv4Size+tcpSize+len(hello))
+
+	efrm, _ := ethernet.NewFrame(pkt)
+	*efrm.DestinationHardwareAddr() = [6]byte{0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe}
+	*efrm.SourceHardwareAddr() = [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+	efrm.SetEtherType(ethernet.TypeIPv4)
+
+	ifrm, _ := ipv4.NewFrame(pkt[ethSize:])
+	ifrm.SetVersionAndIHL(4, 5)
+	ifrm.SetID(0x1234)
+	ifrm.SetTTL(64)
+	ifrm.SetProtocol(lneto.IPProtoTCP)
+	ifrm.SetTotalLength(uint16(ipv4Size + tcpSize + len(hello)))
+
+	tfrm, _ := tcp.NewFrame(pkt[ethSize+ipv4Size:])
+	tfrm.SetSourcePort(51000)
+	tfrm.SetDestinationPort(443)
+	tfrm.SetOffsetAndFlags(5, tcp.FlagPSH|tcp.FlagACK)
+
+	copy(pkt[ethSize+ipv4Size+tcpSize:], hello)
+	return pkt
+}
+
 func configureBenchFormatter(f *Formatter) {
 	f.SubfieldLimit = benchSubfieldLimit
 	f.FrameSep = "\n"
@@ -123,6 +157,7 @@ func BenchmarkPcap(b *testing.B) {
 	}{
 		{"DHCP", buildDHCPPacket(b)},
 		{"DNS", buildDNSPacket(b)},
+		{"TLS", buildTLSPacket(b)},
 	}
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
@@ -182,6 +217,7 @@ func BenchmarkPcapPhases(b *testing.B) {
 	}{
 		{"DHCP", buildDHCPPacket(b)},
 		{"DNS", buildDNSPacket(b)},
+		{"TLS", buildTLSPacket(b)},
 	}
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
