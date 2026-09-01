@@ -93,7 +93,7 @@ func run(ctx context.Context, stack *xnet.StackAsync) error {
 		return makeMsgErr("resolving Router MAC", err)
 	}
 	stack.SetGatewayHardwareAddr(gateway)
-	berkstack := stack.StackBlocking(stackBackoff).StackGo(xnet.StackGoConfig{
+	gostack := stack.StackBlocking(stackBackoff).StackGo(xnet.StackGoConfig{
 		ListenerPoolConfig: xnet.TCPPoolConfig{
 			PoolSize:           tcpConnPoolSize,
 			QueueSize:          tcpPacketQueueSize,
@@ -109,7 +109,7 @@ func run(ctx context.Context, stack *xnet.StackAsync) error {
 	laddr := net.TCPAddrFromAddrPort(netip.AddrPortFrom(netip.AddrFrom4(results.AssignedAddr4), 80))
 	// raddr := net.TCPAddr{} // If active (client) connection then set raddr in which case a net.Conn type is returned.
 	const sockstream = 0x1
-	c, err := berkstack.Socket(ctx, "tcp", syscall.AF_INET, sockstream, laddr, nil)
+	c, err := gostack.Socket(ctx, "tcp", syscall.AF_INET, sockstream, laddr, nil)
 	if err != nil {
 		return makeMsgErr("creating AF_INET stream socket", err)
 	}
