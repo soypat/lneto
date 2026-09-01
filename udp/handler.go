@@ -1,7 +1,6 @@
 package udp
 
 import (
-	"fmt"
 	"net"
 
 	"github.com/soypat/lneto"
@@ -117,7 +116,7 @@ func (h *Handler) Send(buf []byte) (int, error) {
 	dgram := internal.SliceDequeueFront(&h.txDgrams)
 	n, err := h.txRing.Read(buf[8 : 8+dgram.length])
 	if err != nil || n != int(dgram.length) {
-		panic(fmt.Sprintf("udp send handler failure %d %s", n, err))
+		panic("udp send handler failure")
 	}
 	ufrm.SetSourcePort(h.lport)
 	ufrm.SetDestinationPort(h.rport)
@@ -152,13 +151,13 @@ func (h *Handler) ReadNext(b []byte) (int, error) {
 	dgram := internal.SliceDequeueFront(&h.rxDgrams)
 	n, err := h.rxRing.Read(b[:min(len(b), int(dgram.length))])
 	if err != nil {
-		panic(fmt.Sprintf("udp read handler failure %d %s", n, err))
+		panic("udp readnext rx ring failure")
 	}
 	discard := int(dgram.length) - len(b)
 	if discard > 0 {
 		err = h.rxRing.ReadDiscard(discard)
 		if err != nil {
-			panic(fmt.Sprintf("udp readdiscard handler failure %d %s", n, err))
+			panic("udp readnext discard failure")
 		}
 	}
 	return n, nil

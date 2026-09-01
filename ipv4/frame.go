@@ -2,8 +2,6 @@ package ipv4
 
 import (
 	"encoding/binary"
-	"fmt"
-	"net/netip"
 
 	"github.com/soypat/lneto"
 )
@@ -238,14 +236,10 @@ func (ifrm Frame) ValidateExceptCRC(v *lneto.Validator) {
 }
 
 func (ifrm Frame) String() string {
-	dst := netip.AddrFrom4(*ifrm.DestinationAddr())
-	src := netip.AddrFrom4(*ifrm.SourceAddr())
-
-	hl := ifrm.HeaderLength()
-	tl := int(ifrm.TotalLength())
-	ttl := ifrm.TTL()
-	id := ifrm.ID()
-	proto := ifrm.Protocol()
-	tos := ifrm.ToS()
-	return fmt.Sprintf("IP %s SRC=%s DST=%s LEN=%d OPT=%d TTL=%d ID=%d ToS=0x%x", proto.String(), src.String(), dst.String(), tl, tl-hl, ttl, id, tos)
+	proto := ifrm.Protocol().String()
+	b := make([]byte, 0, 5+len(proto))
+	b = append(b, "IP ("...)
+	b = append(b, proto...)
+	b = append(b, ')')
+	return string(b)
 }

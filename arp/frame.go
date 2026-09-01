@@ -2,9 +2,6 @@ package arp
 
 import (
 	"encoding/binary"
-	"fmt"
-	"net"
-	"net/netip"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
@@ -147,21 +144,8 @@ func (afrm Frame) ValidateSize(v *lneto.Validator) {
 
 func (afrm Frame) String() string {
 	opstr := afrm.Operation().String()
-	hwt, _ := afrm.Hardware()
-	ptt, _ := afrm.Protocol()
-	sndhw, sndpt := afrm.Sender()
-	tgthw, tgtpt := afrm.Target()
-	var sndstr, tgtstr string
-	if ptt == ethernet.TypeIPv4 || ptt == ethernet.TypeIPv6 {
-		sender, _ := netip.AddrFromSlice(sndpt)
-		target, _ := netip.AddrFromSlice(tgtpt)
-		sndstr = sender.String()
-		tgtstr = target.String()
-	} else {
-		sndstr = net.HardwareAddr(sndpt).String()
-		tgtstr = net.HardwareAddr(tgtpt).String()
-	}
-	return fmt.Sprintf("ARP %s HW=(%d,SENDER=%s,TARGET=%s) PROTO=(%s,SENDER=%s,TARGET=%s)",
-		opstr, hwt, net.HardwareAddr(sndhw).String(), net.HardwareAddr(tgthw).String(),
-		ptt.String(), sndstr, tgtstr)
+	var rawbuf [11]byte
+	b := append(rawbuf[:0], "ARP "...)
+	b = append(b, opstr...)
+	return string(rawbuf[:len(b)])
 }

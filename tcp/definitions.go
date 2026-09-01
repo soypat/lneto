@@ -2,12 +2,12 @@ package tcp
 
 import (
 	"errors"
-	"fmt"
 	"math/bits"
 	"strconv"
 	"unsafe"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/internal"
 )
 
 //go:generate stringer -type=State,OptionKind -linecomment -output stringers.go .
@@ -73,10 +73,19 @@ func (seg Segment) isFirstSYN() bool {
 }
 
 func (seg Segment) String() string {
-	if seg.DATALEN == 0 {
-		return fmt.Sprintf("SEG %s ACK=%d SEQ=%d WND=%d", seg.Flags, seg.ACK, seg.SEQ, seg.WND)
+	return string(seg.AppendString(nil))
+}
+
+func (seg Segment) AppendString(b []byte) []byte {
+	b = append(b, "SEG "...)
+	b = append(b, seg.Flags.String()...)
+	b = internal.AppendStrDecimal(b, " ACK=", int64(seg.ACK))
+	b = internal.AppendStrDecimal(b, " SEQ=", int64(seg.SEQ))
+	b = internal.AppendStrDecimal(b, " WND=", int64(seg.WND))
+	if seg.DATALEN > 0 {
+		b = internal.AppendStrDecimal(b, " DATALEN=", int64(seg.DATALEN))
 	}
-	return fmt.Sprintf("SEG %s ACK=%d SEQ=%d WND=%d DATALEN=%d", seg.Flags, seg.ACK, seg.SEQ, seg.WND, seg.DATALEN)
+	return b
 }
 
 // ClientSynSegment is a the first packet sent over a TCP connection to a server. Typically the client

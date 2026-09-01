@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"net"
 	"net/netip"
 	"os"
@@ -46,7 +46,7 @@ func main() {
 	var stack xnet.StackAsync
 	ctx := context.Background()
 	if err := run(ctx, &stack); err != nil {
-		fmt.Println(err)
+		os.Stdout.WriteString(err.Error())
 		os.Exit(1)
 	}
 }
@@ -71,7 +71,7 @@ func run(ctx context.Context, stack *xnet.StackAsync) error {
 		HardwareAddress: hwaddr,
 	})
 	if err != nil {
-		return fmt.Errorf("configuring stack: %w", err)
+		return makeMsgErr("configuring stack", err)
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -82,15 +82,15 @@ func run(ctx context.Context, stack *xnet.StackAsync) error {
 	rstack := stack.StackRetrying(stackBackoff)
 	results, err := rstack.DoDHCPv4([4]byte{}, protoTimeout, protoRetries)
 	if err != nil {
-		return fmt.Errorf("doing DHCP: %w", err)
+		return makeMsgErr("doing DHCP", err)
 	}
 	err = stack.AssimilateDHCPResults(results)
 	if err != nil {
-		return fmt.Errorf("assimilating DHCP: %w", err)
+		return makeMsgErr("assimilating DHCP", err)
 	}
 	gateway, err := rstack.DoResolveHardwareAddress6(results.Router, protoTimeout, protoRetries)
 	if err != nil {
-		return fmt.Errorf("resolving router MAC: %w", err)
+		return makeMsgErr("resolving Router MAC", err)
 	}
 	stack.SetGatewayHardwareAddr(gateway)
 	berkstack := stack.StackBlocking(stackBackoff).StackGo(xnet.StackGoConfig{
@@ -111,14 +111,14 @@ func run(ctx context.Context, stack *xnet.StackAsync) error {
 	const sockstream = 0x1
 	c, err := berkstack.Socket(ctx, "tcp", syscall.AF_INET, sockstream, laddr, nil)
 	if err != nil {
-		return fmt.Errorf("creating AF_INET stream socket: %w", err)
+		return makeMsgErr("creating AF_INET stream socket", err)
 	}
 	listener := c.(net.Listener)
 	for ctx.Err() == nil {
 		time.Sleep(pollTime)
 		conn, err := listener.Accept()
 		if err != nil {
-			fmt.Println("conn failed:", err)
+			return makeMsgErr("listener.Accept failed", err)
 		}
 		go handleConn(conn)
 	}
@@ -145,18 +145,18 @@ func stackLoop(ctx context.Context, stack *xnet.StackAsync) {
 	for ctx.Err() == nil {
 		nwrite, err := stack.EgressEthernet(buf[:])
 		if err != nil {
-			fmt.Println("encaps err:", err)
+			os.Stderr.WriteString(err.Error())
 		} else if nwrite > 0 {
 			network.SendEth(buf[:nwrite])
 			cap.PrintEthernet("OUT", buf[:nwrite])
 		}
 		nread, err := network.RecvEth(buf[:])
 		if err != nil {
-			fmt.Println("network read err:", err)
+			os.Stderr.WriteString(err.Error())
 		} else if nread > 0 {
 			err = stack.IngressEthernet(buf[:nread])
 			if err != nil && err != lneto.ErrPacketDrop {
-				fmt.Println("demux err:", err)
+				os.Stderr.WriteString(err.Error())
 			} else {
 				cap.PrintEthernet("IN ", buf[:nread])
 			}
@@ -190,4 +190,8 @@ func tcpBackoff(consecutiveBackoffs uint) time.Duration {
 	shifted := minWait << min(consecutiveBackoffs, maxShift)
 	wait := min(shifted, maxWait)
 	return time.Duration(wait)
+}
+
+func makeMsgErr(msg string, err error) error {
+	return errors.New(msg + ": " + err.Error())
 }
