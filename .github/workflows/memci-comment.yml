@@ -1,0 +1,24 @@
+name: memci comment
+
+# Runs in the base repo's context with a write token, after the untrusted memci
+# workflow finishes. It never checks out or runs PR code; it only consumes the
+# report artifact as inert data.
+
+on:
+  workflow_run:
+    workflows: [memci]
+    types: [completed]
+
+permissions: read-all
+
+jobs:
+  comment:
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: soypat/memci/comment@main
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
