@@ -146,4 +146,4 @@ jobs:
       - uses: soypat/memci@main
         with:
           args: -kind package
-          targets: .github/memci.json
+          targets: .github/workflows/memci.json
