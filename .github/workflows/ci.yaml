@@ -143,6 +143,12 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
+      # Needed because a build command in memci.json names tinygo. Keep the two
+      # versions in step: TinyGo 0.42 builds with Go 1.25 through 1.27 and
+      # refuses to run outside that window, in either direction.
+      - uses: acifani/setup-tinygo@v2
+        with:
+          tinygo-version: "0.42.0"
       - uses: soypat/memci@main
         with:
           args: -kind package

@@ -1,6 +1,9 @@
 package internal
 
-import "strconv"
+import (
+	"encoding/hex"
+	"strconv"
+)
 
 // AppendStrDecimal appends pfx followed by value in base 10 to dst and returns
 // the resulting slice. It condenses the prefixed-number pattern common to
@@ -8,6 +11,14 @@ import "strconv"
 func AppendStrDecimal(dst []byte, pfx string, value int64) []byte {
 	dst = append(dst, pfx...)
 	return strconv.AppendInt(dst, value, 10)
+}
+
+// AppendStrHexData appends pfx followed by data as hexadecimaldata.
+//
+//	dst = internal.AppendStrHexData(dst, "data=0x", data...) // data=0xdeadbeef
+func AppendStrHexData(dst []byte, pfx string, data ...byte) []byte {
+	dst = append(dst, pfx...)
+	return hex.AppendEncode(dst, data)
 }
 
 // IntLen returns the number of bytes [strconv.AppendInt] emits for value in the

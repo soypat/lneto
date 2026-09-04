@@ -6,7 +6,7 @@ name: memci comment
 
 on:
   workflow_run:
-    workflows: [memci]
+    workflows: [CI]
     types: [completed]
 
 permissions: read-all

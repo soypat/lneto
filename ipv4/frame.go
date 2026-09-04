@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/internal"
 )
 
 // NewFrame returns a new [Frame] with data set to buf.
@@ -237,9 +238,17 @@ func (ifrm Frame) ValidateExceptCRC(v *lneto.Validator) {
 
 func (ifrm Frame) String() string {
 	proto := ifrm.Protocol().String()
-	b := make([]byte, 0, 5+len(proto))
+	b := make([]byte, 0, 91+len(proto))
 	b = append(b, "IP ("...)
 	b = append(b, proto...)
-	b = append(b, ')')
+	b = append(b, ") src="...)
+	b = AppendFormatAddr(b, *ifrm.SourceAddr())
+	b = append(b, " dst="...)
+	b = AppendFormatAddr(b, *ifrm.DestinationAddr())
+	b = internal.AppendStrDecimal(b, " len=", int64(ifrm.TotalLength()))
+	b = internal.AppendStrDecimal(b, " opt=", int64(ifrm.HeaderLength()-20))
+	b = internal.AppendStrDecimal(b, " ttl=", int64(ifrm.TTL()))
+	b = internal.AppendStrDecimal(b, " id=", int64(ifrm.ID()))
+	b = internal.AppendStrHexData(b, " tos=0x", byte(ifrm.ToS()))
 	return string(b)
 }

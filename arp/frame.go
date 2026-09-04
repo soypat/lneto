@@ -5,6 +5,7 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/internal"
 )
 
 // NewFrame returns a Frame with data set to buf.
@@ -142,10 +143,24 @@ func (afrm Frame) ValidateSize(v *lneto.Validator) {
 	}
 }
 
+// String returns a basic human readable represetation of ARP frame.
 func (afrm Frame) String() string {
 	opstr := afrm.Operation().String()
-	var rawbuf [11]byte
+	rawbuf := make([]byte, 0, 128)
 	b := append(rawbuf[:0], "ARP "...)
 	b = append(b, opstr...)
-	return string(rawbuf[:len(b)])
+	htyp, hlen := afrm.Hardware()
+	b = internal.AppendStrDecimal(b, " htyp=", int64(htyp))
+	b = internal.AppendStrDecimal(b, " hlen=", int64(hlen))
+	ptyp, plen := afrm.Protocol()
+	b = internal.AppendStrDecimal(b, " plen=", int64(plen))
+	b = append(b, " proto="...)
+	b = append(b, ptyp.String()...)
+	hw, proto := afrm.Target()
+	b = internal.AppendStrHexData(b, " htgt=", hw...)
+	b = internal.AppendStrHexData(b, " ptgt=", proto...)
+	hw, proto = afrm.Sender()
+	b = internal.AppendStrHexData(b, " hsnd=", hw...)
+	b = internal.AppendStrHexData(b, " psnd=", proto...)
+	return string(b)
 }
