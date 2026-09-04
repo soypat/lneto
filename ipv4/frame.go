@@ -2,10 +2,9 @@ package ipv4
 
 import (
 	"encoding/binary"
-	"fmt"
-	"net/netip"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/internal"
 )
 
 // NewFrame returns a new [Frame] with data set to buf.
@@ -238,14 +237,18 @@ func (ifrm Frame) ValidateExceptCRC(v *lneto.Validator) {
 }
 
 func (ifrm Frame) String() string {
-	dst := netip.AddrFrom4(*ifrm.DestinationAddr())
-	src := netip.AddrFrom4(*ifrm.SourceAddr())
-
-	hl := ifrm.HeaderLength()
-	tl := int(ifrm.TotalLength())
-	ttl := ifrm.TTL()
-	id := ifrm.ID()
-	proto := ifrm.Protocol()
-	tos := ifrm.ToS()
-	return fmt.Sprintf("IP %s SRC=%s DST=%s LEN=%d OPT=%d TTL=%d ID=%d ToS=0x%x", proto.String(), src.String(), dst.String(), tl, tl-hl, ttl, id, tos)
+	proto := ifrm.Protocol().String()
+	b := make([]byte, 0, 91+len(proto))
+	b = append(b, "IP ("...)
+	b = append(b, proto...)
+	b = append(b, ") src="...)
+	b = AppendFormatAddr(b, *ifrm.SourceAddr())
+	b = append(b, " dst="...)
+	b = AppendFormatAddr(b, *ifrm.DestinationAddr())
+	b = internal.AppendStrDecimal(b, " len=", int64(ifrm.TotalLength()))
+	b = internal.AppendStrDecimal(b, " opt=", int64(ifrm.HeaderLength()-20))
+	b = internal.AppendStrDecimal(b, " ttl=", int64(ifrm.TTL()))
+	b = internal.AppendStrDecimal(b, " id=", int64(ifrm.ID()))
+	b = internal.AppendStrHexData(b, " tos=0x", byte(ifrm.ToS()))
+	return string(b)
 }

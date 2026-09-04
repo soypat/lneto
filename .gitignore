@@ -81,3 +81,6 @@ local
 
 # If running a python script.
 */__pycache__/*
+
+# memci targets
+!.github/workflows/memci.json

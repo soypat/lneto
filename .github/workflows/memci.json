@@ -1,0 +1,13 @@
+[
+    {
+        "name":"Stack MWE",
+        "build":"go build -o=mwe.elf -tags=noslog ./examples/min-working-example",
+        "elf":"mwe.elf"
+    },
+    {
+        "name":"Stack MWE pico",
+        "build":"tinygo build -o=mwe-pico.elf -target=pico -tags=noslog -panic=trap ./examples/min-working-example",
+        "elf":"mwe-pico.elf",
+        "mem":true
+    }
+]

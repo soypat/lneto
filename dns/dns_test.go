@@ -1,7 +1,6 @@
 package dns
 
 import (
-	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
@@ -195,33 +194,8 @@ func TestMessageAppendEncodeIncompleteOK(t *testing.T) {
 }
 
 func (m *Message) String() string {
-	// s := fmt.Sprintf("Message: %#v\n", &m.Header)
-	var s strings.Builder
-	if len(m.Questions) > 0 {
-		s.WriteString("-- Questions\n")
-		for _, q := range m.Questions {
-			s.WriteString(fmt.Sprintf("%#v\n", q))
-		}
-	}
-	if len(m.Answers) > 0 {
-		s.WriteString("-- Answers\n")
-		for _, a := range m.Answers {
-			s.WriteString(fmt.Sprintf("%#v\n", a))
-		}
-	}
-	if len(m.Authorities) > 0 {
-		s.WriteString("-- Authorities\n")
-		for _, ns := range m.Authorities {
-			s.WriteString(fmt.Sprintf("%#v\n", ns))
-		}
-	}
-	if len(m.Additionals) > 0 {
-		s.WriteString("-- Additionals\n")
-		for _, e := range m.Additionals {
-			s.WriteString(fmt.Sprintf("%#v\n", e))
-		}
-	}
-	return s.String()
+	b, _ := m.AppendText(nil)
+	return string(b)
 }
 
 func TestDecodeMessage(t *testing.T) {

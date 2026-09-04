@@ -290,3 +290,11 @@ The document has moved
 </BODY></HTML>
 success
 ```
+
+## Reference
+
+### Build tags
+
+- `debugheaplog`: All logging calls are enabled and all will print out heap information. Warning: Heavy cost on some TinyGo garbage collectors which do not cache the GC statistics
+- `noslog`: All slog package logging calls omitted.
+- `xnetdebug`: Packet capture printing to standard output enabled on `xnet.StackAsync` Ethernet and IP receive and send methods
