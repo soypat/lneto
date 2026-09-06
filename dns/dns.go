@@ -3,6 +3,7 @@ package dns
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"math"
 	"net/netip"
 	"slices"
@@ -426,10 +427,64 @@ func (m *Message) Reset() {
 	m.Additionals = m.Additionals[:0]
 }
 
+// AppendText appends a human readable representation of the Message's resources
+// to b and returns the resulting slice. It implements [encoding.TextAppender].
+func (m *Message) AppendText(b []byte) (_ []byte, err error) {
+	if len(m.Questions) > 0 {
+		b = append(b, "-- Questions\n"...)
+		for i := range m.Questions {
+			b, err = m.Questions[i].AppendText(b)
+			if err != nil {
+				return b, err
+			}
+			b = append(b, '\n')
+		}
+	}
+	b, err = appendResourcesText(b, "-- Answers\n", m.Answers)
+	if err != nil {
+		return b, err
+	}
+	b, err = appendResourcesText(b, "-- Authorities\n", m.Authorities)
+	if err != nil {
+		return b, err
+	}
+	return appendResourcesText(b, "-- Additionals\n", m.Additionals)
+}
+
+func appendResourcesText(b []byte, title string, resources []Resource) (_ []byte, err error) {
+	if len(resources) == 0 {
+		return b, nil
+	}
+	b = append(b, title...)
+	for i := range resources {
+		b, err = resources[i].AppendText(b)
+		if err != nil {
+			return b, err
+		}
+		b = append(b, '\n')
+	}
+	return b, nil
+}
+
 // String returns a string representation of the header.
 func (h *ResourceHeader) String() string {
-	return h.Name.String() + " " + h.Type.String() + " " + h.Class.String() +
-		" ttl=" + strconv.FormatUint(uint64(h.TTL), 10) + " len=" + strconv.FormatUint(uint64(h.Length), 10)
+	b, _ := h.AppendText(make([]byte, 0, 64))
+	return string(b)
+}
+
+// AppendText appends a human readable representation of the header to b and
+// returns the resulting slice. It implements [encoding.TextAppender].
+func (h *ResourceHeader) AppendText(b []byte) ([]byte, error) {
+	b = h.Name.AppendDottedTo(b)
+	b = append(b, ' ')
+	b = append(b, h.Type.String()...)
+	b = append(b, ' ')
+	b = append(b, h.Class.String()...)
+	b = append(b, " ttl="...)
+	b = strconv.AppendUint(b, uint64(h.TTL), 10)
+	b = append(b, " len="...)
+	b = strconv.AppendUint(b, uint64(h.Length), 10)
+	return b, nil
 }
 
 func (r *Resource) Reset() {
@@ -454,6 +509,29 @@ func (r *Resource) CNAMEView() Name {
 		return Name{}
 	}
 	return Name{data: r.RawData()}
+}
+
+// String returns a string representation of the Resource: its header followed by
+// the record's data.
+func (r *Resource) String() string {
+	b, _ := r.AppendText(make([]byte, 0, 96))
+	return string(b)
+}
+
+// AppendText appends a human readable representation of the Resource to b: the
+// header followed by the record's data, in dotted format for CNAME records and
+// hexadecimal otherwise. It implements [encoding.TextAppender].
+func (r *Resource) AppendText(b []byte) (_ []byte, err error) {
+	b, err = r.header.AppendText(b)
+	if err != nil {
+		return b, err
+	}
+	b = append(b, " data="...)
+	if r.header.Type == TypeCNAME {
+		cname := r.CNAMEView()
+		return cname.AppendDottedTo(b), nil
+	}
+	return hex.AppendEncode(b, r.RawData()), nil
 }
 
 func (q *Question) Reset() {
@@ -494,7 +572,19 @@ func (q *Question) appendTo(buf []byte) (_ []byte, err error) {
 
 // String returns a string representation of the Question with the Name in dotted format.
 func (q *Question) String() string {
-	return q.Name.String() + " " + q.Type.String() + " " + q.Class.String()
+	b, _ := q.AppendText(make([]byte, 0, 32))
+	return string(b)
+}
+
+// AppendText appends a human readable representation of the Question to b with
+// the Name in dotted format. It implements [encoding.TextAppender].
+func (q *Question) AppendText(b []byte) ([]byte, error) {
+	b = q.Name.AppendDottedTo(b)
+	b = append(b, ' ')
+	b = append(b, q.Type.String()...)
+	b = append(b, ' ')
+	b = append(b, q.Class.String()...)
+	return b, nil
 }
 
 func (r *Resource) Decode(b []byte, off uint16) (uint16, error) {
