@@ -504,6 +504,19 @@ func (h *Handler) nextSegmentIsRetransmit() bool {
 	return hasSent && h.scb.snd.NXT.LessThan(endSeq)
 }
 
+// NextSegmentSYN returns syn=true if next outgoing segment is a handshake SYN.
+// This method is exported for use by [Policy] implementations to decide handshake-only options (window scale, SACK-permitted, timestamps).
+func (h *Handler) NextSegmentSYN() (syn, ack bool) {
+	state := h.scb.State()
+	if h.AwaitingSynSend() || h.requeueControl && state == StateSynSent {
+		return true, false // SYN initial/requeue.
+	} else if h.requeueControl && state == StateSynRcvd {
+		return true, true // SYNACK requeue.
+	}
+	pending := h.scb.pending[0]
+	return pending.HasAny(FlagSYN), pending.HasAny(FlagACK)
+}
+
 // Write implements [io.Writer] by copying b to a internal buffer to be sent over the network on the next
 // [Handler.Send] call that can send data to remote peer. Use [Handler.Free] to know the maximum length the argument slice can be before erroring.
 func (h *Handler) Write(b []byte) (int, error) {
