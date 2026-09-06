@@ -272,7 +272,9 @@ func (tcb *ControlBlock) HasPendingRetransmit() bool {
 // unacknowledged range [snd.UNA, snd.NXT] or the connection cannot send data, so
 // a misbehaving [Policy] cannot corrupt the send sequence space.
 func (tcb *ControlBlock) RetransmitFrom(newNxt Value) bool {
-	if !tcb._state.TxDataOpen() {
+	if !tcb._state.txQueuedDataOpen() {
+		// Matches [State.TxDataOpen] and other states that may have data queued to make progress.
+		// Matches [ControlBlock.PendingSegment] gate (RFC 9293 §3.10.8).
 		return false
 	} else if newNxt.LessThan(tcb.snd.UNA) || tcb.snd.NXT.LessThan(newNxt) {
 		return false

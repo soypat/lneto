@@ -376,6 +376,9 @@ func (h *Handler) Send(b []byte) (int, error) {
 		tfrm.SetOffsetAndFlags(offset, 0)
 		limit, rtxFrom, doRtx := h.policy.PreTx(h, tfrm)
 		txLimit = limit
+		if limit == 0 {
+			h.info("tcp.Policy:newTxLimit=0") // Can cause headaches for users.
+		}
 		if doRtx && h.scb.RetransmitFrom(rtxFrom) {
 			// Retransmission directed by the Policy: rewind the transmit buffer
 			// to match the send sequence so unacknowledged data is resent. Done
