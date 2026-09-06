@@ -106,15 +106,15 @@ func TestRTO_RetransmitOnTimeout(t *testing.T) {
 	const iss = uint32(1000)
 	r.postTx(dataSeg(iss, 100), 0)
 
-	if _, rtx, _ := r.preTx(int64(rtoInitial)-1, tcp.Value(iss)); rtx {
+	if _, _, rtx := r.preTx(int64(rtoInitial)-1, tcp.Value(iss)); rtx {
 		t.Fatal("must not retransmit before the deadline")
 	}
-	from, rtx, hold := r.preTx(int64(rtoInitial), tcp.Value(iss))
+	limit, from, rtx := r.preTx(int64(rtoInitial), tcp.Value(iss))
 	if !rtx {
 		t.Fatal("RTO must fire at the deadline with data outstanding")
 	}
-	if hold {
-		t.Error("the estimator never holds new data back")
+	if limit != tcp.TransmitUnlimited {
+		t.Error("the estimator never limits new data")
 	}
 	if from != tcp.Value(iss) {
 		t.Errorf("retransmit from %d, want snd.UNA=%d", from, iss)
@@ -293,7 +293,7 @@ func TestRTO_RetransmitsZeroWindowProbe(t *testing.T) {
 	now := int64(rtoInitial)
 	prevRTO := r.CurrentRTO()
 	for attempt := 1; attempt <= 4; attempt++ {
-		from, rtx, _ := r.preTx(now, tcp.Value(iss))
+		_, from, rtx := r.preTx(now, tcp.Value(iss))
 		if !rtx {
 			t.Fatalf("attempt %d: timer did not fire; the probe would never be resent", attempt)
 		}

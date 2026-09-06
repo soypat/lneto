@@ -368,14 +368,14 @@ func (h *Handler) Send(b []byte) (int, error) {
 		return 0, err
 	}
 	offset := uint8(5)
-	var holdNew bool
+	txLimit := TransmitUnlimited
 	if h.policyEnabled() {
 		// Hand the Policy a defined frame: zeroed header at the minimum offset.
 		// It may append options and raise the offset, which is read back below.
 		tfrm.ClearHeader()
 		tfrm.SetOffsetAndFlags(offset, 0)
-		rtxFrom, doRtx, hold := h.policy.PreTx(h, tfrm)
-		holdNew = hold
+		limit, rtxFrom, doRtx := h.policy.PreTx(h, tfrm)
+		txLimit = limit
 		if doRtx && h.scb.RetransmitFrom(rtxFrom) {
 			// Retransmission directed by the Policy: rewind the transmit buffer
 			// to match the send sequence so unacknowledged data is resent. Done
@@ -441,10 +441,9 @@ func (h *Handler) Send(b []byte) (int, error) {
 	} else {
 		var ok bool
 		maxPayload := len(b) - optHead
-		if holdNew && !h.nextSegmentIsRetransmit() {
-			// Policy is holding new data back (congestion window exhausted).
-			// A retransmission it directed in this same call still proceeds.
-			maxPayload = 0
+		if txLimit < Size(maxPayload) && !h.nextSegmentIsRetransmit() {
+			// Policy clamped new data.
+			maxPayload = int(txLimit)
 		}
 		segment, ok = h.scb.PendingSegment(maxPayload)
 		segment.WND = h.recvWindow()

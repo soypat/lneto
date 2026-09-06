@@ -184,15 +184,17 @@ func (r *Timer) postRx(incoming tcp.Segment, now int64) {
 // PreTx reports whether the retransmission timer has expired and, if so, applies
 // the RFC 6298 §5.4–§5.6 timeout response — discard the outstanding RTT sample
 // (Karn), back the RTO off exponentially and restart the timer — and asks the
-// connection to retransmit from snd.UNA (go-back-N). It writes no TCP options:
-// retransmission timing needs none of its own. It implements [tcp.Policy].
-func (r *Timer) PreTx(h *tcp.Handler, outgoingOpts tcp.Frame) (rtxFrom tcp.Value, retransmit, holdNew bool) {
+// connection to retransmit from snd.UNA (go-back-N). It writes no TCP options
+// and imposes no transmit limit: retransmission timing needs neither, and
+// congestion control belongs to a Policy composing this timer. It implements
+// [tcp.Policy].
+func (r *Timer) PreTx(h *tcp.Handler, outgoingOpts tcp.Frame) (newTransmitLimit tcp.Size, rtxFrom tcp.Value, retransmit bool) {
 	return r.preTx(r.nanotime(), h.ControlBlock().SendUNA())
 }
 
-func (r *Timer) preTx(now int64, una tcp.Value) (rtxFrom tcp.Value, retransmit, holdNew bool) {
+func (r *Timer) preTx(now int64, una tcp.Value) (newTransmitLimit tcp.Size, rtxFrom tcp.Value, retransmit bool) {
 	if !r.running || now < r.deadline || r.sndUNA == r.sndNXT {
-		return 0, false, false
+		return tcp.TransmitUnlimited, 0, false
 	}
 	r.expirations++
 	r.timing = false // §5.4: do not sample a retransmitted segment.
@@ -202,7 +204,7 @@ func (r *Timer) preTx(now int64, una tcp.Value) (rtxFrom tcp.Value, retransmit, 
 	}
 	r.running = true
 	r.deadline = now + int64(r.CurrentRTO())
-	return una, true, false
+	return tcp.TransmitUnlimited, una, true
 }
 
 // PostTx records an emitted segment: it advances the shadow send sequence,

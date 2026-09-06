@@ -21,7 +21,7 @@ type recordingPolicy struct {
 	keep       bool // PreRx result. Default true (see newRecordingPolicy).
 	rtxFrom    Value
 	retransmit bool
-	holdNew    bool
+	txLimit    Size // PreTx new-data limit. Default TransmitUnlimited (see newRecordingPolicy).
 	// writeOpts, when non-empty, is appended as TCP options by PreTx.
 	writeOpts []byte
 }
@@ -34,7 +34,9 @@ type txRecord struct {
 	dport  uint16
 }
 
-func newRecordingPolicy() *recordingPolicy { return &recordingPolicy{keep: true} }
+func newRecordingPolicy() *recordingPolicy {
+	return &recordingPolicy{keep: true, txLimit: TransmitUnlimited}
+}
 
 var _ Policy = (*recordingPolicy)(nil)
 
@@ -49,7 +51,7 @@ func (p *recordingPolicy) PostRx(h *Handler, prevState State, accepted Frame) {
 	p.postRx = append(p.postRx, accepted.Segment(len(accepted.Payload())))
 }
 
-func (p *recordingPolicy) PreTx(h *Handler, outgoingOpts Frame) (Value, bool, bool) {
+func (p *recordingPolicy) PreTx(h *Handler, outgoingOpts Frame) (Size, Value, bool) {
 	p.preTx++
 	if len(p.writeOpts) > 0 {
 		// Raise the offset first: Options() is sized from it.
@@ -57,7 +59,7 @@ func (p *recordingPolicy) PreTx(h *Handler, outgoingOpts Frame) (Value, bool, bo
 		outgoingOpts.SetOffsetAndFlags(words, 0)
 		copy(outgoingOpts.Options(), p.writeOpts)
 	}
-	return p.rtxFrom, p.retransmit, p.holdNew
+	return p.txLimit, p.rtxFrom, p.retransmit
 }
 
 func (p *recordingPolicy) PostTx(h *Handler, outgoing Frame) {
@@ -365,9 +367,10 @@ func TestPolicy_PreTxRetransmitOutOfRange(t *testing.T) {
 	}
 }
 
-// TestPolicy_HoldNew verifies holdNew suppresses new data while leaving control
-// segments free to go out.
-func TestPolicy_HoldNew(t *testing.T) {
+// TestPolicy_TransmitLimit verifies the PreTx new-data limit caps the payload
+// sent while leaving control segments free to go out: a zero limit suppresses
+// data entirely, a partial limit truncates the segment.
+func TestPolicy_TransmitLimit(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	rng := rand.New(rand.NewSource(10))
 	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
@@ -378,8 +381,9 @@ func TestPolicy_HoldNew(t *testing.T) {
 	var buf [mtu]byte
 	establish(t, client, server, buf[:])
 
-	pol.holdNew = true
-	if _, err := client.Write([]byte("payload")); err != nil {
+	const payload = "payload"
+	pol.txLimit = 0
+	if _, err := client.Write([]byte(payload)); err != nil {
 		t.Fatal("client write:", err)
 	}
 	clear(buf[:])
@@ -388,18 +392,29 @@ func TestPolicy_HoldNew(t *testing.T) {
 		t.Fatal("client send:", err)
 	}
 	if n > sizeHeaderTCP {
-		t.Fatalf("holdNew must suppress new data, got %d payload bytes", n-sizeHeaderTCP)
+		t.Fatalf("a zero limit must suppress new data, got %d payload bytes", n-sizeHeaderTCP)
 	}
 
-	// Releasing the hold lets the same data out.
-	pol.holdNew = false
+	// A partial limit lets only that many bytes out.
+	pol.txLimit = 3
 	clear(buf[:])
 	n, err = client.Send(buf[:])
 	if err != nil {
-		t.Fatal("client send after hold:", err)
+		t.Fatal("client send under partial limit:", err)
 	}
-	if n <= sizeHeaderTCP {
-		t.Fatal("data must flow once holdNew is cleared")
+	if got := n - sizeHeaderTCP; got != int(pol.txLimit) {
+		t.Fatalf("got %d payload bytes, want the limit of %d", got, pol.txLimit)
+	}
+
+	// Releasing the limit lets the rest of the data out.
+	pol.txLimit = TransmitUnlimited
+	clear(buf[:])
+	n, err = client.Send(buf[:])
+	if err != nil {
+		t.Fatal("client send after limit lifted:", err)
+	}
+	if got := n - sizeHeaderTCP; got != len(payload)-3 {
+		t.Fatalf("got %d payload bytes, want the remaining %d once unlimited", got, len(payload)-3)
 	}
 }
 
