@@ -1274,7 +1274,7 @@ func TestStackGoTCPDialSurvivesManyWaitIterations(t *testing.T) {
 	}()
 
 	// Quiet phase: no packets serviced, so the dialer only spins.
-	for i := 0; i < quietIters; i++ {
+	for i := range quietIters {
 		done, err := tsched.AwaitGoroYieldOrDone()
 		if done {
 			t.Fatalf("dial gave up during quiet phase after %d iterations: %v", i, err)
@@ -1286,7 +1286,7 @@ func TestStackGoTCPDialSurvivesManyWaitIterations(t *testing.T) {
 	// Handshake phase: pump packets until the dial completes, bounded rounds so
 	// a broken handshake fails loudly.
 	var buf [ethernet.MaxMTU + ethernet.MaxOverheadSize]byte
-	for round := 0; round < 64; round++ {
+	for range 64 {
 		done, err := tsched.AwaitGoroYieldOrDone()
 		if done {
 			if err != nil {
