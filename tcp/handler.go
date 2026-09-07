@@ -677,10 +677,14 @@ func (h *Handler) putSynOptions(b []byte, mss uint16, isSynack bool) uint8 {
 // wireWnd converts a segment's real window to its on-wire representation.
 // SYN segments are never scaled (RFC7323 §2.2), we cap SYN windows at maxuint16.
 func (h *Handler) wireWnd(seg Segment) Size {
+	wnd := seg.WND
 	if h.peerOfferedWS && !seg.Flags.HasAny(FlagSYN) {
-		return seg.WND >> h.wndShiftLocal
+		wnd >>= h.wndShiftLocal
 	}
-	return min(seg.WND, 0xFFFF)
+	if wnd > 0xFFFF {
+		wnd = 0xFFFF
+	}
+	return wnd
 }
 
 // AwaitingSynResponse returns true if the Handler is an active client opened with [Handler.OpenActive] and has already sent out the first SYN packet to the remote client.
