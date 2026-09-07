@@ -230,14 +230,11 @@ func (rtx *ringTx) RetransmitFromUNA() {
 	rtx.RetransmitFrom(oldest.seq)
 }
 
-// RetransmitFrom rewinds the transmit queue so sent-but-unacked data at and
-// after seq becomes unsent again; the next MakePacket calls re-send it. seq is
-// snapped down to the start of the packet containing it — the retransmission
-// queue tracks whole packets, so sub-packet rewind is not representable. It is
-// a no-op when seq is not covered by any queued packet (nothing to resend).
+// RetransmitFrom rewinds the transmit queue so sent-but-unacked data from seq onward
+// becomes unsent again causing next [ringTx.MakePacket] to resend them.
 //
-// Callers must pair this with [ControlBlock.RetransmitFrom] using the same seq
-// so the send sequence space and the transmit buffer rewind together.
+// Must be called when [ControlBlock.RetransmitFrom] returns true so the
+// ring and control block state are coherent.
 func (rtx *ringTx) RetransmitFrom(seq Value) {
 	pkt := rtx.slist.packetContaining(seq)
 	if pkt == nil {
@@ -353,8 +350,7 @@ func (sl *sentlist) Free() int {
 }
 
 // packetContaining returns the queued packet whose sequence range covers seq, or
-// nil when no packet does. It is the floor lookup a retransmission rewind needs:
-// seq lands inside a packet and the whole packet is resent.
+// nil when no packet does.
 func (sl *sentlist) packetContaining(seq Value) *ringidx {
 	for i := range sl.pkts {
 		pkt := &sl.pkts[i]
