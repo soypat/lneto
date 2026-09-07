@@ -658,7 +658,7 @@ func wndShiftFor(bufSize int) (shift uint8) {
 	return shift
 }
 
-// putSynOptions writes the option block shared by SYN and SYN-ACK segments:
+// putSynOptions writes the option block shared by SYN and SYN-ACK segments.
 // MSS always, then the NOP-padded window-scale offer. An active SYN always
 // offers scaling, since a zero shift still lets the peer scale its own window
 // (RFC 7323 §2.5). A SYN-ACK echoes the offer only when the peer's SYN carried
@@ -674,19 +674,13 @@ func (h *Handler) putSynOptions(b []byte, mss uint16, isSynack bool) uint8 {
 	return words
 }
 
-// wireWnd converts a segment's real window to its on-wire representation: SYN
-// windows are never scaled (RFC 7323 §2.2), other windows drop the low shift bits
-// once both sides offered scaling, and a value still exceeding the 16-bit field
-// saturates rather than wrapping to near zero.
+// wireWnd converts a segment's real window to its on-wire representation.
+// SYN segments are never scaled (RFC7323 §2.2), we cap SYN windows at maxuint16.
 func (h *Handler) wireWnd(seg Segment) Size {
-	wnd := seg.WND
 	if h.peerOfferedWS && !seg.Flags.HasAny(FlagSYN) {
-		wnd >>= h.wndShiftLocal
+		return seg.WND >> h.wndShiftLocal
 	}
-	if wnd > 0xFFFF {
-		wnd = 0xFFFF
-	}
-	return wnd
+	return min(seg.WND, 0xFFFF)
 }
 
 // AwaitingSynResponse returns true if the Handler is an active client opened with [Handler.OpenActive] and has already sent out the first SYN packet to the remote client.
