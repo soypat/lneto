@@ -3,7 +3,6 @@ package tcp
 import (
 	"io"
 	"log/slog"
-	"math"
 	"net"
 
 	"github.com/soypat/lneto/internal"
@@ -230,7 +229,7 @@ func (tcb *ControlBlock) Open(iss Value, wnd Size) (err error) {
 	switch {
 	case tcb._state != StateClosed && tcb._state != StateTimeWait:
 		err = errNeedClosedTCBToOpen
-	case wnd > math.MaxUint16:
+	case wnd > maxWindow:
 		err = errWindowTooLarge
 	}
 	if err != nil {
@@ -535,7 +534,7 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	switch {
 	case tcb._state == StateClosed && !isFirst:
 		err = io.ErrClosedPipe
-	case seg.WND > math.MaxUint16:
+	case seg.WND > maxWindow:
 		err = errWindowTooLarge
 	case hasAck && seg.ACK != tcb.rcv.NXT:
 		err = errAckNotNext
@@ -578,7 +577,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	zeroWindowOK := tcb.rcv.WND == 0 && seg.DATALEN == 0 && seg.SEQ == tcb.rcv.NXT
 	// See section 3.4 of RFC 9293 for more on these checks.
 	switch {
-	case seg.WND > math.MaxUint16:
+	case seg.WND > maxWindow:
 		err = errWindowOverflow
 	case tcb._state == StateClosed:
 		err = io.ErrClosedPipe

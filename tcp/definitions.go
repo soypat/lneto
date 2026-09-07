@@ -14,7 +14,7 @@ import (
 
 var (
 	errDropSegment    error = lneto.ErrPacketDrop
-	errWindowTooLarge       = errors.New("invalid window size > 2**16")
+	errWindowTooLarge       = errors.New("invalid window size > max scaled window")
 
 	errBufferTooSmall      error = lneto.ErrShortBuffer
 	errNeedClosedTCBToOpen       = errors.New("need closed TCB to call open")
@@ -25,7 +25,7 @@ var (
 	errBadSegack                 = errors.New("seqs:bad segack")
 	errFinwaitExpectedACK        = errors.New("seqs:finwait1 expected ACK")
 
-	errWindowOverflow    = newRejectErr("wnd > 2**16")
+	errWindowOverflow    = newRejectErr("wnd > max scaled window")
 	errSeqNotInWindow    = newRejectErr("seq not in snd/rcv.wnd")
 	errZeroWindow        = newRejectErr("zero window")
 	errLastNotInWindow   = newRejectErr("last not in snd/rcv.wnd")
