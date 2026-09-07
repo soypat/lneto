@@ -253,20 +253,7 @@ func trimOWS(b []byte) []byte {
 	return b
 }
 
-// equalFold compares b to the ASCII lowercase key, case insensitively.
+// equalFold compares b to key, case insensitively.
 func equalFold(b []byte, key string) bool {
-	if len(b) != len(key) {
-		return false
-	}
-	const asciiCapDiff = 'a' - 'A'
-	for i := range b {
-		c := b[i]
-		if c >= 'A' && c <= 'Z' {
-			c += asciiCapDiff
-		}
-		if c != key[i] {
-			return false
-		}
-	}
-	return true
+	return EqualFoldASCII(b2s(b), key)
 }

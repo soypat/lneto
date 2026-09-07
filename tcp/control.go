@@ -3,7 +3,6 @@ package tcp
 import (
 	"io"
 	"log/slog"
-	"math"
 	"net"
 
 	"github.com/soypat/lneto/internal"
@@ -94,6 +93,12 @@ func (tcb *ControlBlock) RecvWindow() Size { return tcb.rcv.WND }
 
 // ISS returns the initial sequence number of the connection that was defined on a call to Open by user.
 func (tcb *ControlBlock) ISS() Value { return tcb.snd.ISS }
+
+// SendUNA returns snd.UNA, the oldest sequence number not yet acked by the remote.
+func (tcb *ControlBlock) SendUNA() Value { return tcb.snd.UNA }
+
+// SendNext returns snd.NXT, one past the highest sequence number sent.
+func (tcb *ControlBlock) SendNext() Value { return tcb.snd.NXT }
 
 // MaxInFlightData returns the maximum size of a segment that can be sent by taking into account
 // the send window size and the unacked data. Returns 0 before StateSynRcvd.
@@ -224,7 +229,7 @@ func (tcb *ControlBlock) Open(iss Value, wnd Size) (err error) {
 	switch {
 	case tcb._state != StateClosed && tcb._state != StateTimeWait:
 		err = errNeedClosedTCBToOpen
-	case wnd > math.MaxUint16:
+	case wnd > maxWindow:
 		err = errWindowTooLarge
 	}
 	if err != nil {
@@ -257,14 +262,34 @@ func (tcb *ControlBlock) HasPendingRetransmit() bool {
 	return tcb._state.TxDataOpen() && tcb.dupack >= retransmitAfterDupacks && tcb.nRetransmit <= tcb.dupack-retransmitAfterDupacks
 }
 
+// RetransmitFrom rewinds snd.NXT back to newNxt so the next PendingSegment and
+// Send calls retransmit unacknowledged data from that sequence number onwards.
+// It must be paired with ringTx.RetransmitFrom to rewind the transmit buffer to
+// the same point. Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
+//
+// It reports false and changes nothing when newNxt falls outside the
+// unacknowledged range [snd.UNA, snd.NXT] or the connection cannot send data, so
+// a misbehaving [Policy] cannot corrupt the send sequence space.
+func (tcb *ControlBlock) RetransmitFrom(newNxt Value) bool {
+	if !tcb._state.txQueuedDataOpen() {
+		// Matches [State.TxDataOpen] and other states that may have data queued to make progress.
+		// Matches [ControlBlock.PendingSegment] gate (RFC 9293 §3.10.8).
+		return false
+	} else if newNxt.LessThan(tcb.snd.UNA) || tcb.snd.NXT.LessThan(newNxt) {
+		return false
+	}
+	tcb.snd.NXT = newNxt
+	tcb.dupack = 0
+	tcb.nRetransmit = 0
+	return true
+}
+
 // RetransmitAll rewinds snd.NXT back to snd.UNA so the next PendingSegment and
 // Send calls retransmit all unacknowledged data from the oldest sequence number
 // (go-back-N). It must be paired with ringTx.RetransmitFromUNA to rewind the
 // transmit buffer. Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
 func (tcb *ControlBlock) RetransmitAll() {
-	tcb.snd.NXT = tcb.snd.UNA
-	tcb.dupack = 0
-	tcb.nRetransmit = 0
+	tcb.RetransmitFrom(tcb.snd.UNA)
 }
 
 // PendingSegment calculates a suitable next segment to send from a payload length.
@@ -279,10 +304,9 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 		// Optimist Strategy: retransmit oldest data once.
 		return Segment{SEQ: tcb.snd.UNA, DATALEN: Size(payloadLen), ACK: tcb.rcv.NXT, WND: tcb.rcv.WND, Flags: FlagACK}, true
 	}
-	established := tcb._state == StateEstablished
-	canSendData := established || tcb._state == StateCloseWait
+	canSendData := tcb._state.txQueuedDataOpen()
 	if !canSendData {
-		payloadLen = 0 // Can't send data if not established or close-wait.
+		payloadLen = 0 // No send-buffer data may go out in this state.
 	}
 	if pending == 0 && payloadLen == 0 {
 		return Segment{}, false // No pending segment.
@@ -510,7 +534,7 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	switch {
 	case tcb._state == StateClosed && !isFirst:
 		err = io.ErrClosedPipe
-	case seg.WND > math.MaxUint16:
+	case seg.WND > maxWindow:
 		err = errWindowTooLarge
 	case hasAck && seg.ACK != tcb.rcv.NXT:
 		err = errAckNotNext
@@ -522,8 +546,12 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 			err = errSeqNotInWindow
 		}
 
-	case seg.DATALEN > 0 && (tcb._state == StateFinWait1 || tcb._state == StateFinWait2):
-		err = errConnectionClosing // Case 1: No further SENDs from the user will be accepted by the TCP implementation.
+	case seg.DATALEN > 0 && tcb._state == StateFinWait2:
+		// FIN-WAIT-2 means our FIN was acknowledged, so no data below it can be
+		// unacknowledged and data here is a caller error. FIN-WAIT-1 is excluded:
+		// its FIN sits above data the peer may still be missing, which must go out
+		// for either side to make progress (RFC 9293 §3.10.8).
+		err = errConnectionClosing
 
 	case checkSeq && tcb.snd.WND == 0 && seg.DATALEN > 0 && seg.SEQ == tcb.snd.NXT:
 		err = errZeroWindow
@@ -549,7 +577,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	zeroWindowOK := tcb.rcv.WND == 0 && seg.DATALEN == 0 && seg.SEQ == tcb.rcv.NXT
 	// See section 3.4 of RFC 9293 for more on these checks.
 	switch {
-	case seg.WND > math.MaxUint16:
+	case seg.WND > maxWindow:
 		err = errWindowOverflow
 	case tcb._state == StateClosed:
 		err = io.ErrClosedPipe

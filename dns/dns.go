@@ -3,6 +3,7 @@ package dns
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"math"
 	"net/netip"
 	"slices"
@@ -97,6 +98,12 @@ func (n Name) EqualString(strname string) bool {
 // for case-insensitive comparison use [NamesEqualFold].
 func NamesEqual(a, b Name) bool {
 	return internal.BytesEqual(a.data, b.data)
+}
+
+// NamesEqualFold reports whether two DNS names are equal under ASCII case
+// folding, which is how DNS labels compare per RFC 1035 section 2.3.3.
+func NamesEqualFold(a, b Name) bool {
+	return internal.BytesEqualFoldASCII(a.data, b.data)
 }
 
 type ZFlags uint16
@@ -299,25 +306,55 @@ func (m *Message) AppendTo(buf []byte, txid uint16, flags HeaderFlags) (_ []byte
 	return buf, nil
 }
 
+// WriteAnswers writes the addresses answering host into dst, following the
+// CNAME chain rooted at host. It returns the number of addresses written.
 func (m *Message) WriteAnswers(dst []netip.Addr, host string) (n uint16, err error) {
-	for i := range m.Answers {
-		if int(n) >= len(dst) {
-			return n, lneto.ErrExhausted
+	// Each round resolves one CNAME, which consumes an answer. Bounding the
+	// walk by the answer count is thus enough to reach the addresses, and
+	// terminates on cyclic chains.
+	var alias Name // Canonical name reached so far; zero means host itself.
+	for range m.Answers {
+		var next Name
+		for i := range m.Answers {
+			ans := &m.Answers[i]
+			if !ans.header.ownedBy(alias, host) {
+				continue
+			}
+			switch {
+			case ans.header.Type.IsIPAddr():
+				if int(n) >= len(dst) {
+					return n, lneto.ErrExhausted
+				}
+				addr, ok := netip.AddrFromSlice(ans.RawData())
+				if !ok {
+					err = lneto.ErrInvalidAddr
+					continue
+				}
+				dst[n] = addr
+				n++
+			case ans.header.Type == TypeCNAME:
+				if cname := ans.CNAMEView(); cname.Len() != 0 {
+					next = cname
+				}
+			}
 		}
-		ans := &m.Answers[i]
-		hdr := ans.Header()
-		if !hdr.Name.EqualString(host) {
-			continue
+		if n > 0 || next.Len() == 0 {
+			break
 		}
-		var ok bool
-		dst[n], ok = netip.AddrFromSlice(ans.RawData())
-		if !ok {
-			err = lneto.ErrInvalidAddr
-		} else {
-			n++
-		}
+		alias = next
 	}
 	return n, err
+}
+
+// ownedBy reports whether the record's owner name is the name being resolved:
+// the alias reached by following CNAMEs, or host at the root of the chain.
+func (h *ResourceHeader) ownedBy(alias Name, host string) bool {
+	if alias.Len() == 0 {
+		return h.Name.EqualString(host)
+	}
+	// Fold: the server chooses the case of both the CNAME target and the owner
+	// name of the records it aliases, and may randomize it (DNS 0x20).
+	return NamesEqualFold(h.Name, alias)
 }
 
 func (m *Message) Len() uint16 {
@@ -390,10 +427,64 @@ func (m *Message) Reset() {
 	m.Additionals = m.Additionals[:0]
 }
 
+// AppendText appends a human readable representation of the Message's resources
+// to b and returns the resulting slice. It implements [encoding.TextAppender].
+func (m *Message) AppendText(b []byte) (_ []byte, err error) {
+	if len(m.Questions) > 0 {
+		b = append(b, "-- Questions\n"...)
+		for i := range m.Questions {
+			b, err = m.Questions[i].AppendText(b)
+			if err != nil {
+				return b, err
+			}
+			b = append(b, '\n')
+		}
+	}
+	b, err = appendResourcesText(b, "-- Answers\n", m.Answers)
+	if err != nil {
+		return b, err
+	}
+	b, err = appendResourcesText(b, "-- Authorities\n", m.Authorities)
+	if err != nil {
+		return b, err
+	}
+	return appendResourcesText(b, "-- Additionals\n", m.Additionals)
+}
+
+func appendResourcesText(b []byte, title string, resources []Resource) (_ []byte, err error) {
+	if len(resources) == 0 {
+		return b, nil
+	}
+	b = append(b, title...)
+	for i := range resources {
+		b, err = resources[i].AppendText(b)
+		if err != nil {
+			return b, err
+		}
+		b = append(b, '\n')
+	}
+	return b, nil
+}
+
 // String returns a string representation of the header.
 func (h *ResourceHeader) String() string {
-	return h.Name.String() + " " + h.Type.String() + " " + h.Class.String() +
-		" ttl=" + strconv.FormatUint(uint64(h.TTL), 10) + " len=" + strconv.FormatUint(uint64(h.Length), 10)
+	b, _ := h.AppendText(make([]byte, 0, 64))
+	return string(b)
+}
+
+// AppendText appends a human readable representation of the header to b and
+// returns the resulting slice. It implements [encoding.TextAppender].
+func (h *ResourceHeader) AppendText(b []byte) ([]byte, error) {
+	b = h.Name.AppendDottedTo(b)
+	b = append(b, ' ')
+	b = append(b, h.Type.String()...)
+	b = append(b, ' ')
+	b = append(b, h.Class.String()...)
+	b = append(b, " ttl="...)
+	b = strconv.AppendUint(b, uint64(h.TTL), 10)
+	b = append(b, " len="...)
+	b = strconv.AppendUint(b, uint64(h.Length), 10)
+	return b, nil
 }
 
 func (r *Resource) Reset() {
@@ -409,6 +500,38 @@ func (r *Resource) RawData() []byte {
 		length = uint16(len(r.data))
 	}
 	return r.data[:length]
+}
+
+// CNAMEView returns the canonical name held by a CNAME record, aliasing the
+// Resource's buffer. It returns a zero Name for any other record type.
+func (r *Resource) CNAMEView() Name {
+	if r.header.Type != TypeCNAME {
+		return Name{}
+	}
+	return Name{data: r.RawData()}
+}
+
+// String returns a string representation of the Resource: its header followed by
+// the record's data.
+func (r *Resource) String() string {
+	b, _ := r.AppendText(make([]byte, 0, 96))
+	return string(b)
+}
+
+// AppendText appends a human readable representation of the Resource to b: the
+// header followed by the record's data, in dotted format for CNAME records and
+// hexadecimal otherwise. It implements [encoding.TextAppender].
+func (r *Resource) AppendText(b []byte) (_ []byte, err error) {
+	b, err = r.header.AppendText(b)
+	if err != nil {
+		return b, err
+	}
+	b = append(b, " data="...)
+	if r.header.Type == TypeCNAME {
+		cname := r.CNAMEView()
+		return cname.AppendDottedTo(b), nil
+	}
+	return hex.AppendEncode(b, r.RawData()), nil
 }
 
 func (q *Question) Reset() {
@@ -449,7 +572,19 @@ func (q *Question) appendTo(buf []byte) (_ []byte, err error) {
 
 // String returns a string representation of the Question with the Name in dotted format.
 func (q *Question) String() string {
-	return q.Name.String() + " " + q.Type.String() + " " + q.Class.String()
+	b, _ := q.AppendText(make([]byte, 0, 32))
+	return string(b)
+}
+
+// AppendText appends a human readable representation of the Question to b with
+// the Name in dotted format. It implements [encoding.TextAppender].
+func (q *Question) AppendText(b []byte) ([]byte, error) {
+	b = q.Name.AppendDottedTo(b)
+	b = append(b, ' ')
+	b = append(b, q.Type.String()...)
+	b = append(b, ' ')
+	b = append(b, q.Class.String()...)
+	return b, nil
 }
 
 func (r *Resource) Decode(b []byte, off uint16) (uint16, error) {
@@ -460,8 +595,19 @@ func (r *Resource) Decode(b []byte, off uint16) (uint16, error) {
 	if r.header.Length > uint16(len(b[off:])) {
 		return off, errResourceLen
 	}
-	r.data = append(r.data[:0], b[off:off+r.header.Length]...)
-	return off + r.header.Length, nil
+	end := off + r.header.Length
+	if r.header.Type == TypeCNAME {
+		// CNAME data is a name which may use message compression. Expand it now
+		// since r.data is detached from b, leaving pointers unresolvable later.
+		cname := Name{data: r.data[:0]}
+		if _, derr := cname.Decode(b, off); derr == nil {
+			r.data = cname.data
+			r.header.Length = uint16(len(r.data))
+			return end, nil
+		}
+	}
+	r.data = append(r.data[:0], b[off:end]...)
+	return end, nil
 }
 
 func (r *Resource) appendTo(buf []byte) (_ []byte, err error) {

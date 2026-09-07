@@ -157,7 +157,7 @@ func (r *Ring) ReadDiscard(n int) error {
 	case n > buffered:
 		return errDiscardExceeds
 	case n == buffered:
-		r.Reset()
+		r.emptied()
 	case n+r.Off > len(r.Buf):
 		r.Off = n - (len(r.Buf) - r.Off)
 	default:
@@ -222,6 +222,18 @@ func (r *Ring) read(b []byte) (n int, err error) {
 func (r *Ring) Reset() {
 	r.Off = 0
 	r.End = 0
+}
+
+// emptied marks the ring empty keeping the write position where it is, unlike
+// [Ring.Reset] which rewinds it to index 0. Bytes staged past that position with
+// [Ring.PeekWrite] are addressed relative to it, so moving it makes a later
+// [Ring.Commit] hand back the wrong bytes.
+func (r *Ring) emptied() {
+	off := r.End
+	if off == len(r.Buf) {
+		off = 0 // Tail exhausted, next write wraps.
+	}
+	r.Off, r.End = off, 0
 }
 
 // Size returns the capacity of the ring buffer.
@@ -306,7 +318,7 @@ func (r *Ring) onReadEnd(totalRead int) {
 	}
 	newOff := r.addOff(r.Off, totalRead)
 	if newOff == r.End {
-		r.Reset()
+		r.emptied()
 	} else if newOff == len(r.Buf) {
 		r.Off = 0 // Optimization case.
 	} else {

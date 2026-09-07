@@ -18,7 +18,7 @@ var (
 )
 
 func LogEnabled(l *slog.Logger, lvl slog.Level) bool {
-	return true
+	return logEnabled
 }
 
 func logAttrsAndAllocs(allocmsg string, l *slog.Logger, level slog.Level, msg string, attrs ...slog.Attr) {

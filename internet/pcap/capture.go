@@ -987,16 +987,13 @@ func (frm Frame) AppendString(b []byte) []byte {
 	bitlen := frm.LenBits()
 	b = append(b, frm.Protocol...)
 	if bitlen%8 == 0 {
-		b = append(b, " len="...)
-		b = strconv.AppendInt(b, int64(bitlen/8), 10)
+		b = internal.AppendStrDecimal(b, " len=", int64(bitlen/8))
 	} else {
-		b = append(b, " bits="...)
-		b = strconv.AppendInt(b, int64(bitlen), 10)
+		b = internal.AppendStrDecimal(b, " bits=", int64(bitlen))
 	}
 	iopt, err := frm.FieldByClass(FieldClassOptions)
 	if err == nil {
-		b = append(b, " optlen="...)
-		b = strconv.AppendInt(b, int64((frm.Fields[iopt].BitLength+7)/8), 10)
+		b = internal.AppendStrDecimal(b, " optlen=", int64((frm.Fields[iopt].BitLength+7)/8))
 	}
 	for _, err := range frm.Errors {
 		b = append(b, ' ')

@@ -2,12 +2,10 @@ package arp
 
 import (
 	"encoding/binary"
-	"fmt"
-	"net"
-	"net/netip"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/internal"
 )
 
 // NewFrame returns a Frame with data set to buf.
@@ -145,23 +143,24 @@ func (afrm Frame) ValidateSize(v *lneto.Validator) {
 	}
 }
 
+// String returns a basic human readable represetation of ARP frame.
 func (afrm Frame) String() string {
 	opstr := afrm.Operation().String()
-	hwt, _ := afrm.Hardware()
-	ptt, _ := afrm.Protocol()
-	sndhw, sndpt := afrm.Sender()
-	tgthw, tgtpt := afrm.Target()
-	var sndstr, tgtstr string
-	if ptt == ethernet.TypeIPv4 || ptt == ethernet.TypeIPv6 {
-		sender, _ := netip.AddrFromSlice(sndpt)
-		target, _ := netip.AddrFromSlice(tgtpt)
-		sndstr = sender.String()
-		tgtstr = target.String()
-	} else {
-		sndstr = net.HardwareAddr(sndpt).String()
-		tgtstr = net.HardwareAddr(tgtpt).String()
-	}
-	return fmt.Sprintf("ARP %s HW=(%d,SENDER=%s,TARGET=%s) PROTO=(%s,SENDER=%s,TARGET=%s)",
-		opstr, hwt, net.HardwareAddr(sndhw).String(), net.HardwareAddr(tgthw).String(),
-		ptt.String(), sndstr, tgtstr)
+	rawbuf := make([]byte, 0, 128)
+	b := append(rawbuf[:0], "ARP "...)
+	b = append(b, opstr...)
+	htyp, hlen := afrm.Hardware()
+	b = internal.AppendStrDecimal(b, " htyp=", int64(htyp))
+	b = internal.AppendStrDecimal(b, " hlen=", int64(hlen))
+	ptyp, plen := afrm.Protocol()
+	b = internal.AppendStrDecimal(b, " plen=", int64(plen))
+	b = append(b, " proto="...)
+	b = append(b, ptyp.String()...)
+	hw, proto := afrm.Target()
+	b = internal.AppendStrHexData(b, " htgt=", hw...)
+	b = internal.AppendStrHexData(b, " ptgt=", proto...)
+	hw, proto = afrm.Sender()
+	b = internal.AppendStrHexData(b, " hsnd=", hw...)
+	b = internal.AppendStrHexData(b, " psnd=", proto...)
+	return string(b)
 }

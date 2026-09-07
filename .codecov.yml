@@ -1,3 +1,12 @@
+coverage:
+  status:
+    project:
+      default:
+        target: 62% # Ensure we don't accumulate too much debt.
+    patch:
+      default:
+        informational: true # Shows the patch metric but never turns red/fails the PR
+
 ignore:
   - "examples/**"
   - "**/stringers.go"

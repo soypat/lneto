@@ -1,7 +1,6 @@
 package udp
 
 import (
-	"fmt"
 	"math"
 	"net"
 	"net/netip"
@@ -226,7 +225,7 @@ func (mh *muxHandler) Encapsulate(carrierData []byte, ipOffset, frameOffset int)
 
 	n, err := mh.txRing.Read(buf[8 : 8+dgram.length])
 	if err != nil || n != int(dgram.length) {
-		panic(fmt.Sprintf("udp send handler failure %d %s", n, err))
+		panic("udp muxh encaps fail txring read")
 	}
 	ufrm.SetSourcePort(dgram.lport)
 	ufrm.SetDestinationPort(dgram.rport)

@@ -2,19 +2,19 @@ package tcp
 
 import (
 	"errors"
-	"fmt"
 	"math/bits"
 	"strconv"
 	"unsafe"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/internal"
 )
 
 //go:generate stringer -type=State,OptionKind -linecomment -output stringers.go .
 
 var (
 	errDropSegment    error = lneto.ErrPacketDrop
-	errWindowTooLarge       = errors.New("invalid window size > 2**16")
+	errWindowTooLarge       = errors.New("invalid window size > max scaled window")
 
 	errBufferTooSmall      error = lneto.ErrShortBuffer
 	errNeedClosedTCBToOpen       = errors.New("need closed TCB to call open")
@@ -25,7 +25,7 @@ var (
 	errBadSegack                 = errors.New("seqs:bad segack")
 	errFinwaitExpectedACK        = errors.New("seqs:finwait1 expected ACK")
 
-	errWindowOverflow    = newRejectErr("wnd > 2**16")
+	errWindowOverflow    = newRejectErr("wnd > max scaled window")
 	errSeqNotInWindow    = newRejectErr("seq not in snd/rcv.wnd")
 	errZeroWindow        = newRejectErr("zero window")
 	errLastNotInWindow   = newRejectErr("last not in snd/rcv.wnd")
@@ -73,10 +73,19 @@ func (seg Segment) isFirstSYN() bool {
 }
 
 func (seg Segment) String() string {
-	if seg.DATALEN == 0 {
-		return fmt.Sprintf("SEG %s ACK=%d SEQ=%d WND=%d", seg.Flags, seg.ACK, seg.SEQ, seg.WND)
+	return string(seg.AppendString(nil))
+}
+
+func (seg Segment) AppendString(b []byte) []byte {
+	b = append(b, "SEG "...)
+	b = append(b, seg.Flags.String()...)
+	b = internal.AppendStrDecimal(b, " ACK=", int64(seg.ACK))
+	b = internal.AppendStrDecimal(b, " SEQ=", int64(seg.SEQ))
+	b = internal.AppendStrDecimal(b, " WND=", int64(seg.WND))
+	if seg.DATALEN > 0 {
+		b = internal.AppendStrDecimal(b, " DATALEN=", int64(seg.DATALEN))
 	}
-	return fmt.Sprintf("SEG %s ACK=%d SEQ=%d WND=%d DATALEN=%d", seg.Flags, seg.ACK, seg.SEQ, seg.WND, seg.DATALEN)
+	return b
 }
 
 // ClientSynSegment is a the first packet sent over a TCP connection to a server. Typically the client
@@ -327,6 +336,14 @@ func (s State) TxDataOpen() bool {
 	// In CloseWait state the remote endpoint has closed
 	// our receive hald of the connection but we can still transmit indefinitely.
 	return s == StateEstablished || s == StateCloseWait
+}
+
+// txQueuedDataOpen returns true if already-queued send-buffer data may still be
+// put on the wire. It stays true after a local close, where the FIN occupies a
+// sequence above data the peer has not acknowledged: until that data is
+// (re)transmitted the peer cannot reach the FIN. RFC 9293 §3.10.8.
+func (s State) txQueuedDataOpen() bool {
+	return s.TxDataOpen() || s == StateFinWait1 || s == StateClosing || s == StateLastAck
 }
 
 // RxDataOpen returns true if the state allows the receiving of incoming data segments.
