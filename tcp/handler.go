@@ -444,7 +444,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 	if awaitingSyn || requeueControl && h.scb.State() == StateSynSent {
 		// Handling init syn segment.
 		segment = ClientSynSegment(h.bufTx.iss, Size(h.bufRx.Size()))
-		offset += h.putSynOptions(b[sizeHeaderTCP:], mss, false)
+		offset += h.putSynOptions(b[optHead:], mss, false)
 		if requeueControl {
 			h.info("tcp.Handler:requeue-syn", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("rport", uint64(h.remotePort)))
 		}
@@ -455,7 +455,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 			WND:   Size(h.bufRx.Free()),
 			Flags: synack,
 		}
-		offset += h.putSynOptions(b[sizeHeaderTCP:], mss, true)
+		offset += h.putSynOptions(b[optHead:], mss, true)
 		h.info("tcp.Handler:requeue-synack", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("rport", uint64(h.remotePort)))
 	} else if requeueControl {
 		h.requeueControl = false
@@ -473,7 +473,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 			// No pending control segment or data to send. Yield.
 			return 0, nil
 		} else if segment.Flags == synack {
-			offset += h.putSynOptions(b[sizeHeaderTCP:], mss, true)
+			offset += h.putSynOptions(b[optHead:], mss, true)
 		} else if segment.DATALEN > 0 {
 			n, err := h.bufTx.MakePacket(b[optHead:optHead+int(segment.DATALEN)], segment.SEQ)
 			if err != nil {
