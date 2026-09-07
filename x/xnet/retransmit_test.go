@@ -12,11 +12,14 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/tcp"
+	"github.com/soypat/lneto/tcp/rto"
 )
 
 // TestTCPRetransmitsLostSegment drops exactly one data segment and requires the
-// bytes to arrive anyway, which is what [TCPPoolConfig.NanoTime] already promises
-// in its own documentation. Without a LossRecovery installed the loss is terminal.
+// bytes to arrive anyway. It covers [TCPPoolConfig.NewPolicy] reaching the
+// pooled and dialed connections alike: without a [tcp.Policy] installed the
+// loss is terminal, which is what this test asserts against.
 func TestTCPRetransmitsLostSegment(t *testing.T) {
 	const (
 		MTU     = ethernet.MaxMTU
@@ -55,6 +58,13 @@ func TestTCPRetransmitsLostSegment(t *testing.T) {
 		EstablishedTimeout: 30 * time.Second,
 		ClosingTimeout:     30 * time.Second,
 		NewBackoff:         func() lneto.BackoffStrategy { return backoffYield },
+		NewPolicy: func() tcp.Policy {
+			timer := new(rto.Timer)
+			if err := timer.Configure(func() int64 { return time.Now().UnixNano() }); err != nil {
+				t.Fatal(err)
+			}
+			return timer
+		},
 	}
 	svGo := sv.StackBlocking(backoffYield).StackGo(StackGoConfig{ListenerPoolConfig: pool})
 	clGo := client.StackBlocking(backoffYield).StackGo(StackGoConfig{

@@ -42,8 +42,9 @@ type TCPPoolConfig struct {
 	ConnLogger *slog.Logger
 
 	// NanoTime returns the current monotonic time in nanoseconds.
-	// Used for pool timeout tracking and passed to each [tcp.Conn] for
-	// retransmission timing (RFC 6298). If nil, defaults to time.Now().UnixNano().
+	// Used for pool timeout tracking. If nil, defaults to time.Now().UnixNano().
+	// Retransmission timing is not driven by this clock: a [tcp.Policy] carries
+	// its own. See NewPolicy.
 	NanoTime func() int64
 	// EstablishedTimeout sets the timeout for a TCP connection since it is acquired until it is established.
 	// If the connection does not establish in this time it will be closed by the pool.
@@ -56,6 +57,9 @@ type TCPPoolConfig struct {
 	// NewBackoff returns the backoff to use for every newly configured TCP connection. Must be non-nil.
 	// This should always return a static(non-method) function unless you know what you are doing.
 	NewBackoff func() lneto.BackoffStrategy
+	// NewPolicy if non-nil creates a [tcp.Policy] for each [tcp.Conn] used by the configured Listener.
+	// NewPolicy should not return reused policies unless the algorithm is stateless. See [tcp.Policy] for more information.
+	NewPolicy func() tcp.Policy
 }
 
 func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
@@ -87,11 +91,11 @@ func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
 			TxPacketQueueSize: cfg.QueueSize,
 			Logger:            cfg.ConnLogger,
 			RWBackoff:         cfg.NewBackoff(),
-			// Retransmission timing, as NanoTime's contract promises. One RTO per
-			// connection: it shadows that connection's send sequence space and so
-			// cannot be shared.
-			LossRecovery: new(tcp.RTO),
-			Nanotime:     pool.now,
+		}
+		if cfg.NewPolicy != nil {
+			// One Policy per connection: it shadows that connection's send
+			// sequence space and so cannot be shared.
+			conncfg.Policy = cfg.NewPolicy()
 		}
 		err := pool.conns[i].Configure(conncfg)
 		if err != nil {

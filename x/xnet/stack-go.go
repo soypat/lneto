@@ -176,17 +176,19 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 		if isDial {
 			var conn tcp.Conn
 			// DIAL TCP: active connection a.k.a TCP Client branch.
-			err = conn.Configure(tcp.ConnConfig{
+			conncfg := tcp.ConnConfig{
 				// TODO(pato): Eventually add UDP configuration. we use TCP for now for simplicity's sake.
 				TxBuf:             make([]byte, s.plcfg.TxBufSize),
 				RxBuf:             make([]byte, s.plcfg.RxBufSize),
 				TxPacketQueueSize: s.plcfg.QueueSize,
 				RWBackoff:         s.plcfg.NewBackoff(),
-				// A dialed connection needs a retransmission timer as much as a
-				// pooled one. See [NewTCPPool].
-				LossRecovery: new(tcp.RTO),
-				Nanotime:     s.blk.nanotime,
-			})
+			}
+			if s.plcfg.NewPolicy != nil {
+				// A dialed connection needs loss recovery as much as a pooled
+				// one. See [TCPPoolConfig.NewPolicy].
+				conncfg.Policy = s.plcfg.NewPolicy()
+			}
+			err = conn.Configure(conncfg)
 			if err != nil {
 				return nil, err
 			}
