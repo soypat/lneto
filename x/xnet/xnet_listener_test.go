@@ -277,6 +277,67 @@ func TestListener_Close(t *testing.T) {
 	}
 }
 
+// TestTCPListener_CloseUnblocksAccept covers the net.Listener wrapper's Accept
+// poll loop being ended by a Close from another goroutine.
+func TestTCPListener_CloseUnblocksAccept(t *testing.T) {
+	const svPort uint16 = 80
+
+	pool, err := NewTCPPool(TCPPoolConfig{
+		PoolSize:           1,
+		QueueSize:          4,
+		TxBufSize:          512,
+		RxBufSize:          512,
+		EstablishedTimeout: 10e9,
+		ClosingTimeout:     10e9,
+		NewBackoff:         func() lneto.BackoffStrategy { return backoffYield },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var l tcplistener
+	// Sleep rather than yield between polls so Accept is genuinely parked in the
+	// loop when Close lands, instead of spinning a core for the whole test.
+	l.sleep = func(consecutiveBackoffs uint) time.Duration { return time.Millisecond }
+	l.localAddr = net.TCPAddrFromAddrPort(netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 0, 0, 1}), svPort))
+	err = l.l.Reset(svPort, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No stack is driving this listener, so Accept can only ever block: nothing
+	// will become ready and the sole way out is the Close below.
+	accepted := make(chan error, 1)
+	go func() {
+		c, err := l.Accept()
+		if c != nil {
+			c.Close()
+		}
+		accepted <- err
+	}()
+	time.Sleep(20 * time.Millisecond) // Let Accept reach its poll loop.
+
+	if err := l.Close(); err != nil {
+		t.Fatal("Close while Accept is blocked:", err)
+	}
+	select {
+	case err := <-accepted:
+		if err != net.ErrClosed {
+			t.Fatalf("blocked Accept: want net.ErrClosed, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Accept did not return after Close")
+	}
+
+	// A later Accept reports the close rather than blocking again.
+	if _, err := l.Accept(); err != net.ErrClosed {
+		t.Fatalf("Accept after Close: want net.ErrClosed, got %v", err)
+	}
+	if err := l.Close(); err != net.ErrClosed {
+		t.Fatalf("double Close: want net.ErrClosed, got %v", err)
+	}
+}
+
 func TestListener_ResetAfterClose(t *testing.T) {
 	const svPort uint16 = 80
 

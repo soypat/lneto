@@ -290,9 +290,9 @@ func (u *udppktconn) Write(b []byte) (int, error) {
 }
 func (u *udppktconn) RemoteAddr() net.Addr { return nil }
 
+// tcplistener adapts [tcp.Listener] to [net.Listener].
 type tcplistener struct {
 	l         tcp.Listener
-	closed    bool
 	sleep     lneto.BackoffStrategy
 	localAddr net.Addr
 }
@@ -308,42 +308,26 @@ func (l *tcplistener) Addr() net.Addr {
 
 func (l *tcplistener) Shutdown() { l.Close() }
 
+// Accept blocks until the next connection is accepted and returned or until it is closed.
+// It ignores [lneto.ErrExhausted] which cause dropped connections.
 func (l *tcplistener) Accept() (net.Conn, error) {
-	if l.closed {
-		return nil, net.ErrClosed
-	}
 	var backoffs uint
 	for {
-		if l.closed {
-			return nil, net.ErrClosed
-		}
-		n := l.l.NumberOfReadyToAccept()
-		if n == 0 {
-			backoff(l.sleep, backoffs)
-			backoffs++
-			continue
-		}
-		backoffs = 0
 		c, _, err := l.l.TryAccept()
-		if err != nil {
-			return nil, err
+		if err == nil {
+			return tcpconn{
+				Conn:      c,
+				localAddr: l.localAddr,
+			}, nil
+		} else if err != lneto.ErrExhausted {
+			return nil, err // net.ErrClosed or failure.
 		}
-		cc := tcpconn{
-			Conn:      c,
-			localAddr: l.localAddr,
-		}
-		return cc, nil
+		backoff(l.sleep, backoffs)
+		backoffs++
 	}
 }
 
-func (l *tcplistener) Close() error {
-	if l.closed {
-		return net.ErrClosed
-	}
-	err := l.l.Close()
-	l.closed = true
-	return err
-}
+func (l *tcplistener) Close() error { return l.l.Close() }
 
 type tcpconn struct {
 	*tcp.Conn
