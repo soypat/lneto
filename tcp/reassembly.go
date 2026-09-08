@@ -133,3 +133,36 @@ func (r *reassembly) reassemble(rx *internal.Ring, nxt Value) Size {
 	r.held = r.held[:0]
 	return delivered
 }
+
+// ReassemblyView is a read-only view of the out-of-order data a connection is
+// holding, in ascending sequence order. It is what a policy generating selective
+// acknowledgements (RFC 2018) advertises: each block is a range the receiver has
+// but cannot yet deliver, because data before it is missing.
+//
+// The view borrows the connection's state for the duration of the call it was
+// handed to and must not be retained, like the option area lent to
+// [Policy.WriteOptions]. Reading it allocates nothing, which is why blocks
+// are reached by index rather than through a range-over-function iterator: the
+// closure that would take would allocate on a path walked for every segment.
+//
+// The zero value is a valid empty view, so a policy needs no nil check.
+type ReassemblyView struct {
+	r *reassembly
+}
+
+// Len returns the number of held blocks, which is zero when the connection holds
+// no out-of-order data or has reassembly disabled.
+func (v ReassemblyView) Len() int {
+	if v.r == nil {
+		return 0
+	}
+	return len(v.r.held)
+}
+
+// Block returns the i'th held block as the half-open sequence range
+// [start, end). Blocks are ordered by ascending start and never overlap. It
+// panics if i is out of range, so callers bound it with [ReassemblyView.Len].
+func (v ReassemblyView) Block(i int) (start, end Value) {
+	seg := v.r.held[i]
+	return seg.seq, Add(seg.seq, Size(seg.n))
+}

@@ -102,3 +102,52 @@ func SetMulticast(ethernetCarrier []byte, ipOff int, multicastAddr []byte) (err 
 	}
 	return nil
 }
+
+// ECN codepoints of RFC 3168 §5, carried in the low two bits of the IPv4 Type of
+// Service octet and of the IPv6 Traffic Class field.
+const (
+	// ECNNotECT marks a packet whose endpoints do not use ECN. A router with a full
+	// queue drops it rather than marking it.
+	ECNNotECT uint8 = 0b00
+	// ECNECT1 and ECNECT0 both mark a packet as ECN-capable. A router experiencing
+	// congestion may change either to ECNCE instead of dropping the packet.
+	ECNECT1 uint8 = 0b01
+	ECNECT0 uint8 = 0b10
+	// ECNCE is Congestion Experienced: a router on the path has signalled
+	// congestion by marking this packet instead of discarding it.
+	ECNCE uint8 = 0b11
+)
+
+// GetIPECN returns the ECN codepoint of an IPv4 or IPv6 header.
+func GetIPECN(buf []byte) (ecn uint8, err error) {
+	switch buf[0] >> 4 {
+	case 4:
+		return buf[1] & 0b11, nil
+	case 6:
+		// The Traffic Class field straddles two octets: its top four bits are the
+		// low nibble of octet 0 and its bottom four are the top nibble of octet 1,
+		// so the ECN bits are bits 5 and 4 of octet 1.
+		return (buf[1] >> 4) & 0b11, nil
+	}
+	return 0, lneto.ErrUnsupported
+}
+
+// SetIPECN sets the ECN codepoint of an IPv4 or IPv6 header, leaving the
+// differentiated services bits alone.
+//
+// The IPv4 header checksum is not recalculated: it is computed after this by the
+// stack that owns the frame. Setting it here would be undone.
+func SetIPECN(buf []byte, ecn uint8) error {
+	if ecn > 0b11 {
+		return lneto.ErrInvalidField
+	}
+	switch buf[0] >> 4 {
+	case 4:
+		buf[1] = buf[1]&^0b11 | ecn
+		return nil
+	case 6:
+		buf[1] = buf[1]&^(0b11<<4) | ecn<<4
+		return nil
+	}
+	return lneto.ErrUnsupported
+}

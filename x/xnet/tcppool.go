@@ -43,8 +43,9 @@ type TCPPoolConfig struct {
 
 	// NanoTime returns the current monotonic time in nanoseconds.
 	// Used for pool timeout tracking. If nil, defaults to time.Now().UnixNano().
-	// Retransmission timing is not driven by this clock: a [tcp.Policy] carries
-	// its own. See NewPolicy.
+	// It also drives the per-connection [tcp.Policy] created by NewPolicy: the tcp
+	// package holds no clock, so a connection with a Policy is configured with this
+	// same time source as its [tcp.ConnConfig.Nanotime].
 	NanoTime func() int64
 	// EstablishedTimeout sets the timeout for a TCP connection since it is acquired until it is established.
 	// If the connection does not establish in this time it will be closed by the pool.
@@ -75,7 +76,7 @@ func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
 		abortedAt:      make([]int64, n),
 		conns:          make([]tcp.Conn, n),
 		userData:       make([]any, n),
-		_now:           cfg.NanoTime,
+		_now:           nanotimeOrDefault(cfg.NanoTime),
 		estbTimeout:    cfg.EstablishedTimeout,
 		closingTimeout: cfg.ClosingTimeout,
 		logger:         cfg.Logger,
@@ -94,8 +95,11 @@ func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
 		}
 		if cfg.NewPolicy != nil {
 			// One Policy per connection: it shadows that connection's send
-			// sequence space and so cannot be shared.
+			// sequence space and so cannot be shared. The tcp package holds no
+			// clock, so the Policy is handed the pool's own resolved time source
+			// (issue #140), the same one CheckTimeouts reads.
 			conncfg.Policy = cfg.NewPolicy()
+			conncfg.Nanotime = pool._now
 		}
 		err := pool.conns[i].Configure(conncfg)
 		if err != nil {
@@ -191,6 +195,15 @@ func (p *TCPPool) now() int64 {
 		return time.Now().UnixNano()
 	}
 	return p._now()
+}
+
+// nanotimeOrDefault returns fn, or a time.Now-based monotonic source when fn is
+// nil, so a [tcp.Policy] always has the non-nil clock [tcp.ConnConfig] requires.
+func nanotimeOrDefault(fn func() int64) func() int64 {
+	if fn != nil {
+		return fn
+	}
+	return func() int64 { return time.Now().UnixNano() }
 }
 
 func (p *TCPPool) trace(msg string, attrs ...slog.Attr) {

@@ -193,6 +193,24 @@ var (
 	_ = net.ErrClosed
 )
 
+// nextDeadline returns the earliest non-zero deadline reported by the registered
+// nodes, or 0 when none of them asks to be serviced at a particular time.
+// Invalidated nodes are skipped, so a closed connection stops contributing a
+// deadline without needing to be reaped first.
+func (h *handlers) nextDeadline() (deadline int64) {
+	for i := range h.nodes {
+		n := &h.nodes[i]
+		if n.IsInvalid() {
+			continue
+		}
+		d := n.callbacks.NextDeadline()
+		if d != 0 && (deadline == 0 || d < deadline) {
+			deadline = d
+		}
+	}
+	return deadline
+}
+
 func (node *node) IsInvalid() bool {
 	return node.callbacks.IsZeroed() || (node.connID != nil && node.currConnID != *node.connID)
 }

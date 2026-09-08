@@ -17,6 +17,8 @@ var _ lneto.StackNode = (*Conn)(nil)
 // Conn implements a UDP datagram socket with SOCK_DGRAM semantics.
 // Each [Conn.Write] enqueues one datagram and each [Conn.Read] dequeues one complete datagram.
 type Conn struct {
+	lneto.NoDeadline // no time-driven work
+
 	mu sync.Mutex
 	h  Handler
 

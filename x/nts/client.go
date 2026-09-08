@@ -41,6 +41,8 @@ type ClientConfig struct {
 //
 // Client is not safe for concurrent use.
 type Client struct {
+	lneto.NoDeadline // no time-driven work
+
 	connID     uint64
 	cfg        ClientConfig
 	ntpState   ntp.Client

@@ -16,6 +16,15 @@ type StackUDPPort struct {
 	raddr  []byte
 }
 
+// NextDeadline returns the deadline of the wrapped node, or 0 when it has none or
+// has been invalidated. It implements [lneto.StackNode].
+func (sudp *StackUDPPort) NextDeadline() int64 {
+	if sudp.h.IsInvalid() {
+		return 0
+	}
+	return sudp.h.callbacks.NextDeadline()
+}
+
 func (sudp *StackUDPPort) SetStackNode(node lneto.StackNode, raddr []byte, rmport uint16) {
 	sudp.h = nodeFromStackNode(node, node.LocalPort(), node.Protocol(), raddr)
 	sudp.rmport = rmport

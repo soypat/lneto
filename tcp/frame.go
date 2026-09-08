@@ -10,6 +10,11 @@ import (
 
 const (
 	sizeHeaderTCP = 20
+	// maxTCPOptionBytes is the largest TCP option area: the data offset is four
+	// bits of 32-bit words, so a header spans at most 60 octets.
+	maxTCPOptionBytes = 40
+	// sizeOptionMSS is the length of the Maximum Segment Size option.
+	sizeOptionMSS = 4
 )
 
 // NewFrame returns a new [Frame] with data set to buf.

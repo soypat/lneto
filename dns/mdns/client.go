@@ -38,6 +38,8 @@ const (
 // Clients are attached to MDNS ports and function until manual detachment
 // due to their dual design: they double as a querier and service discovery.
 type Client struct {
+	lneto.NoDeadline // no time-driven work
+
 	connID uint64
 	closed bool
 	lport  uint16
