@@ -385,7 +385,11 @@ func (tcb *ControlBlock) HasPendingRetransmit() bool {
 // from what the peer has reported by then. It must be paired with ringTx.MakePacket at
 // the same sequence to read the data back out of the transmit queue.
 func (tcb *ControlBlock) RetransmitAt(seq Value) (resumeAt Value, ok bool) {
-	if !tcb._state.TxDataOpen() {
+	if !tcb._state.txQueuedDataOpen() {
+		// Retransmission must still resume after a local close: in FIN-WAIT-1,
+		// CLOSING and LAST-ACK the FIN sits above data the peer may not have, so
+		// that data has to go out for either side to progress (RFC 9293 §3.10.8,
+		// soypat#182).
 		return 0, false
 	}
 	if seq.LessThan(tcb.snd.UNA) {
@@ -478,10 +482,9 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 		// Optimist Strategy: retransmit oldest data once.
 		return Segment{SEQ: tcb.snd.UNA, DATALEN: Size(payloadLen), ACK: tcb.rcv.NXT, WND: tcb.advertisedWindow(tcb.rcv.WND), Flags: FlagACK}, true
 	}
-	established := tcb._state == StateEstablished
-	canSendData := established || tcb._state == StateCloseWait
+	canSendData := tcb._state.txQueuedDataOpen()
 	if !canSendData {
-		payloadLen = 0 // Can't send data if not established or close-wait.
+		payloadLen = 0 // No send-buffer data may go out in this state.
 	}
 	if pending == 0 && payloadLen == 0 {
 		return Segment{}, false // No pending segment.
@@ -750,8 +753,12 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 			err = errSeqNotInWindow
 		}
 
-	case seg.DATALEN > 0 && (tcb._state == StateFinWait1 || tcb._state == StateFinWait2):
-		err = errConnectionClosing // Case 1: No further SENDs from the user will be accepted by the TCP implementation.
+	case seg.DATALEN > 0 && tcb._state == StateFinWait2:
+		// FIN-WAIT-2 means our FIN was acknowledged, so no data below it can be
+		// unacknowledged and data here is a caller error. FIN-WAIT-1 is excluded:
+		// its FIN sits above data the peer may still be missing, which must go out
+		// for either side to make progress (RFC 9293 §3.10.8).
+		err = errConnectionClosing
 
 	case checkSeq && tcb.snd.WND == 0 && seg.DATALEN > 1 && seg.SEQ == tcb.snd.NXT:
 		err = errZeroWindow
