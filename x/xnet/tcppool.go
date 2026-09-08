@@ -76,7 +76,7 @@ func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
 		abortedAt:      make([]int64, n),
 		conns:          make([]tcp.Conn, n),
 		userData:       make([]any, n),
-		_now:           cfg.NanoTime,
+		_now:           nanotimeOrDefault(cfg.NanoTime),
 		estbTimeout:    cfg.EstablishedTimeout,
 		closingTimeout: cfg.ClosingTimeout,
 		logger:         cfg.Logger,
@@ -96,9 +96,10 @@ func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
 		if cfg.NewPolicy != nil {
 			// One Policy per connection: it shadows that connection's send
 			// sequence space and so cannot be shared. The tcp package holds no
-			// clock, so the Policy is handed the pool's time source (issue #140).
+			// clock, so the Policy is handed the pool's own resolved time source
+			// (issue #140), the same one CheckTimeouts reads.
 			conncfg.Policy = cfg.NewPolicy()
-			conncfg.Nanotime = nanotimeOrDefault(cfg.NanoTime)
+			conncfg.Nanotime = pool._now
 		}
 		err := pool.conns[i].Configure(conncfg)
 		if err != nil {
