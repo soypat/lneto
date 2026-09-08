@@ -185,8 +185,10 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			}
 			if s.plcfg.NewPolicy != nil {
 				// A dialed connection needs loss recovery as much as a pooled
-				// one. See [TCPPoolConfig.NewPolicy].
+				// one. See [TCPPoolConfig.NewPolicy]. The Policy carries no clock,
+				// so it is given the pool's time source (issue #140).
 				conncfg.Policy = s.plcfg.NewPolicy()
+				conncfg.Nanotime = nanotimeOrDefault(s.plcfg.NanoTime)
 			}
 			err = conn.Configure(conncfg)
 			if err != nil {

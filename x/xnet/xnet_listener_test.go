@@ -439,12 +439,10 @@ func TestTCPRetransmitsLostSegment(t *testing.T) {
 			ClosingTimeout:     120 * time.Second,
 			NanoTime:           nanotime,
 			NewBackoff:         func() lneto.BackoffStrategy { return yield },
+			// The Policy carries no clock; the pool hands it NanoTime above as the
+			// connection's tcp.ConnConfig.Nanotime, so the Timer needs no setup.
 			NewPolicy: func() tcp.Policy {
-				timer := new(rto.Timer)
-				if err := timer.Configure(nanotime); err != nil {
-					t.Error(err)
-				}
-				return timer
+				return new(rto.Timer)
 			},
 		}
 	}
