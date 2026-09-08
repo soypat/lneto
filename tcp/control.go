@@ -359,8 +359,11 @@ func (tcb *ControlBlock) HasPending() bool {
 // HasPending returns true if the control block is pending a retransmit according to simple optmist
 // retransmit strategy.
 func (tcb *ControlBlock) HasPendingRetransmit() bool {
-	// Force retransmit after 3 consecutive acks of UNA.
-	return tcb._state.TxDataOpen() && tcb.dupack >= retransmitAfterDupacks && tcb.nRetransmit <= tcb.dupack-retransmitAfterDupacks
+	// Force retransmit after 3 consecutive acks of UNA. txQueuedDataOpen, not
+	// TxDataOpen, so the optimist strategy still resends after a local close: a
+	// segment lost just before the FIN is what the peer dupacks from FIN-WAIT-1,
+	// and a policy-less connection has only this to resend it (RFC 9293 §3.10.8).
+	return tcb._state.txQueuedDataOpen() && tcb.dupack >= retransmitAfterDupacks && tcb.nRetransmit <= tcb.dupack-retransmitAfterDupacks
 }
 
 // RetransmitAt directs the next segments to resend already-sent data starting at
@@ -427,10 +430,13 @@ func (tcb *ControlBlock) RetransmitPointer() (Value, bool) { return tcb.rtxPtr, 
 //
 // Like PendingSegment this does not modify the ControlBlock.
 func (tcb *ControlBlock) ZeroWindowProbe() (_ Segment, ok bool) {
-	if tcb.snd.WND != 0 || !tcb._state.TxDataOpen() || tcb.snd.UNA != tcb.snd.NXT {
+	if tcb.snd.WND != 0 || !tcb._state.txQueuedDataOpen() || tcb.snd.UNA != tcb.snd.NXT {
 		// Three things disqualify a probe. A non-zero window is not a stall at
 		// all, merely a full one awaiting acknowledgements. A state that cannot
-		// send data has no window to probe. And outstanding data means a
+		// send queued data has no window to probe — but a local close does not
+		// disqualify it: write-then-close against a zero window strands the queued
+		// data and the FIN behind it just as in ESTABLISHED (RFC 9293 §3.10.8).
+		// And outstanding data means a
 		// retransmission is already due, which doubles as a probe because the peer
 		// must acknowledge it; injecting probes there would fragment the stream
 		// into single octets and starve the transmit queue.
@@ -615,7 +621,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	}
 
 	if seg.Flags.HasAny(FlagACK) && seg.ACK.LessThanEq(tcb.snd.NXT) {
-		if tcb.IncomingIsDupACK(seg.ACK) && tcb.State().TxDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < tcb.nRetransmit+retransmitMaxQueued+retransmitMaxQueued {
+		if tcb.IncomingIsDupACK(seg.ACK) && tcb.State().txQueuedDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < tcb.nRetransmit+retransmitMaxQueued+retransmitMaxQueued {
 			// Duplicate ack. Don't advance dupack counter past scb.nRetransmit+retransmitAfterDupacks
 			tcb.dupack++
 		} else if tcb.snd.UNA.LessThan(seg.ACK) {
