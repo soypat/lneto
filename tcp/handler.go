@@ -30,14 +30,6 @@ type Handler struct {
 	// Read and Write calls belong to the current connection.
 
 	optcodec OptionCodec
-	// Window scaling (RFC 7323 §2). wndShiftLocal is derived from the receive
-	// buffer in [Handler.SetBuffers], wndShiftPeer learned from the peer's offer.
-	// Scaling lives at the wire seam only: the ControlBlock always holds real
-	// octet counts, converted on frame read ([Handler.Recv]) and write
-	// ([Handler.wireWnd]).
-	wndShiftLocal uint8
-	wndShiftPeer  uint8
-	peerOfferedWS bool
 	// reasm tracks out-of-order segments staged in bufRx's free region. Always
 	// enabled once buffers are set (see [Handler.SetBuffers]).
 	reasm reassembly
@@ -83,7 +75,6 @@ func (h *Handler) SetBuffers(txbuf, rxbuf []byte, packets int) error {
 		h.bufRx.Buf = rxbuf
 	}
 	h.scb.SetRecvWindow(Size(h.bufRx.Size()))
-	h.wndShiftLocal = wndShiftFor(h.bufRx.Size())
 	h.bufRx.Reset()
 	h.reasm.reset(maxReasmSegments)
 	return h.bufTx.ResetOrReuse(txbuf, packets, 0)
@@ -98,7 +89,6 @@ func (h *Handler) SetPolicy(policy Policy, nanotime func() int64) {
 	h.policy = policy
 	h.nanotime = nanotime
 }
-func (h *Handler) policyEnabled() bool { return h.policy != nil }
 
 func (h *Handler) hasPolicy() bool { return h.policy != nil }
 
@@ -276,12 +266,6 @@ func (h *Handler) recv(incomingPacket []byte) error {
 	}
 	payload := tfrm.Payload()
 	segIncoming := tfrm.Segment(len(payload))
-	if h.peerOfferedWS && !segIncoming.Flags.HasAny(FlagSYN) {
-		// Peer windows arrive scaled once both sides offered scaling, but never on
-		// SYN segments (RFC 7323 §2.2). Restore real octets before the
-		// ControlBlock sees them.
-		segIncoming.WND <<= h.wndShiftPeer
-	}
 	if h.scb.IncomingIsKeepalive(segIncoming) {
 		h.info("tcp.Handler:rx-keepalive", slog.Uint64("port", uint64(h.localPort)))
 		return nil
@@ -357,9 +341,6 @@ func (h *Handler) recv(incomingPacket []byte) error {
 	if prevState != h.scb.State() {
 		h.info("tcp.Handler:rx-statechange", slog.Uint64("port", uint64(h.localPort)), slog.String("old", prevState.String()), slog.String("new", h.scb.State().String()), slog.String("rxflags", segIncoming.Flags.String()))
 	}
-	if h.policyEnabled() {
-		h.policy.PostRx(h, prevState, tfrm)
-	}
 	if segIncoming.DATALEN != 0 && h.shutdownRx && (h.scb.State() == StateFinWait1 || h.scb.State() == StateFinWait2) {
 		// soypat/lneto#50: the application is done in both directions — read side
 		// shut down (CloseRead) and our FIN sent (Close) — so inbound data has no
@@ -405,11 +386,6 @@ func (h *Handler) recv(incomingPacket []byte) error {
 				}
 			case kind == OptWindowScale && len(data) == 1:
 				h.scb.recvWindowScale(data[0])
-			}
-			if kind == OptWindowScale && len(data) == 1 {
-				// RFC 7323 §2.3: a shift above 14 is clamped, not rejected.
-				h.peerOfferedWS = true
-				h.wndShiftPeer = min(data[0], maxWndShift)
 			}
 			return nil
 		})
@@ -564,7 +540,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 		// In CLOSE-WAIT: wait until the pending ACK is sent first, since scb.Close()
 		// overwrites pending with [FIN|ACK] (unlike ESTABLISHED which merges via bitmask).
 		h.closing = false
-		err := h.scb.Close()
+		err = h.scb.Close()
 		if err != nil {
 			h.logerr("tcp.Handler.Close", slog.String("err", errstr(err)), slog.String("state", h.State().String()))
 			h.Abort()
@@ -730,17 +706,9 @@ func (h *Handler) Send(b []byte) (int, error) {
 	h.requeueControl = false
 	tfrm.SetSourcePort(h.localPort)
 	tfrm.SetDestinationPort(h.remotePort)
-	segment.WND = h.wireWnd(segment) // wire representation only; scb keeps real octets
 	tfrm.SetSegment(segment, offset)
 	tfrm.SetUrgentPtr(0)
 	datalen := int(offset)*4 + int(segment.DATALEN)
-	if h.policyEnabled() {
-		// Frame trimmed to what is actually emitted so the Policy's Payload()
-		// is the segment data and nothing more.
-		if sent, err := NewFrame(b[:datalen]); err == nil {
-			h.policy.PostTx(h, sent)
-		}
-	}
 	closedSuccess := prevState == StateTimeWait && segment.Flags.HasAny(FlagACK)
 	if closedSuccess {
 		h.reset(0, 0, 0)
@@ -750,27 +718,6 @@ func (h *Handler) Send(b []byte) (int, error) {
 		h.Abort()
 	}
 	return datalen, nil
-}
-
-// nextSegmentIsRetransmit reports whether the next data segment would resend
-// already-transmitted bytes rather than open new sequence space. Used to let a
-// retransmission through while a [Policy] holds new data back.
-func (h *Handler) nextSegmentIsRetransmit() bool {
-	endSeq, hasSent := h.bufTx.sentEndSeq()
-	return hasSent && h.scb.snd.NXT.LessThan(endSeq)
-}
-
-// NextSegmentSYN returns syn=true if next outgoing segment is a handshake SYN.
-// This method is exported for use by [Policy] implementations to decide handshake-only options (window scale, SACK-permitted, timestamps).
-func (h *Handler) NextSegmentSYN() (syn, ack bool) {
-	state := h.scb.State()
-	if h.AwaitingSynSend() || h.requeueControl && state == StateSynSent {
-		return true, false // SYN initial/requeue.
-	} else if h.requeueControl && state == StateSynRcvd {
-		return true, true // SYNACK requeue.
-	}
-	pending := h.scb.pending[0]
-	return pending.HasAny(FlagSYN), pending.HasAny(FlagACK)
 }
 
 // Write implements [io.Writer] by copying b to a internal buffer to be sent over the network on the next
@@ -875,51 +822,6 @@ func (h *Handler) recvWindow() Size {
 		return free - ooo
 	}
 	return 0
-}
-
-// maxWndShift is the RFC 7323 §2.2/§2.3 cap on the window-scale shift count and
-// maxWindow the largest window it permits: the 16-bit wire field at that shift.
-const (
-	maxWndShift = 14
-	maxWindow   = 0xFFFF << maxWndShift
-)
-
-// wndShiftFor returns the smallest window-scale shift with which a receive
-// buffer of bufSize octets can be advertised in the 16-bit window field.
-func wndShiftFor(bufSize int) (shift uint8) {
-	for shift < maxWndShift && bufSize>>shift > 0xFFFF {
-		shift++
-	}
-	return shift
-}
-
-// putSynOptions writes the option block shared by SYN and SYN-ACK segments.
-// MSS always, then the NOP-padded window-scale offer. An active SYN always
-// offers scaling, since a zero shift still lets the peer scale its own window
-// (RFC 7323 §2.5). A SYN-ACK echoes the offer only when the peer's SYN carried
-// it (§2.2). Returns the number of 32-bit header words written.
-func (h *Handler) putSynOptions(b []byte, mss uint16, isSynack bool) uint8 {
-	h.optcodec.PutOption16(b, OptMaxSegmentSize, mss)
-	words := uint8(1)
-	if (!isSynack || h.peerOfferedWS) && len(b) >= 8 {
-		b[4] = byte(OptNop)
-		h.optcodec.PutOption(b[5:], OptWindowScale, h.wndShiftLocal)
-		words++
-	}
-	return words
-}
-
-// wireWnd converts a segment's real window to its on-wire representation.
-// SYN segments are never scaled (RFC7323 §2.2), we cap SYN windows at maxuint16.
-func (h *Handler) wireWnd(seg Segment) Size {
-	wnd := seg.WND
-	if h.peerOfferedWS && !seg.Flags.HasAny(FlagSYN) {
-		wnd >>= h.wndShiftLocal
-	}
-	if wnd > 0xFFFF {
-		wnd = 0xFFFF
-	}
-	return wnd
 }
 
 // AwaitingSynResponse returns true if the Handler is an active client opened with [Handler.OpenActive] and has already sent out the first SYN packet to the remote client.

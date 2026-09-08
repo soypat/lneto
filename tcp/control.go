@@ -3,6 +3,7 @@ package tcp
 import (
 	"io"
 	"log/slog"
+	"math"
 	"net"
 
 	"github.com/soypat/lneto/internal"
@@ -131,12 +132,6 @@ func (tcb *ControlBlock) RecvWindow() Size { return tcb.rcv.WND }
 
 // ISS returns the initial sequence number of the connection that was defined on a call to Open by user.
 func (tcb *ControlBlock) ISS() Value { return tcb.snd.ISS }
-
-// SendUNA returns snd.UNA, the oldest sequence number not yet acked by the remote.
-func (tcb *ControlBlock) SendUNA() Value { return tcb.snd.UNA }
-
-// SendNext returns snd.NXT, one past the highest sequence number sent.
-func (tcb *ControlBlock) SendNext() Value { return tcb.snd.NXT }
 
 // MaxInFlightData returns the maximum size of a segment that can be sent by taking into account
 // the send window size and the unacked data. Returns 0 before StateSynRcvd.
@@ -483,9 +478,10 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 		// Optimist Strategy: retransmit oldest data once.
 		return Segment{SEQ: tcb.snd.UNA, DATALEN: Size(payloadLen), ACK: tcb.rcv.NXT, WND: tcb.advertisedWindow(tcb.rcv.WND), Flags: FlagACK}, true
 	}
-	canSendData := tcb._state.txQueuedDataOpen()
+	established := tcb._state == StateEstablished
+	canSendData := established || tcb._state == StateCloseWait
 	if !canSendData {
-		payloadLen = 0 // No send-buffer data may go out in this state.
+		payloadLen = 0 // Can't send data if not established or close-wait.
 	}
 	if pending == 0 && payloadLen == 0 {
 		return Segment{}, false // No pending segment.
@@ -742,7 +738,7 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	switch {
 	case tcb._state == StateClosed && !isFirst:
 		err = io.ErrClosedPipe
-	case seg.WND > maxWindow:
+	case seg.WND > math.MaxUint16:
 		err = errWindowTooLarge
 	case hasAck && seg.ACK != tcb.rcv.NXT:
 		err = errAckNotNext
@@ -754,12 +750,8 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 			err = errSeqNotInWindow
 		}
 
-	case seg.DATALEN > 0 && tcb._state == StateFinWait2:
-		// FIN-WAIT-2 means our FIN was acknowledged, so no data below it can be
-		// unacknowledged and data here is a caller error. FIN-WAIT-1 is excluded:
-		// its FIN sits above data the peer may still be missing, which must go out
-		// for either side to make progress (RFC 9293 §3.10.8).
-		err = errConnectionClosing
+	case seg.DATALEN > 0 && (tcb._state == StateFinWait1 || tcb._state == StateFinWait2):
+		err = errConnectionClosing // Case 1: No further SENDs from the user will be accepted by the TCP implementation.
 
 	case checkSeq && tcb.snd.WND == 0 && seg.DATALEN > 1 && seg.SEQ == tcb.snd.NXT:
 		err = errZeroWindow
@@ -785,7 +777,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	zeroWindowOK := tcb.rcv.WND == 0 && seg.DATALEN == 0 && seg.SEQ == tcb.rcv.NXT
 	// See section 3.4 of RFC 9293 for more on these checks.
 	switch {
-	case seg.WND > maxWindow:
+	case seg.WND > math.MaxUint16:
 		err = errWindowOverflow
 	case tcb._state == StateClosed:
 		err = io.ErrClosedPipe
