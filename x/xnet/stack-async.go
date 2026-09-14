@@ -667,7 +667,20 @@ func (s *StackAsync) StartLookupIPType(host string, qtype dns.Type) error {
 var (
 	errDNSNotDone = errors.New("DNS not done")
 	errDNSNoAns   = errors.New("no address in DNS answer")
+	// errDNSOnlyCNAME is returned when the answer ends in a CNAME without address.
+	errDNSOnlyCNAME = errors.New("DNS answer is CNAME without address")
 )
+
+// resultCanonicalName returns the end of the CNAME chain for host in dotted format, or "" if none.
+func (s *StackAsync) resultCanonicalName(host string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cname := s.dns.ResponseCanonicalName(host)
+	if cname.Len() == 0 {
+		return ""
+	}
+	return cname.String()
+}
 
 func (s *StackAsync) ResultLookupIP(host string) ([]netip.Addr, bool, error) {
 	s.mu.Lock()
@@ -679,6 +692,9 @@ func (s *StackAsync) ResultLookupIP(host string) ([]netip.Addr, bool, error) {
 	n, err := s.dns.ResponseAnswerLookup(s.addrbufnip[:], host)
 	if n == 0 && err == nil {
 		err = errDNSNoAns
+		if cname := s.dns.ResponseCanonicalName(host); cname.Len() != 0 {
+			err = errDNSOnlyCNAME
+		}
 	}
 	return s.addrbufnip[:n], true, err
 }

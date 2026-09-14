@@ -137,6 +137,15 @@ func (c *Client) ResponseAnswerLookup(dst []netip.Addr, host string) (uint16, er
 	return c.msg.WriteAnswers(dst, host)
 }
 
+// ResponseCanonicalName returns the end of the CNAME chain rooted at host.
+// Returns zero [Name] if there is no valid response or no CNAME for host.
+func (c *Client) ResponseCanonicalName(host string) Name {
+	if !c.respFlags.IsResponse() || c.respFlags.ResponseCode() != 0 {
+		return Name{}
+	}
+	return c.msg.CanonicalName(host)
+}
+
 func (c *Client) ResponseFlags() (HeaderFlags, bool) {
 	return c.respFlags, c.respFlags.IsResponse()
 }

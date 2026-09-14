@@ -357,6 +357,28 @@ func (h *ResourceHeader) ownedBy(alias Name, host string) bool {
 	return NamesEqualFold(h.Name, alias)
 }
 
+// CanonicalName returns end of CNAME chain rooted at host, aliasing m.
+// Returns zero Name if host has no CNAME.
+func (m *Message) CanonicalName(host string) (cname Name) {
+	// Constrain outer for loop, never more than num answer CNAMEs.
+	cnameFollowLim := len(m.Answers)
+	for range cnameFollowLim {
+		var next Name
+		for i := range m.Answers {
+			ans := &m.Answers[i]
+			if ans.header.Type == TypeCNAME && ans.header.ownedBy(cname, host) {
+				next = ans.CNAMEView()
+				break
+			}
+		}
+		if next.Len() == 0 {
+			break
+		}
+		cname = next
+	}
+	return cname
+}
+
 func (m *Message) Len() uint16 {
 	return SizeHeader + m.lenResources()
 }
