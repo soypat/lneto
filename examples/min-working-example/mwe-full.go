@@ -1,4 +1,4 @@
-//go:build onlytcp
+//go:build !onlytcp
 
 package main
 
