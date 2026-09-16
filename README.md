@@ -38,7 +38,8 @@ go run ./examples/gen/gen-binary-bench # generate table
 
 | Program | Extra Protocols | Packet capture printing | amd64 Go | WASM Go | amd64 TinyGo | WASM TinyGo | Pico TinyGo |
 |---|:---:|:---:|---|---|---|---|---|
-| [Lneto MWE](./examples/min-working-example/) | DNS,NTP,DHCP | ✅ | 3.9MB | 4.5MB | 1.6MB | 1.2MB | 192kB |
+| [Lneto Only TCP](./examples/min-working-example/) | DHCP | ❌ | 3.8MB | 4.3MB | 2.4MB | 1.4MB | 264kB |
+| [Lneto Stack](./examples/min-working-example/) | DNS,NTP,DHCP | ✅ | 4.0MB | 4.6MB | 2.6MB | 1.6MB | 338kB |
 | [Gvisor MWE w/ go-net](./examples/_import_examples/gvisor-mwe/) | None | ❌ | 6.6MB | 7.5MB | DNC | DNC | DNC |
 *Size for Pico is not size on flash, but rather the size of `.bin` file produced by TinyGo compiler.
 
