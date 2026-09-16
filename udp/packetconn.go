@@ -30,6 +30,8 @@ var (
 // PacketConn is the UDP equivalent of [net.PacketConn] and implements
 // [lnetopacketconn] and [lneto.StackNode]. It is thread safe.
 type PacketConn struct {
+	lneto.NoDeadline // no time-driven work
+
 	mu        sync.Mutex
 	m         muxHandler
 	localAddr netip.AddrPort

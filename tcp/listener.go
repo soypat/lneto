@@ -65,6 +65,23 @@ func (listener *Listener) ConnectionID() *uint64 { return &listener.connID }
 // Protocol implements [StackNode].
 func (listener *Listener) Protocol() uint64 { return uint64(lneto.IPProtoTCP) }
 
+// NextDeadline returns the earliest transmit deadline among the connections this
+// listener holds, or 0 when none of them has one. It implements
+// [lneto.StackNode]. See [Conn.NextDeadline].
+func (listener *Listener) NextDeadline() (deadline int64) {
+	listener.mu.Lock()
+	defer listener.mu.Unlock()
+	for _, conns := range [2][]handler{listener.incoming, listener.accepted} {
+		for i := range conns {
+			d := conns[i].conn.NextDeadline()
+			if d != 0 && (deadline == 0 || d < deadline) {
+				deadline = d
+			}
+		}
+	}
+	return deadline
+}
+
 func (listener *Listener) Close() error {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()

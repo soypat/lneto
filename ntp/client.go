@@ -22,6 +22,8 @@ const (
 const sysprecRecalcNeeded int8 = 127
 
 type Client struct {
+	lneto.NoDeadline // no time-driven work
+
 	connID uint64
 	start  time.Time
 	_now   func() time.Time

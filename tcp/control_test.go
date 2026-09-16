@@ -426,3 +426,74 @@ func TestACKLoop_MutualOutOfWindow(t *testing.T) {
 	}
 	t.Fatal("ACK ping-pong did not converge after", maxRounds, "rounds — infinite loop bug")
 }
+
+// TestPendingSegment_RetransmitAfter3DupACKs_FinWait1 guards that the optimist
+// dup-ACK retransmit still fires after a local close. A segment lost just before
+// the FIN is what a peer keeps dup-ACKing from FIN-WAIT-1; a connection with no
+// Policy has only this strategy to resend it, so gating dup-ACK accounting on
+// TxDataOpen (which excludes FIN-WAIT-1) would strand that data and the FIN
+// behind it forever (RFC 9293 §3.10.8, soypat#182).
+func TestPendingSegment_RetransmitAfter3DupACKs_FinWait1(t *testing.T) {
+	const (
+		iss       Value = 100
+		remoteISS Value = 500
+		inFlight        = 10
+		wnd       Size  = 1024
+	)
+
+	var tcb ControlBlock
+	tcb.HelperInitState(StateFinWait1, iss, iss+inFlight, wnd)
+	tcb.HelperInitRcv(remoteISS, remoteISS+1, wnd)
+
+	for i := range 3 {
+		dup := Segment{
+			SEQ:   remoteISS + 1,
+			ACK:   iss, // UNA (duplicate, no progress).
+			Flags: FlagACK,
+			WND:   wnd,
+		}
+		if err := tcb.Recv(dup); err != nil {
+			t.Fatalf("dup ACK %d: unexpected error: %v", i+1, err)
+		}
+	}
+
+	if tcb.dupack != 3 {
+		t.Fatalf("dupack = %d; want 3 (dup-ACKs must count in FIN-WAIT-1)", tcb.dupack)
+	}
+	if !tcb.HasPendingRetransmit() {
+		t.Fatal("expected HasPendingRetransmit() == true after 3 dupacks in FIN-WAIT-1")
+	}
+	seg, ok := tcb.PendingSegment(4)
+	if !ok {
+		t.Fatal("PendingSegment returned no segment; expected optimist retransmit in FIN-WAIT-1")
+	}
+	if seg.SEQ != tcb.snd.UNA {
+		t.Fatalf("retransmit SEQ = %d; want UNA(%d)", seg.SEQ, tcb.snd.UNA)
+	}
+	if seg.DATALEN == 0 {
+		t.Fatal("optimist retransmit in FIN-WAIT-1 carried no data")
+	}
+}
+
+// TestZeroWindowProbe_AfterLocalClose guards that a closed peer window is still
+// probed from FIN-WAIT-1. Without it, write-then-close against a zero window
+// strands the queued data and the FIN behind it, the same stall the persist
+// timer exists to break in ESTABLISHED (RFC 9293 §3.8.6.1, §3.10.8, soypat#182).
+func TestZeroWindowProbe_AfterLocalClose(t *testing.T) {
+	const iss Value = 100
+
+	var tcb ControlBlock
+	tcb.HelperInitState(StateFinWait1, iss, iss, 1024) // UNA == NXT: nothing outstanding.
+	tcb.HelperInitRcv(500, 501, 0)                     // Peer window closed.
+
+	seg, ok := tcb.ZeroWindowProbe()
+	if !ok {
+		t.Fatal("expected a zero-window probe from FIN-WAIT-1; connection would deadlock")
+	}
+	if seg.DATALEN != 1 {
+		t.Fatalf("probe carries %d octets, want exactly 1", seg.DATALEN)
+	}
+	if seg.SEQ != tcb.snd.NXT {
+		t.Fatalf("probe SEQ = %d; want snd.NXT(%d)", seg.SEQ, tcb.snd.NXT)
+	}
+}
