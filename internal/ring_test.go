@@ -662,39 +662,33 @@ func TestRingPeekWriteRejects(t *testing.T) {
 	}
 }
 
-// TestRingPeekWriteSurvivesEmptyRead checks bytes staged with [Ring.PeekWrite]
-// survive the ring being read empty, an event the stager does not control.
-func TestRingPeekWriteSurvivesEmptyRead(t *testing.T) {
-	r := &Ring{Buf: make([]byte, 16)}
-	if _, err := r.Write([]byte("AAAA")); err != nil {
-		t.Fatal("first write:", err)
+// TestRingPeekWriteSurvivesFullDrain guards a regression where a full read
+// drain reset the ring (zeroing Off/End) while out-of-order data staged with
+// PeekWrite was still waiting for its gap to fill, invalidating the staged
+// bytes' physical offsets. Reading out the gap must preserve the staged data so
+// a later Commit still reveals it (see TCP out-of-order reassembly, exercised by
+// SACK multi-hole recovery).
+func TestRingPeekWriteSurvivesFullDrain(t *testing.T) {
+	var r Ring
+	r.Buf = make([]byte, 16)
+	// Stage 4 bytes 4 bytes ahead of the (empty) write position.
+	if !r.PeekWrite([]byte("WXYZ"), 4) {
+		t.Fatal("PeekWrite rejected")
 	}
-	// Stage "CCCC" one 4-byte gap past the write position.
-	if !r.PeekWrite([]byte("CCCC"), 4) {
-		t.Fatal("PeekWrite should fit")
+	// Fill the 4-byte gap in order, then read it out — fully draining the
+	// readable region while the staged bytes still wait ahead.
+	if _, err := r.Write([]byte("abcd")); err != nil {
+		t.Fatalf("write gap: %v", err)
 	}
-	// Drain everything readable: ring goes empty, staged bytes still pending.
-	got := make([]byte, 16)
-	n, err := r.Read(got)
-	if err != nil || string(got[:n]) != "AAAA" {
-		t.Fatalf("drain read %q (%v), want AAAA", got[:n], err)
+	got := make([]byte, 4)
+	if n, _ := r.Read(got); n != 4 || string(got[:n]) != "abcd" {
+		t.Fatalf("gap read = %q, want abcd", got[:n])
 	}
-	if !r.IsEmpty() {
-		t.Fatal("ring should be empty after draining")
-	}
-	// Fill the gap and commit the staged tail.
-	if _, err := r.Write([]byte("BBBB")); err != nil {
-		t.Fatal("gap write:", err)
-	}
+	// The full drain must not have invalidated the staged bytes.
 	if err := r.Commit(4); err != nil {
-		t.Fatal("commit:", err)
+		t.Fatalf("commit staged: %v", err)
 	}
-	n, err = r.Read(got)
-	if err != nil {
-		t.Fatal("read:", err)
+	if n, _ := r.Read(got); n != 4 || string(got[:n]) != "WXYZ" {
+		t.Fatalf("staged read after full drain = %q, want WXYZ", got[:n])
 	}
-	if string(got[:n]) != "BBBBCCCC" {
-		t.Fatalf("read %q, want BBBBCCCC: the staged bytes were committed from the wrong offset", got[:n])
-	}
-	testRingSanity(t, r)
 }

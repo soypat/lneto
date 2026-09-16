@@ -82,6 +82,16 @@ func (netstack *Netstack) Socket(ctx context.Context, network string, family, so
 	return netstack.gstack.SocketNetip(ctx, network, family, sotype, laddr, raddr)
 }
 
+// NextDeadline returns the monotonic-nanosecond instant at which
+// [Netstack.EgressPackets] must next be called for time-driven work such as a
+// retransmission, or 0 when nothing in the stack is waiting on time. See
+// [StackAsync.NextDeadline].
+//
+// A driver that blocks on incoming packets should bound that wait by this
+// instant, otherwise a quiet link defers every retransmission until traffic
+// happens to arrive.
+func (netstack *Netstack) NextDeadline() int64 { return netstack.stack.NextDeadline() }
+
 // EgressPackets instructs Stack to write outgoing packets into bufs and writing the sizes into sizes not including initial offset.
 // offset can be used to tell the stack to start writing after an offset for each buffer.
 func (netstack *Netstack) EgressPackets(bufs [][]byte, sizes []int, offset int) (err error) {

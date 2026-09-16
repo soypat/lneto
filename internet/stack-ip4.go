@@ -62,6 +62,10 @@ type stackip4 struct {
 	acceptBroadcast bool
 }
 
+// NextDeadline returns the earliest deadline of the registered protocol
+// handlers, or 0 when none has one. It implements [lneto.StackNode].
+func (si4 *stackip4) NextDeadline() int64 { return si4.handlers.nextDeadline() }
+
 func (si4 *stackip4) reset4(vld *lneto.Validator, maxNodes int) {
 	*si4 = stackip4{
 		ip4:             [4]byte{},

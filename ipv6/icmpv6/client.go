@@ -26,6 +26,8 @@ type ClientConfig struct {
 }
 
 type Client struct {
+	lneto.NoDeadline // no time-driven work
+
 	connid uint64
 	magic  uint32
 	_seq   uint16

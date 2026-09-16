@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/udp"
 )
 
@@ -313,5 +315,82 @@ func TestStackAsyncRegisterListenerUDP_MultiSource(t *testing.T) {
 		if got[1].from != wantFrom1 || !bytes.Equal(got[1].data, msg1) {
 			t.Errorf("[1]: got addr=%v data=%q, want addr=%v data=%q", got[1].from, got[1].data, wantFrom1, msg1)
 		}
+	}
+}
+
+// TestStackAsyncUDPRejectsBadChecksum documents where UDP checksum protection
+// lives: not in package udp, which cannot see the pseudo-header of addresses the
+// checksum covers, but in the IP stack that owns them. A datagram tampered with
+// after egress must be dropped before it reaches the listener.
+func TestStackAsyncUDPRejectsBadChecksum(t *testing.T) {
+	const (
+		svPort = 9010
+		clPort = 9011
+	)
+	sv, cl := newUDPTestPair(t, 4321)
+	buf := make([]byte, ethernet.MaxMTU+ethernet.MaxOverheadSize)
+
+	var pc udp.PacketConn
+	if err := pc.Configure(udp.PacketConnConfig{
+		RxBuf: make([]byte, testUDPBufSize), TxBuf: make([]byte, testUDPBufSize),
+		RxQueueSize: testUDPQueueSize, TxQueueSize: testUDPQueueSize,
+		RWBackoff: backoffYield,
+	}); err != nil {
+		t.Fatal("pc Configure:", err)
+	}
+	if err := pc.Open(netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort)); err != nil {
+		t.Fatal("pc.Open:", err)
+	}
+	if err := sv.RegisterListenerUDP(&pc); err != nil {
+		t.Fatal("RegisterListenerUDP:", err)
+	}
+
+	var conn udp.Conn
+	if err := conn.Configure(udp.ConnConfig{
+		RxBuf: make([]byte, testUDPBufSize), TxBuf: make([]byte, testUDPBufSize),
+		RxQueueSize: testUDPQueueSize, TxQueueSize: testUDPQueueSize,
+		RWBackoff: backoffYield,
+	}); err != nil {
+		t.Fatal("conn Configure:", err)
+	}
+	if err := cl.DialUDP4(&conn, clPort, sv.Addr4(), svPort); err != nil {
+		t.Fatal("DialUDP4:", err)
+	}
+	if _, err := conn.Write([]byte("tamper me")); err != nil {
+		t.Fatal("Write:", err)
+	}
+	n, err := cl.EgressEthernet(buf)
+	if err != nil {
+		t.Fatal("EgressEthernet:", err)
+	} else if n == 0 {
+		t.Fatal("no packet sent by client")
+	}
+
+	// Corrupt the last payload octet, leaving the checksum field stale.
+	efrm, err := ethernet.NewFrame(buf[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	ifrm, err := ipv4.NewFrame(efrm.Payload())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ufrm, err := udp.NewFrame(ifrm.Payload()[:ifrm.TotalLength()-20])
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := ufrm.Payload()
+	if len(payload) == 0 {
+		t.Fatal("no UDP payload to corrupt")
+	}
+	payload[len(payload)-1] ^= 0xff
+
+	if err := sv.IngressEthernet(buf[:n]); err != lneto.ErrBadCRC {
+		t.Fatalf("tampered datagram: got err=%v, want ErrBadCRC", err)
+	}
+	pc.SetReadDeadline(time.Now().Add(10 * time.Millisecond))
+	var rbuf [testUDPBufSize]byte
+	if _, _, err := pc.ReadFrom(rbuf[:]); err == nil {
+		t.Error("tampered datagram must not reach the listener")
 	}
 }

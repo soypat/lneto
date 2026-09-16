@@ -88,6 +88,8 @@ type DelegatedPrefix struct {
 //	cl.BeginRequest(xid, RequestConfig{ClientHardwareAddr: mac})
 //	// drive Encapsulate / Demux calls via the network stack
 type Client struct {
+	lneto.NoDeadline // no time-driven work
+
 	connID uint64
 	state  ClientState
 	xid    uint32 // lower 24 bits used

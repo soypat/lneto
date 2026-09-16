@@ -15,6 +15,8 @@ import (
 )
 
 type Client struct {
+	lneto.NoDeadline // no time-driven work
+
 	connID      uint64
 	reqHostname string
 	clientID    []byte
