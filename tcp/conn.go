@@ -474,15 +474,7 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 		return lneto.ErrMismatch
 	}
 	conn.trace("tcpconn.Recv", slog.Uint64("lport", uint64(conn.h.LocalPort())), slog.Uint64("rport", uint64(conn.h.remotePort)))
-	// Congestion is signalled in the IP header, which the handler is not given, so
-	// the codepoint is read here where the header is in hand. An unreadable one is
-	// treated as no mark rather than failing the segment: a lost congestion signal
-	// costs performance, and a dropped segment costs correctness.
-	ecn, ecnErr := internal.GetIPECN(buf[:off])
-	if ecnErr != nil {
-		ecn = ECNNotECT
-	}
-	err = conn.h.RecvWithECN(buf[off:], ecn)
+	err = conn.h.Recv(buf[off:])
 	if err != nil {
 		return err
 	}
@@ -518,14 +510,6 @@ func (conn *Conn) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 	err = internal.SetIPAddrs(ipFrame, conn.ipID, nil, conn.remoteAddr)
 	if err != nil {
 		return 0, err
-	}
-	// Mark the packet ECN-capable once ECN is negotiated, so a congested router
-	// marks it instead of dropping it. Set after the addresses and before the
-	// stack computes the header checksum.
-	if ecn := conn.h.ECNCodepoint(); ecn != ECNNotECT {
-		if err = internal.SetIPECN(ipFrame, ecn); err != nil {
-			return 0, err
-		}
 	}
 	conn.ipID++
 	return n, nil

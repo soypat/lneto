@@ -74,8 +74,6 @@ type MuxConfig struct {
 
 // muxHandler
 type muxHandler struct {
-	lneto.NoDeadline // no time-driven work
-
 	connid uint64
 	// filterLPorts stores rx port ranges over which Handler can receive data.
 	// If not set will not filter UDP data.

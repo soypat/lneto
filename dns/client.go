@@ -11,8 +11,6 @@ import (
 )
 
 type Client struct {
-	lneto.NoDeadline // no time-driven work
-
 	connID          uint64
 	txid            uint16
 	lport           uint16

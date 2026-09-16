@@ -7,8 +7,6 @@ import (
 )
 
 type Handler struct {
-	lneto.NoDeadline // no time-driven work
-
 	connID       uint64
 	cache        cache
 	vld          lneto.Validator

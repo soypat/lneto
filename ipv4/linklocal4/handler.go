@@ -26,8 +26,6 @@ import (
 //
 // [RFC3927]: https://datatracker.ietf.org/doc/html/rfc3927
 type Handler struct {
-	lneto.NoDeadline // no time-driven work
-
 	connID uint64
 	now    func() time.Time
 

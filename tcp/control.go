@@ -81,8 +81,6 @@ type ControlBlock struct {
 	// reason. Only meaningful while rtxActive.
 	rtxPtr    Value
 	rtxActive bool
-	// ecn holds the RFC 3168 Explicit Congestion Notification state. See [ecnState].
-	ecn ecnState
 	logger
 
 	// pending is the queue of pending flags to be sent in the next 2 segments.
@@ -226,7 +224,7 @@ func (tcb *ControlBlock) SetLogger(log *slog.Logger) {
 // Segments which are keepalives should not be passed into Recv or Send methods.
 func (tcb *ControlBlock) IncomingIsKeepalive(incomingSegment Segment) bool {
 	return incomingSegment.SEQ == tcb.rcv.NXT-1 &&
-		incomingSegment.Flags&^flagECN == FlagACK &&
+		incomingSegment.Flags == FlagACK &&
 		incomingSegment.ACK == tcb.snd.NXT && incomingSegment.DATALEN == 0
 }
 
@@ -639,8 +637,6 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 		}
 	}
 
-	tcb.ecnRecvFlags(seg)
-
 	seglen := seg.LEN()
 	tcb.rcv.NXT.UpdateForward(seglen)
 
@@ -667,7 +663,7 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 	var newPending Flags
 	switch tcb._state {
 	case StateClosed:
-		if seg.Flags&^flagECN == FlagSYN {
+		if seg.Flags == FlagSYN {
 			tcb.prepareToHandshake(seg.SEQ, seg.WND, StateSynSent)
 			tcb.trace("tcb:open-client")
 		}
@@ -719,8 +715,6 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 	} else {
 		tcb.snd.NXT.UpdateForward(seglen)
 	}
-
-	tcb.ecnSent(seg)
 
 	// seg.WND is the 16-bit value that goes on the wire; record the true window it
 	// stands for. See [ControlBlock.advertisedWindow].
@@ -947,9 +941,6 @@ func (tcb *ControlBlock) Abort() {
 func (tcb *ControlBlock) reset() {
 	*tcb = ControlBlock{
 		logger: tcb.logger,
-		// Whether ECN is offered is configuration and survives, as the logger does;
-		// everything negotiated about it does not.
-		ecn: ecnState{requested: tcb.ecn.requested},
 	}
 }
 
