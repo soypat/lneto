@@ -158,9 +158,9 @@ func (s StackBlocking) DoLookupIP(host string, timeout time.Duration) (addrs []n
 // DoLookupIPType resolves host for the given record type (dns.TypeA or dns.TypeAAAA),
 // blocking until a response arrives or the timeout elapses.
 func (s StackBlocking) DoLookupIPType(host string, timeout time.Duration, qtype dns.Type) (addrs []netip.Addr, err error) {
-	const maxCNAMEHops = 3
+	const maxCNAMEqueries = 3
 	deadline := s.deadlineTO(timeout)
-	for range maxCNAMEHops {
+	for range maxCNAMEqueries {
 		addrs, err = s.lookupIPType(host, deadline, qtype)
 		if err != errDNSOnlyCNAME {
 			return addrs, err // nil(OK) or non-only-cname error.

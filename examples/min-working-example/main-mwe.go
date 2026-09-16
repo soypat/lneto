@@ -93,6 +93,16 @@ func run(ctx context.Context, stack *xnet.StackAsync) error {
 		return makeMsgErr("resolving Router MAC", err)
 	}
 	stack.SetGatewayHardwareAddr(gateway)
+	if !OnlyTCP { // Can exclude DNS and NTP from binary with onlytcp flag.
+		addrs, err := rstack.DoLookupIP("pool.ntp.org", time.Second, 2)
+		if err != nil {
+			return err
+		}
+		offset, err := rstack.DoNTP(addrs[0], time.Second, 2)
+		if err == nil {
+			os.Stdout.WriteString(offset.String())
+		}
+	}
 	gostack := stack.StackBlocking(stackBackoff).StackGo(xnet.StackGoConfig{
 		ListenerPoolConfig: xnet.TCPPoolConfig{
 			PoolSize:           tcpConnPoolSize,
@@ -118,11 +128,11 @@ func run(ctx context.Context, stack *xnet.StackAsync) error {
 		time.Sleep(pollTime)
 		conn, err := listener.Accept()
 		if err != nil {
-			return makeMsgErr("listener.Accept failed", err)
+			err = makeMsgErr("listener.Accept failed", err)
 		}
 		go handleConn(conn)
 	}
-	return nil
+	return err
 }
 
 func handleConn(conn net.Conn) {
@@ -136,10 +146,12 @@ func handleConn(conn net.Conn) {
 func stackLoop(ctx context.Context, stack *xnet.StackAsync) {
 	// Enables logging of packets.
 	var cap xnet.CapturePrinter
-	must(cap.Configure(os.Stdout, xnet.CapturePrinterConfig{
-		Now:           time.Now,
-		TimePrecision: 3,
-	}))
+	if !OnlyTCP {
+		must(cap.Configure(os.Stdout, xnet.CapturePrinterConfig{
+			Now:           time.Now,
+			TimePrecision: 3,
+		}))
+	}
 	frameLength, _ := network.MaxFrameLength()
 	buf := make([]byte, frameLength)
 	for ctx.Err() == nil {
@@ -148,7 +160,9 @@ func stackLoop(ctx context.Context, stack *xnet.StackAsync) {
 			os.Stderr.WriteString(err.Error())
 		} else if nwrite > 0 {
 			network.SendEth(buf[:nwrite])
-			cap.PrintEthernet("OUT", buf[:nwrite])
+			if !OnlyTCP {
+				cap.PrintEthernet("OUT", buf[:nwrite])
+			}
 		}
 		nread, err := network.RecvEth(buf[:])
 		if err != nil {
@@ -157,7 +171,7 @@ func stackLoop(ctx context.Context, stack *xnet.StackAsync) {
 			err = stack.IngressEthernet(buf[:nread])
 			if err != nil && err != lneto.ErrPacketDrop {
 				os.Stderr.WriteString(err.Error())
-			} else {
+			} else if !OnlyTCP {
 				cap.PrintEthernet("IN ", buf[:nread])
 			}
 		}
