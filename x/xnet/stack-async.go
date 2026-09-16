@@ -614,14 +614,14 @@ var errNoDNSServer = errors.New("no DNS server- did DHCP complete? You can set a
 
 var errDNSv6Transport = errors.New("DNS query over IPv6 transport not supported; configure an IPv4 DNS server")
 
-func (s *StackAsync) StartLookupIP(host string) error {
+func (s *StackAsync) StartLookupIP(host dns.Name) error {
 	return s.StartLookupIPType(host, dns.TypeA)
 }
 
 // StartLookupIPType begins resolving host for the given record type (e.g. dns.TypeA
 // or dns.TypeAAAA). The DNS query is always carried over IPv4 to the configured DNS
 // server; resolving over an IPv6 DNS transport is not yet supported.
-func (s *StackAsync) StartLookupIPType(host string, qtype dns.Type) error {
+func (s *StackAsync) StartLookupIPType(host dns.Name, qtype dns.Type) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.dnssv.IsValid() {
@@ -630,19 +630,14 @@ func (s *StackAsync) StartLookupIPType(host string, qtype dns.Type) error {
 	if !s.dnssv.Is4() {
 		return errDNSv6Transport
 	}
-	name, err := dns.NewName(host)
-	if err != nil {
-		return err
-	}
-
 	// EDNS0 buffer size: MTU minus overhead for IP+UDP headers and safety margin.
 	// 100 bytes covers IPv4 max header (60) + UDP (8) + 32 byte margin.
 	s.ednsopt.SetEDNS0(uint16(s.link.MTU())-100, 0, 0, nil)
 	rand := s.prand32()
-	err = s.dns.StartResolve(uint16(rand>>1)+1024, uint16(rand), dns.ResolveConfig{
+	err := s.dns.StartResolve(uint16(rand>>1)+1024, uint16(rand), dns.ResolveConfig{
 		Questions: []dns.Question{
 			{
-				Name:  name,
+				Name:  host,
 				Type:  qtype,
 				Class: dns.ClassINET,
 			},
@@ -671,18 +666,15 @@ var (
 	errDNSOnlyCNAME = errors.New("DNS answer is CNAME without address")
 )
 
-// resultCanonicalName returns the end of the CNAME chain for host in dotted format, or "" if none.
-func (s *StackAsync) resultCanonicalName(host string) string {
+// copyResultCanonicalName copies the end of the CNAME chain for host into dst.
+// dst is left empty if host has no CNAME.
+func (s *StackAsync) copyResultCanonicalName(dst *dns.Name, host dns.Name) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cname := s.dns.ResponseCanonicalName(host)
-	if cname.Len() == 0 {
-		return ""
-	}
-	return cname.String()
+	dst.CopyFrom(s.dns.ResponseCanonicalName(host))
 }
 
-func (s *StackAsync) ResultLookupIP(host string) ([]netip.Addr, bool, error) {
+func (s *StackAsync) ResultLookupIP(host dns.Name) ([]netip.Addr, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, ok := s.dns.ResponseFlags()

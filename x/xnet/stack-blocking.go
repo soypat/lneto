@@ -151,26 +151,28 @@ func (s StackBlocking) DoResolveHardwareAddress6(addr netip.Addr, timeout time.D
 	return hw, err
 }
 
-func (s StackBlocking) DoLookupIP(host string, timeout time.Duration) (addrs []netip.Addr, err error) {
+func (s StackBlocking) DoLookupIP(host dns.Name, timeout time.Duration) (addrs []netip.Addr, err error) {
 	return s.DoLookupIPType(host, timeout, dns.TypeA)
 }
 
 // DoLookupIPType resolves host for the given record type (dns.TypeA or dns.TypeAAAA),
 // blocking until a response arrives or the timeout elapses.
-func (s StackBlocking) DoLookupIPType(host string, timeout time.Duration, qtype dns.Type) (addrs []netip.Addr, err error) {
+func (s StackBlocking) DoLookupIPType(host dns.Name, timeout time.Duration, qtype dns.Type) (addrs []netip.Addr, err error) {
 	const maxCNAMEqueries = 3
 	deadline := s.deadlineTO(timeout)
+	var cname dns.Name // Owns its buffer: the next query overwrites the response.
 	for range maxCNAMEqueries {
 		addrs, err = s.lookupIPType(host, deadline, qtype)
 		if err != errDNSOnlyCNAME {
 			return addrs, err // nil(OK) or non-only-cname error.
 		}
-		host = s.async.resultCanonicalName(host)
+		s.async.copyResultCanonicalName(&cname, host)
+		host = cname
 	}
 	return nil, errDNSOnlyCNAME
 }
 
-func (s StackBlocking) lookupIPType(host string, deadline int64, qtype dns.Type) (addrs []netip.Addr, err error) {
+func (s StackBlocking) lookupIPType(host dns.Name, deadline int64, qtype dns.Type) (addrs []netip.Addr, err error) {
 	err = s.async.StartLookupIPType(host, qtype)
 	if err != nil {
 		return nil, err

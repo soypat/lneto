@@ -23,7 +23,8 @@ func TestNameString(t *testing.T) {
 
 func TestNameAppendDecode(t *testing.T) {
 	const domain = "foo.bar.org"
-	name, err := NewName(domain)
+	var name Name
+	err := name.Parse(domain)
 	if err != nil {
 		t.Fatal(err)
 	} else if name.String() != domain+"." {
@@ -257,7 +258,7 @@ func TestClient_CNAMEResponse(t *testing.T) {
 		t.Fatal("failed to demux DNS response:", err)
 	}
 	var addrs [4]netip.Addr
-	n, err := client.ResponseAnswerLookup(addrs[:], hostname)
+	n, err := client.ResponseAnswerLookup(addrs[:], name)
 	if err != nil {
 		t.Fatal("failed to look up DNS response answers:", err)
 	}
@@ -343,7 +344,7 @@ func TestMessage_WriteAnswers(t *testing.T) {
 				t.Fatal("decode:", incomplete, err)
 			}
 			var addrs [4]netip.Addr
-			n, err := msg.WriteAnswers(addrs[:], tt.host)
+			n, err := msg.WriteAnswers(addrs[:], MustNewName(tt.host))
 			if err != nil {
 				t.Fatal("write answers:", err)
 			}
@@ -402,7 +403,7 @@ func TestMessage_CanonicalName(t *testing.T) {
 			if incomplete || err != nil {
 				t.Fatal("decode:", incomplete, err)
 			}
-			got := msg.CanonicalName(host)
+			got := msg.CanonicalName(MustNewName(host))
 			if tt.anyWant {
 				return
 			}
@@ -488,7 +489,7 @@ func TestClient_ReceivesDNSResponse(t *testing.T) {
 			}
 
 			var addrs [maxAnswers]netip.Addr
-			answers, err := client.ResponseAnswerLookup(addrs[:], hostname)
+			answers, err := client.ResponseAnswerLookup(addrs[:], name)
 			if err != nil {
 				t.Fatal("failed to look up DNS response answers:", err)
 			}

@@ -43,7 +43,7 @@ func TestDNS_QueryReceivesAnswer(t *testing.T) {
 
 	// Start DNS lookup on the client.
 	const hostname = "example.com"
-	err = client.StartLookupIP(hostname)
+	err = client.StartLookupIP(dns.MustNewName(hostname))
 	if err != nil {
 		t.Fatal("StartLookupIP failed:", err)
 	}
@@ -78,7 +78,7 @@ func TestDNS_QueryReceivesAnswer(t *testing.T) {
 	}
 
 	// Check the result.
-	addrs, done, err := client.ResultLookupIP(hostname)
+	addrs, done, err := client.ResultLookupIP(dns.MustNewName(hostname))
 	if err != nil {
 		t.Fatal("ResultLookupIP error:", err)
 	}
@@ -139,7 +139,9 @@ func buildDNSResponsePacket(t *testing.T, txid uint16, dstPort uint16, hostname 
 	srcIP netip.Addr, srcMAC [6]byte, dstIP netip.Addr, dstMAC [6]byte, buf []byte) ([]byte, error) {
 	t.Helper()
 
-	name, err := dns.NewName(hostname)
+	var name dns.Name
+
+	err := name.Parse(hostname)
 	if err != nil {
 		return nil, err
 	}
@@ -277,7 +279,7 @@ func TestDNS_CNAMEResponse(t *testing.T) {
 	const alias = "cdn.example.net"
 	wantAddr := netip.MustParseAddr("192.0.2.200")
 
-	err = client.StartLookupIP(hostname)
+	err = client.StartLookupIP(dns.MustNewName(hostname))
 	if err != nil {
 		t.Fatal("StartLookupIP failed:", err)
 	}
@@ -297,11 +299,13 @@ func TestDNS_CNAMEResponse(t *testing.T) {
 
 	// Respond with a CNAME record www.example.com -> cdn.example.net
 	// followed by the A record for cdn.example.net.
-	owner, err := dns.NewName(hostname)
+	var owner dns.Name
+	err = owner.Parse(hostname)
 	if err != nil {
 		t.Fatal(err)
 	}
-	aliasName, err := dns.NewName(alias)
+	var aliasName dns.Name
+	err = aliasName.Parse(alias)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +333,7 @@ func TestDNS_CNAMEResponse(t *testing.T) {
 		t.Fatal("client Demux of CNAME response failed:", err)
 	}
 
-	addrs, done, err := client.ResultLookupIP(hostname)
+	addrs, done, err := client.ResultLookupIP(dns.MustNewName(hostname))
 	if err != nil {
 		t.Fatal("ResultLookupIP error:", err)
 	}
@@ -406,13 +410,13 @@ func TestDNS_CNAMEOnlyRequery(t *testing.T) {
 	}
 
 	// Async: CNAME-only answer has its own error.
-	if err = client.StartLookupIP(hostname); err != nil {
+	if err = client.StartLookupIP(dns.MustNewName(hostname)); err != nil {
 		t.Fatal("StartLookupIP failed:", err)
 	}
 	if !respond() {
 		t.Fatal("expected DNS query packet from client")
 	}
-	_, done, err := client.ResultLookupIP(hostname)
+	_, done, err := client.ResultLookupIP(dns.MustNewName(hostname))
 	if !done || err != errDNSOnlyCNAME {
 		t.Errorf("expected done with %v, got done=%v err=%v", errDNSOnlyCNAME, done, err)
 	}
@@ -423,7 +427,7 @@ func TestDNS_CNAMEOnlyRequery(t *testing.T) {
 		respond()
 		return lneto.BackoffFlagNop
 	}
-	addrs, err := client.StackBlocking(pump).DoLookupIP(hostname, time.Second)
+	addrs, err := client.StackBlocking(pump).DoLookupIP(dns.MustNewName(hostname), time.Second)
 	if err != nil {
 		t.Fatal("DoLookupIP failed:", err)
 	}

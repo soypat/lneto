@@ -15,18 +15,9 @@ import (
 
 func TestMDNS_QueryResponse(t *testing.T) {
 	const MTU = ethernet.MaxMTU
-	svcName, err := dns.NewName("My Web._http._tcp.local")
-	if err != nil {
-		t.Fatal(err)
-	}
-	hostName, err := dns.NewName("mydevice.local")
-	if err != nil {
-		t.Fatal(err)
-	}
-	svcType, err := dns.NewName("_http._tcp.local")
-	if err != nil {
-		t.Fatal(err)
-	}
+	svcName := dns.MustNewName("My Web._http._tcp.local")
+	hostName := dns.MustNewName("mydevice.local")
+	svcType := dns.MustNewName("_http._tcp.local")
 	svc := mdns.Service{
 		Name: svcName,
 		Host: hostName,
@@ -42,7 +33,7 @@ func TestMDNS_QueryResponse(t *testing.T) {
 
 	// Setup responder stack with mDNS service.
 	responderStack := new(StackAsync)
-	err = responderStack.Reset(StackConfig{
+	err := responderStack.Reset(StackConfig{
 		Hostname:          "responder",
 		RandSeed:          1234,
 		StaticAddress4:    responderAddr,
@@ -197,14 +188,8 @@ func TestMDNS_QueryResponse(t *testing.T) {
 
 func TestMDNS_SRVThroughStack(t *testing.T) {
 	const MTU = ethernet.MaxMTU
-	svcName, err := dns.NewName("My Web._http._tcp.local")
-	if err != nil {
-		t.Fatal(err)
-	}
-	hostName, err := dns.NewName("mydevice.local")
-	if err != nil {
-		t.Fatal(err)
-	}
+	svcName := dns.MustNewName("My Web._http._tcp.local")
+	hostName := dns.MustNewName("mydevice.local")
 	svc := mdns.Service{
 		Name: svcName,
 		Host: hostName,
@@ -227,7 +212,7 @@ func TestMDNS_SRVThroughStack(t *testing.T) {
 		netip.AddrFrom4([4]byte{192, 168, 1, 100}), querierMAC, responderMAC,
 		mdns.ClientConfig{LocalPort: mdns.Port, MulticastAddr: mcastAddr},
 	)
-	err = querierClient.StartResolve(mdns.ResolveConfig{
+	err := querierClient.StartResolve(mdns.ResolveConfig{
 		Questions: []dns.Question{{
 			Name:  svcName,
 			Type:  dns.TypeSRV,

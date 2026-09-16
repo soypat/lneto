@@ -126,7 +126,7 @@ func (c *Client) ResponseCopyTo(dst *Message) (done bool, err error) {
 	return true, nil
 }
 
-func (c *Client) ResponseAnswerLookup(dst []netip.Addr, host string) (uint16, error) {
+func (c *Client) ResponseAnswerLookup(dst []netip.Addr, host Name) (uint16, error) {
 	if !c.respFlags.IsResponse() {
 		return 0, nil
 	}
@@ -139,7 +139,7 @@ func (c *Client) ResponseAnswerLookup(dst []netip.Addr, host string) (uint16, er
 
 // ResponseCanonicalName returns the end of the CNAME chain rooted at host.
 // Returns zero [Name] if there is no valid response or no CNAME for host.
-func (c *Client) ResponseCanonicalName(host string) Name {
+func (c *Client) ResponseCanonicalName(host Name) Name {
 	if !c.respFlags.IsResponse() || c.respFlags.ResponseCode() != 0 {
 		return Name{}
 	}

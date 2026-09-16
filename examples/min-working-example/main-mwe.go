@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/dns"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/x/xnet"
 )
@@ -94,7 +95,7 @@ func run(ctx context.Context, stack *xnet.StackAsync) error {
 	}
 	stack.SetGatewayHardwareAddr(gateway)
 	if !OnlyTCP { // Can exclude DNS and NTP from binary with onlytcp flag.
-		addrs, err := rstack.DoLookupIP("pool.ntp.org", time.Second, 2)
+		addrs, err := rstack.DoLookupIP(dns.MustNewName("pool.ntp.org"), time.Second, 2)
 		if err != nil {
 			return err
 		}
