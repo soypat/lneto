@@ -198,6 +198,171 @@ func TestSentlist_simple(t *testing.T) {
 	}
 }
 
+func TestRingTx_retransmitBoundary(t *testing.T) {
+	const bufsize = 16
+	const maxpkts = 4
+	const iss = Value(1000)
+	const npkt, pktlen = 3, 4
+	const datalen = npkt * pktlen
+	for _, test := range []struct {
+		name string
+		// rotate is a number of octets pushed through and acked before the test
+		// data is queued, to move the ring offsets and force a wraparound.
+		rotate int
+		// start is the retransmission point relative to the first test octet.
+		start int
+		// want is the expected resume point relative to the first test octet,
+		// only meaningful when ok is true.
+		want int
+		ok   bool
+	}{
+		{name: "at UNA", start: 0, want: 0, ok: true},
+		{name: "second packet", start: pktlen, want: pktlen, ok: true},
+		{name: "last packet", start: 2 * pktlen, want: 2 * pktlen, ok: true},
+		{name: "mid packet clamps down", start: pktlen + 2, want: pktlen, ok: true},
+		{name: "last octet clamps down", start: datalen - 1, want: 2 * pktlen, ok: true},
+		{name: "before UNA", start: -1},
+		{name: "at NXT", start: datalen},
+		{name: "past NXT", start: datalen + 1},
+		{name: "wrapped at UNA", rotate: bufsize - 6, start: 0, want: 0, ok: true},
+		{name: "wrapped mid packet", rotate: bufsize - 6, start: pktlen + 2, want: pktlen, ok: true},
+		{name: "wrapped last packet", rotate: bufsize - 6, start: 2 * pktlen, want: 2 * pktlen, ok: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var rtx ringTx
+			var scratch [bufsize]byte
+			err := rtx.Reset(make([]byte, bufsize), maxpkts, iss)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Rotate the ring so the test data does not start at offset zero.
+			base := iss
+			for range test.rotate {
+				if _, err = rtx.Write([]byte{0}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err = rtx.MakePacket(scratch[:1], base); err != nil {
+					t.Fatal(err)
+				}
+				base = Add(base, 1)
+				if err = rtx.RecvACK(base); err != nil {
+					t.Fatal(err)
+				}
+			}
+			data := make([]byte, datalen)
+			for i := range data {
+				data[i] = byte(i + 1)
+			}
+			if _, err = rtx.Write(data); err != nil {
+				t.Fatal(err)
+			}
+			for i := range npkt {
+				seq := Add(base, Size(i*pktlen))
+				if _, err = rtx.MakePacket(scratch[:pktlen], seq); err != nil {
+					t.Fatal(err)
+				}
+			}
+			testQueueSanity(t, &rtx)
+			if rtx.BufferedSent() != datalen {
+				t.Fatalf("want %d sent, got %d", datalen, rtx.BufferedSent())
+			}
+
+			at, ok := rtx.retransmitBoundary(base + Value(test.start))
+			if ok != test.ok {
+				t.Fatalf("want ok=%v, got %v", test.ok, ok)
+			}
+			testQueueSanity(t, &rtx)
+			// The query never modifies the queue, whatever it reports: the data
+			// stays sent, which is what lets the range after a hole stay sent.
+			if rtx.BufferedSent() != datalen || rtx.BufferedUnsent() != 0 {
+				t.Fatalf("queue modified by a query: sent=%d unsent=%d",
+					rtx.BufferedSent(), rtx.BufferedUnsent())
+			}
+			if !ok {
+				return
+			}
+			if want := base + Value(test.want); at != want {
+				t.Fatalf("want resume at %d, got %d", want, at)
+			}
+			// The boundary reported must be one MakePacket can resend by exact
+			// sequence, which is the invariant the clamping exists to maintain.
+			n, err := rtx.MakePacket(scratch[:], at)
+			if err != nil {
+				t.Fatalf("resend at the reported boundary %d: %s", at, err)
+			}
+			testQueueSanity(t, &rtx)
+			if want := data[test.want : test.want+pktlen]; !bytes.Equal(scratch[:n], want) {
+				t.Fatalf("want resent data %v, got %v", want, scratch[:n])
+			}
+		})
+	}
+}
+
+// TestRingTx_RetransmitByExactSeqIsNonDestructive pins the property selective
+// retransmission depends on: an already-sent segment can be resent by its exact
+// sequence number without disturbing the sent/unsent split, so ranges the peer has
+// acknowledged selectively can be skipped rather than resent.
+//
+// This is what makes SACK cheap here. The alternative, rewinding the queue with
+// [ringTx.RetransmitFrom], turns everything from the rewind point back into unsent
+// data and so can only ever express go-back-N.
+func TestRingTx_RetransmitByExactSeqIsNonDestructive(t *testing.T) {
+	const bufsize, maxpkts = 32, 4
+	const iss = Value(500)
+	const npkt, pktlen = 3, 4
+	var rtx ringTx
+	if err := rtx.Reset(make([]byte, bufsize), maxpkts, iss); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rtx.Write([]byte("AAAABBBBCCCC")); err != nil {
+		t.Fatal(err)
+	}
+	var scratch [bufsize]byte
+	for i := range npkt {
+		if _, err := rtx.MakePacket(scratch[:pktlen], Add(iss, Size(i*pktlen))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	testQueueSanity(t, &rtx)
+	wantUO, wantUE, wantSO, wantSE := rtx.lims()
+
+	// Resend only the middle segment, as a receiver reporting a single hole would
+	// have the sender do.
+	n, err := rtx.MakePacket(scratch[:], Add(iss, pktlen))
+	if err != nil {
+		t.Fatal("retransmit middle segment:", err)
+	}
+	if got := string(scratch[:n]); got != "BBBB" {
+		t.Fatalf("retransmitted %q, want BBBB", got)
+	}
+	testQueueSanity(t, &rtx)
+	if uo, ue, so, se := rtx.lims(); uo != wantUO || ue != wantUE || so != wantSO || se != wantSE {
+		t.Fatalf("queue moved: unsent=[%d,%d) sent=[%d,%d), want unsent=[%d,%d) sent=[%d,%d)",
+			uo, ue, so, se, wantUO, wantUE, wantSO, wantSE)
+	}
+	if rtx.BufferedSent() != npkt*pktlen || rtx.BufferedUnsent() != 0 {
+		t.Errorf("accounting changed: sent=%d unsent=%d, want %d and 0",
+			rtx.BufferedSent(), rtx.BufferedUnsent(), npkt*pktlen)
+	}
+
+	// A later segment must still be resendable, and new data must still flow, so
+	// the retransmission left no dent in the queue.
+	if n, err = rtx.MakePacket(scratch[:], Add(iss, 2*pktlen)); err != nil {
+		t.Fatal("retransmit last segment:", err)
+	} else if got := string(scratch[:n]); got != "CCCC" {
+		t.Errorf("retransmitted %q, want CCCC", got)
+	}
+	if _, err = rtx.Write([]byte("DDDD")); err != nil {
+		t.Fatal("write after retransmit:", err)
+	}
+	if n, err = rtx.MakePacket(scratch[:], Add(iss, 3*pktlen)); err != nil {
+		t.Fatal("send new data after retransmit:", err)
+	} else if got := string(scratch[:n]); got != "DDDD" {
+		t.Errorf("sent %q after retransmit, want DDDD", got)
+	}
+	testQueueSanity(t, &rtx)
+}
+
 func TestTxQueue_multipacket(t *testing.T) {
 	const mtu = 32
 	const iss = 1
@@ -681,5 +846,78 @@ func (rtx *ringTx) zones() []internal.BufferZone {
 			Name:  "usnt",
 			Start: rtx.unsentoff, End: rtx.unsentend,
 		},
+	}
+}
+
+// TestMakePacketRetransmitWithFullQueue verifies a packet the queue already tracks
+// can be resent when the queue is full.
+//
+// The free-entry check ran before the retransmission path, so a full queue refused
+// to resend anything. Resending a tracked packet needs no new entry — it is the same
+// packet — and a full queue is exactly the state a stalled connection is in: nothing
+// is being acknowledged, which is why entries are not being freed, which is why a
+// retransmission is due. Refusing there means the one action that could recover the
+// connection is the one action unavailable.
+func TestMakePacketRetransmitWithFullQueue(t *testing.T) {
+	const (
+		bufsize = 64
+		maxpkts = 3
+		pktlen  = 4
+		iss     = Value(1000)
+	)
+	var rtx ringTx
+	if err := rtx.Reset(make([]byte, bufsize), maxpkts, iss); err != nil {
+		t.Fatal(err)
+	}
+	data := make([]byte, maxpkts*pktlen)
+	for i := range data {
+		data[i] = byte(i + 1)
+	}
+	if _, err := rtx.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	var scratch [bufsize]byte
+	for i := range maxpkts {
+		if _, err := rtx.MakePacket(scratch[:pktlen], Add(iss, Size(i*pktlen))); err != nil {
+			t.Fatalf("packet %d: %v", i, err)
+		}
+	}
+	if rtx.slist.Free() != 0 {
+		t.Fatalf("queue has %d free entries, want a full queue for this test", rtx.slist.Free())
+	}
+
+	// Every packet in the full queue must still be resendable, with its data intact.
+	for i := range maxpkts {
+		seq := Add(iss, Size(i*pktlen))
+		clear(scratch[:])
+		n, err := rtx.MakePacket(scratch[:pktlen], seq)
+		if err != nil {
+			t.Fatalf("retransmit of packet %d at seq %d: %v", i, seq, err)
+		}
+		if n != pktlen {
+			t.Errorf("retransmit of packet %d read %d octets, want %d", i, n, pktlen)
+		}
+		want := data[i*pktlen : (i+1)*pktlen]
+		if string(scratch[:n]) != string(want) {
+			t.Errorf("retransmit of packet %d = %v, want %v", i, scratch[:n], want)
+		}
+	}
+	testQueueSanity(t, &rtx)
+	// The queue is unchanged: resending is not a new packet.
+	if rtx.slist.Free() != 0 {
+		t.Errorf("queue has %d free entries after retransmitting, want 0", rtx.slist.Free())
+	}
+	if rtx.BufferedSent() != len(data) {
+		t.Errorf("sent octets = %d after retransmitting, want %d", rtx.BufferedSent(), len(data))
+	}
+	if rtx.BufferedUnsent() != 0 {
+		t.Errorf("unsent octets = %d after retransmitting, want 0", rtx.BufferedUnsent())
+	}
+	// New data still needs an entry, so a full queue still refuses it.
+	if _, err := rtx.Write([]byte{99}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rtx.MakePacket(scratch[:1], Add(iss, Size(len(data)))); err == nil {
+		t.Error("new data on a full queue was accepted, want a refusal")
 	}
 }
