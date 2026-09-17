@@ -1,6 +1,7 @@
 package tcp
 
 import (
+	"bytes"
 	"math/rand"
 	"testing"
 
@@ -233,6 +234,54 @@ func TestPolicy_PreTxOptions(t *testing.T) {
 	}
 	if n != int(offset)*4+len(data) {
 		t.Fatalf("frame length=%d, want %d", n, int(offset)*4+len(data))
+	}
+}
+
+func TestPolicy_SynMSSIgnoresOptions(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts []byte
+	}{
+		{name: "no-policy"},
+		{name: "nop", opts: []byte{1, 1, 1, 1}},
+		{name: "timestamps", opts: []byte{1, 1, 8, 10, 0, 0, 0, 1, 0, 0, 0, 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const mtu = 120
+			client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
+			if tc.opts != nil {
+				for _, h := range []*Handler{client, server} {
+					pol := newRecordingPolicy()
+					pol.writeOpts = tc.opts
+					h.SetPolicy(pol)
+				}
+			}
+			setupClientServer(t, rand.New(rand.NewSource(1)), client, server)
+			var buf [mtu]byte
+			for _, sender := range []*Handler{client, server} {
+				n, err := sender.Send(buf[:])
+				if err != nil {
+					t.Fatal(err)
+				}
+				mss, ok, _, _ := synOptions(t, buf[:n])
+				if !ok || mss != mtu-sizeHeaderTCP {
+					t.Errorf("port %d: MSS = %d, present = %t, want %d", sender.LocalPort(), mss, ok, mtu-sizeHeaderTCP)
+				}
+				frame, err := NewFrame(buf[:n])
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.HasPrefix(frame.Options(), tc.opts) {
+					t.Errorf("port %d: options = %x, want prefix %x", sender.LocalPort(), frame.Options(), tc.opts)
+				}
+				if sender == client {
+					if err := server.Recv(buf[:n]); err != nil {
+						t.Fatal(err)
+					}
+				}
+				clear(buf[:])
+			}
+		})
 	}
 }
 
