@@ -8,17 +8,15 @@ import (
 
 type HelloClientMsg struct {
 	buf       []byte
-	extOff    int // cached, not part of message.
+	_extOff   int // cached, not part of message.
 	extLen    uint16
 	suitesLen uint16
 	complen   uint8
 	sidLen    uint8
 }
 
-func (d *HelloClientMsg) reset() {
-	*d = HelloClientMsg{}
-}
-
+func (d *HelloClientMsg) reset()        { *d = HelloClientMsg{} }
+func (d *HelloClientMsg) extoff() int   { return d._extOff }
 func (d *HelloClientMsg) SIDLen() uint8 { return d.buf[2+SizeHelloRandom] }
 
 // Random returns the 32-byte client_random.
@@ -33,6 +31,9 @@ func (d *HelloClientMsg) Decode(body []byte, vld *lneto.Validator) (int, error) 
 	const fixed = 2 + SizeHelloRandom + 1
 	dec := decoder{buf: body, vld: vld, off: 2 + SizeHelloRandom}
 	sidLen := int(dec.Uint8())
+	if sidLen > MaxSessionIDLen {
+		vld.AddError(lneto.ErrInvalidLengthField)
+	}
 	dec.Advance(sidLen)
 	suitesLen := int(dec.Uint16())
 	dec.Advance(suitesLen)
@@ -44,7 +45,7 @@ func (d *HelloClientMsg) Decode(body []byte, vld *lneto.Validator) (int, error) 
 		return dec.off, vld.ErrPop()
 	}
 	d.buf = body
-	d.extOff = dec.off - int(extsLen)
+	d._extOff = dec.off - int(extsLen)
 	d.extLen = extsLen
 	d.suitesLen = uint16(suitesLen)
 	d.sidLen = uint8(sidLen)
@@ -63,7 +64,67 @@ func (h *HelloClientMsg) Compressions() []byte {
 }
 
 func (h *HelloClientMsg) Extensions() []byte {
-	return h.buf[h.extOff : h.extOff+int(h.extLen)]
+	off := h.extoff()
+	return h.buf[off : off+int(h.extLen)]
+}
+
+type HelloServerMsg struct {
+	buf     []byte
+	_extOff int // cached, not part of message.
+	extLen  uint16
+	sidLen  uint8
+}
+
+func (d *HelloServerMsg) reset()      { *d = HelloServerMsg{} }
+func (d *HelloServerMsg) extoff() int { return d._extOff }
+
+// Random returns the 32-byte server_random.
+func (h *HelloServerMsg) Random() *[SizeHelloRandom]byte {
+	return (*[SizeHelloRandom]byte)(h.buf[2 : 2+SizeHelloRandom])
+}
+
+// SessionID returns legacy_session_id_echo, which must match the ClientHello's.
+func (h *HelloServerMsg) SessionID() []byte {
+	const off = 2 + SizeHelloRandom + 1
+	return h.buf[off : off+int(h.sidLen)]
+}
+
+func (h *HelloServerMsg) CipherSuite() CipherSuite {
+	off := 2 + SizeHelloRandom + 1 + int(h.sidLen)
+	return CipherSuite(binary.BigEndian.Uint16(h.buf[off:]))
+}
+
+// Compression returns legacy_compression_method, which must be 0.
+func (h *HelloServerMsg) Compression() uint8 {
+	return h.buf[2+SizeHelloRandom+1+int(h.sidLen)+2]
+}
+
+func (h *HelloServerMsg) Extensions() []byte {
+	off := h.extoff()
+	return h.buf[off : off+int(h.extLen)]
+}
+
+// Decode parses the HelloServerMsg body bytes. First byte is start of version.
+// Decode fails if message is not complete.
+func (d *HelloServerMsg) Decode(body []byte, vld *lneto.Validator) (int, error) {
+	d.reset()
+	dec := decoder{buf: body, vld: vld, off: 2 + SizeHelloRandom}
+	sidLen := int(dec.Uint8())
+	if sidLen > MaxSessionIDLen {
+		vld.AddError(lneto.ErrInvalidLengthField)
+	}
+	dec.Advance(sidLen)
+	dec.Advance(2 + 1) // cipher_suite and legacy_compression_method.
+	extsLen := dec.Uint16()
+	dec.Advance(int(extsLen))
+	if vld.HasError() {
+		return dec.off, vld.ErrPop()
+	}
+	d.buf = body
+	d._extOff = dec.off - int(extsLen)
+	d.extLen = extsLen
+	d.sidLen = uint8(sidLen)
+	return dec.off, nil
 }
 
 // NextKeyShare returns parsed group and key data that is next in buffer. If caller is server then asServer=true.
@@ -301,7 +362,7 @@ func (dec *decoder) Advance(n int) {
 func (dec *decoder) failLen(n int) (failed bool) {
 	if dec.vld.HasError() {
 		return true
-	} else if len(dec.buf[dec.off:]) < n {
+	} else if len(dec.buf)-dec.off < n {
 		dec.vld.AddError(lneto.ErrTruncatedFrame)
 		return true
 	}
