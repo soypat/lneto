@@ -2,6 +2,8 @@ package tls
 
 // Sizes of fixed length headers and the record size limits of RFC 8446 5.2.
 const (
+	MaxSessionIDLen = 32
+	SizeHelloRandom = 32
 	// SizeHeaderRecord is the size of a TLSPlaintext/TLSCiphertext header: content type(1) + legacy record version(2) + length(2).
 	SizeHeaderRecord = 5
 	// SizeHeaderHandshake is the size of a Handshake header: message type(1) + 24-bit length(3).
