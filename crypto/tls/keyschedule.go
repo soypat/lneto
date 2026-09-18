@@ -21,8 +21,21 @@ type keySchedule struct {
 	mac        hash.Hash                                              // Scratch hash for HMAC, reset on every use.
 	secret     [32]byte                                               // Early, then handshake, then master secret.
 	sum        [32]byte                                               // Scratch digest.
+	scratch    [32]byte                                               // Scratch
 	pad        [64]byte                                               // HMAC key pad, one SHA-256 block.
 	info       [2 + 1 + len(labelPrefix) + maxLabel + 1 + 32 + 1]byte // HkdfLabel and HKDF-Expand counter.
+	paranoid   bool
+}
+
+// Finished returns the verify_data of RFC 8446 4.4.4 for the transcript so far.
+// Call [keySchedule.Zeroize] after finishing use to ensure data deleted.
+func (ks *keySchedule) Finished(secret *[32]byte) (verify [32]byte) {
+	key := ks.scratch[:]
+	ks.expandLabel(key, secret[:], "finished", nil)
+	th := ks.TranscriptHash()
+	ks.hmacSum(key, th[:])
+	ks.shh(key)
+	return ks.sum
 }
 
 // Reset starts a new handshake at the early secret. transcript and mac must be
@@ -74,9 +87,10 @@ func (ks *keySchedule) Keys(secret *[32]byte) (tk trafficKeys) {
 
 func (ks *keySchedule) advance(ikm []byte) {
 	emptyHash := sha256.Sum256(nil)
-	var salt [32]byte
-	ks.expandLabel(salt[:], ks.secret[:], "derived", emptyHash[:])
-	ks.extract(salt[:], ikm)
+	salt := ks.scratch[:]
+	ks.expandLabel(salt, ks.secret[:], "derived", emptyHash[:])
+	ks.extract(salt, ikm)
+	ks.shh(salt)
 }
 
 func (ks *keySchedule) trafficSecrets(clientLabel, serverLabel string) (client, server [32]byte) {
@@ -130,4 +144,26 @@ func (ks *keySchedule) hmacSum(key, msg []byte) {
 	ks.mac.Write(ks.pad[:])
 	ks.mac.Write(ks.sum[:])
 	ks.mac.Sum(ks.sum[:0])
+}
+
+// Zeroize overwrites all memory used by keySchedule and calls [hash.Hash.Reset] on used hashers.
+// After Zeroize called Reset should be called before reuse.
+func (ks *keySchedule) Zeroize() {
+	*ks = keySchedule{
+		transcript: ks.transcript,
+		mac:        ks.mac,
+	}
+	// Finish with Reset calls- who knows, maybe they block long enough for attacker to read? This order sounds safer :)
+	// [sha256.Digest] does not overwrite all state... such is life. Maybe time for lcrypto...
+	ks.transcript.Reset()
+	ks.mac.Reset()
+}
+
+// shh dont tell secrets out loud. TODO: check if we've covered every place we can.
+func (ks *keySchedule) shh(data []byte) {
+	if ks.paranoid {
+		for i := range data {
+			data[i] = 0
+		}
+	}
 }

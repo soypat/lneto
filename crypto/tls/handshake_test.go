@@ -128,6 +128,7 @@ func TestHandshakeRFC8448(t *testing.T) {
 	}
 
 	// Key schedule, handshake stage.
+	// We use bytes.Equal but should use subtle package for constant time comparisons to prevent timing attacks!
 	var ks keySchedule
 	ks.Reset(sha256.New(), sha256.New())
 	ks.AddMessage(vecClientHello)
@@ -154,6 +155,7 @@ func TestHandshakeRFC8448(t *testing.T) {
 		_, s := ks.Handshake(shared)
 		ks.Keys(&s)
 		ks.Master()
+		ks.Zeroize()
 	})
 	if allocs != 0 {
 		t.Errorf("key schedule allocs=%v, want 0", allocs)
