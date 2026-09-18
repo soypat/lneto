@@ -7,11 +7,16 @@ import (
 )
 
 type HelloClientMsg struct {
-	buf []byte
+	buf       []byte
+	extOff    int // cached, not part of message.
+	extLen    uint16
+	suitesLen uint16
+	complen   uint8
+	sidLen    uint8
 }
 
 func (d *HelloClientMsg) reset() {
-	d.buf = nil
+	*d = HelloClientMsg{}
 }
 
 func (d *HelloClientMsg) SIDLen() uint8 { return d.buf[2+SizeHelloRandom] }
@@ -21,23 +26,44 @@ func (ch HelloClientMsg) Random() *[SizeHelloRandom]byte {
 	return (*[SizeHelloRandom]byte)(ch.buf[2 : 2+SizeHelloRandom])
 }
 
-func (d *HelloClientMsg) Decode(body []byte) (int, error) {
+// Decode parses the HelloClientMsg body bytes. First byte is start of version.
+// Decode fails if message is not complete.
+func (d *HelloClientMsg) Decode(body []byte, vld *lneto.Validator) (int, error) {
+	d.reset()
 	const fixed = 2 + SizeHelloRandom + 1
-	if len(body) < fixed {
-		return 0, lneto.ErrTruncatedFrame
+	dec := decoder{buf: body, vld: vld, off: 2 + SizeHelloRandom}
+	sidLen := int(dec.Uint8())
+	dec.Advance(sidLen)
+	suitesLen := int(dec.Uint16())
+	dec.Advance(suitesLen)
+	compLen := int(dec.Uint8())
+	dec.Advance(compLen)
+	extsLen := dec.Uint16()
+	dec.Advance(int(extsLen))
+	if vld.HasError() {
+		return dec.off, vld.ErrPop()
 	}
-	off := 2 + SizeHelloRandom
-	sidLen := int(body[off])
-	off += sidLen + 1
-	suitesLen := int(binary.BigEndian.Uint16(body[off : off+2]))
-	off += 2
-	compLen := int(body[off])
-	off += compLen
-	extsLen := int(binary.BigEndian.Uint16(body[off : off+2]))
-	off += 2
-	_ = suitesLen
-	_ = extsLen
-	return 0, nil
+	d.buf = body
+	d.extOff = dec.off - int(extsLen)
+	d.extLen = extsLen
+	d.suitesLen = uint16(suitesLen)
+	d.sidLen = uint8(sidLen)
+	d.complen = uint8(compLen)
+	return dec.off, nil
+}
+
+func (h *HelloClientMsg) Suites() []byte {
+	off := 2 + SizeHelloRandom + 1 + int(h.sidLen) + 2
+	return h.buf[off : off+int(h.suitesLen)]
+}
+
+func (h *HelloClientMsg) Compressions() []byte {
+	off := 2 + SizeHelloRandom + 1 + int(h.sidLen) + 2 + int(h.suitesLen) + 1
+	return h.buf[off : off+int(h.complen)]
+}
+
+func (h *HelloClientMsg) Extensions() []byte {
+	return h.buf[h.extOff : h.extOff+int(h.extLen)]
 }
 
 // NextKeyShare returns parsed group and key data that is next in buffer. If caller is server then asServer=true.
@@ -237,4 +263,47 @@ func checkVec8(data []byte) error {
 		return lneto.ErrInvalidLengthField
 	}
 	return nil
+}
+
+// decoder provides a API to readably decode TLS packets.
+// It's decoding methods are meant to be used with no error checking between them
+// for maximum readability while not sacrificing panic risk; performance is secondary.
+type decoder struct {
+	buf []byte
+	off int
+	vld *lneto.Validator
+}
+
+func (dec *decoder) Uint16() (v uint16) {
+	if dec.failLen(2) {
+		return
+	}
+	v = binary.BigEndian.Uint16(dec.buf[dec.off:])
+	dec.off += 2
+	return v
+}
+
+func (dec *decoder) Uint8() (v uint8) {
+	if dec.failLen(1) {
+		return
+	}
+	v = dec.buf[dec.off]
+	dec.off++
+	return v
+}
+
+func (dec *decoder) Advance(n int) {
+	if !dec.failLen(n) {
+		dec.off += n
+	}
+}
+
+func (dec *decoder) failLen(n int) (failed bool) {
+	if dec.vld.HasError() {
+		return true
+	} else if len(dec.buf[dec.off:]) < n {
+		dec.vld.AddError(lneto.ErrTruncatedFrame)
+		return true
+	}
+	return false
 }
