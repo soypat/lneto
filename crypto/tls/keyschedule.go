@@ -32,8 +32,8 @@ type keySchedule struct {
 func (ks *keySchedule) Finished(secret *[32]byte) (verify [32]byte) {
 	key := ks.scratch[:]
 	ks.expandLabel(key, secret[:], "finished", nil)
-	th := ks.TranscriptHash()
-	ks.hmacSum(key, th[:])
+	ks.TranscriptHash(&ks.sum) // Into ks.sum: a stack copy passed to hmacSum would escape.
+	ks.hmacSum(key, ks.sum[:])
 	ks.shh(key)
 	return ks.sum
 }
@@ -52,10 +52,9 @@ func (ks *keySchedule) Reset(transcript, mac hash.Hash) {
 // AddMessage appends a handshake message, header included, to the transcript.
 func (ks *keySchedule) AddMessage(msg []byte) { ks.transcript.Write(msg) }
 
-// TranscriptHash returns the hash of all messages added so far.
-func (ks *keySchedule) TranscriptHash() [32]byte {
-	ks.transcript.Sum(ks.sum[:0])
-	return ks.sum
+// TranscriptHash writes the hash of all messages added so far.
+func (ks *keySchedule) TranscriptHash(dst *[32]byte) {
+	ks.transcript.Sum(dst[:0])
 }
 
 // Handshake advances to the handshake secret with the key exchange's shared secret and returns
@@ -94,9 +93,10 @@ func (ks *keySchedule) advance(ikm []byte) {
 }
 
 func (ks *keySchedule) trafficSecrets(clientLabel, serverLabel string) (client, server [32]byte) {
-	th := ks.TranscriptHash()
-	ks.expandLabel(client[:], ks.secret[:], clientLabel, th[:])
-	ks.expandLabel(server[:], ks.secret[:], serverLabel, th[:])
+	ks.TranscriptHash(&ks.scratch)
+	ks.expandLabel(client[:], ks.secret[:], clientLabel, ks.scratch[:])
+	ks.expandLabel(server[:], ks.secret[:], serverLabel, ks.scratch[:])
+	ks.shh(ks.scratch[:])
 	return client, server
 }
 
