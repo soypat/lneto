@@ -78,10 +78,10 @@ type trafficKeys struct {
 }
 
 // Keys derives the record protection inputs of a traffic secret.
-func (ks *keySchedule) Keys(secret *[32]byte) (tk trafficKeys) {
-	ks.expandLabel(tk.key[:], secret[:], "key", nil)
-	ks.expandLabel(tk.iv[:], secret[:], "iv", nil)
-	return tk
+func (ks *keySchedule) Keys(secret *[32]byte) (key [16]byte, iv [12]byte) {
+	ks.expandLabel(key[:], secret[:], "key", nil)
+	ks.expandLabel(iv[:], secret[:], "iv", nil)
+	return key, iv
 }
 
 func (ks *keySchedule) advance(ikm []byte) {
@@ -121,6 +121,7 @@ func (ks *keySchedule) expandLabel(dst, secret []byte, label string, context []b
 	info = append(info, 1) // HKDF-Expand block counter.
 	ks.hmacSum(secret, info)
 	copy(dst, ks.sum[:])
+	ks.shh(ks.sum[:])
 }
 
 // hmacSum writes HMAC(key, msg) of RFC 2104 to ks.sum. key must fit in one block.

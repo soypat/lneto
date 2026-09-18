@@ -204,9 +204,9 @@ func TestHandshakeRFC8448(t *testing.T) {
 	} else if !bytes.Equal(sHS[:], vecServerHSTraffic) {
 		t.Fatalf("s hs traffic=%x, want %x", sHS, vecServerHSTraffic)
 	}
-	sKeys := ks.Keys(&sHS)
-	if !bytes.Equal(sKeys.key[:], vecServerHSKey) || !bytes.Equal(sKeys.iv[:], vecServerHSIV) {
-		t.Fatalf("server hs key=%x iv=%x, want %x %x", sKeys.key, sKeys.iv, vecServerHSKey, vecServerHSIV)
+	sKey, sIV := ks.Keys(&sHS)
+	if !bytes.Equal(sKey[:], vecServerHSKey) || !bytes.Equal(sIV[:], vecServerHSIV) {
+		t.Fatalf("server hs key=%x iv=%x, want %x %x", sKey, sIV, vecServerHSKey, vecServerHSIV)
 	}
 
 	// Server Finished over EncryptedExtensions, Certificate and CertificateVerify.
@@ -235,7 +235,7 @@ func TestHandshakeRFC8448(t *testing.T) {
 
 	// Server seals its encrypted flight into a single record.
 	var sConn halfConn
-	if err := sConn.SetAEAD(newGCM(t, sKeys.key[:]), sKeys.iv); err != nil {
+	if err := sConn.SetAEAD(newGCM(t, sKey[:]), sIV); err != nil {
 		t.Fatal(err)
 	}
 	flight := make([]byte, SizeHeaderRecord, MaxRecord)
@@ -251,32 +251,11 @@ func TestHandshakeRFC8448(t *testing.T) {
 
 	// Server opens the client Finished record.
 	var cConn halfConn
-	cKeys := ks.Keys(&cHS)
-	if err := cConn.SetAEAD(newGCM(t, cKeys.key[:]), cKeys.iv); err != nil {
+	cKey, cIV := ks.Keys(&cHS)
+	if err := cConn.SetAEAD(newGCM(t, cKey[:]), cIV); err != nil {
 		t.Fatal(err)
 	}
-	rec = append(make([]byte, 0, len(vecClientRecord)), vecClientRecord...)
-	content, ct, err := cConn.Open(rec)
-	if err != nil {
-		t.Fatal(err)
-	} else if ct != ContentTypeHandshake {
-		t.Fatalf("content type=%d, want handshake", ct)
-	} else if HandshakeType(content[0]) != HandshakeTypeFinished || !bytes.Equal(content[SizeHeaderHandshake:], vecClientVerify) {
-		t.Fatalf("client finished=%x, want verify_data %x", content, vecClientVerify)
-	}
-
 	allocs := testing.AllocsPerRun(10, func() {
-		sConn.seq = 0
-		flight = append(flight[:SizeHeaderRecord], content...)
-		rec, _ := sConn.Seal(flight, ContentTypeHandshake)
-		sConn.seq = 0
-		sConn.Open(rec)
-	})
-	if allocs != 0 {
-		t.Errorf("record protection allocs=%v, want 0", allocs)
-	}
-
-	allocs = testing.AllocsPerRun(10, func() {
 		ks.Reset(ks.transcript, ks.mac)
 		ks.AddMessage(vecClientHello)
 		ks.AddMessage(vecServerHello)
@@ -288,6 +267,26 @@ func TestHandshakeRFC8448(t *testing.T) {
 	})
 	if allocs != 0 {
 		t.Errorf("key schedule allocs=%v, want 0", allocs)
+	}
+	rec = append(make([]byte, 0, len(vecClientRecord)), vecClientRecord...)
+	content, ct, err := cConn.Open(rec)
+	if err != nil {
+		t.Fatal(err)
+	} else if ct != ContentTypeHandshake {
+		t.Fatalf("content type=%d, want handshake", ct)
+	} else if HandshakeType(content[0]) != HandshakeTypeFinished || !bytes.Equal(content[SizeHeaderHandshake:], vecClientVerify) {
+		t.Fatalf("client finished=%x, want verify_data %x", content, vecClientVerify)
+	}
+
+	allocs = testing.AllocsPerRun(10, func() {
+		sConn.seq = 0
+		flight = append(flight[:SizeHeaderRecord], content...)
+		rec, _ := sConn.Seal(flight, ContentTypeHandshake)
+		sConn.seq = 0
+		sConn.Open(rec)
+	})
+	if allocs != 0 {
+		t.Errorf("record protection allocs=%v, want 0", allocs)
 	}
 
 	// TODO: application data records with application traffic keys.
