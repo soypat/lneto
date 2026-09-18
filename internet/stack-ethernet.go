@@ -162,7 +162,7 @@ DROP:
 	// broadcast spam). Log at debug so a production logger at info level gates it
 	// out instead of allocating slog attrs per dropped packet.
 	if internal.LogEnabled(ls.handlers.logger.log, slog.LevelDebug) {
-		ls.handlers.debug("LinkStack:drop-packet", internal.SlogAddr6("dsthw", dstaddr), slog.String("ethertype", efrm.EtherTypeOrSize().String()))
+		ls.handlers.debug("LinkStack:drop-packet", internal.SlogAddr6("dsthw", dstaddr), slog.Uint64("ethertype", uint64(efrm.EtherTypeOrSize())))
 	}
 	return lneto.ErrPacketDrop
 }
