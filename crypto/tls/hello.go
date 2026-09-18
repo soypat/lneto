@@ -40,15 +40,26 @@ func (d *HelloClientMsg) Decode(body []byte) (int, error) {
 	return 0, nil
 }
 
-func NextKeyShare(body []byte, asServer bool) (group NamedGroup, key, remBody []byte, err error) {
-
-	group = NamedGroup(binary.BigEndian.Uint16(body))
-	n := binary.BigEndian.Uint16(body[2:4])
-	if int(n) > len(body) {
-		return
+// NextKeyShare returns parsed group and key data that is next in buffer. If caller is server then asServer=true.
+func NextKeyShare(body []byte, asServer bool) (group NamedGroup, key []byte, n int, err error) {
+	if len(body) < 2 {
+		return 0, nil, 0, lneto.ErrTruncatedFrame
 	}
-
-	return
+	group = NamedGroup(binary.BigEndian.Uint16(body))
+	if asServer && len(body) == 2 {
+		return group, nil, 0, nil
+	} else if len(body) < 4 {
+		return 0, nil, 0, lneto.ErrTruncatedFrame
+	}
+	n = int(binary.BigEndian.Uint16(body[2:4]))
+	if n == 0 {
+		return 0, nil, 0, lneto.ErrInvalidLengthField
+	} else if n > len(body)-4 {
+		return 0, nil, 0, lneto.ErrTruncatedFrame
+	} else if asServer && n != len(body)-4 {
+		return 0, nil, 0, lneto.ErrInvalidLengthField
+	}
+	return group, body[4 : 4+n], 4 + n, nil
 }
 
 type ExtensionFrame struct {
@@ -59,7 +70,11 @@ func NewExtensionFrame(buf []byte) (ExtensionFrame, error) {
 	if len(buf) < 4 {
 		return ExtensionFrame{}, lneto.ErrTruncatedFrame
 	}
-	return ExtensionFrame{buf: buf}, nil
+	n := int(binary.BigEndian.Uint16(buf[2:4]))
+	if n > len(buf)-4 {
+		return ExtensionFrame{}, lneto.ErrTruncatedFrame
+	}
+	return ExtensionFrame{buf: buf[:4+n]}, nil
 }
 
 // Type returns the extension type.
@@ -69,39 +84,45 @@ func (ef ExtensionFrame) Type() ExtensionType { return ExtensionType(binary.BigE
 func (ef ExtensionFrame) Length() uint16 { return binary.BigEndian.Uint16(ef.buf[2:4]) }
 
 // Data is extension_data section of frame.
-func (ef ExtensionFrame) Data() []byte { return ef.buf[4 : 4+ef.Length()] }
+func (ef ExtensionFrame) Data() []byte { return ef.buf[4:] }
 
-// RawData returns the buffer the ExtensionFrame was created with.
+// RawData returns the extension bytes, type and length included. Its length is
+// the distance to the next extension in a list.
 func (ef ExtensionFrame) RawData() []byte { return ef.buf }
 
-func (ef ExtensionFrame) ValidateSize(vld *lneto.Validator) {
-	l := ef.Length()
-	if len(ef.buf) > int(l+4) {
-		vld.AddError(lneto.ErrInvalidLengthField)
-	}
-}
-
+// ValidateType validates the overall data size and shape carried by extension without
+// introspection into the actual data. If caller is server then asServer=true.
 func (ef ExtensionFrame) ValidateType(vld *lneto.Validator, asServer bool) (checked bool) {
 	checked = true
 	data := ef.Data()
 	var err error
 	switch ef.Type() {
 	case ExtServerName:
-		err = validateServerNames(data)
+		if asServer {
+			// A server acknowledges the name with empty extension_data.
+			if len(data) != 0 {
+				err = lneto.ErrInvalidLengthField
+			}
+		} else {
+			err = validateServerNames(data)
+		}
 	case ExtALPN:
 		err = validateALPN(data)
 	case ExtSupportedGroups, ExtSignatureAlgorithms, ExtSignatureAlgorithmsCert:
 		if err = checkVec16(data); err != nil {
 			break
-		} else if len(data)%2 != 0 {
+		} else if len(data) < 4 || len(data)%2 != 0 {
 			err = lneto.ErrInvalidLengthField
 		}
 	case ExtSupportedVersions:
-		if asServer && len(data)%2 != 0 {
-			err = lneto.ErrInvalidField
+		if asServer {
+			// A server names the one selected version.
+			if len(data) != 2 {
+				err = lneto.ErrInvalidLengthField
+			}
 		} else if err = checkVec8(data); err != nil {
 			break
-		} else if (len(data)-1)%2 != 0 {
+		} else if len(data) < 3 || (len(data)-1)%2 != 0 {
 			err = lneto.ErrInvalidLengthField
 		}
 	case ExtKeyShare:
@@ -116,7 +137,10 @@ func (ef ExtensionFrame) ValidateType(vld *lneto.Validator, asServer bool) (chec
 }
 
 func validateALPN(data []byte) error {
-	if err := checkVec16(data); err != nil {
+	// Shortest valid list is a single one-byte protocol name.
+	if len(data) < 2+2 {
+		return lneto.ErrTruncatedFrame
+	} else if err := checkVec16(data); err != nil {
 		return err
 	}
 	data = data[2:]
@@ -135,7 +159,10 @@ func validateALPN(data []byte) error {
 }
 
 func validateServerNames(data []byte) error {
-	if err := checkVec16(data); err != nil {
+	// Shortest valid list is a single entry with a one-byte host name.
+	if len(data) < 2+4 {
+		return lneto.ErrTruncatedFrame
+	} else if err := checkVec16(data); err != nil {
 		return err
 	}
 	data = data[2:]
@@ -145,7 +172,9 @@ func validateServerNames(data []byte) error {
 		}
 		n := int(binary.BigEndian.Uint16(data[off+1 : off+3]))
 		off += 3
-		if n > len(data)-off {
+		if n == 0 {
+			return lneto.ErrInvalidLengthField
+		} else if n > len(data)-off {
 			return lneto.ErrTruncatedFrame
 		}
 		off += n
