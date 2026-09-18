@@ -24,7 +24,7 @@ func IPv4MulticastMAC() [6]byte {
 // linux machines provide to reach them at hostname.local:
 //
 //	s := Service{
-//		Host: dns.NewName("yourhostname.local"),
+//		Host: dns.MustNewName("yourhostname.local"),
 //		Addr: ipAddressSlice,
 //	}
 type Service struct {

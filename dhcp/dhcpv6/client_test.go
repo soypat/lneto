@@ -395,7 +395,8 @@ func appendNTPServerOption(t testing.TB, frame []byte, addr, multicast [16]byte,
 	var ntpPayload []byte
 	ntpPayload = appendNTPServerAddrSuboption(ntpPayload, 1, addr)
 	ntpPayload = appendNTPServerAddrSuboption(ntpPayload, 2, multicast)
-	name, err := dns.NewName(fqdn)
+	var name dns.Name
+	err := name.Parse(fqdn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +423,8 @@ func appendDomainSearchOption(t testing.TB, frame []byte, domains ...string) []b
 	t.Helper()
 	var payload []byte
 	for _, domain := range domains {
-		name, err := dns.NewName(domain)
+		var name dns.Name
+		err := name.Parse(domain)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -599,7 +601,8 @@ func floodNTPOption(t testing.TB, frame []byte, nAddr, nMulticast, nNames int) [
 		a[0], a[1], a[15] = 0xff, 0x05, byte(i+1)
 		payload = appendNTPServerAddrSuboption(payload, 2, a)
 	}
-	name, err := dns.NewName("ntp.example.com")
+	var name dns.Name
+	err := name.Parse("ntp.example.com")
 	if err != nil {
 		t.Fatal(err)
 	}

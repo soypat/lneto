@@ -308,16 +308,16 @@ func (m *Message) AppendTo(buf []byte, txid uint16, flags HeaderFlags) (_ []byte
 
 // WriteAnswers writes the addresses answering host into dst, following the
 // CNAME chain rooted at host. It returns the number of addresses written.
-func (m *Message) WriteAnswers(dst []netip.Addr, host string) (n uint16, err error) {
+func (m *Message) WriteAnswers(dst []netip.Addr, host Name) (n uint16, err error) {
 	// Each round resolves one CNAME, which consumes an answer. Bounding the
 	// walk by the answer count is thus enough to reach the addresses, and
 	// terminates on cyclic chains.
-	var alias Name // Canonical name reached so far; zero means host itself.
+	alias := host // Name reached so far by following CNAMEs.
 	for range m.Answers {
 		var next Name
 		for i := range m.Answers {
 			ans := &m.Answers[i]
-			if !ans.header.ownedBy(alias, host) {
+			if !ans.header.ownedBy(alias) {
 				continue
 			}
 			switch {
@@ -346,15 +346,33 @@ func (m *Message) WriteAnswers(dst []netip.Addr, host string) (n uint16, err err
 	return n, err
 }
 
-// ownedBy reports whether the record's owner name is the name being resolved:
-// the alias reached by following CNAMEs, or host at the root of the chain.
-func (h *ResourceHeader) ownedBy(alias Name, host string) bool {
-	if alias.Len() == 0 {
-		return h.Name.EqualString(host)
-	}
+// ownedBy reports whether the record's owner name is name.
+func (h *ResourceHeader) ownedBy(name Name) bool {
 	// Fold: the server chooses the case of both the CNAME target and the owner
 	// name of the records it aliases, and may randomize it (DNS 0x20).
-	return NamesEqualFold(h.Name, alias)
+	return NamesEqualFold(h.Name, name)
+}
+
+// CanonicalName returns end of CNAME chain rooted at host, aliasing m.
+// Returns zero Name if host has no CNAME.
+func (m *Message) CanonicalName(host Name) (cname Name) {
+	alias := host
+	// Constrain outer for loop, never more than num answer CNAMEs.
+	for range m.Answers {
+		var next Name
+		for i := range m.Answers {
+			ans := &m.Answers[i]
+			if ans.header.Type == TypeCNAME && ans.header.ownedBy(alias) {
+				next = ans.CNAMEView()
+				break
+			}
+		}
+		if next.Len() == 0 {
+			break
+		}
+		cname, alias = next, next
+	}
+	return cname
 }
 
 func (m *Message) Len() uint16 {
@@ -650,8 +668,10 @@ func (rhdr *ResourceHeader) appendTo(buf []byte) (_ []byte, err error) {
 	return buf, nil
 }
 
-func MustNewName(s string) Name {
-	name, err := NewName(s)
+// MustNewName parses domain into a new Name and panics on error. See [Name.Parse].
+func MustNewName(domain string) Name {
+	var name Name
+	err := name.Parse(domain)
 	if err != nil {
 		panic(err)
 	}
@@ -660,31 +680,34 @@ func MustNewName(s string) Name {
 
 var rootDomain = []byte{0}
 
-// NewName parses a domain name and returns a new Name.
-func NewName(domain string) (Name, error) {
+// Parse resets n and parses the dotted domain name into it, reusing n's buffer.
+// A lone "." parses as the root domain. On error n is left empty.
+func (n *Name) Parse(domain string) error {
+	n.Reset()
 	if domain == "" {
-		return Name{}, errEmptyDomainName
+		return errEmptyDomainName
 	}
 	if len(domain) == 1 && domain[0] == '.' {
-		return Name{data: append([]byte{}, rootDomain...)}, nil
+		n.data = append(n.data, rootDomain...)
+		return nil
 	}
-	var name Name
 	for len(domain) > 0 {
 		idx := strings.IndexByte(domain, '.')
 		done := idx < 0 || idx+1 > len(domain)
 		if done {
 			idx = len(domain)
 		}
-		if !name.CanAddLabel(domain[:idx]) {
-			return Name{}, errCantAddLabel
+		if !n.CanAddLabel(domain[:idx]) {
+			n.Reset()
+			return errCantAddLabel
 		}
-		name.AddLabel(domain[:idx])
+		n.AddLabel(domain[:idx])
 		if done {
 			break
 		}
 		domain = domain[idx+1:]
 	}
-	return name, nil
+	return nil
 }
 
 // TrimLabels returns a Name sharing the same backing data with the first n labels removed.

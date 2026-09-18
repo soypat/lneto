@@ -76,7 +76,8 @@ func run() (err error) {
 			os.WriteFile("xnet.pprof", b.Bytes(), 0777)
 		}()
 	}
-	_, err = dns.NewName(flagHostToResolve)
+	var hostToResolve dns.Name
+	err = hostToResolve.Parse(flagHostToResolve)
 	if err != nil {
 		flag.Usage()
 		return err
@@ -272,7 +273,7 @@ func run() (err error) {
 	if flagDoNTP {
 		timeLookupNTP := timer("NTP IP lookup")
 		const ntpHost = "pool.ntp.org"
-		addrs, err := rstack.DoLookupIP(ntpHost, internetTimeout, internetRetries)
+		addrs, err := rstack.DoLookupIP(dns.MustNewName(ntpHost), internetTimeout, internetRetries)
 		if err != nil {
 			return fmt.Errorf("NTP address lookup of %q failed: %w", ntpHost, err)
 		}
@@ -290,7 +291,7 @@ func run() (err error) {
 		fmt.Println("NTP completed. You are", offset.Abs().String(), relative, "of the NTP server")
 	}
 	timeResolveIP := timer("resolve " + flagHostToResolve)
-	addrs, err := rstack.DoLookupIP(flagHostToResolve, internetTimeout, internetRetries)
+	addrs, err := rstack.DoLookupIP(hostToResolve, internetTimeout, internetRetries)
 	if err != nil {
 		return fmt.Errorf("DNS of host %q failed: %w", flagHostToResolve, err)
 	}

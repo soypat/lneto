@@ -18,12 +18,13 @@ type program struct {
 	Dir            string // directory to build from, relative to repo root
 	ExtraProtocols string
 	PacketCapture  bool
+	ExtraArgs      []string // extra build flags passed to go/tinygo build, e.g. -tags=onlytcp
 }
 
 type buildTarget struct {
 	Name  string
 	ext   string // output file extension (determines format for tinygo)
-	build func(dir, outFile string) error
+	build func(dir, outFile string, extraArgs []string) error
 }
 
 type result struct {
@@ -51,9 +52,12 @@ func formatSize(n int64) string {
 	return fmt.Sprintf("%dkB", (n+512)/1024)
 }
 
-func goBuild(goos, goarch string) func(dir, out string) error {
-	return func(dir, out string) error {
-		cmd := exec.Command("go", "build", "-o", out, ".")
+func goBuild(goos, goarch string) func(dir, out string, extraArgs []string) error {
+	return func(dir, out string, extraArgs []string) error {
+		args := []string{"build"}
+		args = append(args, extraArgs...)
+		args = append(args, "-o", out, ".")
+		cmd := exec.Command("go", args...)
 		cmd.Dir = dir
 		cmd.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch)
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -63,12 +67,13 @@ func goBuild(goos, goarch string) func(dir, out string) error {
 	}
 }
 
-func tinygoBuild(target string) func(dir, out string) error {
-	return func(dir, out string) error {
+func tinygoBuild(target string) func(dir, out string, extraArgs []string) error {
+	return func(dir, out string, extraArgs []string) error {
 		args := []string{"build"}
 		if target != "" {
-			args = append(args, "-target="+target)
+			args = append(args, "-target="+target, "-panic=trap")
 		}
+		args = append(args, extraArgs...)
 		args = append(args, "-o", out, ".")
 		cmd := exec.Command("tinygo", args...)
 		cmd.Dir = dir
@@ -84,16 +89,25 @@ var buildTargets = []buildTarget{
 	{Name: "WASM Go", ext: ".wasm", build: goBuild("wasip1", "wasm")},
 	{Name: "amd64 TinyGo", ext: ".elf", build: tinygoBuild("")},
 	{Name: "WASM TinyGo", ext: ".wasm", build: tinygoBuild("wasm")},
-	{Name: "Pico TinyGo", ext: ".bin", build: tinygoBuild("pico")},
+	{Name: "Pico TinyGo", ext: ".bin", build: tinygoBuild("pico")}, // bin files are not representative of flash occupied :/
 }
 
 var programs = []program{
 	{
-		Name:           "Lneto MWE",
+		Name:           "Lneto Only TCP",
+		Link:           "./examples/min-working-example/",
+		Dir:            "examples/min-working-example",
+		ExtraProtocols: "DHCP",
+		PacketCapture:  false,
+		ExtraArgs:      []string{"-tags=onlytcp,noslog"},
+	},
+	{
+		Name:           "Lneto Stack",
 		Link:           "./examples/min-working-example/",
 		Dir:            "examples/min-working-example",
 		ExtraProtocols: "DNS,NTP,DHCP",
 		PacketCapture:  true,
+		ExtraArgs:      []string{"-tags=noslog"},
 	},
 	{
 		Name:           "Gvisor MWE w/ go-net",
@@ -104,9 +118,9 @@ var programs = []program{
 	},
 }
 
-func measure(dir, outFile string, fn func(dir, out string) error) result {
+func measure(dir, outFile string, extraArgs []string, fn func(dir, out string, extraArgs []string) error) result {
 	start := time.Now()
-	err := fn(dir, outFile)
+	err := fn(dir, outFile, extraArgs)
 	elapsed := time.Since(start)
 	if err != nil {
 		return result{DNC: true, CompileTime: elapsed, Err: err}
@@ -145,8 +159,9 @@ func main() {
 		results := make([]result, len(buildTargets))
 		for j, bt := range buildTargets {
 			outFile := filepath.Join(tmpDir, fmt.Sprintf("p%d_t%d%s", i, j, bt.ext))
-			fmt.Fprintf(os.Stderr, "building %s for %s...\n", prog.Name, bt.Name)
-			r := measure(dir, outFile, bt.build)
+			fmt.Fprintf(os.Stderr, "building %s for %s...", prog.Name, bt.Name)
+			r := measure(dir, outFile, prog.ExtraArgs, bt.build)
+			fmt.Fprintf(os.Stderr, " %s\n", r.sizeString())
 			if r.DNC {
 				fmt.Fprintf(os.Stderr, "  DNC: %v\n", r.Err)
 			}
