@@ -2,6 +2,8 @@ package tls
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/ecdh"
 	"crypto/sha256"
 	"encoding/binary"
@@ -65,6 +67,32 @@ f3 94 ca b6 d3 0b be 8d 48 59 ee 51 1f 60 29 57 b1 54 11 ac 02 76 71 45 9e 46 44
 	vecServerFinHash   = mustHex(`96 08 10 2a 0f 1c cc 6d b6 25 0b 7b 7e 41 7b 1a 00 0e aa da 3d aa e4 77 7a 76 86 c9 ff 83 df 13`)
 	vecClientAPTraffic = mustHex(`9e 40 64 6c e7 9a 7f 9d c0 5a f8 88 9b ce 65 52 87 5a fa 0b 06 df 00 87 f7 92 eb b7 c1 75 04 a5`)
 	vecServerAPTraffic = mustHex(`a1 1a f9 f0 55 31 f8 56 ad 47 11 6b 45 a9 50 32 82 04 b4 f4 4b fb 6b 3a 4b 4f 1f 3f cb 63 16 43`)
+	vecServerRecord    = mustHex(`
+17 03 03 02 a2 d1 ff 33 4a 56 f5 bf f6 59 4a 07 cc 87 b5 80 23 3f 50 0f 45 e4 89 e7 f3 3a f3 5e df 78
+69 fc f4 0a a4 0a a2 b8 ea 73 f8 48 a7 ca 07 61 2e f9 f9 45 cb 96 0b 40 68 90 51 23 ea 78 b1 11 b4 29
+ba 91 91 cd 05 d2 a3 89 28 0f 52 61 34 aa dc 7f c7 8c 4b 72 9d f8 28 b5 ec f7 b1 3b d9 ae fb 0e 57 f2
+71 58 5b 8e a9 bb 35 5c 7c 79 02 07 16 cf b9 b1 18 3e f3 ab 20 e3 7d 57 a6 b9 d7 47 76 09 ae e6 e1 22
+a4 cf 51 42 73 25 25 0c 7d 0e 50 92 89 44 4c 9b 3a 64 8f 1d 71 03 5d 2e d6 5b 0e 3c dd 0c ba e8 bf 2d
+0b 22 78 12 cb b3 60 98 72 55 cc 74 41 10 c4 53 ba a4 fc d6 10 92 8d 80 98 10 e4 b7 ed 1a 8f d9 91 f0
+6a a6 24 82 04 79 7e 36 a6 a7 3b 70 a2 55 9c 09 ea d6 86 94 5b a2 46 ab 66 e5 ed d8 04 4b 4c 6d e3 fc
+f2 a8 94 41 ac 66 27 2f d8 fb 33 0e f8 19 05 79 b3 68 45 96 c9 60 bd 59 6e ea 52 0a 56 a8 d6 50 f5 63
+aa d2 74 09 96 0d ca 63 d3 e6 88 61 1e a5 e2 2f 44 15 cf 95 38 d5 1a 20 0c 27 03 42 72 96 8a 26 4e d6
+54 0c 84 83 8d 89 f7 2c 24 46 1a ad 6d 26 f5 9e ca ba 9a cb bb 31 7b 66 d9 02 f4 f2 92 a3 6a c1 b6 39
+c6 37 ce 34 31 17 b6 59 62 22 45 31 7b 49 ee da 0c 62 58 f1 00 d7 d9 61 ff b1 38 64 7e 92 ea 33 0f ae
+ea 6d fa 31 c7 a8 4d c3 bd 7e 1b 7a 6c 71 78 af 36 87 90 18 e3 f2 52 10 7f 24 3d 24 3d c7 33 9d 56 84
+c8 b0 37 8b f3 02 44 da 8c 87 c8 43 f5 e5 6e b4 c5 e8 28 0a 2b 48 05 2c f9 3b 16 49 9a 66 db 7c ca 71
+e4 59 94 26 f7 d4 61 e6 6f 99 88 2b d8 9f c5 08 00 be cc a6 2d 6c 74 11 6d bd 29 72 fd a1 fa 80 f8 5d
+f8 81 ed be 5a 37 66 89 36 b3 35 58 3b 59 91 86 dc 5c 69 18 a3 96 fa 48 a1 81 d6 b6 fa 4f 9d 62 d5 13
+af bb 99 2f 2b 99 2f 67 f8 af e6 7f 76 91 3f a3 88 cb 56 30 c8 ca 01 e0 c6 5d 11 c6 6a 1e 2a c4 c8 59
+77 b7 c7 a6 99 9b bf 10 dc 35 ae 69 f5 51 56 14 63 6c 0b 9b 68 c1 9e d2 e3 1c 0b 3b 66 76 30 38 eb ba
+42 f3 b3 8e dc 03 99 f3 a9 f2 3f aa 63 97 8c 31 7f c9 fa 66 a7 3f 60 f0 50 4d e9 3b 5b 84 5e 27 55 92
+c1 23 35 ee 34 0b bc 4f dd d5 02 78 40 16 e4 b3 be 7e f0 4d da 49 f4 b4 40 a3 0c b5 d2 af 93 98 28 fd
+4a e3 79 4e 44 f9 4d f5 a6 31 ed e4 2c 17 19 bf da bf 02 53 fe 51 75 be 89 8e 75 0e dc 53 37 0d 2b
+`)
+	vecClientRecord = mustHex(`
+17 03 03 00 35 75 ec 4d c2 38 cc e6 0b 29 80 44 a7 1e 21 9c 56 cc 77 b0 51 7f e9 b9 3c 7a 4b fc 44 d8
+7f 38 f8 03 38 ac 98 fc 46 de b3 84 bd 1c ae ac ab 68 67 d7 26 c4 05 46
+`)
 )
 
 // TestHandshakeRFC8448 walks the Simple 1-RTT Handshake of RFC 8448 3 from the server side.
@@ -205,7 +233,50 @@ func TestHandshakeRFC8448(t *testing.T) {
 		t.Fatalf("s ap traffic=%x, want %x", sAP, vecServerAPTraffic)
 	}
 
+	// Server seals its encrypted flight into a single record.
+	var sConn halfConn
+	if err := sConn.SetAEAD(newGCM(t, sKeys.key[:]), sKeys.iv); err != nil {
+		t.Fatal(err)
+	}
+	flight := make([]byte, SizeHeaderRecord, MaxRecord)
+	for _, msg := range [][]byte{vecEncryptedExtensions, vecCertificate, vecCertificateVerify, vecServerFinished} {
+		flight = append(flight, msg...)
+	}
+	rec, err := sConn.Seal(flight, ContentTypeHandshake)
+	if err != nil {
+		t.Fatal(err)
+	} else if !bytes.Equal(rec, vecServerRecord) {
+		t.Fatalf("server record=%x, want %x", rec, vecServerRecord)
+	}
+
+	// Server opens the client Finished record.
+	var cConn halfConn
+	cKeys := ks.Keys(&cHS)
+	if err := cConn.SetAEAD(newGCM(t, cKeys.key[:]), cKeys.iv); err != nil {
+		t.Fatal(err)
+	}
+	rec = append(make([]byte, 0, len(vecClientRecord)), vecClientRecord...)
+	content, ct, err := cConn.Open(rec)
+	if err != nil {
+		t.Fatal(err)
+	} else if ct != ContentTypeHandshake {
+		t.Fatalf("content type=%d, want handshake", ct)
+	} else if HandshakeType(content[0]) != HandshakeTypeFinished || !bytes.Equal(content[SizeHeaderHandshake:], vecClientVerify) {
+		t.Fatalf("client finished=%x, want verify_data %x", content, vecClientVerify)
+	}
+
 	allocs := testing.AllocsPerRun(10, func() {
+		sConn.seq = 0
+		flight = append(flight[:SizeHeaderRecord], content...)
+		rec, _ := sConn.Seal(flight, ContentTypeHandshake)
+		sConn.seq = 0
+		sConn.Open(rec)
+	})
+	if allocs != 0 {
+		t.Errorf("record protection allocs=%v, want 0", allocs)
+	}
+
+	allocs = testing.AllocsPerRun(10, func() {
 		ks.Reset(ks.transcript, ks.mac)
 		ks.AddMessage(vecClientHello)
 		ks.AddMessage(vecServerHello)
@@ -219,7 +290,7 @@ func TestHandshakeRFC8448(t *testing.T) {
 		t.Errorf("key schedule allocs=%v, want 0", allocs)
 	}
 
-	// TODO: EncryptedExtensions, Certificate, CertificateVerify, server Finished, master secret.
+	// TODO: application data records with application traffic keys.
 }
 
 // walkExtensions validates each extension in exts and passes it to fn.
@@ -246,4 +317,17 @@ func mustHex(s string) []byte {
 		panic(err)
 	}
 	return b
+}
+
+func newGCM(t *testing.T, key []byte) cipher.AEAD {
+	t.Helper()
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return aead
 }
