@@ -27,25 +27,26 @@ type keySchedule struct {
 	paranoid   bool
 }
 
-// Finished returns the verify_data of RFC 8446 4.4.4 for the transcript so far.
+// Finished writes to dst the verify_data of RFC 8446 4.4.4 for the transcript so far.
 // Call [keySchedule.Zeroize] after finishing use to ensure data deleted.
-func (ks *keySchedule) Finished(secret *[32]byte) (verify [32]byte) {
+func (ks *keySchedule) Finished(dst, secret *[32]byte) {
 	key := ks.scratch[:]
 	ks.expandLabel(key, secret[:], "finished", nil)
-	ks.TranscriptHash(&ks.sum) // Into ks.sum: a stack copy passed to hmacSum would escape.
+	ks.transcriptSum(&ks.sum) // Key is in ks.scratch.
 	ks.hmacSum(key, ks.sum[:])
+	*dst = ks.sum
 	ks.shh(key)
-	return ks.sum
+	ks.shh(ks.sum[:])
 }
 
 // Reset starts a new handshake at the early secret. transcript and mac must be
 // distinct SHA-256 hashes; they are reused across handshakes.
-func (ks *keySchedule) Reset(transcript, mac hash.Hash) {
+func (ks *keySchedule) Reset(transcript, mac hash.Hash, paranoid bool) {
 	if transcript.Size() != sha256.Size || mac.Size() != sha256.Size || mac.BlockSize() != len(ks.pad) {
 		panic("tls: keySchedule requires SHA-256")
 	}
 	transcript.Reset()
-	*ks = keySchedule{transcript: transcript, mac: mac}
+	*ks = keySchedule{transcript: transcript, mac: mac, paranoid: paranoid}
 	ks.extract(zeroSecret[:], zeroSecret[:])
 }
 
@@ -54,34 +55,32 @@ func (ks *keySchedule) AddMessage(msg []byte) { ks.transcript.Write(msg) }
 
 // TranscriptHash writes the hash of all messages added so far.
 func (ks *keySchedule) TranscriptHash(dst *[32]byte) {
-	ks.transcript.Sum(dst[:0])
+	ks.transcriptSum(&ks.sum) // Handoff through ks.sum: dst passed to hash.Hash would escape.
+	*dst = ks.sum
+	ks.shh(ks.sum[:])
 }
 
-// Handshake advances to the handshake secret with the key exchange's shared secret and returns
+// transcriptSum writes the transcript hash to dst, which must be a field of ks.
+func (ks *keySchedule) transcriptSum(dst *[32]byte) { ks.transcript.Sum(dst[:0]) }
+
+// Handshake advances to the handshake secret with the key exchange's shared secret and writes
 // the handshake traffic secrets. Call after adding the ServerHello.
-func (ks *keySchedule) Handshake(shared []byte) (client, server [32]byte) {
+func (ks *keySchedule) Handshake(client, server *[32]byte, shared []byte) {
 	ks.advance(shared)
-	return ks.trafficSecrets("c hs traffic", "s hs traffic")
+	ks.trafficSecrets(client, server, "c hs traffic", "s hs traffic")
 }
 
-// Master advances to the master secret and returns the application traffic secrets.
+// Master advances to the master secret and writes the application traffic secrets.
 // Call after adding the server Finished.
-func (ks *keySchedule) Master() (client, server [32]byte) {
+func (ks *keySchedule) Master(client, server *[32]byte) {
 	ks.advance(zeroSecret[:])
-	return ks.trafficSecrets("c ap traffic", "s ap traffic")
+	ks.trafficSecrets(client, server, "c ap traffic", "s ap traffic")
 }
 
-// trafficKeys are the TLS_AES_128_GCM_SHA256 record protection inputs of RFC 8446 7.3.
-type trafficKeys struct {
-	key [16]byte
-	iv  [12]byte
-}
-
-// Keys derives the record protection inputs of a traffic secret.
-func (ks *keySchedule) Keys(secret *[32]byte) (key [16]byte, iv [12]byte) {
+// Keys writes the TLS_AES_128_GCM_SHA256 record protection key and IV of a traffic secret, RFC 8446 7.3.
+func (ks *keySchedule) Keys(key *[16]byte, iv *[12]byte, secret *[32]byte) {
 	ks.expandLabel(key[:], secret[:], "key", nil)
 	ks.expandLabel(iv[:], secret[:], "iv", nil)
-	return key, iv
 }
 
 func (ks *keySchedule) advance(ikm []byte) {
@@ -92,12 +91,11 @@ func (ks *keySchedule) advance(ikm []byte) {
 	ks.shh(salt)
 }
 
-func (ks *keySchedule) trafficSecrets(clientLabel, serverLabel string) (client, server [32]byte) {
-	ks.TranscriptHash(&ks.scratch)
+func (ks *keySchedule) trafficSecrets(client, server *[32]byte, clientLabel, serverLabel string) {
+	ks.transcriptSum(&ks.scratch)
 	ks.expandLabel(client[:], ks.secret[:], clientLabel, ks.scratch[:])
 	ks.expandLabel(server[:], ks.secret[:], serverLabel, ks.scratch[:])
 	ks.shh(ks.scratch[:])
-	return client, server
 }
 
 // extract sets the stage secret to HKDF-Extract(salt, ikm) of RFC 5869 2.2.
@@ -153,6 +151,7 @@ func (ks *keySchedule) Zeroize() {
 	*ks = keySchedule{
 		transcript: ks.transcript,
 		mac:        ks.mac,
+		paranoid:   ks.paranoid,
 	}
 	// Finish with Reset calls- who knows, maybe they block long enough for attacker to read? This order sounds safer :)
 	// [sha256.Digest] does not overwrite all state... such is life. Maybe time for lcrypto...

@@ -97,7 +97,7 @@ c1 23 35 ee 34 0b bc 4f dd d5 02 78 40 16 e4 b3 be 7e f0 4d da 49 f4 b4 40 a3 0c
 
 // TestHandshakeRFC8448 walks the Simple 1-RTT Handshake of RFC 8448 3 from the server side.
 func TestHandshakeRFC8448(t *testing.T) {
-
+	const paranoid = true
 	// ClientHello sent by client.
 	var scratch [32]byte
 	var vld lneto.Validator
@@ -190,13 +190,14 @@ func TestHandshakeRFC8448(t *testing.T) {
 	// Key schedule, handshake stage.
 	// We use bytes.Equal but should use subtle package for constant time comparisons to prevent timing attacks!
 	var ks keySchedule
-	ks.Reset(sha256.New(), sha256.New())
+	ks.Reset(sha256.New(), sha256.New(), paranoid)
 	ks.AddMessage(vecClientHello)
 	ks.AddMessage(vecServerHello)
 	if ks.TranscriptHash(&scratch); !bytes.Equal(scratch[:], vecHelloHash) {
 		t.Fatalf("transcript hash=%x, want %x", scratch, vecHelloHash)
 	}
-	cHS, sHS := ks.Handshake(shared)
+	var cHS, sHS [32]byte
+	ks.Handshake(&cHS, &sHS, shared)
 	if !bytes.Equal(ks.secret[:], vecHandshakeSecret) {
 		t.Fatalf("handshake secret=%x, want %x", ks.secret, vecHandshakeSecret)
 	} else if !bytes.Equal(cHS[:], vecClientHSTraffic) {
@@ -204,7 +205,9 @@ func TestHandshakeRFC8448(t *testing.T) {
 	} else if !bytes.Equal(sHS[:], vecServerHSTraffic) {
 		t.Fatalf("s hs traffic=%x, want %x", sHS, vecServerHSTraffic)
 	}
-	sKey, sIV := ks.Keys(&sHS)
+	var sKey, cKey [16]byte
+	var sIV, cIV [12]byte
+	ks.Keys(&sKey, &sIV, &sHS)
 	if !bytes.Equal(sKey[:], vecServerHSKey) || !bytes.Equal(sIV[:], vecServerHSIV) {
 		t.Fatalf("server hs key=%x iv=%x, want %x %x", sKey, sIV, vecServerHSKey, vecServerHSIV)
 	}
@@ -214,8 +217,8 @@ func TestHandshakeRFC8448(t *testing.T) {
 	ks.AddMessage(vecCertificate)
 	ks.AddMessage(vecCertificateVerify)
 	sFin := vecServerFinished[SizeHeaderHandshake:]
-	if got := ks.Finished(&sHS); !bytes.Equal(got[:], sFin) {
-		t.Fatalf("server finished=%x, want %x", got, sFin)
+	if ks.Finished(&scratch, &sHS); !bytes.Equal(scratch[:], sFin) {
+		t.Fatalf("server finished=%x, want %x", scratch, sFin)
 	}
 	ks.AddMessage(vecServerFinished)
 
@@ -223,10 +226,11 @@ func TestHandshakeRFC8448(t *testing.T) {
 	if ks.TranscriptHash(&scratch); !bytes.Equal(scratch[:], vecServerFinHash) {
 		t.Fatalf("transcript hash=%x, want %x", scratch, vecServerFinHash)
 	}
-	if got := ks.Finished(&cHS); !bytes.Equal(got[:], vecClientVerify) {
-		t.Fatalf("client finished=%x, want %x", got, vecClientVerify)
+	if ks.Finished(&scratch, &cHS); !bytes.Equal(scratch[:], vecClientVerify) {
+		t.Fatalf("client finished=%x, want %x", scratch, vecClientVerify)
 	}
-	cAP, sAP := ks.Master()
+	var cAP, sAP [32]byte
+	ks.Master(&cAP, &sAP)
 	if !bytes.Equal(cAP[:], vecClientAPTraffic) {
 		t.Fatalf("c ap traffic=%x, want %x", cAP, vecClientAPTraffic)
 	} else if !bytes.Equal(sAP[:], vecServerAPTraffic) {
@@ -251,18 +255,18 @@ func TestHandshakeRFC8448(t *testing.T) {
 
 	// Server opens the client Finished record.
 	var cConn halfConn
-	cKey, cIV := ks.Keys(&cHS)
+	ks.Keys(&cKey, &cIV, &cHS)
 	if err := cConn.SetAEAD(newGCM(t, cKey[:]), cIV); err != nil {
 		t.Fatal(err)
 	}
 	allocs := testing.AllocsPerRun(10, func() {
-		ks.Reset(ks.transcript, ks.mac)
+		ks.Reset(ks.transcript, ks.mac, paranoid)
 		ks.AddMessage(vecClientHello)
 		ks.AddMessage(vecServerHello)
-		_, s := ks.Handshake(shared)
-		ks.Keys(&s)
-		ks.Finished(&s)
-		ks.Master()
+		ks.Handshake(&cHS, &sHS, shared)
+		ks.Keys(&sKey, &sIV, &sHS)
+		ks.Finished(&scratch, &sHS)
+		ks.Master(&cAP, &sAP)
 		ks.Zeroize()
 	})
 	if allocs != 0 {
