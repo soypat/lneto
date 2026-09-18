@@ -439,7 +439,8 @@ func (h *Handler) Send(b []byte) (int, error) {
 	// optHead is where the Handler's own options begin: after the fixed header
 	// and after any options the Policy already wrote, so neither clobbers the other.
 	optHead := int(offset) * 4
-	mss := uint16(len(b) - optHead)
+	// Advertised MSS excludes options; subtract only the fixed header (RFC 6691).
+	mss := uint16(len(b) - sizeHeaderTCP)
 	var segment Segment
 	if awaitingSyn || requeueControl && h.scb.State() == StateSynSent {
 		// Handling init syn segment.
