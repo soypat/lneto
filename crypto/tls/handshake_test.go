@@ -3,6 +3,7 @@ package tls
 import (
 	"bytes"
 	"crypto/ecdh"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"strings"
@@ -26,12 +27,19 @@ d3 e2 69 28 00 13 01 00 00 2e 00 33 00 24 00 1d 00 20 c9 82 88 76 11 20 95 fe 66
 	vecServerPriv = mustHex(`b1 58 0e ea df 6d d5 89 b8 ef 4f 2d 56 52 57 8c c8 10 e9 98 01 91 ec 8d 05 83 08 ce a2 16 a2 1e`)
 	vecServerPub  = mustHex(`c9 82 88 76 11 20 95 fe 66 76 2b db f7 c6 72 e1 56 d6 cc 25 3b 83 3d f1 dd 69 b1 b0 4e 75 1f 0f`)
 	vecWantShared = mustHex(`8b d4 05 4f b5 5b 9d 63 fd fb ac f9 f0 4b 9f 0d 35 e6 d6 3f 53 75 63 ef d4 62 72 90 0f 89 49 2d`)
+
+	vecHelloHash       = mustHex(`86 0c 06 ed c0 78 58 ee 8e 78 f0 e7 42 8c 58 ed d6 b4 3f 2c a3 e6 e9 5f 02 ed 06 3c f0 e1 ca d8`)
+	vecHandshakeSecret = mustHex(`1d c8 26 e9 36 06 aa 6f dc 0a ad c1 2f 74 1b 01 04 6a a6 b9 9f 69 1e d2 21 a9 f0 ca 04 3f be ac`)
+	vecClientHSTraffic = mustHex(`b3 ed db 12 6e 06 7f 35 a7 80 b3 ab f4 5e 2d 8f 3b 1a 95 07 38 f5 2e 96 00 74 6a 0e 27 a5 5a 21`)
+	vecServerHSTraffic = mustHex(`b6 7b 7d 69 0c c1 6c 4e 75 e5 42 13 cb 2d 37 b4 e9 c9 12 bc de d9 10 5d 42 be fd 59 d3 91 ad 38`)
+	vecServerHSKey     = mustHex(`3f ce 51 60 09 c2 17 27 d0 f2 e4 e8 6e e4 03 bc`)
+	vecServerHSIV      = mustHex(`5d 31 3e b2 67 12 76 ee 13 00 0b 30`)
 )
 
 // TestHandshakeRFC8448 walks the Simple 1-RTT Handshake of RFC 8448 3 from the server side.
 func TestHandshakeRFC8448(t *testing.T) {
 
-	// ClientHello.
+	// ClientHello sent by client.
 	var vld lneto.Validator
 	body := vecClientHello[SizeHeaderHandshake:]
 	var ch HelloClientMsg
@@ -119,7 +127,39 @@ func TestHandshakeRFC8448(t *testing.T) {
 		t.Errorf("selected version=%#x, want %#x", version, VersionTLS13)
 	}
 
-	// TODO: key schedule, EncryptedExtensions, Certificate, CertificateVerify, Finished.
+	// Key schedule, handshake stage.
+	var ks keySchedule
+	ks.Reset(sha256.New(), sha256.New())
+	ks.AddMessage(vecClientHello)
+	ks.AddMessage(vecServerHello)
+	if got := ks.TranscriptHash(); !bytes.Equal(got[:], vecHelloHash) {
+		t.Fatalf("transcript hash=%x, want %x", got, vecHelloHash)
+	}
+	cHS, sHS := ks.Handshake(shared)
+	if !bytes.Equal(ks.secret[:], vecHandshakeSecret) {
+		t.Fatalf("handshake secret=%x, want %x", ks.secret, vecHandshakeSecret)
+	} else if !bytes.Equal(cHS[:], vecClientHSTraffic) {
+		t.Fatalf("c hs traffic=%x, want %x", cHS, vecClientHSTraffic)
+	} else if !bytes.Equal(sHS[:], vecServerHSTraffic) {
+		t.Fatalf("s hs traffic=%x, want %x", sHS, vecServerHSTraffic)
+	}
+	sKeys := ks.Keys(&sHS)
+	if !bytes.Equal(sKeys.key[:], vecServerHSKey) || !bytes.Equal(sKeys.iv[:], vecServerHSIV) {
+		t.Fatalf("server hs key=%x iv=%x, want %x %x", sKeys.key, sKeys.iv, vecServerHSKey, vecServerHSIV)
+	}
+	allocs := testing.AllocsPerRun(10, func() {
+		ks.Reset(ks.transcript, ks.mac)
+		ks.AddMessage(vecClientHello)
+		ks.AddMessage(vecServerHello)
+		_, s := ks.Handshake(shared)
+		ks.Keys(&s)
+		ks.Master()
+	})
+	if allocs != 0 {
+		t.Errorf("key schedule allocs=%v, want 0", allocs)
+	}
+
+	// TODO: EncryptedExtensions, Certificate, CertificateVerify, server Finished, master secret.
 }
 
 // walkExtensions validates each extension in exts and passes it to fn.
