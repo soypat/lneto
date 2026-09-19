@@ -1,4 +1,13 @@
-package tls
+/*
+package tlsraw implements low level TLS 1.3 functionality.
+
+It prioritizes readability and security. Performance is a secondary priority.
+An example of this focus can be appreciated in [HelloClientMsg.Decode] which
+leverages the [decoder] type for very readable decoding of messages at the expense
+of more branching.
+*/
+
+package tlsraw
 
 // Sizes of fixed length headers and the record size limits of RFC 8446 5.2.
 const (
@@ -15,6 +24,8 @@ const (
 	MaxCiphertext = 1<<14 + 256 // 16640
 	// MaxRecord is the largest legal record as it appears on the wire.
 	MaxRecord = SizeHeaderRecord + MaxCiphertext // 16645
+	// SizeAEADTag is the authentication tag size of every TLS 1.3 AEAD.
+	SizeAEADTag = 16
 	// MinRecordSizeLimit is the smallest value a peer may advertise in the record_size_limit extension of RFC 8449 4.
 	MinRecordSizeLimit = 64
 )

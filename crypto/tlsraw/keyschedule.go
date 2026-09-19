@@ -13,10 +13,10 @@ const (
 
 var zeroSecret [32]byte
 
-// keySchedule derives the TLS 1.3 secrets of RFC 8446 7.1 for SHA-256 cipher suites without PSK.
+// KeySchedule derives the TLS 1.3 secrets of RFC 8446 7.1 for SHA-256 cipher suites without PSK.
 // It does not allocate. Buffers passed to a hash.Hash escape to the heap, so all
 // scratch space lives in the struct.
-type keySchedule struct {
+type KeySchedule struct {
 	transcript hash.Hash                                              // Running hash of handshake messages, headers included.
 	mac        hash.Hash                                              // Scratch hash for HMAC, reset on every use.
 	secret     [32]byte                                               // Early, then handshake, then master secret.
@@ -29,7 +29,7 @@ type keySchedule struct {
 
 // Finished writes to dst the verify_data of RFC 8446 4.4.4 for the transcript so far.
 // Call [keySchedule.Zeroize] after finishing use to ensure data deleted.
-func (ks *keySchedule) Finished(dst, secret *[32]byte) {
+func (ks *KeySchedule) Finished(dst, secret *[32]byte) {
 	key := ks.scratch[:]
 	ks.expandLabel(key, secret[:], "finished", nil)
 	ks.transcriptSum(&ks.sum) // Key is in ks.scratch.
@@ -41,49 +41,49 @@ func (ks *keySchedule) Finished(dst, secret *[32]byte) {
 
 // Reset starts a new handshake at the early secret. transcript and mac must be
 // distinct SHA-256 hashes; they are reused across handshakes.
-func (ks *keySchedule) Reset(transcript, mac hash.Hash, paranoid bool) {
+func (ks *KeySchedule) Reset(transcript, mac hash.Hash, paranoid bool) {
 	if transcript.Size() != sha256.Size || mac.Size() != sha256.Size || mac.BlockSize() != len(ks.pad) {
 		panic("tls: keySchedule requires SHA-256")
 	}
 	transcript.Reset()
-	*ks = keySchedule{transcript: transcript, mac: mac, paranoid: paranoid}
+	*ks = KeySchedule{transcript: transcript, mac: mac, paranoid: paranoid}
 	ks.extract(zeroSecret[:], zeroSecret[:])
 }
 
 // AddMessage appends a handshake message, header included, to the transcript.
-func (ks *keySchedule) AddMessage(msg []byte) { ks.transcript.Write(msg) }
+func (ks *KeySchedule) AddMessage(msg []byte) { ks.transcript.Write(msg) }
 
 // TranscriptHash writes the hash of all messages added so far.
-func (ks *keySchedule) TranscriptHash(dst *[32]byte) {
+func (ks *KeySchedule) TranscriptHash(dst *[32]byte) {
 	ks.transcriptSum(&ks.sum) // Handoff through ks.sum: dst passed to hash.Hash would escape.
 	*dst = ks.sum
 	ks.shh(ks.sum[:])
 }
 
 // transcriptSum writes the transcript hash to dst, which must be a field of ks.
-func (ks *keySchedule) transcriptSum(dst *[32]byte) { ks.transcript.Sum(dst[:0]) }
+func (ks *KeySchedule) transcriptSum(dst *[32]byte) { ks.transcript.Sum(dst[:0]) }
 
 // Handshake advances to the handshake secret with the key exchange's shared secret and writes
 // the handshake traffic secrets. Call after adding the ServerHello.
-func (ks *keySchedule) Handshake(client, server *[32]byte, shared []byte) {
+func (ks *KeySchedule) Handshake(client, server *[32]byte, shared []byte) {
 	ks.advance(shared)
 	ks.trafficSecrets(client, server, "c hs traffic", "s hs traffic")
 }
 
 // Master advances to the master secret and writes the application traffic secrets.
 // Call after adding the server Finished.
-func (ks *keySchedule) Master(client, server *[32]byte) {
+func (ks *KeySchedule) Master(client, server *[32]byte) {
 	ks.advance(zeroSecret[:])
 	ks.trafficSecrets(client, server, "c ap traffic", "s ap traffic")
 }
 
 // Keys writes the TLS_AES_128_GCM_SHA256 record protection key and IV of a traffic secret, RFC 8446 7.3.
-func (ks *keySchedule) Keys(key *[16]byte, iv *[12]byte, secret *[32]byte) {
+func (ks *KeySchedule) Keys(key *[16]byte, iv *[12]byte, secret *[32]byte) {
 	ks.expandLabel(key[:], secret[:], "key", nil)
 	ks.expandLabel(iv[:], secret[:], "iv", nil)
 }
 
-func (ks *keySchedule) advance(ikm []byte) {
+func (ks *KeySchedule) advance(ikm []byte) {
 	emptyHash := sha256.Sum256(nil)
 	salt := ks.scratch[:]
 	ks.expandLabel(salt, ks.secret[:], "derived", emptyHash[:])
@@ -91,7 +91,7 @@ func (ks *keySchedule) advance(ikm []byte) {
 	ks.shh(salt)
 }
 
-func (ks *keySchedule) trafficSecrets(client, server *[32]byte, clientLabel, serverLabel string) {
+func (ks *KeySchedule) trafficSecrets(client, server *[32]byte, clientLabel, serverLabel string) {
 	ks.transcriptSum(&ks.scratch)
 	ks.expandLabel(client[:], ks.secret[:], clientLabel, ks.scratch[:])
 	ks.expandLabel(server[:], ks.secret[:], serverLabel, ks.scratch[:])
@@ -99,14 +99,14 @@ func (ks *keySchedule) trafficSecrets(client, server *[32]byte, clientLabel, ser
 }
 
 // extract sets the stage secret to HKDF-Extract(salt, ikm) of RFC 5869 2.2.
-func (ks *keySchedule) extract(salt, ikm []byte) {
+func (ks *KeySchedule) extract(salt, ikm []byte) {
 	ks.hmacSum(salt, ikm)
 	ks.secret = ks.sum
 }
 
 // expandLabel is HKDF-Expand-Label of RFC 8446 7.1. Output is limited to one
 // HMAC block, which covers every length TLS 1.3 derives with SHA-256.
-func (ks *keySchedule) expandLabel(dst, secret []byte, label string, context []byte) {
+func (ks *KeySchedule) expandLabel(dst, secret []byte, label string, context []byte) {
 	if len(dst) > len(ks.sum) || len(label) > maxLabel || len(context) > len(ks.sum) {
 		panic("tls: expandLabel argument too long")
 	}
@@ -123,7 +123,7 @@ func (ks *keySchedule) expandLabel(dst, secret []byte, label string, context []b
 }
 
 // hmacSum writes HMAC(key, msg) of RFC 2104 to ks.sum. key must fit in one block.
-func (ks *keySchedule) hmacSum(key, msg []byte) {
+func (ks *KeySchedule) hmacSum(key, msg []byte) {
 	if len(key) > len(ks.pad) {
 		panic("tls: HMAC key longer than block")
 	}
@@ -147,20 +147,22 @@ func (ks *keySchedule) hmacSum(key, msg []byte) {
 
 // Zeroize overwrites all memory used by keySchedule and calls [hash.Hash.Reset] on used hashers.
 // After Zeroize called Reset should be called before reuse.
-func (ks *keySchedule) Zeroize() {
-	*ks = keySchedule{
+func (ks *KeySchedule) Zeroize() {
+	*ks = KeySchedule{
 		transcript: ks.transcript,
 		mac:        ks.mac,
 		paranoid:   ks.paranoid,
 	}
 	// Finish with Reset calls- who knows, maybe they block long enough for attacker to read? This order sounds safer :)
 	// [sha256.Digest] does not overwrite all state... such is life. Maybe time for lcrypto...
-	ks.transcript.Reset()
-	ks.mac.Reset()
+	if ks.transcript != nil {
+		ks.transcript.Reset()
+		ks.mac.Reset()
+	}
 }
 
 // shh dont tell secrets out loud. TODO: check if we've covered every place we can.
-func (ks *keySchedule) shh(data []byte) {
+func (ks *KeySchedule) shh(data []byte) {
 	if ks.paranoid {
 		for i := range data {
 			data[i] = 0

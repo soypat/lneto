@@ -8,10 +8,10 @@ import (
 	"github.com/soypat/lneto"
 )
 
-// halfConn protects the TLS_AES_128_GCM_SHA256 records of one direction, RFC 8446 5.2.
+// HalfConn protects the TLS_AES_128_GCM_SHA256 records of one direction, RFC 8446 5.2.
 // Seal and Open do not allocate and work in place. Buffers passed to a cipher.AEAD
 // escape to the heap, so the nonce lives in the struct.
-type halfConn struct {
+type HalfConn struct {
 	aead  cipher.AEAD
 	iv    [12]byte
 	nonce [12]byte // Per-record nonce: iv XOR sequence number.
@@ -21,8 +21,8 @@ type halfConn struct {
 // SetAEAD installs the AEAD keyed with a traffic key and the matching IV, and
 // restarts the sequence number. The caller owns construction of aead so that
 // lneto never allocates cipher state.
-func (hc *halfConn) SetAEAD(aead cipher.AEAD, iv [12]byte) error {
-	if aead.NonceSize() != len(iv) || aead.Overhead() != 16 {
+func (hc *HalfConn) SetAEAD(aead cipher.AEAD, iv [12]byte) error {
+	if aead.NonceSize() != len(iv) || aead.Overhead() != SizeAEADTag {
 		return lneto.ErrInvalidConfig
 	}
 	hc.aead = aead
@@ -33,7 +33,7 @@ func (hc *halfConn) SetAEAD(aead cipher.AEAD, iv [12]byte) error {
 
 // Seal protects the content in rec[SizeHeaderRecord:] in place and returns the
 // complete record. rec's capacity must fit the content type byte and AEAD tag.
-func (hc *halfConn) Seal(rec []byte, ct ContentType) ([]byte, error) {
+func (hc *HalfConn) Seal(rec []byte, ct ContentType) ([]byte, error) {
 	overhead := 1 + hc.aead.Overhead()
 	if len(rec) < SizeHeaderRecord {
 		return nil, lneto.ErrShortBuffer
@@ -54,7 +54,7 @@ func (hc *halfConn) Seal(rec []byte, ct ContentType) ([]byte, error) {
 }
 
 // Open decrypts a complete record in place and returns its content and real content type.
-func (hc *halfConn) Open(rec []byte) (content []byte, ct ContentType, err error) {
+func (hc *HalfConn) Open(rec []byte) (content []byte, ct ContentType, err error) {
 	if len(rec) < SizeHeaderRecord+1+hc.aead.Overhead() {
 		return nil, 0, lneto.ErrTruncatedFrame
 	} else if ContentType(rec[0]) != ContentTypeApplicationData {
@@ -83,7 +83,7 @@ func (hc *halfConn) Open(rec []byte) (content []byte, ct ContentType, err error)
 }
 
 // nextNonce sets the nonce of the next record and advances the sequence number.
-func (hc *halfConn) nextNonce() error {
+func (hc *HalfConn) nextNonce() error {
 	if hc.seq == math.MaxUint64 {
 		return lneto.ErrExhausted // Sequence numbers must not wrap; rekey instead.
 	}
@@ -97,5 +97,8 @@ func (hc *halfConn) nextNonce() error {
 	return nil
 }
 
+// HasKeys reports whether SetAEAD installed keys since the last Zeroize.
+func (hc *HalfConn) HasKeys() bool { return hc.aead != nil }
+
 // Zeroize forgets the keys. SetAEAD must be called before reuse.
-func (hc *halfConn) Zeroize() { *hc = halfConn{} }
+func (hc *HalfConn) Zeroize() { *hc = HalfConn{} }

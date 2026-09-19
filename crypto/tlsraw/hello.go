@@ -371,17 +371,26 @@ func (dec *decoder) failLen(n int) (failed bool) {
 	return false
 }
 
-// encoder writes TLS structures to a fixed buffer, the counterpart of [decoder].
+// Encoder writes TLS structures to a fixed buffer, the counterpart of [decoder].
 // A write past the end of buf sets err and all later writes are dropped, so
 // callers check err once after writing.
-type encoder struct {
+type Encoder struct {
 	buf []byte
 	off int
 	err error
 }
 
+// Reset makes e write to buf starting at off, keeping buf[:off].
+func (e *Encoder) Reset(buf []byte, off int) { *e = Encoder{buf: buf, off: off} }
+
+// Len returns the number of bytes of buf written, including the ones kept by Reset.
+func (e *Encoder) Len() int { return e.off }
+
+// Err returns the first error, usually [lneto.ErrShortBuffer].
+func (e *Encoder) Err() error { return e.err }
+
 // next reserves n bytes. It returns nil if they do not fit.
-func (e *encoder) next(n int) []byte {
+func (e *Encoder) next(n int) []byte {
 	if e.err == nil && len(e.buf)-e.off < n {
 		e.err = lneto.ErrShortBuffer
 	}
@@ -392,42 +401,42 @@ func (e *encoder) next(n int) []byte {
 	return e.buf[e.off-n : e.off]
 }
 
-func (e *encoder) Uint8(v uint8) {
+func (e *Encoder) Uint8(v uint8) {
 	if b := e.next(1); b != nil {
 		b[0] = v
 	}
 }
 
-func (e *encoder) Uint16(v uint16) {
+func (e *Encoder) Uint16(v uint16) {
 	if b := e.next(2); b != nil {
 		binary.BigEndian.PutUint16(b, v)
 	}
 }
 
-func (e *encoder) Bytes(v []byte) {
+func (e *Encoder) Bytes(v []byte) {
 	if b := e.next(len(v)); b != nil {
 		copy(b, v)
 	}
 }
 
 // Rest returns the unwritten part of buf for a callee to write into. Commit with Advance.
-func (e *encoder) Rest() []byte {
+func (e *Encoder) Rest() []byte {
 	if e.err != nil {
 		return nil
 	}
 	return e.buf[e.off:]
 }
 
-func (e *encoder) Advance(n int) { e.next(n) }
+func (e *Encoder) Advance(n int) { e.next(n) }
 
 // Open reserves a length prefix of width bytes and returns where its content starts.
-func (e *encoder) Open(width int) (start int) {
+func (e *Encoder) Open(width int) (start int) {
 	e.next(width)
 	return e.off
 }
 
 // Close writes the length of the content written since Open returned start.
-func (e *encoder) Close(start, width int) {
+func (e *Encoder) Close(start, width int) {
 	if e.err != nil {
 		return
 	}
@@ -443,7 +452,7 @@ func (e *encoder) Close(start, width int) {
 }
 
 // StartMessage writes a handshake message header whose length is set by EndMessage.
-func (e *encoder) StartMessage(typ HandshakeType) (start int) {
+func (e *Encoder) StartMessage(typ HandshakeType) (start int) {
 	start = e.off
 	e.Uint8(uint8(typ))
 	e.Open(3)
@@ -451,7 +460,7 @@ func (e *encoder) StartMessage(typ HandshakeType) (start int) {
 }
 
 // EndMessage sets the length of the message started at start and returns the message.
-func (e *encoder) EndMessage(start int) []byte {
+func (e *Encoder) EndMessage(start int) []byte {
 	e.Close(start+SizeHeaderHandshake, 3)
 	if e.err != nil {
 		return nil
@@ -460,7 +469,7 @@ func (e *encoder) EndMessage(start int) []byte {
 }
 
 // StartRecord writes a TLSPlaintext header whose length is set by EndRecord.
-func (e *encoder) StartRecord(ct ContentType) (start int) {
+func (e *Encoder) StartRecord(ct ContentType) (start int) {
 	start = e.off
 	e.Uint8(uint8(ct))
 	e.Uint16(VersionTLS12)
@@ -468,10 +477,10 @@ func (e *encoder) StartRecord(ct ContentType) (start int) {
 	return start
 }
 
-func (e *encoder) EndRecord(start int) { e.Close(start+SizeHeaderRecord, 2) }
+func (e *Encoder) EndRecord(start int) { e.Close(start+SizeHeaderRecord, 2) }
 
 // SealRecord protects with hc the content written since StartRecord returned start.
-func (e *encoder) SealRecord(hc *halfConn, start int, ct ContentType) {
+func (e *Encoder) SealRecord(hc *HalfConn, start int, ct ContentType) {
 	if e.err != nil {
 		return
 	}
