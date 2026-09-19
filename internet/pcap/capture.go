@@ -53,10 +53,12 @@ type PacketBreakdown struct {
 //	1: L3 max(IPv4=12, ARP=9, IPv6=8) = 12
 //	2: L4 max(TCP=10, ICMP=8, UDP=4) = 10
 //	3: App max(DHCP=15, NTP=13, HTTP=2, DNS=1) = 16
-//	4-5: overflow/remaining = 2
+//	4-7: spare = 8,4,2,2
+//
+// CaptureTLS also starts from these frames when called with a nil dst.
 func (pc *PacketBreakdown) initFrames() []Frame {
-	const nframes = 6
-	var fieldCaps = [nframes]int{4, 12, 10, 16, 2, 2}
+	const nframes = 8
+	var fieldCaps = [nframes]int{4, 12, 10, 16, 8, 4, 2, 2}
 	frames := make([]Frame, nframes)
 	for i := range frames {
 		frames[i].Fields = make([]FrameField, 0, fieldCaps[i])
@@ -328,6 +330,7 @@ func (pc *PacketBreakdown) CaptureTCP(dst []Frame, pkt []byte, bitOffset int) ([
 	}
 	payload := tfrm.Payload()
 	if len(payload) > 0 {
+		// TLS is never sniffed from payloads; capture it with CaptureTLS.
 		debuglog("pcap:tcp:http-start")
 		dst, err = pc.CaptureHTTP(dst, pkt, end)
 		debuglog("pcap:tcp:http-done")
@@ -840,10 +843,13 @@ const (
 	// FlagContainer is used for [FrameField]s whose SubFields represent
 	// the entirety of the FrameField's data. i.e: DNS Questions/Answers.
 	FlagContainer
+	// FlagEncrypted marks fields whose bytes are ciphertext. i.e: TLS application_data fragment.
+	FlagEncrypted
 )
 
 func (ff Flags) IsLegacy() bool       { return ff&FlagLegacy != 0 }
 func (ff Flags) IsRightAligned() bool { return ff&FlagRightAligned != 0 }
+func (ff Flags) IsEncrypted() bool    { return ff&FlagEncrypted != 0 }
 
 type Frame struct {
 	PacketBitOffset int
@@ -1011,6 +1017,9 @@ func (frm Frame) LenBits() (totalBitlen int) {
 
 func (ff FrameField) String() string {
 	if ff.Class == FieldClassPayload {
+		if ff.Flags.IsEncrypted() {
+			return "Encrypted len=" + strconv.Itoa(ff.BitLength/8)
+		}
 		return "Payload len=" + strconv.Itoa(ff.BitLength/8)
 	}
 	if ff.Name != "" {
@@ -1579,8 +1588,21 @@ func reclaimFrame(dst *[]Frame, proto string, bitOffset int, baseFields []FrameF
 	*finfo = Frame{
 		PacketBitOffset: bitOffset,
 		Protocol:        proto,
-		Fields:          append(finfo.Fields[:0], baseFields...),
+		Fields:          finfo.Fields[:0],
 		Errors:          finfo.Errors[:0],
+	}
+	if len(baseFields) > cap(finfo.Fields) {
+		finfo.Fields = append(finfo.Fields, baseFields...)
+	} else {
+		// Keep the SubFields backing arrays of the reclaimed fields so a container
+		// field placed here by another protocol does not have to regrow them.
+		fields := finfo.Fields[:len(baseFields)]
+		for i := range fields {
+			sub := fields[i].SubFields[:0]
+			fields[i] = baseFields[i]
+			fields[i].SubFields = sub
+		}
+		finfo.Fields = fields
 	}
 	debuglog("pcap:reclaim")
 	return finfo

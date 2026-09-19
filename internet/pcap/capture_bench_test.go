@@ -13,6 +13,7 @@ import (
 )
 
 const benchSubfieldLimit = 32
+const benchFmtBufLim = 2048
 
 // buildDHCPPacket builds an Ethernet+IPv4+UDP+DHCPv4 Discover packet, exercising
 // the option-heavy DHCP path (hostname, client id, requested address, param list).
@@ -106,6 +107,28 @@ func buildDNSPacket(b testing.TB) []byte {
 	return pkt
 }
 
+// buildTLSRecord returns a real ClientHello record for CaptureTLS, exercising
+// the string-heavy TLS path: cipher suite and extension subfields, SNI and ALPN text.
+func buildTLSRecord(b testing.TB) []byte {
+	return captureClientHelloRecord(b, "example.com", []string{"h2", "http/1.1"})
+}
+
+// benchCase is a packet and the entry point that breaks it down.
+type benchCase struct {
+	name    string
+	pkt     []byte
+	capture func(pc *PacketBreakdown, dst []Frame, pkt []byte, bitOffset int) ([]Frame, error)
+}
+
+func benchCases(b *testing.B) []benchCase {
+	eth := (*PacketBreakdown).CaptureEthernet
+	return []benchCase{
+		{"DHCP", buildDHCPPacket(b), eth},
+		{"DNS", buildDNSPacket(b), eth},
+		{"TLS", buildTLSRecord(b), (*PacketBreakdown).CaptureTLS},
+	}
+}
+
 func configureBenchFormatter(f *Formatter) {
 	f.SubfieldLimit = benchSubfieldLimit
 	f.FrameSep = "\n"
@@ -113,57 +136,64 @@ func configureBenchFormatter(f *Formatter) {
 	f.SubfieldSep = "\n\t"
 }
 
+// warmup captures and formats every case once so reused buffers (frame fields,
+// subfields, formatter scratch and output) are grown before timing starts and
+// benchmarks only expose allocations incurred at runtime.
+func warmup(b *testing.B, cases []benchCase, pb *PacketBreakdown, formt *Formatter) (frames []Frame, fmtbuf []byte) {
+	frames = pb.initFrames()
+	fmtbuf = make([]byte, 0, benchFmtBufLim)
+	var err error
+	for _, tc := range cases {
+		frames, err = tc.capture(pb, frames[:0], tc.pkt, 0)
+		if err != nil {
+			b.Fatal(tc.name, err)
+		}
+		fmtbuf, err = formt.FormatFrames(fmtbuf[:0], frames, tc.pkt)
+		if err != nil {
+			b.Fatal(tc.name, err)
+		}
+	}
+	return frames, fmtbuf
+}
+
 // BenchmarkPcap measures the decode, format, and decode+format (roundtrip) phases
 // separately for the string-heavy DHCP and DNS frames. Run with -benchmem for
 // per-phase allocs/op.
 func BenchmarkPcap(b *testing.B) {
-	cases := []struct {
-		name string
-		pkt  []byte
-	}{
-		{"DHCP", buildDHCPPacket(b)},
-		{"DNS", buildDNSPacket(b)},
-	}
+	cases := benchCases(b)
+	var (
+		formt Formatter
+		pb    PacketBreakdown
+	)
+	pb.SubfieldLimit = benchSubfieldLimit
+	configureBenchFormatter(&formt)
+	frames, fmtbuf := warmup(b, cases, &pb, &formt)
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
 			b.Run("decode", func(b *testing.B) {
-				var pb PacketBreakdown
-				pb.SubfieldLimit = benchSubfieldLimit
-				var frames []Frame
 				b.ReportAllocs()
 				b.ResetTimer()
 				for b.Loop() {
-					frames, _ = pb.CaptureEthernet(frames[:0], tc.pkt, 0)
+					frames, _ = tc.capture(&pb, frames[:0], tc.pkt, 0)
 				}
 			})
 			b.Run("format", func(b *testing.B) {
-				var pb PacketBreakdown
-				pb.SubfieldLimit = benchSubfieldLimit
-				frames, err := pb.CaptureEthernet(nil, tc.pkt, 0)
+				frames, err := tc.capture(&pb, frames[:0], tc.pkt, 0)
 				if err != nil {
 					b.Fatal(err)
 				}
-				var f Formatter
-				configureBenchFormatter(&f)
-				var buf []byte
 				b.ReportAllocs()
 				b.ResetTimer()
 				for b.Loop() {
-					buf, _ = f.FormatFrames(buf[:0], frames, tc.pkt)
+					fmtbuf, _ = formt.FormatFrames(fmtbuf[:0], frames, tc.pkt)
 				}
 			})
-			b.Run("roundtrip", func(b *testing.B) {
-				var pb PacketBreakdown
-				pb.SubfieldLimit = benchSubfieldLimit
-				var f Formatter
-				configureBenchFormatter(&f)
-				var frames []Frame
-				var buf []byte
+			b.Run("decode+format", func(b *testing.B) {
 				b.ReportAllocs()
 				b.ResetTimer()
 				for b.Loop() {
-					frames, _ = pb.CaptureEthernet(frames[:0], tc.pkt, 0)
-					buf, _ = f.FormatFrames(buf[:0], frames, tc.pkt)
+					frames, _ = tc.capture(&pb, frames[:0], tc.pkt, 0)
+					fmtbuf, _ = formt.FormatFrames(fmtbuf[:0], frames, tc.pkt)
 				}
 			})
 		})
@@ -176,28 +206,23 @@ func BenchmarkPcap(b *testing.B) {
 // Per-phase allocs are not split here (ReadMemStats is STW and skews timing);
 // use BenchmarkPcap's decode/format sub-benchmarks with -benchmem for that.
 func BenchmarkPcapPhases(b *testing.B) {
-	cases := []struct {
-		name string
-		pkt  []byte
-	}{
-		{"DHCP", buildDHCPPacket(b)},
-		{"DNS", buildDNSPacket(b)},
-	}
+	cases := benchCases(b)
+	var (
+		pb    PacketBreakdown
+		formt Formatter
+	)
+	pb.SubfieldLimit = benchSubfieldLimit
+	configureBenchFormatter(&formt)
+	frames, fmtbuf := warmup(b, cases, &pb, &formt)
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
-			var pb PacketBreakdown
-			pb.SubfieldLimit = benchSubfieldLimit
-			var f Formatter
-			configureBenchFormatter(&f)
-			var frames []Frame
-			var buf []byte
 			var decNs, fmtNs int64
 			b.ResetTimer()
 			for b.Loop() {
 				t0 := time.Now()
-				frames, _ = pb.CaptureEthernet(frames[:0], tc.pkt, 0)
+				frames, _ = tc.capture(&pb, frames[:0], tc.pkt, 0)
 				t1 := time.Now()
-				buf, _ = f.FormatFrames(buf[:0], frames, tc.pkt)
+				fmtbuf, _ = formt.FormatFrames(fmtbuf[:0], frames, tc.pkt)
 				t2 := time.Now()
 				decNs += t1.Sub(t0).Nanoseconds()
 				fmtNs += t2.Sub(t1).Nanoseconds()
