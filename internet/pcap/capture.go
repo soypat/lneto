@@ -52,9 +52,10 @@ type PacketBreakdown struct {
 //	0: Ethernet (3 base + VLAN tag = 4)
 //	1: L3 max(IPv4=12, ARP=9, IPv6=8) = 12
 //	2: L4 max(TCP=10, ICMP=8, UDP=4) = 10
-//	3: App max(DHCP=15, NTP=13, HTTP=2, DNS=1, TLS record=4) = 16
-//	4: TLS handshake message (ClientHello=8) = 8
-//	5-7: extra TLS records/overflow/remaining = 4,2,2
+//	3: App max(DHCP=15, NTP=13, HTTP=2, DNS=1) = 16
+//	4-7: spare = 8,4,2,2
+//
+// CaptureTLS also starts from these frames when called with a nil dst.
 func (pc *PacketBreakdown) initFrames() []Frame {
 	const nframes = 8
 	var fieldCaps = [nframes]int{4, 12, 10, 16, 8, 4, 2, 2}
@@ -329,18 +330,10 @@ func (pc *PacketBreakdown) CaptureTCP(dst []Frame, pkt []byte, bitOffset int) ([
 	}
 	payload := tfrm.Payload()
 	if len(payload) > 0 {
-		// Application protocol is picked by inspecting the payload rather than
-		// by port, so that TLS on a port other than 443 and HTTP on a port
-		// other than 80 are both broken down correctly.
-		if payloadIsTLS(payload) {
-			debuglog("pcap:tcp:tls-start")
-			dst, err = pc.CaptureTLS(dst, pkt, end)
-			debuglog("pcap:tcp:tls-done")
-		} else {
-			debuglog("pcap:tcp:http-start")
-			dst, err = pc.CaptureHTTP(dst, pkt, end)
-			debuglog("pcap:tcp:http-done")
-		}
+		// TLS is never sniffed from payloads; capture it with CaptureTLS.
+		debuglog("pcap:tcp:http-start")
+		dst, err = pc.CaptureHTTP(dst, pkt, end)
+		debuglog("pcap:tcp:http-done")
 		if err != nil {
 			reclaimRemainingFrame(&dst, unknownPayloadProto, FieldClassPayload, end, octet*len(pkt))
 		}

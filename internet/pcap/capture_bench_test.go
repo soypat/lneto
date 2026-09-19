@@ -9,7 +9,6 @@ import (
 	"github.com/soypat/lneto/dns"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/ipv4"
-	"github.com/soypat/lneto/tcp"
 	"github.com/soypat/lneto/udp"
 )
 
@@ -107,37 +106,26 @@ func buildDNSPacket(b testing.TB) []byte {
 	return pkt
 }
 
-// buildTLSPacket builds an Ethernet+IPv4+TCP packet carrying a real
-// ClientHello record, exercising the string-heavy TLS path: cipher suite and
-// extension subfields, SNI and ALPN text.
-func buildTLSPacket(b testing.TB) []byte {
-	const (
-		ethSize  = 14
-		ipv4Size = 20
-		tcpSize  = 20
-	)
-	hello := captureClientHelloRecord(b, "example.com", []string{"h2", "http/1.1"})
-	pkt := make([]byte, ethSize+ipv4Size+tcpSize+len(hello))
+// buildTLSRecord returns a real ClientHello record for CaptureTLS, exercising
+// the string-heavy TLS path: cipher suite and extension subfields, SNI and ALPN text.
+func buildTLSRecord(b testing.TB) []byte {
+	return captureClientHelloRecord(b, "example.com", []string{"h2", "http/1.1"})
+}
 
-	efrm, _ := ethernet.NewFrame(pkt)
-	*efrm.DestinationHardwareAddr() = [6]byte{0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe}
-	*efrm.SourceHardwareAddr() = [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
-	efrm.SetEtherType(ethernet.TypeIPv4)
+// benchCase is a packet and the entry point that breaks it down.
+type benchCase struct {
+	name    string
+	pkt     []byte
+	capture func(pc *PacketBreakdown, dst []Frame, pkt []byte, bitOffset int) ([]Frame, error)
+}
 
-	ifrm, _ := ipv4.NewFrame(pkt[ethSize:])
-	ifrm.SetVersionAndIHL(4, 5)
-	ifrm.SetID(0x1234)
-	ifrm.SetTTL(64)
-	ifrm.SetProtocol(lneto.IPProtoTCP)
-	ifrm.SetTotalLength(uint16(ipv4Size + tcpSize + len(hello)))
-
-	tfrm, _ := tcp.NewFrame(pkt[ethSize+ipv4Size:])
-	tfrm.SetSourcePort(51000)
-	tfrm.SetDestinationPort(443)
-	tfrm.SetOffsetAndFlags(5, tcp.FlagPSH|tcp.FlagACK)
-
-	copy(pkt[ethSize+ipv4Size+tcpSize:], hello)
-	return pkt
+func benchCases(b *testing.B) []benchCase {
+	eth := (*PacketBreakdown).CaptureEthernet
+	return []benchCase{
+		{"DHCP", buildDHCPPacket(b), eth},
+		{"DNS", buildDNSPacket(b), eth},
+		{"TLS", buildTLSRecord(b), (*PacketBreakdown).CaptureTLS},
+	}
 }
 
 func configureBenchFormatter(f *Formatter) {
@@ -151,14 +139,7 @@ func configureBenchFormatter(f *Formatter) {
 // separately for the string-heavy DHCP and DNS frames. Run with -benchmem for
 // per-phase allocs/op.
 func BenchmarkPcap(b *testing.B) {
-	cases := []struct {
-		name string
-		pkt  []byte
-	}{
-		{"DHCP", buildDHCPPacket(b)},
-		{"DNS", buildDNSPacket(b)},
-		{"TLS", buildTLSPacket(b)},
-	}
+	cases := benchCases(b)
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
 			b.Run("decode", func(b *testing.B) {
@@ -168,13 +149,13 @@ func BenchmarkPcap(b *testing.B) {
 				b.ReportAllocs()
 				b.ResetTimer()
 				for b.Loop() {
-					frames, _ = pb.CaptureEthernet(frames[:0], tc.pkt, 0)
+					frames, _ = tc.capture(&pb, frames[:0], tc.pkt, 0)
 				}
 			})
 			b.Run("format", func(b *testing.B) {
 				var pb PacketBreakdown
 				pb.SubfieldLimit = benchSubfieldLimit
-				frames, err := pb.CaptureEthernet(nil, tc.pkt, 0)
+				frames, err := tc.capture(&pb, nil, tc.pkt, 0)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -197,7 +178,7 @@ func BenchmarkPcap(b *testing.B) {
 				b.ReportAllocs()
 				b.ResetTimer()
 				for b.Loop() {
-					frames, _ = pb.CaptureEthernet(frames[:0], tc.pkt, 0)
+					frames, _ = tc.capture(&pb, frames[:0], tc.pkt, 0)
 					buf, _ = f.FormatFrames(buf[:0], frames, tc.pkt)
 				}
 			})
@@ -211,14 +192,7 @@ func BenchmarkPcap(b *testing.B) {
 // Per-phase allocs are not split here (ReadMemStats is STW and skews timing);
 // use BenchmarkPcap's decode/format sub-benchmarks with -benchmem for that.
 func BenchmarkPcapPhases(b *testing.B) {
-	cases := []struct {
-		name string
-		pkt  []byte
-	}{
-		{"DHCP", buildDHCPPacket(b)},
-		{"DNS", buildDNSPacket(b)},
-		{"TLS", buildTLSPacket(b)},
-	}
+	cases := benchCases(b)
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
 			var pb PacketBreakdown
@@ -231,7 +205,7 @@ func BenchmarkPcapPhases(b *testing.B) {
 			b.ResetTimer()
 			for b.Loop() {
 				t0 := time.Now()
-				frames, _ = pb.CaptureEthernet(frames[:0], tc.pkt, 0)
+				frames, _ = tc.capture(&pb, frames[:0], tc.pkt, 0)
 				t1 := time.Now()
 				buf, _ = f.FormatFrames(buf[:0], frames, tc.pkt)
 				t2 := time.Now()

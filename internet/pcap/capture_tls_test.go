@@ -2,16 +2,14 @@ package pcap
 
 import (
 	stdtls "crypto/tls"
-	"math/rand"
+	"encoding/binary"
 	"net"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/soypat/lneto/ethernet"
-	"github.com/soypat/lneto/internal/ltesto"
-	"github.com/soypat/lneto/tcp"
-	"github.com/soypat/lneto/x/tls"
+	"github.com/soypat/lneto"
+	tls "github.com/soypat/lneto/crypto/tlsraw"
 )
 
 // captureClientHelloRecord drives a standard library TLS client far enough to
@@ -38,100 +36,80 @@ func captureClientHelloRecord(t testing.TB, serverName string, protos []string) 
 	if err != nil {
 		t.Fatalf("reading ClientHello: %v", err)
 	}
-	rec, err := tls.NewRecordFrame(buf[:n])
-	if err != nil {
-		t.Fatal(err)
+	if n < tls.SizeHeaderRecord {
+		t.Fatalf("short ClientHello read: %d bytes", n)
 	}
-	if !rec.Complete() {
-		t.Fatalf("ClientHello record split across reads: have %d want %d", n, rec.RecordLength())
+	recLen := tls.SizeHeaderRecord + int(binary.BigEndian.Uint16(buf[3:5]))
+	if n < recLen {
+		t.Fatalf("ClientHello record split across reads: have %d want %d", n, recLen)
 	}
-	return append([]byte{}, rec.RawData()...)
+	return append([]byte{}, buf[:recLen]...)
 }
 
-// TestCaptureTLSClientHello runs a real ClientHello through the full
-// Ethernet/IPv4/TCP path to check that TLS is detected by payload content
-// rather than by port, and that the SNI hostname is recovered.
+// TestCaptureTLSClientHello breaks down a real ClientHello record and checks
+// that the SNI hostname is recovered.
 func TestCaptureTLSClientHello(t *testing.T) {
-	const mtu = ethernet.MaxMTU
 	const serverName = "example.com"
-	payload := captureClientHelloRecord(t, serverName, []string{"h2", "http/1.1"})
-
-	var buf [mtu]byte
-	var gen ltesto.PacketGen
-	rng := rand.New(rand.NewSource(1))
-	gen.RandomizeAddrs(rng)
-	pkt := gen.AppendRandomIPv4TCPPacket(buf[:0], rng, tcp.Segment{
-		SEQ:     100,
-		ACK:     200,
-		DATALEN: tcp.Size(len(payload)),
-		WND:     1024,
-		Flags:   tcp.FlagPSH | tcp.FlagACK,
-	})
-	copy(pkt[len(pkt)-len(payload):], payload)
+	pkt := captureClientHelloRecord(t, serverName, []string{"h2", "http/1.1"})
 
 	var pbreak PacketBreakdown
 	pbreak.SubfieldLimit = 32
-	frames, err := pbreak.CaptureEthernet(nil, pkt, 0)
+	frames, err := pbreak.CaptureTLS(nil, pkt, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Ethernet+IPv4+TCP+TLS record+TLS ClientHello = 5 frames.
-	if len(frames) != 5 {
+	// TLS record+TLS ClientHello = 2 frames.
+	if len(frames) != 2 {
 		for i := range frames {
 			t.Logf("frame[%d]=%s", i, frames[i].String())
 		}
-		t.Fatalf("want 5 frames, got %d", len(frames))
+		t.Fatalf("want 2 frames, got %d", len(frames))
 	}
-	if frames[3].Protocol != "TLS" {
-		t.Errorf("frame 3 protocol=%q want TLS", frames[3].Protocol)
+	if frames[0].Protocol != "TLS" {
+		t.Errorf("frame 0 protocol=%q want TLS", frames[0].Protocol)
 	}
-	if frames[4].Protocol != "TLS ClientHello" {
-		t.Errorf("frame 4 protocol=%q want TLS ClientHello", frames[4].Protocol)
+	if frames[1].Protocol != "TLS ClientHello" {
+		t.Errorf("frame 1 protocol=%q want TLS ClientHello", frames[1].Protocol)
 	}
-	if len(frames[3].Errors) > 0 || len(frames[4].Errors) > 0 {
-		t.Errorf("unexpected errors: %v %v", frames[3].Errors, frames[4].Errors)
+	if len(frames[0].Errors) > 0 || len(frames[1].Errors) > 0 {
+		t.Errorf("unexpected errors: %v %v", frames[0].Errors, frames[1].Errors)
 	}
 	// A handshake record frame describes the record header only; its fragment is
 	// broken down by the handshake frame that follows, so that no bytes are
 	// claimed by two frames at once.
-	if got := frames[3].LenBits() / 8; got != tls.SizeHeaderRecord {
+	if got := frames[0].LenBits() / 8; got != tls.SizeHeaderRecord {
 		t.Errorf("TLS record frame len=%d want %d", got, tls.SizeHeaderRecord)
 	}
-	if got := frames[4].LenBits() / 8; got != len(payload)-tls.SizeHeaderRecord {
-		t.Errorf("handshake frame len=%d want %d", got, len(payload)-tls.SizeHeaderRecord)
+	if got := frames[1].LenBits() / 8; got != len(pkt)-tls.SizeHeaderRecord {
+		t.Errorf("handshake frame len=%d want %d", got, len(pkt)-tls.SizeHeaderRecord)
 	}
 
-	ctype := fieldByName(frames[3], "handshake")
+	ctype := fieldByName(frames[0], "handshake")
 	if ctype == nil {
 		t.Fatal("no handshake content type field")
 	}
-	if v, _ := frames[3].FieldAsUint(indexOfField(frames[3], "handshake"), pkt); v != uint64(tls.ContentTypeHandshake) {
+	if v, _ := frames[0].FieldAsUint(indexOfField(frames[0], "handshake"), pkt); v != uint64(tls.ContentTypeHandshake) {
 		t.Errorf("content type=%d want %d", v, tls.ContentTypeHandshake)
 	}
 
 	// SNI and ALPN live as subfields of the extensions container.
-	exts := fieldByName(frames[4], "extensions")
+	exts := fieldByName(frames[1], "extensions")
 	if exts == nil {
 		t.Fatal("no extensions field in ClientHello")
 	}
-	var sni, alpn *FrameField
+	// SNI and ALPN are the text subfields, in wire order.
+	var text []*FrameField
 	for i := range exts.SubFields {
-		switch exts.SubFields[i].Name {
-		case tls.ExtServerName.String():
-			sni = &exts.SubFields[i]
-		case tls.ExtALPN.String():
-			alpn = &exts.SubFields[i]
+		if exts.SubFields[i].Class == FieldClassText {
+			text = append(text, &exts.SubFields[i])
 		}
 	}
-	if sni == nil {
-		t.Fatal("no server_name extension field")
+	if len(text) != 2 {
+		t.Fatalf("got %d text extension fields want 2 (server_name, ALPN)", len(text))
 	}
-	got := string(pkt[(frames[4].PacketBitOffset+sni.FrameBitOffset)/8:][:sni.BitLength/8])
+	got := string(pkt[(frames[1].PacketBitOffset+text[0].FrameBitOffset)/8:][:text[0].BitLength/8])
 	if got != serverName {
 		t.Errorf("server_name=%q want %q", got, serverName)
-	}
-	if alpn == nil {
-		t.Error("no application_layer_protocol_negotiation extension field")
 	}
 
 	// Formatted output is the point of the exercise: the hostname and the
@@ -155,68 +133,57 @@ func TestCaptureTLSClientHello(t *testing.T) {
 // coalesces ServerHello, the compatibility ChangeCipherSpec and the first
 // protected record into a single segment.
 func TestCaptureTLSRecordSequence(t *testing.T) {
-	var b tls.Builder
+	var e tls.Encoder
 	var buf [512]byte
-	b.Reset(buf[:])
+	e.Reset(buf[:], 0)
 
 	// ServerHello record.
-	b.AddU8(uint8(tls.ContentTypeHandshake))
-	b.AddU16(tls.VersionTLS12)
-	b.OpenU16()
-	b.AddU8(uint8(tls.HandshakeTypeServerHello))
-	b.OpenU24()
-	b.AddU16(tls.VersionTLS12) // legacy_version
-	for range tls.SizeRandom {
-		b.AddU8(0xab) // server_random
+	rec := e.StartRecord(tls.ContentTypeHandshake)
+	msg := e.StartMessage(tls.HandshakeTypeServerHello)
+	e.Uint16(tls.VersionTLS12) // legacy_version
+	for range tls.SizeHelloRandom {
+		e.Uint8(0xab) // server_random
 	}
-	b.OpenU8() // legacy_session_id echo
+	sid := e.Open(1) // legacy_session_id echo
 	for range 32 {
-		b.AddU8(0xcd)
+		e.Uint8(0xcd)
 	}
-	b.Close()
-	b.AddU16(uint16(tls.SuiteAES128GCMSHA256))
-	b.AddU8(0)  // legacy_compression_method
-	b.OpenU16() // extensions
-	b.AddU16(uint16(tls.ExtSupportedVersions))
-	b.OpenU16()
-	b.AddU16(tls.VersionTLS13)
-	b.Close()
-	b.AddU16(uint16(tls.ExtKeyShare))
-	b.OpenU16()
-	b.AddU16(uint16(tls.GroupX25519))
-	b.OpenU16()
+	e.Close(sid, 1)
+	e.Uint16(uint16(tls.SuiteAES128GCMSHA256))
+	e.Uint8(0) // legacy_compression_method
+	exts := e.Open(2)
+	e.Uint16(uint16(tls.ExtSupportedVersions))
+	ext := e.Open(2)
+	e.Uint16(tls.VersionTLS13)
+	e.Close(ext, 2)
+	e.Uint16(uint16(tls.ExtKeyShare))
+	ext = e.Open(2)
+	e.Uint16(uint16(tls.GroupX25519))
+	key := e.Open(2)
 	for range 32 {
-		b.AddU8(0xee)
+		e.Uint8(0xee)
 	}
-	b.Close()
-	b.Close()
-	b.Close() // extensions
-	b.Close() // handshake body
-	b.Close() // record fragment
+	e.Close(key, 2)
+	e.Close(ext, 2)
+	e.Close(exts, 2)
+	e.EndMessage(msg)
+	e.EndRecord(rec)
 
 	// change_cipher_spec record.
-	b.AddU8(uint8(tls.ContentTypeChangeCipherSpec))
-	b.AddU16(tls.VersionTLS12)
-	b.OpenU16()
-	b.AddU8(1)
-	b.Close()
+	rec = e.StartRecord(tls.ContentTypeChangeCipherSpec)
+	e.Uint8(1)
+	e.EndRecord(rec)
 
 	// First protected record: outwardly application_data.
-	b.AddU8(uint8(tls.ContentTypeApplicationData))
-	b.AddU16(tls.VersionTLS12)
-	b.OpenU16()
+	rec = e.StartRecord(tls.ContentTypeApplicationData)
 	for range 24 {
-		b.AddU8(0x5a)
+		e.Uint8(0x5a)
 	}
-	b.Close()
-
-	pkt, err := b.Bytes()
-	if err != nil {
-		t.Fatal(err)
+	e.EndRecord(rec)
+	if e.Err() != nil {
+		t.Fatal(e.Err())
 	}
-	if !payloadIsTLS(pkt) {
-		t.Fatal("payloadIsTLS did not recognize a ServerHello record")
-	}
+	pkt := buf[:e.Len()]
 
 	var pbreak PacketBreakdown
 	pbreak.SubfieldLimit = 8
@@ -258,11 +225,7 @@ func TestCaptureTLSRecordSequence(t *testing.T) {
 		if frames[i].PacketBitOffset != off*octet {
 			t.Errorf("frame[%d] starts at bit %d want %d", i, frames[i].PacketBitOffset, off*octet)
 		}
-		rec, err := tls.NewRecordFrame(pkt[off:])
-		if err != nil {
-			t.Fatal(err)
-		}
-		off += rec.RecordLength()
+		off += tls.SizeHeaderRecord + int(binary.BigEndian.Uint16(pkt[off+3:]))
 	}
 	if off != len(pkt) {
 		t.Errorf("records cover %d bytes of %d", off, len(pkt))
@@ -283,8 +246,8 @@ func TestCaptureTLSIncomplete(t *testing.T) {
 		if len(frames) != 1 {
 			t.Fatalf("got %d frames want 1", len(frames))
 		}
-		if len(frames[0].Errors) != 1 || frames[0].Errors[0] != tls.ErrNeedMore {
-			t.Errorf("errors=%v want %v", frames[0].Errors, tls.ErrNeedMore)
+		if len(frames[0].Errors) != 1 || frames[0].Errors[0] != lneto.ErrTruncatedFrame {
+			t.Errorf("errors=%v want %v", frames[0].Errors, lneto.ErrTruncatedFrame)
 		}
 		if got := frames[0].LenBits() / 8; got != len(pkt) {
 			t.Errorf("frame covers %d bytes want %d", got, len(pkt))
@@ -308,8 +271,8 @@ func TestCaptureTLSIncomplete(t *testing.T) {
 		if frames[1].Protocol != "TLS Handshake" {
 			t.Errorf("protocol=%q want TLS Handshake", frames[1].Protocol)
 		}
-		if len(frames[1].Errors) != 1 || frames[1].Errors[0] != tls.ErrNeedMore {
-			t.Errorf("errors=%v want %v", frames[1].Errors, tls.ErrNeedMore)
+		if len(frames[1].Errors) != 1 || frames[1].Errors[0] != lneto.ErrTruncatedFrame {
+			t.Errorf("errors=%v want %v", frames[1].Errors, lneto.ErrTruncatedFrame)
 		}
 		if got := frames[1].LenBits() / 8; got != 6 {
 			t.Errorf("handshake frame covers %d bytes want 6", got)
@@ -332,8 +295,10 @@ func TestCaptureTLSAlert(t *testing.T) {
 	if len(frames) != 1 {
 		t.Fatalf("got %d frames want 1", len(frames))
 	}
-	if fieldByName(frames[0], tls.AlertHandshakeFailure.String()) == nil {
-		t.Errorf("no field named %q in %s", tls.AlertHandshakeFailure.String(), frames[0].String())
+	// The alert description is the last field.
+	desc := len(frames[0].Fields) - 1
+	if v, err := frames[0].FieldAsUint(desc, pkt); err != nil || v != uint64(tls.AlertHandshakeFailure) {
+		t.Errorf("alert description=%d err=%v want %d in %s", v, err, tls.AlertHandshakeFailure, frames[0].String())
 	}
 	var f Formatter
 	f.DisableLegacyFilter = true
@@ -341,34 +306,8 @@ func TestCaptureTLSAlert(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(out), "handshake_failure") {
+	if !strings.Contains(string(out), "type=0x28") {
 		t.Errorf("formatted alert missing description: %s", out)
-	}
-}
-
-// TestPayloadIsTLS guards the heuristic that routes a TCP payload to CaptureTLS
-// against the HTTP traffic it shares the datapath with.
-func TestPayloadIsTLS(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		payload []byte
-		want    bool
-	}{
-		{"client hello", []byte{22, 3, 1, 0, 10}, true},
-		{"app data", []byte{23, 3, 3, 0x40, 0x00}, true},
-		{"alert", []byte{21, 3, 3, 0, 2}, true},
-		{"http request", []byte("GET / HTTP/1.1\r\n"), false},
-		{"http response", []byte("HTTP/1.1 200 OK\r\n"), false},
-		{"bad content type", []byte{25, 3, 3, 0, 10}, false},
-		{"bad version", []byte{22, 2, 1, 0, 10}, false},
-		{"future version", []byte{22, 3, 5, 0, 10}, false},
-		{"zero length", []byte{22, 3, 3, 0, 0}, false},
-		{"oversize length", []byte{23, 3, 3, 0xff, 0xff}, false},
-		{"short", []byte{22, 3, 3}, false},
-	} {
-		if got := payloadIsTLS(tc.payload); got != tc.want {
-			t.Errorf("%s: payloadIsTLS=%v want %v", tc.name, got, tc.want)
-		}
 	}
 }
 

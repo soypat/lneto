@@ -9,6 +9,8 @@ of more branching.
 
 package tlsraw
 
+//go:generate stringer -type=ContentType,HandshakeType,AlertLevel,NamedGroup,SignatureScheme,CipherSuite -linecomment -output stringers.go .
+
 // Sizes of fixed length headers and the record size limits of RFC 8446 5.2.
 const (
 	MaxSessionIDLen = 32
@@ -161,12 +163,19 @@ type NamedGroup uint16
 // Named groups. Only X25519 is implemented; the rest are recognized so that
 // group selection and HelloRetryRequest can report precisely what was offered.
 const (
-	GroupSECP256R1      NamedGroup = 0x0017 // secp256r1
-	GroupSECP384R1      NamedGroup = 0x0018 // secp384r1
-	GroupSECP521R1      NamedGroup = 0x0019 // secp521r1
-	GroupX25519         NamedGroup = 0x001d // x25519
-	GroupX448           NamedGroup = 0x001e // x448
-	GroupX25519MLKEM768 NamedGroup = 0x11ec // x25519mlkem768
+	GroupSECP256R1 NamedGroup = 0x0017 // secp256r1
+	GroupSECP384R1 NamedGroup = 0x0018 // secp384r1
+	GroupSECP521R1 NamedGroup = 0x0019 // secp521r1
+	GroupX25519    NamedGroup = 0x001d // x25519
+	GroupX448      NamedGroup = 0x001e // x448
+	// Post-quantum ML-KEM groups, pure and hybrid with ECDH (RFC 10024).
+	// Names follow the IANA registry, whose casing varies.
+	GroupMLKEM512           NamedGroup = 0x0200 // MLKEM512
+	GroupMLKEM768           NamedGroup = 0x0201 // MLKEM768
+	GroupMLKEM1024          NamedGroup = 0x0202 // MLKEM1024
+	GroupSECP256R1MLKEM768  NamedGroup = 0x11eb // SecP256r1MLKEM768
+	GroupX25519MLKEM768     NamedGroup = 0x11ec // X25519MLKEM768
+	GroupSECP384R1MLKEM1024 NamedGroup = 0x11ed // SecP384r1MLKEM1024
 )
 
 // SignatureScheme identifies a signature algorithm, RFC 8446 4.2.3.
