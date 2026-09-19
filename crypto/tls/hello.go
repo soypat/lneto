@@ -28,7 +28,6 @@ func (ch HelloClientMsg) Random() *[SizeHelloRandom]byte {
 // Decode fails if message is not complete.
 func (d *HelloClientMsg) Decode(body []byte, vld *lneto.Validator) (int, error) {
 	d.reset()
-	const fixed = 2 + SizeHelloRandom + 1
 	dec := decoder{buf: body, vld: vld, off: 2 + SizeHelloRandom}
 	sidLen := int(dec.Uint8())
 	if sidLen > MaxSessionIDLen {
@@ -36,8 +35,14 @@ func (d *HelloClientMsg) Decode(body []byte, vld *lneto.Validator) (int, error) 
 	}
 	dec.Advance(sidLen)
 	suitesLen := int(dec.Uint16())
+	if suitesLen < 2 || suitesLen%2 != 0 {
+		vld.AddError(lneto.ErrInvalidLengthField)
+	}
 	dec.Advance(suitesLen)
 	compLen := int(dec.Uint8())
+	if compLen == 0 {
+		vld.AddError(lneto.ErrInvalidLengthField)
+	}
 	dec.Advance(compLen)
 	extsLen := dec.Uint16()
 	dec.Advance(int(extsLen))
@@ -51,6 +56,12 @@ func (d *HelloClientMsg) Decode(body []byte, vld *lneto.Validator) (int, error) 
 	d.sidLen = uint8(sidLen)
 	d.complen = uint8(compLen)
 	return dec.off, nil
+}
+
+// SessionID returns legacy_session_id, which the server echoes.
+func (h *HelloClientMsg) SessionID() []byte {
+	const off = 2 + SizeHelloRandom + 1
+	return h.buf[off : off+h.sidLen]
 }
 
 func (h *HelloClientMsg) Suites() []byte {
@@ -127,14 +138,15 @@ func (d *HelloServerMsg) Decode(body []byte, vld *lneto.Validator) (int, error) 
 	return dec.off, nil
 }
 
-// NextKeyShare returns parsed group and key data that is next in buffer. If caller is server then asServer=true.
-func NextKeyShare(body []byte, asServer bool) (group NamedGroup, key []byte, n int, err error) {
+// NextKeyShare returns the group and key of the KeyShareEntry at the start of body and its length n.
+// sentByServer is true when body was sent by a server, which sends a single entry, or only the group in a HelloRetryRequest.
+func NextKeyShare(body []byte, sentByServer bool) (group NamedGroup, key []byte, n int, err error) {
 	if len(body) < 2 {
 		return 0, nil, 0, lneto.ErrTruncatedFrame
 	}
 	group = NamedGroup(binary.BigEndian.Uint16(body))
-	if asServer && len(body) == 2 {
-		return group, nil, 0, nil
+	if sentByServer && len(body) == 2 {
+		return group, nil, 2, nil
 	} else if len(body) < 4 {
 		return 0, nil, 0, lneto.ErrTruncatedFrame
 	}
@@ -143,7 +155,7 @@ func NextKeyShare(body []byte, asServer bool) (group NamedGroup, key []byte, n i
 		return 0, nil, 0, lneto.ErrInvalidLengthField
 	} else if n > len(body)-4 {
 		return 0, nil, 0, lneto.ErrTruncatedFrame
-	} else if asServer && n != len(body)-4 {
+	} else if sentByServer && n != len(body)-4 {
 		return 0, nil, 0, lneto.ErrInvalidLengthField
 	}
 	return group, body[4 : 4+n], 4 + n, nil
@@ -178,14 +190,15 @@ func (ef ExtensionFrame) Data() []byte { return ef.buf[4:] }
 func (ef ExtensionFrame) RawData() []byte { return ef.buf }
 
 // ValidateType validates the overall data size and shape carried by extension without
-// introspection into the actual data. If caller is server then asServer=true.
-func (ef ExtensionFrame) ValidateType(vld *lneto.Validator, asServer bool) (checked bool) {
+// introspection into the actual data. sentByServer is true when the extension was
+// sent by a server (ServerHello, HelloRetryRequest) and false when sent by a client.
+func (ef ExtensionFrame) ValidateType(vld *lneto.Validator, sentByServer bool) (checked bool) {
 	checked = true
 	data := ef.Data()
 	var err error
 	switch ef.Type() {
 	case ExtServerName:
-		if asServer {
+		if sentByServer {
 			// A server acknowledges the name with empty extension_data.
 			if len(data) != 0 {
 				err = lneto.ErrInvalidLengthField
@@ -202,7 +215,7 @@ func (ef ExtensionFrame) ValidateType(vld *lneto.Validator, asServer bool) (chec
 			err = lneto.ErrInvalidLengthField
 		}
 	case ExtSupportedVersions:
-		if asServer {
+		if sentByServer {
 			// A server names the one selected version.
 			if len(data) != 2 {
 				err = lneto.ErrInvalidLengthField
@@ -213,7 +226,7 @@ func (ef ExtensionFrame) ValidateType(vld *lneto.Validator, asServer bool) (chec
 			err = lneto.ErrInvalidLengthField
 		}
 	case ExtKeyShare:
-		err = validateKeyShare(data, asServer)
+		err = validateKeyShare(data, sentByServer)
 	default:
 		checked = false
 	}
@@ -269,31 +282,20 @@ func validateServerNames(data []byte) error {
 	return nil
 }
 
-func validateKeyShare(data []byte, asServer bool) error {
-	if asServer {
-		// A ServerHello names one group and its key; a HelloRetryRequest names only the group.
-		if len(data) == 2 {
-			return nil
-		}
-		return validateKeyShareEntries(data)
-	}
-	if err := checkVec16(data); err != nil {
+func validateKeyShare(data []byte, sentByServer bool) error {
+	if sentByServer {
+		_, _, _, err := NextKeyShare(data, true)
+		return err
+	} else if err := checkVec16(data); err != nil {
 		return err
 	}
-	return validateKeyShareEntries(data[2:])
-}
-
-func validateKeyShareEntries(b []byte) error {
-	for off := 0; off < len(b); {
-		if len(b)-off < 4 {
-			return lneto.ErrTruncatedFrame
+	// Empty client_shares is legal: the client asks for a HelloRetryRequest.
+	for data = data[2:]; len(data) > 0; {
+		_, _, n, err := NextKeyShare(data, false)
+		if err != nil {
+			return err
 		}
-		n := int(binary.BigEndian.Uint16(b[off+2 : off+4]))
-		off += 4
-		if n > len(b)-off {
-			return lneto.ErrTruncatedFrame
-		}
-		off += n
+		data = data[n:]
 	}
 	return nil
 }
@@ -367,4 +369,116 @@ func (dec *decoder) failLen(n int) (failed bool) {
 		return true
 	}
 	return false
+}
+
+// encoder writes TLS structures to a fixed buffer, the counterpart of [decoder].
+// A write past the end of buf sets err and all later writes are dropped, so
+// callers check err once after writing.
+type encoder struct {
+	buf []byte
+	off int
+	err error
+}
+
+// next reserves n bytes. It returns nil if they do not fit.
+func (e *encoder) next(n int) []byte {
+	if e.err == nil && len(e.buf)-e.off < n {
+		e.err = lneto.ErrShortBuffer
+	}
+	if e.err != nil {
+		return nil
+	}
+	e.off += n
+	return e.buf[e.off-n : e.off]
+}
+
+func (e *encoder) Uint8(v uint8) {
+	if b := e.next(1); b != nil {
+		b[0] = v
+	}
+}
+
+func (e *encoder) Uint16(v uint16) {
+	if b := e.next(2); b != nil {
+		binary.BigEndian.PutUint16(b, v)
+	}
+}
+
+func (e *encoder) Bytes(v []byte) {
+	if b := e.next(len(v)); b != nil {
+		copy(b, v)
+	}
+}
+
+// Rest returns the unwritten part of buf for a callee to write into. Commit with Advance.
+func (e *encoder) Rest() []byte {
+	if e.err != nil {
+		return nil
+	}
+	return e.buf[e.off:]
+}
+
+func (e *encoder) Advance(n int) { e.next(n) }
+
+// Open reserves a length prefix of width bytes and returns where its content starts.
+func (e *encoder) Open(width int) (start int) {
+	e.next(width)
+	return e.off
+}
+
+// Close writes the length of the content written since Open returned start.
+func (e *encoder) Close(start, width int) {
+	if e.err != nil {
+		return
+	}
+	n := e.off - start
+	if n>>(8*width) != 0 {
+		e.err = lneto.ErrInvalidLengthField
+		return
+	}
+	for i := start - 1; i >= start-width; i-- {
+		e.buf[i] = byte(n)
+		n >>= 8
+	}
+}
+
+// StartMessage writes a handshake message header whose length is set by EndMessage.
+func (e *encoder) StartMessage(typ HandshakeType) (start int) {
+	start = e.off
+	e.Uint8(uint8(typ))
+	e.Open(3)
+	return start
+}
+
+// EndMessage sets the length of the message started at start and returns the message.
+func (e *encoder) EndMessage(start int) []byte {
+	e.Close(start+SizeHeaderHandshake, 3)
+	if e.err != nil {
+		return nil
+	}
+	return e.buf[start:e.off]
+}
+
+// StartRecord writes a TLSPlaintext header whose length is set by EndRecord.
+func (e *encoder) StartRecord(ct ContentType) (start int) {
+	start = e.off
+	e.Uint8(uint8(ct))
+	e.Uint16(VersionTLS12)
+	e.Open(2)
+	return start
+}
+
+func (e *encoder) EndRecord(start int) { e.Close(start+SizeHeaderRecord, 2) }
+
+// SealRecord protects with hc the content written since StartRecord returned start.
+func (e *encoder) SealRecord(hc *halfConn, start int, ct ContentType) {
+	if e.err != nil {
+		return
+	}
+	rec, err := hc.Seal(e.buf[start:e.off:len(e.buf)], ct)
+	if err != nil {
+		e.err = err
+		return
+	}
+	e.off = start + len(rec)
 }

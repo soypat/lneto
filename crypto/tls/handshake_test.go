@@ -264,7 +264,6 @@ func TestHandshakeRFC8448(t *testing.T) {
 		ks.AddMessage(vecClientHello)
 		ks.AddMessage(vecServerHello)
 		ks.Handshake(&cHS, &sHS, shared)
-		ks.Keys(&sKey, &sIV, &sHS)
 		ks.Finished(&scratch, &sHS)
 		ks.Master(&cAP, &sAP)
 		ks.Zeroize()
@@ -297,7 +296,7 @@ func TestHandshakeRFC8448(t *testing.T) {
 }
 
 // walkExtensions validates each extension in exts and passes it to fn.
-func walkExtensions(t *testing.T, exts []byte, asServer bool, fn func(ExtensionFrame)) {
+func walkExtensions(t *testing.T, exts []byte, sentByServer bool, fn func(ExtensionFrame)) {
 	t.Helper()
 	var vld lneto.Validator
 	for len(exts) > 0 {
@@ -305,7 +304,7 @@ func walkExtensions(t *testing.T, exts []byte, asServer bool, fn func(ExtensionF
 		if err != nil {
 			t.Fatal(err)
 		}
-		ef.ValidateType(&vld, asServer)
+		ef.ValidateType(&vld, sentByServer)
 		if err := vld.ErrPop(); err != nil {
 			t.Fatalf("extension %d: %v", ef.Type(), err)
 		}
