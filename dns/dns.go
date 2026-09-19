@@ -209,7 +209,9 @@ func (m *Message) Decode(msg []byte) (_ uint16, incompleteButOK bool, err error)
 
 func decodeToCapResources(dst *[]Resource, msg []byte, nrec, off uint16) (_ uint16, err error) {
 	originalRec := nrec
-	if dst != nil {
+	if dst == nil {
+		nrec = 0 // No resource slice provided, skip all resources below.
+	} else {
 		if nrec > uint16(cap(*dst)) {
 			nrec = uint16(cap(*dst)) // Decode up to cap. Caller will return an error flag.
 		}
@@ -237,7 +239,7 @@ func skipQuestion(msg []byte, off uint16) (_ uint16, err error) {
 	if err != nil {
 		return off, err
 	}
-	if off+4 > uint16(len(msg)) {
+	if int(off)+4 > len(msg) {
 		return off, lneto.ErrTruncatedFrame
 	}
 	return off + 4, nil
@@ -249,12 +251,14 @@ func skipResource(msg []byte, off uint16) (_ uint16, err error) {
 		return off, err
 	}
 	// | Name... | Type16 | Class16 | TTL32 | Length16 | Data... |
-	datalen := binary.BigEndian.Uint16(msg[off+8:])
-	off += datalen + 10
-	if off > uint16(len(msg)) {
+	if int(off)+10 > len(msg) {
 		return off, lneto.ErrTruncatedFrame
 	}
-	return off, nil
+	end := int(off) + 10 + int(binary.BigEndian.Uint16(msg[off+8:]))
+	if end > len(msg) {
+		return off, lneto.ErrTruncatedFrame
+	}
+	return uint16(end), nil
 }
 
 func skipName(msg []byte, off uint16) (uint16, error) {
