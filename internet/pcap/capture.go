@@ -1586,8 +1586,21 @@ func reclaimFrame(dst *[]Frame, proto string, bitOffset int, baseFields []FrameF
 	*finfo = Frame{
 		PacketBitOffset: bitOffset,
 		Protocol:        proto,
-		Fields:          append(finfo.Fields[:0], baseFields...),
+		Fields:          finfo.Fields[:0],
 		Errors:          finfo.Errors[:0],
+	}
+	if len(baseFields) > cap(finfo.Fields) {
+		finfo.Fields = append(finfo.Fields, baseFields...)
+	} else {
+		// Keep the SubFields backing arrays of the reclaimed fields so a container
+		// field placed here by another protocol does not have to regrow them.
+		fields := finfo.Fields[:len(baseFields)]
+		for i := range fields {
+			sub := fields[i].SubFields[:0]
+			fields[i] = baseFields[i]
+			fields[i].SubFields = sub
+		}
+		finfo.Fields = fields
 	}
 	debuglog("pcap:reclaim")
 	return finfo

@@ -136,8 +136,24 @@ func configureBenchFormatter(f *Formatter) {
 	f.SubfieldSep = "\n\t"
 }
 
-func warmFrames(pb *PacketBreakdown) []Frame {
-	return pb.initFrames()
+// warmup captures and formats every case once so reused buffers (frame fields,
+// subfields, formatter scratch and output) are grown before timing starts and
+// benchmarks only expose allocations incurred at runtime.
+func warmup(b *testing.B, cases []benchCase, pb *PacketBreakdown, formt *Formatter) (frames []Frame, fmtbuf []byte) {
+	frames = pb.initFrames()
+	fmtbuf = make([]byte, 0, benchFmtBufLim)
+	var err error
+	for _, tc := range cases {
+		frames, err = tc.capture(pb, frames[:0], tc.pkt, 0)
+		if err != nil {
+			b.Fatal(tc.name, err)
+		}
+		fmtbuf, err = formt.FormatFrames(fmtbuf[:0], frames, tc.pkt)
+		if err != nil {
+			b.Fatal(tc.name, err)
+		}
+	}
+	return frames, fmtbuf
 }
 
 // BenchmarkPcap measures the decode, format, and decode+format (roundtrip) phases
@@ -146,19 +162,12 @@ func warmFrames(pb *PacketBreakdown) []Frame {
 func BenchmarkPcap(b *testing.B) {
 	cases := benchCases(b)
 	var (
-		formt  Formatter
-		pb     PacketBreakdown
-		frames = warmFrames(&pb)
-		fmtbuf = make([]byte, 0, benchFmtBufLim)
-		err    error
+		formt Formatter
+		pb    PacketBreakdown
 	)
 	pb.SubfieldLimit = benchSubfieldLimit
 	configureBenchFormatter(&formt)
-	// warm up capture.
-	frames, err = pb.CaptureEthernet(frames, buildDNSPacket(b), 0)
-	if err != nil {
-		b.Fatal(err)
-	}
+	frames, fmtbuf := warmup(b, cases, &pb, &formt)
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
 			b.Run("decode", func(b *testing.B) {
@@ -199,13 +208,12 @@ func BenchmarkPcap(b *testing.B) {
 func BenchmarkPcapPhases(b *testing.B) {
 	cases := benchCases(b)
 	var (
-		pb     PacketBreakdown
-		formt  Formatter
-		frames = warmFrames(&pb)
-		fmtbuf = make([]byte, 0, benchFmtBufLim)
+		pb    PacketBreakdown
+		formt Formatter
 	)
 	pb.SubfieldLimit = benchSubfieldLimit
 	configureBenchFormatter(&formt)
+	frames, fmtbuf := warmup(b, cases, &pb, &formt)
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
 			var decNs, fmtNs int64
