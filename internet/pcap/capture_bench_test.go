@@ -13,6 +13,7 @@ import (
 )
 
 const benchSubfieldLimit = 32
+const benchFmtBufLim = 2048
 
 // buildDHCPPacket builds an Ethernet+IPv4+UDP+DHCPv4 Discover packet, exercising
 // the option-heavy DHCP path (hostname, client id, requested address, param list).
@@ -135,17 +136,32 @@ func configureBenchFormatter(f *Formatter) {
 	f.SubfieldSep = "\n\t"
 }
 
+func warmFrames(pb *PacketBreakdown) []Frame {
+	return pb.initFrames()
+}
+
 // BenchmarkPcap measures the decode, format, and decode+format (roundtrip) phases
 // separately for the string-heavy DHCP and DNS frames. Run with -benchmem for
 // per-phase allocs/op.
 func BenchmarkPcap(b *testing.B) {
 	cases := benchCases(b)
+	var (
+		formt  Formatter
+		pb     PacketBreakdown
+		frames = warmFrames(&pb)
+		fmtbuf = make([]byte, 0, benchFmtBufLim)
+		err    error
+	)
+	pb.SubfieldLimit = benchSubfieldLimit
+	configureBenchFormatter(&formt)
+	// warm up capture.
+	frames, err = pb.CaptureEthernet(frames, buildDNSPacket(b), 0)
+	if err != nil {
+		b.Fatal(err)
+	}
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
 			b.Run("decode", func(b *testing.B) {
-				var pb PacketBreakdown
-				pb.SubfieldLimit = benchSubfieldLimit
-				var frames []Frame
 				b.ReportAllocs()
 				b.ResetTimer()
 				for b.Loop() {
@@ -153,33 +169,22 @@ func BenchmarkPcap(b *testing.B) {
 				}
 			})
 			b.Run("format", func(b *testing.B) {
-				var pb PacketBreakdown
-				pb.SubfieldLimit = benchSubfieldLimit
-				frames, err := tc.capture(&pb, nil, tc.pkt, 0)
+				frames, err := tc.capture(&pb, frames[:0], tc.pkt, 0)
 				if err != nil {
 					b.Fatal(err)
 				}
-				var f Formatter
-				configureBenchFormatter(&f)
-				var buf []byte
 				b.ReportAllocs()
 				b.ResetTimer()
 				for b.Loop() {
-					buf, _ = f.FormatFrames(buf[:0], frames, tc.pkt)
+					fmtbuf, _ = formt.FormatFrames(fmtbuf[:0], frames, tc.pkt)
 				}
 			})
-			b.Run("roundtrip", func(b *testing.B) {
-				var pb PacketBreakdown
-				pb.SubfieldLimit = benchSubfieldLimit
-				var f Formatter
-				configureBenchFormatter(&f)
-				var frames []Frame
-				var buf []byte
+			b.Run("decode+format", func(b *testing.B) {
 				b.ReportAllocs()
 				b.ResetTimer()
 				for b.Loop() {
 					frames, _ = tc.capture(&pb, frames[:0], tc.pkt, 0)
-					buf, _ = f.FormatFrames(buf[:0], frames, tc.pkt)
+					fmtbuf, _ = formt.FormatFrames(fmtbuf[:0], frames, tc.pkt)
 				}
 			})
 		})
@@ -193,21 +198,23 @@ func BenchmarkPcap(b *testing.B) {
 // use BenchmarkPcap's decode/format sub-benchmarks with -benchmem for that.
 func BenchmarkPcapPhases(b *testing.B) {
 	cases := benchCases(b)
+	var (
+		pb     PacketBreakdown
+		formt  Formatter
+		frames = warmFrames(&pb)
+		fmtbuf = make([]byte, 0, benchFmtBufLim)
+	)
+	pb.SubfieldLimit = benchSubfieldLimit
+	configureBenchFormatter(&formt)
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
-			var pb PacketBreakdown
-			pb.SubfieldLimit = benchSubfieldLimit
-			var f Formatter
-			configureBenchFormatter(&f)
-			var frames []Frame
-			var buf []byte
 			var decNs, fmtNs int64
 			b.ResetTimer()
 			for b.Loop() {
 				t0 := time.Now()
 				frames, _ = tc.capture(&pb, frames[:0], tc.pkt, 0)
 				t1 := time.Now()
-				buf, _ = f.FormatFrames(buf[:0], frames, tc.pkt)
+				fmtbuf, _ = formt.FormatFrames(fmtbuf[:0], frames, tc.pkt)
 				t2 := time.Now()
 				decNs += t1.Sub(t0).Nanoseconds()
 				fmtNs += t2.Sub(t1).Nanoseconds()
