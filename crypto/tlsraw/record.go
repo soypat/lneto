@@ -1,18 +1,27 @@
 package tlsraw
 
 import (
-	"crypto/cipher"
 	"encoding/binary"
 	"math"
 
 	"github.com/soypat/lneto"
 )
 
+// cryptoAEAD is the subset of [crypto/cipher.AEAD] used by [HalfConn]; any cipher.AEAD
+// satisfies it. crypto/cipher is not imported so that wire-format users of this
+// package, e.g. pcap, do not link Go's crypto packages.
+type cipherAEAD interface {
+	NonceSize() int
+	Overhead() int
+	Seal(dst, nonce, plaintext, additionalData []byte) []byte
+	Open(dst, nonce, ciphertext, additionalData []byte) ([]byte, error)
+}
+
 // HalfConn protects the TLS_AES_128_GCM_SHA256 records of one direction, RFC 8446 5.2.
-// Seal and Open do not allocate and work in place. Buffers passed to a cipher.AEAD
+// Seal and Open do not allocate and work in place. Buffers passed to an AEAD
 // escape to the heap, so the nonce lives in the struct.
 type HalfConn struct {
-	aead  cipher.AEAD
+	aead  cipherAEAD
 	iv    [12]byte
 	nonce [12]byte // Per-record nonce: iv XOR sequence number.
 	seq   uint64
@@ -21,7 +30,7 @@ type HalfConn struct {
 // SetAEAD installs the AEAD keyed with a traffic key and the matching IV, and
 // restarts the sequence number. The caller owns construction of aead so that
 // lneto never allocates cipher state.
-func (hc *HalfConn) SetAEAD(aead cipher.AEAD, iv [12]byte) error {
+func (hc *HalfConn) SetAEAD(aead cipherAEAD, iv [12]byte) error {
 	if aead.NonceSize() != len(iv) || aead.Overhead() != SizeAEADTag {
 		return lneto.ErrInvalidConfig
 	}

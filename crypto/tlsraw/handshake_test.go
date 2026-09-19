@@ -7,6 +7,8 @@ import (
 	"crypto/ecdh"
 	"crypto/sha256"
 	"encoding/binary"
+	"go/build"
+	"strings"
 	"testing"
 
 	"github.com/soypat/lneto"
@@ -242,4 +244,20 @@ func newGCM(t *testing.T, key []byte) cipher.AEAD {
 		t.Fatal(err)
 	}
 	return aead
+}
+
+// TestNoCryptoImports guards against linking Go's crypto packages
+// Importing crypto/sha256 or crypto/cipher
+// runs the FIPS 140 self-test registrations in their init functions, which
+// TinyGo is unable to eliminate: tens of kB of SHA-3, AES and GCM.
+func TestNoCryptoImports(t *testing.T) {
+	pkg, err := build.ImportDir(".", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, imp := range pkg.Imports {
+		if imp == "crypto" || strings.HasPrefix(imp, "crypto/") {
+			t.Errorf("tlsraw must not import %q; take the primitive from the caller instead", imp)
+		}
+	}
 }

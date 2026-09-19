@@ -1,7 +1,6 @@
 package tlsraw
 
 import (
-	"crypto/sha256"
 	"encoding/binary"
 	"hash"
 )
@@ -11,7 +10,17 @@ const (
 	maxLabel    = len("c ap traffic")
 )
 
+// sizeSHA256 is the digest size of SHA-256. crypto/sha256 is not imported so that
+// wire-format users of this package, e.g. pcap, do not link Go's crypto packages.
+const sizeSHA256 = 32
+
 var zeroSecret [32]byte
+
+// emptySHA256 is SHA-256 of the empty string, the "derived" context of RFC 8446 7.1.
+var emptySHA256 = [sizeSHA256]byte{
+	0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24,
+	0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55,
+}
 
 // KeySchedule derives the TLS 1.3 secrets of RFC 8446 7.1 for SHA-256 cipher suites without PSK.
 // It does not allocate. Buffers passed to a hash.Hash escape to the heap, so all
@@ -42,7 +51,7 @@ func (ks *KeySchedule) Finished(dst, secret *[32]byte) {
 // Reset starts a new handshake at the early secret. transcript and mac must be
 // distinct SHA-256 hashes; they are reused across handshakes.
 func (ks *KeySchedule) Reset(transcript, mac hash.Hash, paranoid bool) {
-	if transcript.Size() != sha256.Size || mac.Size() != sha256.Size || mac.BlockSize() != len(ks.pad) {
+	if transcript.Size() != sizeSHA256 || mac.Size() != sizeSHA256 || mac.BlockSize() != len(ks.pad) {
 		panic("tls: keySchedule requires SHA-256")
 	}
 	transcript.Reset()
@@ -84,9 +93,8 @@ func (ks *KeySchedule) Keys(key *[16]byte, iv *[12]byte, secret *[32]byte) {
 }
 
 func (ks *KeySchedule) advance(ikm []byte) {
-	emptyHash := sha256.Sum256(nil)
 	salt := ks.scratch[:]
-	ks.expandLabel(salt, ks.secret[:], "derived", emptyHash[:])
+	ks.expandLabel(salt, ks.secret[:], "derived", emptySHA256[:])
 	ks.extract(salt, ikm)
 	ks.shh(salt)
 }
