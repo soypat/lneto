@@ -4,6 +4,8 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+
+	"github.com/soypat/lneto"
 )
 
 var defaultMessageFlags = NewClientHeaderFlags(OpCodeQuery, true)
@@ -210,6 +212,36 @@ func TestDecodeMessage(t *testing.T) {
 	off, incomplete, err := msg.Decode(data)
 	if incomplete || err != nil {
 		t.Fatal(incomplete, err, off)
+	}
+}
+
+// TestDecodeMessageSkipTruncated
+func TestDecodeMessageSkipTruncated(t *testing.T) {
+	// Header with ANCount=1 followed by a root name and a resource header cut short.
+	hdr := []byte{0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0}
+	for missing := 1; missing <= 10; missing++ {
+		msg := append(hdr[:len(hdr):len(hdr)], make([]byte, 10-missing)...)
+		var ans []Resource // Zero capacity: answer is skipped.
+		_, incomplete, err := DecodeMessage(nil, &ans, nil, nil, msg)
+		if err != lneto.ErrTruncatedFrame || incomplete {
+			t.Errorf("missing=%d: want truncated error, got incomplete=%v err=%v", missing, incomplete, err)
+		}
+		_, incomplete, err = DecodeMessage(nil, nil, nil, nil, msg)
+		if err != lneto.ErrTruncatedFrame || incomplete {
+			t.Errorf("missing=%d nil dst: want truncated error, got incomplete=%v err=%v", missing, incomplete, err)
+		}
+	}
+	// Resource data length exceeding message.
+	msg := append(hdr[:len(hdr):len(hdr)], 0, 1, 0, 1, 0, 0, 0, 0, 0, 4, 1, 2, 3)
+	_, _, err := DecodeMessage(nil, nil, nil, nil, msg)
+	if err != lneto.ErrTruncatedFrame {
+		t.Errorf("short data: want truncated error, got %v", err)
+	}
+	// Complete resource skipped with nil dst decodes up to message end.
+	msg = append(msg, 4)
+	off, incomplete, _ := DecodeMessage(nil, nil, nil, nil, msg)
+	if int(off) != len(msg) || !incomplete {
+		t.Errorf("complete: want off=%d incomplete, got off=%d incomplete=%v", len(msg), off, incomplete)
 	}
 }
 
