@@ -128,7 +128,7 @@ func TestHandshakeRFC8448(t *testing.T) {
 	}
 	var sKey, cKey [16]byte
 	var sIV, cIV [12]byte
-	ks.Keys(&sKey, &sIV, &sHS)
+	ks.Keys(sKey[:], &sIV, &sHS)
 	if !bytes.Equal(sKey[:], rfc8448.ServerHSKey) || !bytes.Equal(sIV[:], rfc8448.ServerHSIV) {
 		t.Fatalf("server hs key=%x iv=%x, want %x %x", sKey, sIV, rfc8448.ServerHSKey, rfc8448.ServerHSIV)
 	}
@@ -176,7 +176,7 @@ func TestHandshakeRFC8448(t *testing.T) {
 
 	// Server opens the client Finished record.
 	var cConn HalfConn
-	ks.Keys(&cKey, &cIV, &cHS)
+	ks.Keys(cKey[:], &cIV, &cHS)
 	if err := cConn.SetAEAD(newGCM(t, cKey[:]), cIV); err != nil {
 		t.Fatal(err)
 	}
@@ -185,6 +185,7 @@ func TestHandshakeRFC8448(t *testing.T) {
 		ks.AddMessage(rfc8448.ClientHello)
 		ks.AddMessage(rfc8448.ServerHello)
 		ks.Handshake(&cHS, &sHS, shared)
+		ks.Keys(sKey[:], &sIV, &sHS)
 		ks.Finished(&scratch, &sHS)
 		ks.Master(&cAP, &sAP)
 		ks.Zeroize()

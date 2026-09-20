@@ -86,9 +86,11 @@ func (ks *KeySchedule) Master(client, server *[32]byte) {
 	ks.trafficSecrets(client, server, "c ap traffic", "s ap traffic")
 }
 
-// Keys writes the TLS_AES_128_GCM_SHA256 record protection key and IV of a traffic secret, RFC 8446 7.3.
-func (ks *KeySchedule) Keys(key *[16]byte, iv *[12]byte, secret *[32]byte) {
-	ks.expandLabel(key[:], secret[:], "key", nil)
+// Keys writes the record protection key and IV of a traffic secret, RFC 8446 7.3.
+//   - AES128: len(key)==16
+//   - AES256/ChaCha20: len(key)==32
+func (ks *KeySchedule) Keys(key []byte, iv *[12]byte, secret *[32]byte) {
+	ks.expandLabel(key, secret[:], "key", nil)
 	ks.expandLabel(iv[:], secret[:], "iv", nil)
 }
 
