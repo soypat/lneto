@@ -1,9 +1,26 @@
 // package lcrypto is an internal lneto package that provides
 // abstractions over cryptographic constructs like ciphers
 // and certificates.
+//
+// # Conventions
+//
+// Interface implementations consist of:
+//   - "Factories" like [Suite],[KeyExchange] which are shared among cryptographic
+//     algorithm users such as several tls.Conn's. These should safe for concurrent use.
+//   - "Instances" like  [AEADCipher],[Exchanger] which are owned by a single consumer i.e: tls.Conn.
+//     These are not necessarily safe for concurrent use.
+//
+// This separation allows for Instance reuse throughout the lifetime of a consumer
+// which may want to avoid allocating a Cipher for every action performed.
+// For this reason lcrypto Instances usually have methods which deviate from standard library
+// interfaces or other famous Go interfaces. Notably [AEADCipher] is a superset of cipher.AEAD
+// with the addition of [AEADCipher.Rekey] and [AEADCipher.Zeroize] methods for reuse and security purposes, respectively.
 package lcrypto
 
-import "hash"
+import (
+	"hash"
+	"io"
+)
 
 // AEADCipher is a superset of cipher.AEAD. It does not implement cipher.AEAD since
 // there are no counterparts for Zeroize and Rekey which are needed for a heapless, secure implementation.
@@ -17,6 +34,8 @@ type AEADCipher interface {
 	Open(dst, nonce, ciphertext, additionalData []byte) ([]byte, error) // Open implements cipher.AEAD.
 
 	// Rekey discards current key and installs a new one leaving cipher ready for use.
+	//
+	// key is local: a traffic key derived by the key schedule, never peer data.
 	Rekey(key []byte) error
 	// Zeroize wipes the key and any derived state, leaving the cipher unkeyed.
 	// After a call to Zeroize Rekey must be called to reuse AEADCipher.
@@ -39,4 +58,87 @@ type Suite interface {
 	NewHash() hash.Hash
 	// KeyLen is the length in bytes of the key passed to [AEADCipher.Rekey].
 	KeyLen() int
+}
+
+// KeyExchange is the concurrent-safe factory half of an ephemeral key agreement
+// group, RFC 8446 4.2.8.
+type KeyExchange interface {
+	// ID returns the RFC 8446 B.3.1.4 NamedGroup wire value.
+	ID() uint16
+	// PubLen is the length of the key share written by [Exchanger.Generate],
+	// and the expected length of the peer share passed to [Exchanger.Shared].
+	PubLen() int
+	// SharedLen is the length of the secret written by [Exchanger.Shared].
+	SharedLen() int
+	// NewExchanger returns an unkeyed key pair. Callers build one per
+	// connection and call Generate again to reuse it.
+	NewExchanger() Exchanger
+}
+
+// Exchanger holds one ephemeral key pair.
+type Exchanger interface {
+	// Generate discards any current key pair, draws a fresh one from rand and
+	// writes its public share into pub. Calling it again rekeys in place so a
+	// pooled connection need not build a new Exchanger.
+	//
+	// pub is transmitted to the peer.
+	Generate(pub []byte, rand io.Reader) (n int, err error)
+	// Shared writes the agreed secret for the peer's share into dst. It fails
+	// if Generate has not been called, and on a peer share that is malformed
+	// or, for the curve groups of RFC 7748, of small order.
+	//
+	// peerPub is remote: the peer's key_share, unvalidated.
+	Shared(dst, peerPub []byte) (n int, err error)
+	// Zeroize wipes the private key, leaving the Exchanger unkeyed.
+	// Generate must be called before reuse.
+	Zeroize()
+}
+
+// Credential is the local identity: a certificate chain and the private key
+// operation over it. They are one interface because a chain that does not match
+// its key is a configuration error better made unrepresentable than diagnosed at
+// handshake time. Counterpart of [Verifier].
+type Credential interface {
+	// CertChain is this endpoint's own chain, held locally and transmitted to
+	// the peer in the RFC 8446 4.4.2 Certificate message.
+	CertChain
+
+	// Scheme returns the RFC 8446 B.3.1.3 SignatureScheme used to sign, chosen
+	// from those the peer offered, or 0 if none are supported. Zero is not a
+	// valid SignatureScheme so it needs no error value.
+	//
+	// offered is remote: the peer's signature_algorithms extension, unvalidated.
+	// Unknown and GREASE values simply fail to match.
+	Scheme(offered []uint16) uint16
+	// Sign writes the RFC 8446 4.4.3 CertificateVerify signature over msg into
+	// sig. msg arrives prefixed and hashed, so it is signed as given. Entropy
+	// is the implementation's concern so a TPM or HSM can hold its own.
+	//
+	// msg is not peer data: it is the digest lneto computed over the 4.4.3
+	// prefix and the handshake transcript. The prefix is what stops a Credential
+	// being coerced into signing attacker-chosen content.
+	Sign(sig, msg []byte) (n int, err error)
+}
+
+// Verifier judges the peer's identity. It subsumes trust anchors, hostname
+// matching and expiry so the policy cannot be configured apart, and keeps
+// X.509 parsing out of lneto. Counterpart of [Credential].
+type Verifier interface {
+	// VerifyChain returns nil to accept the peer's chain. An error aborts the
+	// handshake with [lneto.BadCert] error.
+	// chain is remote and should be treated as potentially adversarial.
+	VerifyChain(chain CertChain) error
+}
+
+// CertChain is a DER certificate chain ordered with server (leaf) certs first
+// followed by intermediary CA certs (i.e: DigiCert, Let's Encrypt).
+//
+//   - local: stored locally and trusted as is the case with [Credential.CertChain].
+//   - remote: Chains can also be received over the network as in the case of TLS, in which case
+//     [Verifier.VerifyChain] would be called on the CertChain before trusting it.
+type CertChain interface {
+	// NumCerts returns the number of certificates, leafs first.
+	NumCerts() int
+	// Cert writes the i'th (leafs first) DER certificate into dst
+	Cert(dst []byte, i int) (n int, err error)
 }
