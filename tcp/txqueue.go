@@ -115,12 +115,8 @@ func (rtx *ringTx) Write(b []byte) (n int, err error) {
 }
 
 // MakePacket reads from the unsent data ring buffer and generates a new packet segment.
-// It fails if the sent packet queue is full.
+// It fails if a new packet is needed and the sent packet queue is full.
 func (rtx *ringTx) MakePacket(b []byte, currentSeq Value) (int, error) {
-	free := rtx.slist.Free()
-	if free == 0 {
-		return 0, lneto.ErrBufferFull
-	}
 	endSeq, ok := rtx.sentEndSeq()
 	if ok && currentSeq.LessThan(endSeq) {
 		// maybe retransmit. Look for exact match.
@@ -134,6 +130,9 @@ func (rtx *ringTx) MakePacket(b []byte, currentSeq Value) (int, error) {
 		}
 		internal.LogAttrs(nil, slog.LevelError, "txqueue:seq<endseq", slog.Uint64("seq", uint64(currentSeq)), slog.Uint64("endseq", uint64(endSeq)))
 		return 0, lneto.ErrBug
+	}
+	if rtx.slist.Free() == 0 {
+		return 0, lneto.ErrBufferFull
 	}
 	// Reading unsent ring consumes unsent and converts it to "sent".
 	unsent, _ := rtx.unsentRing()
