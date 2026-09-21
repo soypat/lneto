@@ -78,45 +78,45 @@ type KeyExchange interface {
 // Exchanger holds one ephemeral key pair.
 type Exchanger interface {
 	// Generate discards any current key pair, draws a fresh one from rand and
-	// writes its public share into pub. Calling it again rekeys in place so a
+	// writes its public share into dstPub. Calling it again rekeys in place so a
 	// pooled connection need not build a new Exchanger.
 	//
-	// pub is transmitted to the peer.
-	Generate(pub []byte, rand io.Reader) (n int, err error)
+	// dstPub is transmitted to the peer, who then would call [Exchanger.Shared] on dstPub as peerPub.
+	Generate(dstPub []byte, rand io.Reader) (n int, err error)
 	// Shared writes the agreed secret for the peer's share into dst. It fails
 	// if Generate has not been called, and on a peer share that is malformed
 	// or, for the curve groups of RFC 7748, of small order.
 	//
-	// peerPub is remote: the peer's key_share, unvalidated.
+	// peerPub is received from remote peer who generated it via [Exchanger.Generate].
 	Shared(dst, peerPub []byte) (n int, err error)
-	// Zeroize wipes the private key, leaving the Exchanger unkeyed.
-	// Generate must be called before reuse.
+	// Zeroize wipes the private key and sensitive derived state, leaving the Exchanger unkeyed.
+	// Generate must be called before reuse. Zeroing public and shared derived state is optional.
 	Zeroize()
 }
 
-// Credential is the local identity: a certificate chain and the private key
-// operation over it. They are one interface because a chain that does not match
-// its key is a configuration error better made unrepresentable than diagnosed at
-// handshake time. Counterpart of [Verifier].
+// Credential models the local root of trust ([CertChain]) and the proof
+// of ownership of that trust ([Credential.Scheme],[Credential.Sign]).
+// Credential is the "offering" counterpart of the "receiving" [Verifier]
+// during credential authetication.
 type Credential interface {
-	// CertChain is this endpoint's own chain, held locally and transmitted to
-	// the peer in the RFC 8446 4.4.2 Certificate message.
+	// CertChain is the local root of trust.
 	CertChain
 
-	// Scheme returns the RFC 8446 B.3.1.3 SignatureScheme used to sign, chosen
-	// from those the peer offered, or 0 if none are supported. Zero is not a
-	// valid SignatureScheme so it needs no error value.
+	// Scheme returns the RFC 8448 SignatureScheme used to sign, chosen
+	// from those the peer offered or 0 if none supported.
 	//
 	// offered is remote: the peer's signature_algorithms extension, unvalidated.
-	// Unknown and GREASE values simply fail to match.
 	Scheme(offered []uint16) uint16
-	// Sign writes the RFC 8446 4.4.3 CertificateVerify signature over msg into
-	// sig. msg arrives prefixed and hashed, so it is signed as given. Entropy
-	// is the implementation's concern so a TPM or HSM can hold its own.
+
+	// Sign writes the RFC 8446 4.4.3 CertificateVerify signature over msg into sig.
+	// Implementations hash msg with the digest their [Credential.Scheme] names;
+	// Ed25519 signs it whole. Entropy is the implementation's concern so a TPM
+	// or HSM can hold its own.
 	//
-	// msg is not peer data: it is the digest lneto computed over the 4.4.3
-	// prefix and the handshake transcript. The prefix is what stops a Credential
-	// being coerced into signing attacker-chosen content.
+	// msg is the complete, unhashed 4.4.3 content: [64B pfx, context string,
+	// 0x00, handshake transcript hash]. The padding and context domain-separate
+	// the signature, so implementations sign msg as given and prepend nothing
+	// of their own.
 	Sign(sig, msg []byte) (n int, err error)
 }
 
