@@ -259,7 +259,7 @@ func (tcb *ControlBlock) HasPending() bool {
 // retransmit strategy.
 func (tcb *ControlBlock) HasPendingRetransmit() bool {
 	// Force retransmit after 3 consecutive acks of UNA.
-	return tcb._state.TxDataOpen() && tcb.dupack >= retransmitAfterDupacks && tcb.nRetransmit <= tcb.dupack-retransmitAfterDupacks
+	return tcb._state.txQueuedDataOpen() && tcb.dupack >= retransmitAfterDupacks && tcb.nRetransmit <= tcb.dupack-retransmitAfterDupacks
 }
 
 // RetransmitFrom rewinds snd.NXT back to newNxt so the next PendingSegment and
@@ -432,7 +432,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	}
 
 	if seg.Flags.HasAny(FlagACK) && seg.ACK.LessThanEq(tcb.snd.NXT) {
-		if tcb.IncomingIsDupACK(seg.ACK) && tcb.State().TxDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < tcb.nRetransmit+retransmitMaxQueued+retransmitMaxQueued {
+		if tcb.IncomingIsDupACK(seg.ACK) && tcb.State().txQueuedDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < tcb.nRetransmit+retransmitMaxQueued+retransmitMaxQueued {
 			// Duplicate ack. Don't advance dupack counter past scb.nRetransmit+retransmitAfterDupacks
 			tcb.dupack++
 		} else if tcb.snd.UNA.LessThan(seg.ACK) {

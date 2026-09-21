@@ -10,6 +10,67 @@ import (
 	"github.com/soypat/lneto/ethernet"
 )
 
+func TestHandler_DupACKRetransmitAfterClose(t *testing.T) {
+	client, server := newHandler(t, 1024, 3), newHandler(t, 1024, 3)
+	setupClientServer(t, rand.New(rand.NewSource(1)), client, server)
+	buf := make([]byte, 1024)
+	establish(t, client, server, buf)
+	data := []byte("lost before FIN")
+	if n, err := client.Write(data); err != nil || n != len(data) {
+		t.Fatalf("Write = %d, %v", n, err)
+	}
+	n, err := client.Send(buf)
+	if err != nil || n != sizeHeaderTCP+len(data) {
+		t.Fatalf("initial Send = %d, %v", n, err)
+	}
+	initial := mustSegment(t, buf[:n], len(data))
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	n, err = client.Send(buf)
+	if err != nil || n != sizeHeaderTCP {
+		t.Fatalf("FIN Send = %d, %v", n, err)
+	}
+	if fin := mustSegment(t, buf[:n], 0); !fin.Flags.HasAny(FlagFIN) || client.State() != StateFinWait1 {
+		t.Fatalf("FIN = %v, state = %v", fin, client.State())
+	}
+	next := client.scb.SendNext()
+	ack, err := NewFrame(buf[:sizeHeaderTCP])
+	if err != nil {
+		t.Fatal(err)
+	}
+	ack.ClearHeader()
+	ack.SetSourcePort(server.LocalPort())
+	ack.SetDestinationPort(client.LocalPort())
+	ack.SetSegment(server.scb.MakeChallengeACK(), 5)
+	for i := range retransmitAfterDupacks {
+		if err := client.Recv(buf[:sizeHeaderTCP]); err != nil {
+			t.Fatalf("duplicate ACK %d: %v", i+1, err)
+		}
+		if i+1 < retransmitAfterDupacks && client.scb.HasPendingRetransmit() {
+			t.Fatalf("retransmit pending after only %d duplicate ACKs", i+1)
+		}
+	}
+	n, err = client.Send(buf)
+	if err != nil || n != sizeHeaderTCP+len(data) {
+		t.Fatalf("Send after duplicate ACKs = %d, %v; want %d bytes", n, err, sizeHeaderTCP+len(data))
+	}
+	resent := mustSegment(t, buf[:n], len(data))
+	if resent.SEQ != initial.SEQ || resent.Flags != initial.Flags || !bytes.Equal(buf[sizeHeaderTCP:n], data) {
+		t.Fatalf("retransmission = %v, payload = %q", resent, buf[sizeHeaderTCP:n])
+	}
+	if client.scb.SendNext() != next || client.State() != StateFinWait1 {
+		t.Fatalf("retransmission changed NXT or state: NXT=%d, state=%v", client.scb.SendNext(), client.State())
+	}
+	if err := server.Recv(buf[:n]); err != nil {
+		t.Fatal(err)
+	}
+	n, err = server.Read(buf)
+	if err != nil || !bytes.Equal(buf[:n], data) {
+		t.Fatalf("Read = %q, %v; want %q", buf[:n], err, data)
+	}
+}
+
 func TestHandler(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	const maxpackets = 3
