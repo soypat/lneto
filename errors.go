@@ -25,6 +25,7 @@ const (
 	ErrTruncatedFrame                       // truncated frame
 	ErrMissingHALConfig                     // missing HAL configuration
 	ErrBadState                             // operation invalid in current state
+	ErrBadSignature                         // bad signature
 	// Below are potentially good future error additions
 	// based on one or two encountered use cases, example use case included.
 	/*

@@ -66,27 +66,28 @@ type Suite interface {
 type KeyExchange interface {
 	// ID returns the RFC 8446 B.3.1.4 NamedGroup wire value.
 	ID() uint16
-	// NewExchanger returns an unkeyed key pair. Callers build one per
-	// connection and call ClientGenerate or ServerShared to reuse.
+	// NewExchanger returns an unkeyed Exchanger. Callers build one per
+	// connection and call ClientGenerateRekey or ServerSharedRekey to reuse.
 	NewExchanger() Exchanger
 	// SharedLen returns the length of the client key_share, the server
 	// key_share (a ciphertext for KEM groups) and the shared secret.
 	SharedLen() (clientShare, serverShare, shared int)
 }
 
-// Exchanger implements the core key exchange logic i.e: Diffie Helman or MLKEM.
+// Exchanger implements the core key exchange logic i.e: Diffie-Hellman or ML-KEM.
 // Methods are named after the caller i.e:
 // ClientGenerateRekey means the client calls this method to generate a key and rekey itself.
 type Exchanger interface {
 	// ClientGenerateRekey draws a fresh key from rand and
-	// writes its public share into dstPub and rekeys itself. Calling it again rekeys in place so a
+	// writes its public share into dstClientShare and rekeys itself. Calling it again rekeys in place so a
 	// pooled connection need not build a new Exchanger.
 	//
-	// dstClientShare is transmitted to the server, who then would call [Exchanger.ServerShared] on dstClientShare as clientShare.
+	// dstClientShare is transmitted to the server, who then would call [Exchanger.ServerSharedRekey] on dstClientShare as clientShare.
 	ClientGenerateRekey(dstClientShare []byte, rand io.Reader) (n int, err error)
 
-	// ServerSharedRekey generates a fresh key and writes it into dstServerShare and mixes
-	// the received client share with it to generate the shared key which is written into dstShare.
+	// ServerSharedRekey writes the server key_share into dstServerShare: a fresh public key
+	// for Diffie-Hellman, or a ciphertext encapsulated to clientShare for ML-KEM. It writes
+	// the resulting shared secret into dstShared.
 	//
 	// dstServerShare is transmitted to the client who will then generate dstShared on their side. dstShared is not transmitted.
 	ServerSharedRekey(dstServerShare, dstShared, clientShare []byte, rand io.Reader) (nShare, nShared int, err error)
@@ -95,10 +96,10 @@ type Exchanger interface {
 	// the shared key it then writes into dstShared.
 	//
 	// serverShare contains the server's share.
-	ClientShared(dstShared, serverShare []byte) (int, error)
+	ClientShared(dstShared, serverShare []byte) (n int, err error)
 
-	// Zeroize wipes the private key and sensitive derived state, leaving the Exchanger unkeyed.
-	// Generate must be called before reuse. Zeroing public and shared derived state is optional.
+	// Zeroize wipes the private key and any retained shared secret, leaving the Exchanger unkeyed.
+	// ClientGenerateRekey or ServerSharedRekey must be called before reuse. Zeroing public state is optional.
 	Zeroize()
 }
 
