@@ -66,30 +66,37 @@ type Suite interface {
 type KeyExchange interface {
 	// ID returns the RFC 8446 B.3.1.4 NamedGroup wire value.
 	ID() uint16
-	// PubLen is the length of the key share written by [Exchanger.Generate],
-	// and the expected length of the peer share passed to [Exchanger.Shared].
-	PubLen() int
-	// SharedLen is the length of the secret written by [Exchanger.Shared].
-	SharedLen() int
 	// NewExchanger returns an unkeyed key pair. Callers build one per
-	// connection and call Generate again to reuse it.
+	// connection and call ClientGenerate or ServerShared to reuse.
 	NewExchanger() Exchanger
+	// SharedLen returns the length of the client key_share, the server
+	// key_share (a ciphertext for KEM groups) and the shared secret.
+	SharedLen() (clientShare, serverShare, shared int)
 }
 
-// Exchanger holds one ephemeral key pair.
+// Exchanger implements the core key exchange logic i.e: Diffie Helman or MLKEM.
+// Methods are named after the caller i.e:
+// ClientGenerateRekey means the client calls this method to generate a key and rekey itself.
 type Exchanger interface {
-	// Generate discards any current key pair, draws a fresh one from rand and
-	// writes its public share into dstPub. Calling it again rekeys in place so a
+	// ClientGenerateRekey draws a fresh key from rand and
+	// writes its public share into dstPub and rekeys itself. Calling it again rekeys in place so a
 	// pooled connection need not build a new Exchanger.
 	//
-	// dstPub is transmitted to the peer, who then would call [Exchanger.Shared] on dstPub as peerPub.
-	Generate(dstPub []byte, rand io.Reader) (n int, err error)
-	// Shared writes the agreed secret for the peer's share into dst. It fails
-	// if Generate has not been called, and on a peer share that is malformed
-	// or, for the curve groups of RFC 7748, of small order.
+	// dstClientShare is transmitted to the server, who then would call [Exchanger.ServerShared] on dstClientShare as clientShare.
+	ClientGenerateRekey(dstClientShare []byte, rand io.Reader) (n int, err error)
+
+	// ServerSharedRekey generates a fresh key and writes it into dstServerShare and mixes
+	// the received client share with it to generate the shared key which is written into dstShare.
 	//
-	// peerPub is received from remote peer who generated it via [Exchanger.Generate].
-	Shared(dst, peerPub []byte) (n int, err error)
+	// dstServerShare is transmitted to the client who will then generate dstShared on their side. dstShared is not transmitted.
+	ServerSharedRekey(dstServerShare, dstShared, clientShare []byte, rand io.Reader) (nShare, nShared int, err error)
+
+	// ClientShared mixes the received serverShare with the generated key to create
+	// the shared key it then writes into dstShared.
+	//
+	// serverShare contains the server's share.
+	ClientShared(dstShared, serverShare []byte) (int, error)
+
 	// Zeroize wipes the private key and sensitive derived state, leaving the Exchanger unkeyed.
 	// Generate must be called before reuse. Zeroing public and shared derived state is optional.
 	Zeroize()
@@ -118,7 +125,7 @@ type Credential interface {
 	// 0x00, handshake transcript hash]. The padding and context domain-separate
 	// the signature, so implementations sign msg as given and prepend nothing
 	// of their own.
-	Sign(sig, msg []byte) (n int, err error)
+	Sign(sig, msg []byte, selectedScheme uint16) (n int, err error)
 }
 
 // Verifier judges the peer's identity. It subsumes trust anchors, hostname
