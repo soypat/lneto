@@ -2,7 +2,11 @@ package tcp
 
 import (
 	"bytes"
+	"errors"
+	"slices"
 	"testing"
+
+	"github.com/soypat/lneto"
 )
 
 // newRetransmitQueue builds a queue holding npkt sent packets of pktlen octets
@@ -73,6 +77,38 @@ func TestRingTx_RetransmitFromBoundary(t *testing.T) {
 	mustRemake(t, rtx, iss+pktlen, stream[pktlen:2*pktlen])
 	testQueueSanity(t, rtx)
 	mustRemake(t, rtx, iss+2*pktlen, stream[2*pktlen:3*pktlen])
+	testQueueSanity(t, rtx)
+}
+
+func TestMakePacketRetransmitWithFullQueue(t *testing.T) {
+	const iss, pktlen, npkt = Value(100), 4, 3
+	rtx, stream := newRetransmitQueue(t, 64, npkt, npkt, pktlen, pktlen, iss)
+	if free := rtx.slist.Free(); free != 0 {
+		t.Fatalf("queue has %d free entries, want 0", free)
+	}
+	uo, ue, so, se := rtx.lims()
+	packets := slices.Clone(rtx.slist.pkts)
+	for range 2 {
+		for i := range npkt {
+			mustRemake(t, rtx, iss+Value(i*pktlen), stream[i*pktlen:(i+1)*pktlen])
+		}
+	}
+	if gotUO, gotUE, gotSO, gotSE := rtx.lims(); gotUO != uo || gotUE != ue || gotSO != so || gotSE != se {
+		t.Fatal("retransmission changed sent/unsent buffer boundaries")
+	}
+	if !slices.Equal(rtx.slist.pkts, packets) {
+		t.Fatal("retransmission changed tracked packets")
+	}
+	testQueueSanity(t, rtx)
+	var scratch [pktlen]byte
+	next := iss + npkt*pktlen
+	if n, err := rtx.MakePacket(scratch[:], next); n != 0 || !errors.Is(err, lneto.ErrBufferFull) {
+		t.Fatalf("new packet on full queue: n=%d err=%v, want 0 and ErrBufferFull", n, err)
+	}
+	if err := rtx.RecvACK(iss + pktlen); err != nil {
+		t.Fatal(err)
+	}
+	mustRemake(t, rtx, next, stream[npkt*pktlen:])
 	testQueueSanity(t, rtx)
 }
 
