@@ -2,6 +2,7 @@ package xnet
 
 import (
 	"errors"
+	"fmt"
 	"net/netip"
 	"slices"
 	"testing"
@@ -132,6 +133,14 @@ func extractDNSTxIDAndPort(pkt []byte) (txid uint16, srcPort uint16, err error) 
 		return 0, 0, err
 	}
 	return dnsFrame.TxID(), srcPort, nil
+}
+
+// extractDNSPayload returns the DNS message of an Ethernet+IPv4+UDP+DNS packet
+// already validated by extractDNSTxIDAndPort.
+func extractDNSPayload(pkt []byte) []byte {
+	const ethHdrLen = 14
+	ipHdrLen := int(pkt[ethHdrLen]&0x0f) * 4
+	return pkt[ethHdrLen+ipHdrLen+8:]
 }
 
 // buildDNSResponsePacket builds a complete Ethernet+IP+UDP+DNS response packet.
@@ -345,12 +354,11 @@ func TestDNS_CNAMEResponse(t *testing.T) {
 	}
 }
 
-// TestDNS_CNAMEOnlyRequery verifies a response with only a CNAME is reported by
-// ResultLookupIP and followed by DoLookupIP with a query for the canonical name.
-func TestDNS_CNAMEOnlyRequery(t *testing.T) {
+// TestDNS_CNAMEOnlyResult verifies a response with only a CNAME is reported by
+// ResultLookupIP as errDNSOnlyCNAME. See TestDNS_CNAMEChainQueryLimit for requeries.
+func TestDNS_CNAMEOnlyResult(t *testing.T) {
 	const hostname = "www.example.com"
 	const alias = "cdn.example.net"
-	wantAddr := netip.MustParseAddr("192.0.2.200")
 	dnsServerAddr := netip.AddrFrom4([4]byte{8, 8, 8, 8})
 	clientAddr := netip.AddrFrom4([4]byte{10, 0, 0, 100})
 	clientMAC := [6]byte{0xde, 0xad, 0xbe, 0xef, 0x00, 0x01}
@@ -376,65 +384,133 @@ func TestDNS_CNAMEOnlyRequery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var buf [ethernet.MaxFrameLength]byte
-	queries := 0
-	// respond answers a pending query: first with only a CNAME, then with the alias A record.
-	respond := func() bool {
-		n, err := client.EgressEthernet(buf[:])
-		if err != nil || n == 0 {
-			return false
-		}
-		txid, port, err := extractDNSTxIDAndPort(buf[:n])
-		if err != nil {
-			t.Fatal("failed to extract DNS txid:", err)
-		}
-		queries++
-		qname := owner
-		ans := dns.NewResource(owner, dns.TypeCNAME, dns.ClassINET, 300, aliasWire)
-		if queries > 1 {
-			qname = aliasName
-			ans = dns.NewResource(aliasName, dns.TypeA, dns.ClassINET, 300, wantAddr.AsSlice())
-		}
-		msg := dns.Message{
-			Questions: []dns.Question{{Name: qname, Type: dns.TypeA, Class: dns.ClassINET}},
-			Answers:   []dns.Resource{ans},
-		}
-		pkt, err := buildDNSMsgResponsePacket(t, txid, port, msg, dnsServerAddr, dnsServerMAC, clientAddr, clientMAC, buf[:])
-		if err != nil {
-			t.Fatal("failed to build response packet:", err)
-		}
-		if err = client.IngressEthernet(pkt); err != nil {
-			t.Fatal("client Demux failed:", err)
-		}
-		return true
-	}
-
-	// Async: CNAME-only answer has its own error.
-	if err = client.StartLookupIP(dns.MustNewName(hostname)); err != nil {
+	if err = client.StartLookupIP(owner); err != nil {
 		t.Fatal("StartLookupIP failed:", err)
 	}
-	if !respond() {
-		t.Fatal("expected DNS query packet from client")
+	var buf [ethernet.MaxFrameLength]byte
+	n, err := client.EgressEthernet(buf[:])
+	if err != nil || n == 0 {
+		t.Fatal("expected DNS query packet from client:", err, n)
+	}
+	txid, port, err := extractDNSTxIDAndPort(buf[:n])
+	if err != nil {
+		t.Fatal("failed to extract DNS txid:", err)
+	}
+	msg := dns.Message{
+		Questions: []dns.Question{{Name: owner, Type: dns.TypeA, Class: dns.ClassINET}},
+		Answers:   []dns.Resource{dns.NewResource(owner, dns.TypeCNAME, dns.ClassINET, 300, aliasWire)},
+	}
+	pkt, err := buildDNSMsgResponsePacket(t, txid, port, msg, dnsServerAddr, dnsServerMAC, clientAddr, clientMAC, buf[:])
+	if err != nil {
+		t.Fatal("failed to build response packet:", err)
+	}
+	if err = client.IngressEthernet(pkt); err != nil {
+		t.Fatal("client Demux failed:", err)
 	}
 	_, done, err := client.ResultLookupIP(dns.MustNewName(hostname))
 	if !done || err != errDNSOnlyCNAME {
 		t.Errorf("expected done with %v, got done=%v err=%v", errDNSOnlyCNAME, done, err)
 	}
+}
 
-	// Blocking: DoLookupIP queries again for the canonical name.
-	queries = 0
-	pump := func(uint) time.Duration {
-		respond()
-		return lneto.BackoffFlagNop
-	}
-	addrs, err := client.StackBlocking(pump).DoLookupIP(dns.MustNewName(hostname), time.Second)
-	if err != nil {
-		t.Fatal("DoLookupIP failed:", err)
-	}
-	if !slices.Contains(addrs, wantAddr) {
-		t.Errorf("expected address %s not found in result %v", wantAddr, addrs)
-	}
-	if queries != 2 {
-		t.Errorf("expected 2 queries, got %d", queries)
+// TestDNS_CNAMEChainQueryLimit verifies DoLookupIP follows chains of CNAME-only
+// answers one query per hop, succeeds when the address arrives on the last
+// allowed query and fails with errDNSOnlyCNAME without exceeding maxCNAMEqueries.
+func TestDNS_CNAMEChainQueryLimit(t *testing.T) {
+	wantAddr := netip.MustParseAddr("192.0.2.200")
+	dnsServerAddr := netip.AddrFrom4([4]byte{8, 8, 8, 8})
+	clientAddr := netip.AddrFrom4([4]byte{10, 0, 0, 100})
+	clientMAC := [6]byte{0xde, 0xad, 0xbe, 0xef, 0x00, 0x01}
+	dnsServerMAC := [6]byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}
+
+	// A chain of n hops needs n+1 queries: one per CNAME-only answer plus the final A query.
+	for hops := 1; hops <= maxCNAMEqueries; hops++ {
+		wantErr := error(nil)
+		wantQueries := hops + 1
+		if wantQueries > maxCNAMEqueries {
+			wantErr = errDNSOnlyCNAME
+			wantQueries = maxCNAMEqueries
+		}
+		t.Run(fmt.Sprintf("hops=%d", hops), func(t *testing.T) {
+			client := new(StackAsync)
+			err := client.Reset(StackConfig{
+				Hostname:        "DNSClient",
+				RandSeed:        9876,
+				StaticAddress4:  clientAddr.As4(),
+				DNSServer:       dnsServerAddr,
+				HardwareAddress: clientMAC,
+				MTU:             uint16(ethernet.MaxMTU),
+			})
+			if err != nil {
+				t.Fatal("client Reset failed:", err)
+			}
+			client.SetGatewayHardwareAddr(dnsServerMAC)
+
+			// chain[i] is a CNAME to chain[i+1]; the last name has the A record.
+			chain := make([]dns.Name, hops+1)
+			chain[0] = dns.MustNewName("www.example.com")
+			for i := 1; i <= hops; i++ {
+				chain[i] = dns.MustNewName(fmt.Sprintf("cdn%d.example.net", i))
+			}
+
+			var buf [ethernet.MaxFrameLength]byte
+			var q dns.Question
+			queries := 0
+			// Server answers query i for chain[i] with a CNAME to chain[i+1], or with the A record at the chain end.
+			pump := func(uint) time.Duration {
+				n, err := client.EgressEthernet(buf[:])
+				if err != nil || n == 0 {
+					return lneto.BackoffFlagNop
+				}
+				txid, port, err := extractDNSTxIDAndPort(buf[:n])
+				if err != nil {
+					t.Fatal("failed to extract DNS txid:", err)
+				}
+				if queries >= len(chain) {
+					t.Fatalf("unexpected query #%d past chain end", queries+1)
+				}
+				if _, err = q.Decode(extractDNSPayload(buf[:n]), dns.SizeHeader); err != nil {
+					t.Fatal("failed to decode question:", err)
+				}
+				owner := chain[queries]
+				if !q.Name.EqualString(owner.String()) {
+					t.Fatalf("query #%d: want name %s, got %s", queries+1, owner.String(), q.Name.String())
+				}
+				var ans dns.Resource
+				if queries < hops {
+					target, err := chain[queries+1].AppendTo(nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					ans = dns.NewResource(owner, dns.TypeCNAME, dns.ClassINET, 300, target)
+				} else {
+					ans = dns.NewResource(owner, dns.TypeA, dns.ClassINET, 300, wantAddr.AsSlice())
+				}
+				queries++
+				msg := dns.Message{
+					Questions: []dns.Question{{Name: owner, Type: dns.TypeA, Class: dns.ClassINET}},
+					Answers:   []dns.Resource{ans},
+				}
+				pkt, err := buildDNSMsgResponsePacket(t, txid, port, msg, dnsServerAddr, dnsServerMAC, clientAddr, clientMAC, buf[:])
+				if err != nil {
+					t.Fatal("failed to build response packet:", err)
+				}
+				if err = client.IngressEthernet(pkt); err != nil {
+					t.Fatal("client Demux failed:", err)
+				}
+				return lneto.BackoffFlagNop
+			}
+
+			addrs, err := client.StackBlocking(pump).DoLookupIP(chain[0], time.Second)
+			if err != wantErr {
+				t.Fatalf("want err %v, got %v", wantErr, err)
+			}
+			if wantErr == nil && !slices.Contains(addrs, wantAddr) {
+				t.Errorf("expected address %s not found in result %v", wantAddr, addrs)
+			}
+			if queries != wantQueries {
+				t.Errorf("want %d queries, got %d", wantQueries, queries)
+			}
+		})
 	}
 }
