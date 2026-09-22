@@ -401,6 +401,12 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 		if seg.Flags.HasAny(FlagACK) {
 			tcb._state = StateTimeWait
 		}
+	case StateTimeWait:
+		// RFC 9293 §3.10.7.4: an acceptable segment here is dropped without
+		// advancing the connection. A pure ACK must not be echoed (an ACK loop);
+		// a retransmitted FIN is out of window and already drew a challenge ACK
+		// during validation.
+		return errDropSegment
 	default:
 		panic("unexpected recv state:" + tcb._state.String())
 	}
