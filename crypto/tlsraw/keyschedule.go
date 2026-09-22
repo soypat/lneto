@@ -37,7 +37,7 @@ type KeySchedule struct {
 }
 
 // Finished writes to dst the verify_data of RFC 8446 4.4.4 for the transcript so far.
-// Call [keySchedule.Zeroize] after finishing use to ensure data deleted.
+// Call [KeySchedule.Zeroize] after finishing use to ensure data deleted.
 func (ks *KeySchedule) Finished(dst, secret *[32]byte) {
 	key := ks.scratch[:]
 	ks.expandLabel(key, secret[:], "finished", nil)

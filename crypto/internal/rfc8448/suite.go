@@ -11,32 +11,27 @@ import (
 )
 
 var (
-	_ lcrypto.Suite      = AES128GCMSHA256{}
 	_ lcrypto.AEADCipher = (*gcmAEAD)(nil)
 )
 
 // errUnkeyed is returned by Open on a cipher that has not been keyed with Rekey.
 var errUnkeyed = errors.New("rfc8448: AES-GCM used before Rekey")
 
-// AES128GCMSHA256 implements [lcrypto.Suite] for TLS_AES_128_GCM_SHA256 on top of
-// the standard library. It lives here rather than in tlsraw so that tlsraw keeps
-// its crypto/* import-free guarantee; see TestNoCryptoImports.
-//
-// It is stateless and therefore safe for concurrent use, as a Suite must be.
-type AES128GCMSHA256 struct{}
+// TLS_AES_128_GCM_SHA256 described as the wire value, key length and constructors
+// a consumer needs to build its own cipher suite type, i.e: tlsauto.Suite. They
+// live here rather than in tlsraw so that tlsraw keeps its crypto/* import-free
+// guarantee; see TestNoCryptoImports.
+const (
+	AES128GCMSHA256ID     = 0x1301 // RFC 8446 B.4 wire value of TLS_AES_128_GCM_SHA256.
+	AES128GCMSHA256KeyLen = 16     // AES-128 key length in bytes.
+)
 
-// ID returns the RFC 8446 B.4 wire value of TLS_AES_128_GCM_SHA256.
-func (AES128GCMSHA256) ID() uint16 { return 0x1301 }
+// NewSHA256 returns a SHA-256 hash for the key schedule.
+func NewSHA256() hash.Hash { return sha256.New() }
 
-// KeyLen returns the AES-128 key length in bytes.
-func (AES128GCMSHA256) KeyLen() int { return 16 }
-
-// NewHash returns a SHA-256 hash for the key schedule.
-func (AES128GCMSHA256) NewHash() hash.Hash { return sha256.New() }
-
-// NewAEAD returns an unkeyed AES-GCM cipher. Rekey must be called before the
-// first Seal or Open.
-func (AES128GCMSHA256) NewAEAD() lcrypto.AEADCipher { return new(gcmAEAD) }
+// NewAES128GCM returns an unkeyed AES-GCM cipher. Rekey must be called before
+// the first Seal or Open.
+func NewAES128GCM() lcrypto.AEADCipher { return new(gcmAEAD) }
 
 // gcmAEAD adapts the standard library's AES-GCM to [lcrypto.AEADCipher].
 //

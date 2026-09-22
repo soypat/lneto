@@ -5,10 +5,13 @@
 // # Conventions
 //
 // Interface implementations consist of:
-//   - "Factories" like [Suite],[KeyExchange],[Verifier] which are shared among cryptographic
+//   - "Shared" like [Credential],[Verifier] which are consulted by several cryptographic
 //     algorithm users such as several tls.Conn's. These should be safe for concurrent use.
 //   - "Instances" like  [AEADCipher],[Exchanger] which are owned by a single consumer i.e: tls.Conn.
 //     These are not necessarily safe for concurrent use.
+//
+// lcrypto does not say how Instances come to be: the consumer constructs them,
+// as tlsauto's Suite and KeyExchange do, and keeps them for as long as it likes.
 //
 // This separation allows for Instance reuse throughout the lifetime of a consumer
 // which may want to avoid allocating a Cipher for every action performed.
@@ -18,7 +21,6 @@
 package lcrypto
 
 import (
-	"hash"
 	"io"
 )
 
@@ -41,37 +43,6 @@ type AEADCipher interface {
 	// After a call to Zeroize Rekey must be called to reuse AEADCipher.
 	// The best most standard library packages can do is drop the reference so it can be garbage collected.
 	Zeroize()
-}
-
-// Suite is the concurrent-safe factory of a TLS 1.3 cipher suite, RFC 8446 B.4.
-type Suite interface {
-	// ID returns RFC 8446 B.4 wire value used to define cipher suite used.
-	// Matched on offer for a TLS conn:
-	//  for _, s := range conn.suites {
-	//  	if s.ID() == offered { c.suite = s; break }
-	//  }
-	ID() uint16
-	// NewAEAD returns an unkeyed record cipher. Callers call once
-	// per connection and can reuse previously created ciphers.
-	NewAEAD() AEADCipher
-	// NewHash returns a hash for the suite's key schedule. It allocates, so
-	// callers construct one per connection and call Reset to reuse it.
-	NewHash() hash.Hash
-	// KeyLen is the length in bytes of the key passed to [AEADCipher.Rekey].
-	KeyLen() int
-}
-
-// KeyExchange is the concurrent-safe factory half of an ephemeral key agreement
-// group, RFC 8446 4.2.8.
-type KeyExchange interface {
-	// ID returns the RFC 8446 B.3.1.4 NamedGroup wire value.
-	ID() uint16
-	// NewExchanger returns an unkeyed Exchanger. Callers build one per
-	// connection and call ClientGenerateRekey or ServerSharedRekey to reuse.
-	NewExchanger() Exchanger
-	// SharedLen returns the length of the client key_share, the server
-	// key_share (a ciphertext for KEM groups) and the shared secret.
-	SharedLen() (clientShare, serverShare, shared int)
 }
 
 // Exchanger implements the core key exchange logic i.e: Diffie-Hellman or ML-KEM.
@@ -106,12 +77,12 @@ type Exchanger interface {
 // Credential models the local root of trust ([CertChain]) and the proof
 // of ownership of that trust ([Credential.Scheme],[Credential.Sign]).
 // Credential is the "offering" counterpart of the "receiving" [Verifier]
-// during credential authetication.
+// during credential authentication.
 type Credential interface {
 	// CertChain is the local root of trust.
 	CertChain
 
-	// Scheme returns the RFC 8448 SignatureScheme used to sign, chosen
+	// Scheme returns the RFC 8446 B.3.1.3 SignatureScheme used to sign, chosen
 	// from those the peer offered or 0 if none supported.
 	//
 	// offered is remote: the peer's signature_algorithms extension, unvalidated.
@@ -148,7 +119,7 @@ type Verifier interface {
 	//    handshake transcript hash], built by the caller. Implementations verify msg as given.
 	//  - sig is the signature from the peer's CertificateVerify, remote and potentially adversarial.
 	//
-	// chain, serverName, msg and sig are only valid for the duration of the call and must not be
+	// chainView, serverName, msg and sig are only valid for the duration of the call and must not be
 	// retained or modified: they point into the caller's buffers, which are reused by the next connection.
 	VerifyPeer(chainView CertChain, peerIsServer bool, scheme uint16, serverName, msg, sig []byte) error
 }
@@ -167,6 +138,7 @@ type CertChain interface {
 	Cert(dst []byte, i int) (n int, err error)
 	// CertView returns the i'th (leafs first) DER certificate without copying. It is an alternative
 	// to Cert used in cases where the caller knows the CertChain is in memory i.e: [Verifier.VerifyPeer].
-	// CertView may choose to panic when not addressable. Do not mutate returned slice.
+	// CertView may choose to panic when not addressable, so a chain passed to
+	// [Verifier.VerifyPeer] must implement it. Do not mutate returned slice.
 	CertView(i int) ([]byte, error)
 }

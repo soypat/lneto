@@ -8,7 +8,8 @@ import (
 	"github.com/soypat/lneto/crypto/internal/lcrypto"
 )
 
-// HalfConn protects the TLS_AES_128_GCM_SHA256 records of one direction, RFC 8446 5.2.
+// HalfConn protects the records of one direction, RFC 8446 5.2. It works with any
+// AEAD of the TLS 1.3 suites: 12 byte nonce and 16 byte tag, checked by SetAEAD.
 // Seal and Open do not allocate and work in place. Buffers passed to an AEAD
 // escape to the heap, so the nonce lives in the struct.
 type HalfConn struct {

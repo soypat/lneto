@@ -13,9 +13,6 @@ import (
 	"github.com/soypat/lneto/crypto/internal/rfc8448"
 )
 
-// suite is the cipher suite of the RFC 8448 trace, TLS_AES_128_GCM_SHA256.
-var suite lcrypto.Suite = rfc8448.AES128GCMSHA256{}
-
 // TestHandshakeRFC8448 walks the Simple 1-RTT Handshake of RFC 8448 3 from the server side.
 func TestHandshakeRFC8448(t *testing.T) {
 	const paranoid = true
@@ -111,7 +108,7 @@ func TestHandshakeRFC8448(t *testing.T) {
 	// Key schedule, handshake stage.
 	// We use bytes.Equal but should use subtle package for constant time comparisons to prevent timing attacks!
 	var ks KeySchedule
-	ks.Reset(suite.NewHash(), suite.NewHash(), paranoid)
+	ks.Reset(rfc8448.NewSHA256(), rfc8448.NewSHA256(), paranoid)
 	ks.AddMessage(rfc8448.ClientHello)
 	ks.AddMessage(rfc8448.ServerHello)
 	if ks.TranscriptHash(&scratch); !bytes.Equal(scratch[:], rfc8448.HelloHash) {
@@ -235,11 +232,11 @@ func walkExtensions(t *testing.T, exts []byte, sentByServer bool, fn func(Extens
 	}
 }
 
-// newGCM returns a record cipher keyed with key, built from the suite under
-// test. tlsraw itself never constructs cipher state; the caller owns it.
+// newGCM returns a record cipher keyed with key, the AES-128-GCM of the RFC 8448
+// trace. tlsraw itself never constructs cipher state; the caller owns it.
 func newGCM(t *testing.T, key []byte) lcrypto.AEADCipher {
 	t.Helper()
-	aead := suite.NewAEAD()
+	aead := rfc8448.NewAES128GCM()
 	if err := aead.Rekey(key); err != nil {
 		t.Fatal(err)
 	}
