@@ -35,6 +35,9 @@ func (hc *HalfConn) SetAEAD(aead lcrypto.AEADCipher, iv [12]byte) error {
 // Seal protects the content in rec[SizeHeaderRecord:] in place and returns the
 // complete record. rec's capacity must fit the content type byte and AEAD tag.
 func (hc *HalfConn) Seal(rec []byte, ct ContentType) ([]byte, error) {
+	if !hc.HasKeys() {
+		return nil, lneto.ErrBadState // zeroed; Needs SetAEAD to install the keys.
+	}
 	overhead := 1 + hc.aead.Overhead()
 	if len(rec) < SizeHeaderRecord {
 		return nil, lneto.ErrShortBuffer
@@ -56,6 +59,9 @@ func (hc *HalfConn) Seal(rec []byte, ct ContentType) ([]byte, error) {
 
 // Open decrypts a complete record in place and returns its content and real content type.
 func (hc *HalfConn) Open(rec []byte) (content []byte, ct ContentType, err error) {
+	if !hc.HasKeys() {
+		return nil, 0, lneto.ErrBadState // zeroed; Needs SetAEAD to install the keys.
+	}
 	if len(rec) < SizeHeaderRecord+1+hc.aead.Overhead() {
 		return nil, 0, lneto.ErrTruncatedFrame
 	} else if ContentType(rec[0]) != ContentTypeApplicationData {

@@ -1,5 +1,6 @@
 /*
 package tlsraw implements low level TLS 1.3 functionality.
+This package is not externally audited. Use only if you understand the risks.
 
 It prioritizes readability and security. Performance is a secondary priority.
 An example of this focus can be appreciated in [HelloClientMsg.Decode] which

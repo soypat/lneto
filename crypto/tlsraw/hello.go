@@ -207,7 +207,7 @@ func (ef ExtensionFrame) ValidateType(vld *lneto.Validator, sentByServer bool) (
 			err = validateServerNames(data)
 		}
 	case ExtALPN:
-		err = validateALPN(data)
+		err = validateALPN(data, sentByServer)
 	case ExtSupportedGroups, ExtSignatureAlgorithms, ExtSignatureAlgorithmsCert:
 		if err = checkVec16(data); err != nil {
 			break
@@ -236,7 +236,7 @@ func (ef ExtensionFrame) ValidateType(vld *lneto.Validator, sentByServer bool) (
 	return checked
 }
 
-func validateALPN(data []byte) error {
+func validateALPN(data []byte, sentByServer bool) error {
 	// Shortest valid list is a single one-byte protocol name.
 	if len(data) < 2+2 {
 		return lneto.ErrTruncatedFrame
@@ -244,6 +244,11 @@ func validateALPN(data []byte) error {
 		return err
 	}
 	data = data[2:]
+	if sentByServer {
+		// A server names the one protocol it selected, RFC 7301 3.2, so the
+		// single name fills the list. checkVec8 also rejects a zero-length name.
+		return checkVec8(data)
+	}
 	for off := 0; off < len(data); {
 		n := int(data[off])
 		off++
@@ -258,6 +263,10 @@ func validateALPN(data []byte) error {
 	return nil
 }
 
+// validateServerNames validates a client's ServerNameList. It accepts the single
+// host_name entry a TLS 1.3 client sends and nothing else: RFC 6066 3 permits at
+// most one name per name_type and host_name is the only type ever defined, so a
+// longer list is a peer doing something this stack has no reading of.
 func validateServerNames(data []byte) error {
 	// Shortest valid list is a single entry with a one-byte host name.
 	if len(data) < 2+4 {
@@ -266,18 +275,16 @@ func validateServerNames(data []byte) error {
 		return err
 	}
 	data = data[2:]
-	for off := 0; off < len(data); {
-		if len(data)-off < 3 {
-			return lneto.ErrTruncatedFrame
-		}
-		n := int(binary.BigEndian.Uint16(data[off+1 : off+3]))
-		off += 3
-		if n == 0 {
-			return lneto.ErrInvalidLengthField
-		} else if n > len(data)-off {
-			return lneto.ErrTruncatedFrame
-		}
-		off += n
+	if data[0] != 0 {
+		return lneto.ErrInvalidField // Not host_name.
+	}
+	n := int(binary.BigEndian.Uint16(data[1:3]))
+	data = data[3:]
+	if n > len(data) {
+		return lneto.ErrTruncatedFrame
+	} else if n == 0 || n != len(data) {
+		// A zero-length name, or a second entry after the first.
+		return lneto.ErrInvalidLengthField
 	}
 	return nil
 }

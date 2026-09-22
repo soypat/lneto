@@ -26,6 +26,7 @@ Userspace networking primitives.
     - Only one networking interface fulfilled by all implementations. See [abstractions](#abstractions).
 - Stack can be fuzz tested efficiently, see benchmarks below: 
     - `go test ./x/xnet/ -run FuzzStackAsyncHTTP -fuzz=.` fuzzes Ethernet/IP/TCP/HTTP stack with 170k HTTP exchanges per second on 12 core machine: `fuzz: elapsed: 4m9s, execs: 42649941 (169428/sec), new interesting: 5 (total: 52)`
+- TLS: Heapless and memory constrained for use on microcontrollers. Not externally audited, use only if you understand the risks!
 
 ## [`min-working-example`](./examples/min-working-example/) - Quick lneto showcase
 Get a quick showcase of how lneto can be configured and how to get a TCP listening server up and running.
