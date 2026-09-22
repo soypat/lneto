@@ -71,6 +71,88 @@ func TestHandler_DupACKRetransmitAfterClose(t *testing.T) {
 	}
 }
 
+func TestHandler_DupACKWithOutstandingFIN(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		data    bool
+		ackData bool
+	}{
+		{name: "FIN-only"},
+		{name: "one-byte-outstanding", data: true},
+		{name: "last-byte-acknowledged", data: true, ackData: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client, server := newHandler(t, 1024, 3), newHandler(t, 1024, 3)
+			setupClientServer(t, rand.New(rand.NewSource(1)), client, server)
+			buf := make([]byte, 1024)
+			establish(t, client, server, buf)
+			una := client.scb.snd.UNA
+			if test.data {
+				if n, err := client.Write([]byte("x")); n != 1 || err != nil {
+					t.Fatalf("Write = %d, %v", n, err)
+				}
+				if n, err := client.Send(buf); n != sizeHeaderTCP+1 || err != nil {
+					t.Fatalf("data Send = %d, %v", n, err)
+				}
+			}
+			if err := client.Close(); err != nil {
+				t.Fatal(err)
+			}
+			n, err := client.Send(buf)
+			if n != sizeHeaderTCP || err != nil {
+				t.Fatalf("FIN Send = %d, %v", n, err)
+			}
+			if fin := mustSegment(t, buf[:n], 0); !fin.Flags.HasAny(FlagFIN) || client.State() != StateFinWait1 {
+				t.Fatalf("FIN = %v, state = %v", fin, client.State())
+			}
+			next := client.scb.SendNext()
+			ack := server.scb.MakeChallengeACK()
+			if test.ackData {
+				ack.ACK = una + 1
+			}
+			frame, _ := NewFrame(buf[:sizeHeaderTCP])
+			frame.ClearHeader()
+			frame.SetSourcePort(server.LocalPort())
+			frame.SetDestinationPort(client.LocalPort())
+			frame.SetSegment(ack, 5)
+			if test.ackData {
+				if err := client.Recv(buf[:sizeHeaderTCP]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for range retransmitAfterDupacks {
+				if err := client.Recv(buf[:sizeHeaderTCP]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			wantData := test.data && !test.ackData
+			if got := client.scb.HasPendingRetransmit(); got != wantData {
+				t.Errorf("HasPendingRetransmit = %v, want %v", got, wantData)
+			}
+			n, err = client.Send(buf)
+			if wantData {
+				if err != nil || n != sizeHeaderTCP+1 {
+					t.Fatalf("retransmit Send = %d, %v", n, err)
+				}
+				if seg := mustSegment(t, buf[:n], 1); seg.SEQ != una || buf[sizeHeaderTCP] != 'x' || client.scb.nRetransmit != 1 {
+					t.Fatalf("retransmission = %v, payload = %q, count = %d", seg, buf[sizeHeaderTCP:n], client.scb.nRetransmit)
+				}
+			} else if n != 0 || err != nil || client.scb.nRetransmit != 0 {
+				t.Errorf("FIN-only Send = %d, %v, retransmits = %d", n, err, client.scb.nRetransmit)
+			}
+			if client.scb.HasPending() {
+				t.Error("retransmission left pending work")
+			}
+			if n, err := client.Send(buf); n != 0 || err != nil {
+				t.Errorf("idle Send = %d, %v", n, err)
+			}
+			if client.scb.SendNext() != next || client.State() != StateFinWait1 {
+				t.Fatalf("NXT=%d, state=%v; want NXT=%d, FIN-WAIT-1", client.scb.SendNext(), client.State(), next)
+			}
+		})
+	}
+}
+
 func TestHandler(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	const maxpackets = 3

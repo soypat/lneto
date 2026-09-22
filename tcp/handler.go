@@ -272,6 +272,11 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 			// Update TX ring buffer to free up acked data.
 			h.bufTx.RecvACK(segIncoming.ACK)
 		}
+		if h.bufTx.BufferedSent() == 0 {
+			// FIN occupies sequence space but is not retransmittable payload.
+			h.scb.dupack = 0
+			h.scb.nRetransmit = 0
+		}
 	}
 	if segIncoming.Flags.HasAny(FlagSYN) {
 		// Parse remote MSS from TCP options.
