@@ -16,9 +16,50 @@ jobs:
     if: github.event.workflow_run.event == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       pull-requests: write
     steps:
-      - uses: soypat/memci/comment@main
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
         with:
+          name: memci-report
+          path: ${{ runner.temp }}/memci
           run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Post memci report
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          HEAD_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          prs="$(gh api --method GET "repos/${REPO}/pulls" --paginate \
+            -f state=open -f head="${HEAD_OWNER}:${HEAD_BRANCH}" \
+            -f per_page=100 | jq -s --arg repo "$HEAD_REPO" --arg sha "$HEAD_SHA" \
+            '[.[][] | select(.head.repo.full_name == $repo and .head.sha == $sha)]')"
+          if [ "$(jq 'length' <<< "$prs")" -ne 1 ]; then
+            echo "No unique open PR at ${HEAD_SHA}; nothing to comment."
+            exit 0
+          fi
+          pr="$(jq -r '.[0].number' <<< "$prs")"
+
+          report="${RUNNER_TEMP}/memci/memci-report.md"
+          marker='<!-- memci -->'
+          [ "$(head -n1 "$report")" = "$marker" ] || { echo "::error::not a memci report"; exit 1; }
+          [ "$(wc -c < "$report")" -le 65536 ] || { echo "::error::report too large to post"; exit 1; }
+
+          id="$(gh api "repos/${REPO}/issues/${pr}/comments" --paginate | \
+            jq -s --arg marker "$marker" \
+            '[.[][] | select(.user.login == "github-actions[bot]" and (.body | startswith($marker)))][0].id // empty')"
+          if [ -n "$id" ]; then
+            jq -n --rawfile body "$report" '{body: $body}' |
+              gh api --method PATCH "repos/${REPO}/issues/comments/${id}" --input -
+          else
+            jq -n --rawfile body "$report" '{body: $body}' |
+              gh api --method POST "repos/${REPO}/issues/${pr}/comments" --input -
+          fi
