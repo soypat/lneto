@@ -13,10 +13,13 @@ import (
 // Seal and Open do not allocate and work in place. Buffers passed to an AEAD
 // escape to the heap, so the nonce lives in the struct.
 type HalfConn struct {
+	// TODO(soypat): seq, iv and nonce are redundant; any one is derivable from the
+	// other two, saving 8 bytes here (48->40 after alignment). Benchmark the stdlib
+	// XOR-in/out-of-iv pattern against this copy before dropping a field.
+	seq   uint64
 	aead  lcrypto.AEADCipher
 	iv    [12]byte
 	nonce [12]byte // Per-record nonce: iv XOR sequence number.
-	seq   uint64
 }
 
 // SetAEAD installs the AEAD keyed with a traffic key and the matching IV, and
@@ -26,9 +29,9 @@ func (hc *HalfConn) SetAEAD(aead lcrypto.AEADCipher, iv [12]byte) error {
 	if aead.NonceSize() != len(iv) || aead.Overhead() != SizeAEADTag {
 		return lneto.ErrInvalidConfig
 	}
+	hc.seq = 0
 	hc.aead = aead
 	hc.iv = iv
-	hc.seq = 0
 	return nil
 }
 
