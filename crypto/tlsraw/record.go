@@ -108,4 +108,9 @@ func (hc *HalfConn) nextNonce() error {
 func (hc *HalfConn) HasKeys() bool { return hc.aead != nil }
 
 // Zeroize forgets the keys. SetAEAD must be called before reuse.
-func (hc *HalfConn) Zeroize() { *hc = HalfConn{} }
+func (hc *HalfConn) Zeroize() {
+	*hc = HalfConn{
+		aead: hc.aead,
+	}
+	hc.aead.Zeroize()
+}
