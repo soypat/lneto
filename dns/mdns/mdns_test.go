@@ -11,7 +11,8 @@ import (
 )
 
 func mustNewName(s string) dns.Name {
-	n, err := dns.NewName(s)
+	var n dns.Name
+	err := n.Parse(s)
 	if err != nil {
 		panic(err)
 	}
