@@ -100,28 +100,21 @@ type Credential interface {
 	Sign(sig, msg []byte, selectedScheme uint16) (n int, err error)
 }
 
-// Verifier judges the peer's identity. It subsumes trust anchors, hostname
-// matching and expiry so the policy cannot be configured apart, and keeps
+// Verifier judges the peer's identity. It subsumes trust anchors, identity
+// matching (name or address) and expiry so the policy cannot be configured apart, and keeps
 // X.509 parsing out of lneto. Counterpart of [Credential]. Verifier can be used concurrently.
 type Verifier interface {
-	// VerifyPeer returns nil to accept the peer. It judges the chain (trust anchors, serverName,
-	// expiry, key usage for the peer's role) and checks that sig is the leaf key's signature of msg
-	// under scheme. A nil return is the only way a peer becomes authenticated. A bad signature on an
-	// otherwise acceptable chain returns [lneto.ErrBadSignature].
+	// VerifyPeer returns nil to accept the peer. Nil return signals that sig is the leaf key's signature of msg under the scheme.
+	// Do not retain or modify slices.
 	//
-	//  - chainView is remote and potentially adversarial. Its certificates are read with [CertChain.CertView].
-	//  - peerIsServer=true when chainView is the server in interaction, so the leaf must allow serverAuth.
-	//    peerIsServer=false when chainView is a client presenting a certificate for mutual TLS (clientAuth).
-	//  - scheme is the RFC 8446 B.3.1.3 SignatureScheme of the peer's CertificateVerify. The caller has
-	//    checked it is one it offered; the implementation must check it suits the leaf's key type.
-	//  - serverName is the name the leaf must match, the SNI sent by the client. Empty when peerIsServer=false.
-	//  - msg is the complete, unhashed RFC 8446 4.4.3 content: [64B pfx, context string, 0x00,
-	//    handshake transcript hash], built by the caller. Implementations verify msg as given.
-	//  - sig is the signature from the peer's CertificateVerify, remote and potentially adversarial.
-	//
-	// chainView, serverName, msg and sig are only valid for the duration of the call and must not be
-	// retained or modified: they point into the caller's buffers, which are reused by the next connection.
-	VerifyPeer(chainView CertChain, peerIsServer bool, scheme uint16, serverName, msg, sig []byte) error
+	//  - chainView is remote [CertChain] and potentially adversarial.
+	//  - scheme is peer's [Credential.Scheme] of CertificateVerify. VerifyPeer checks if it suits the leaf's key type.
+	//  - peerIsServer=true signals chainView is server(peer) so leaf must allow serverAuth.
+	//    peerIsServer=false when chainView is client presenting a certificate for mutual TLS (clientAuth).
+	//  - expectName is expected DNS name or IP literal (i.e:"10.0.0.1") configured before connection when peerIsServer=true.
+	//	- msg is RFC 8446 4.4.3 content: [64B pfx, context string, 0x00, handshake transcript hash]
+	//  - sig is remote peer's [Credential.Sign]. Treat as adversarial.
+	VerifyPeer(chainView CertChain, scheme uint16, peerIsServer bool, expectName, msg, sig []byte) error
 }
 
 // CertChain is a DER certificate chain ordered with server (leaf) certs first
