@@ -380,21 +380,23 @@ func (m *Message) CanonicalName(host Name) (cname Name) {
 }
 
 func (m *Message) Len() uint16 {
-	return SizeHeader + m.lenResources()
+	return uint16(SizeHeader + m.lenResources())
 }
 
-func (m *Message) lenResources() (l uint16) {
+// lenResources returns the wire length of all sections. It is an int so
+// [Message.Validate] can detect messages that overflow the uint16 [Message.Len].
+func (m *Message) lenResources() (l int) {
 	for i := range m.Questions {
-		l += m.Questions[i].Len()
+		l += int(m.Questions[i].Len())
 	}
 	for i := range m.Answers {
-		l += m.Answers[i].Len()
+		l += int(m.Answers[i].Len())
 	}
 	for i := range m.Authorities {
-		l += m.Authorities[i].Len()
+		l += int(m.Authorities[i].Len())
 	}
 	for i := range m.Additionals {
-		l += m.Additionals[i].Len()
+		l += int(m.Additionals[i].Len())
 	}
 	return l
 }
@@ -417,6 +419,67 @@ func (m *Message) AddAdditionals(rsc []Resource) {
 	for i := range rsc {
 		m.Additionals[aoff+i].CopyFrom(rsc[i])
 	}
+}
+
+// Validate checks m can be encoded by [Message.AppendTo] into a well-formed DNS message.
+func (m *Message) Validate(vld *lneto.Validator) {
+	if SizeHeader+m.lenResources() > math.MaxUint16 {
+		vld.AddError(errResTooLong)
+		return
+	}
+	for i := range m.Questions {
+		if err := m.Questions[i].Name.validate(); err != nil {
+			vld.AddError(err)
+		}
+	}
+	validateResources(vld, m.Answers, false)
+	validateResources(vld, m.Authorities, false)
+	validateResources(vld, m.Additionals, true)
+}
+
+// validateResources validates each resource. OPT records are only valid
+// in the additional section, at most once (RFC 6891 section 6.1.1).
+func validateResources(vld *lneto.Validator, rs []Resource, isAdditional bool) {
+	seenOPT := false
+	for i := range rs {
+		r := &rs[i]
+		if err := r.validate(); err != nil {
+			vld.AddError(err)
+		}
+		if r.header.Type == TypeOPT {
+			if !isAdditional || seenOPT {
+				vld.AddError(lneto.ErrInvalidField)
+			}
+			seenOPT = true
+		}
+	}
+}
+
+func (r *Resource) validate() error {
+	if err := r.header.Name.validate(); err != nil {
+		return err
+	} else if int(r.header.Length) != len(r.data) {
+		return lneto.ErrInvalidLengthField // appendTo writes both as they are.
+	}
+	switch r.header.Type {
+	case TypeA:
+		if len(r.data) != 4 {
+			return lneto.ErrInvalidAddr
+		}
+	case TypeAAAA:
+		if len(r.data) != 16 {
+			return lneto.ErrInvalidAddr
+		}
+	case TypeCNAME:
+		cname := r.CNAMEView()
+		return cname.validate()
+	case TypeOPT:
+		if !NamesEqual(r.header.Name, Name{data: rootDomain}) {
+			return errInvalidName
+		}
+		// TODO: TXT, SRV, MX checks. Parsers yet unimplemented.
+	}
+	return nil
 }
 
 // LimitResourceDecoding sets the maximum number of resources that can be decoded
@@ -808,11 +871,28 @@ func (n *Name) isTerminated() bool {
 }
 
 func (n *Name) VisitLabels(fn func(label []byte)) error {
-	if len(n.data) > 255 {
-		return errNameTooLong
-	}
-	_, err := visitAllLabels(n.data, 0, fn, allowCompression)
+	_, err := n.visitLabels(fn)
 	return err
+}
+
+// visitLabels visits the labels of n and returns the offset past its terminator.
+// Pointers are rejected: n is detached from the message they would point into.
+func (n *Name) visitLabels(fn func(label []byte)) (uint16, error) {
+	if len(n.data) > 255 {
+		return 0, errNameTooLong
+	}
+	return visitAllLabels(n.data, 0, fn, !allowCompression)
+}
+
+// validate checks n is a single terminated, uncompressed name with no trailing data.
+func (n *Name) validate() error {
+	end, err := n.visitLabels(func([]byte) {})
+	if err != nil {
+		return err
+	} else if int(end) != len(n.data) {
+		return errInvalidName
+	}
+	return nil
 }
 
 func append16(b []byte, v uint16) []byte {
