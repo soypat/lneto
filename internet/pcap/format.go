@@ -136,6 +136,9 @@ func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, p
 	name := field.Name
 	if name == "" {
 		name = field.Class.String()
+		if field.Flags.IsEncrypted() {
+			name = "encrypted"
+		}
 	}
 	hasSpaces := strings.IndexByte(name, ' ') >= 0
 	if hasSpaces {
@@ -191,8 +194,10 @@ func (f *Formatter) formatField(dst []byte, pktStartOff int, field FrameField, p
 		nameOff := field.FrameBitOffset / 8
 		dst = dnsAppendDottedName(dst, dnsMsg, nameOff)
 	case FieldClassDst, FieldClassSrc, FieldClassSize, FieldClassAddress, FieldClassOperation:
-		// IP, MAC addresses and ports.
-		if field.BitLength <= 16 {
+		// IP, MAC addresses and ports. Sizes are always numbers, never
+		// addresses, so a wide one such as the TLS 24-bit handshake length is
+		// still printed in decimal.
+		if field.BitLength <= 16 || field.Class == FieldClassSize && field.BitLength <= 64 {
 			v, err := f.fieldAsUint(pkt, fieldBitStart, field.BitLength, field.Flags.IsRightAligned())
 			if err != nil {
 				return dst, err

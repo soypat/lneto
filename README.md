@@ -26,6 +26,7 @@ Userspace networking primitives.
     - Only one networking interface fulfilled by all implementations. See [abstractions](#abstractions).
 - Stack can be fuzz tested efficiently, see benchmarks below: 
     - `go test ./x/xnet/ -run FuzzStackAsyncHTTP -fuzz=.` fuzzes Ethernet/IP/TCP/HTTP stack with 170k HTTP exchanges per second on 12 core machine: `fuzz: elapsed: 4m9s, execs: 42649941 (169428/sec), new interesting: 5 (total: 52)`
+- TLS: Heapless and memory constrained for use on microcontrollers. Not externally audited, use only if you understand the risks!
 
 ## [`min-working-example`](./examples/min-working-example/) - Quick lneto showcase
 Get a quick showcase of how lneto can be configured and how to get a TCP listening server up and running.
@@ -112,7 +113,7 @@ ok      github.com/soypat/lneto/x/xnet  2.926s
 | DHCPv6 DNS Configuration | RFC 3646 | 🟡 | `dhcp/dhcpv6` | — | Recursive DNS server and domain search options parsed and exposed |
 | DHCPv6 NTP Configuration | RFC 5908 | ✅ | `dhcp/dhcpv6` | — | NTP server address, multicast address, and FQDN suboptions parsed and exposed |
 | DHCPv6 | RFC 8415 | 🟡 | `dhcp/dhcpv6` | — | Client IA_NA/IA_PD request handling and reconfigure-renew; no relay agent or dynamic server pools |
-| TLS 1.3 | RFC 8446 | ❌ | — | — | Not implemented |
+| TLS 1.3 | RFC 8446 | 🟡 | `crypto/tlsraw` | 0 | TLS low-level record parsing and packet capture. No server/client state. |
 
 ¹ `BenchmarkARPExchange` — full ARP request/response exchange over Ethernet: **0 B/op, 0 allocs/op**
 ² `BenchmarkTCPHandshake` — TCP 3-way handshake over Ethernet/IPv4: **0 B/op, 0 allocs/op**
