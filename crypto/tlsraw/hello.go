@@ -436,6 +436,10 @@ func (e *Encoder) Rest() []byte {
 
 func (e *Encoder) Advance(n int) { e.next(n) }
 
+// Reserve commits n bytes and returns them to be written into.
+// Reserve returns nil if n bytes don't fit or if Encoder is in failed state.
+func (e *Encoder) Reserve(n int) []byte { return e.next(n) }
+
 // Open reserves a length prefix of width bytes and returns where its content starts.
 func (e *Encoder) Open(width int) (start int) {
 	e.next(width)
