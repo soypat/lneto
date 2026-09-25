@@ -25,13 +25,13 @@ type HalfConn struct {
 // SetAEAD installs the AEAD keyed with a traffic key and the matching IV, and
 // restarts the sequence number. The caller owns construction of aead so that
 // lneto never allocates cipher state.
-func (hc *HalfConn) SetAEAD(aead lcrypto.AEADCipher, iv [12]byte) error {
+func (hc *HalfConn) SetAEAD(aead lcrypto.AEADCipher, iv *[12]byte) error {
 	if aead.NonceSize() != len(iv) || aead.Overhead() != SizeAEADTag {
 		return lneto.ErrInvalidConfig
 	}
 	hc.seq = 0
 	hc.aead = aead
-	hc.iv = iv
+	hc.iv = *iv
 	return nil
 }
 

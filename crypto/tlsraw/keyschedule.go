@@ -5,6 +5,7 @@ import (
 	"hash"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/crypto/internal/lcrypto"
 )
 
 const (
@@ -144,6 +145,43 @@ func (ks *KeySchedule) Keys(key, secret []byte, iv *[12]byte) {
 	ks.mustSize(secret)
 	ks.expandLabel(key, secret, "key", nil)
 	ks.expandLabel(iv[:], secret, "iv", nil)
+}
+
+// InstallKeys derives record protection key and IV of secret and installs them on hc with aead.
+// This ensures the traffic key lifetime is contained within this function call and cleared on return.
+//   - keyLen is negotiated Suite's AEAD key length
+//   - len(secret)==[KeySchedule.Size]
+//
+// On error hc is left untouched or Zeroize'd. InstallKeys is equivalent to
+//
+//	var key [keylen]byte
+//	ks.Keys(key[:], secret, &iv)
+//	aead.Rekey(key[:])
+//	hc.SetAEAD(aead, iv)
+//	clear(key[:])
+func (ks *KeySchedule) InstallKeys(hc *HalfConn, aead lcrypto.AEADCipher, keyLen int, secret []byte) error {
+	ks.mustSize(secret)
+	if keyLen <= 0 || keyLen > ks.size {
+		// prevent panic in HKDF expand block.
+		return lneto.ErrInvalidConfig
+	}
+	var iv [12]byte
+	ks.expandLabel(iv[:], secret, "iv", nil)
+	err := hc.SetAEAD(aead, &iv)
+	if err != nil {
+		return err // Capture early failure due to invalid AEAD.
+	}
+	key := ks.scratch[:keyLen]
+	ks.expandLabel(key, secret, "key", nil)
+	// Rekey and unconditionally clear key since AEAD stores it.
+	err = aead.Rekey(key)
+	clear(key)
+	clear(ks.sum[:ks.size])
+	if err != nil {
+		hc.Zeroize() // Prevent halfconn/keysched half-state.
+		return err
+	}
+	return nil
 }
 
 func (ks *KeySchedule) advance(ikm []byte) {

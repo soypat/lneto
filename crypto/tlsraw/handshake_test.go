@@ -157,7 +157,7 @@ func TestHandshakeRFC8448(t *testing.T) {
 
 	// Server seals its encrypted flight into a single record.
 	var sConn HalfConn
-	if err := sConn.SetAEAD(newGCM(t, sKey[:]), sIV); err != nil {
+	if err := sConn.SetAEAD(newGCM(t, sKey[:]), &sIV); err != nil {
 		t.Fatal(err)
 	}
 	flight := make([]byte, SizeHeaderRecord, MaxRecord)
@@ -174,7 +174,7 @@ func TestHandshakeRFC8448(t *testing.T) {
 	// Server opens the client Finished record.
 	var cConn HalfConn
 	ks.Keys(cKey[:], cHS[:], &cIV)
-	if err := cConn.SetAEAD(newGCM(t, cKey[:]), cIV); err != nil {
+	if err := cConn.SetAEAD(newGCM(t, cKey[:]), &cIV); err != nil {
 		t.Fatal(err)
 	}
 	allocs := testing.AllocsPerRun(10, func() {

@@ -35,7 +35,7 @@ type AEADCipher interface {
 	Seal(dst, nonce, plaintext, additionalData []byte) []byte           // Seal implements cipher.AEAD.
 	Open(dst, nonce, ciphertext, additionalData []byte) ([]byte, error) // Open implements cipher.AEAD.
 
-	// Rekey discards current key and installs a new one leaving cipher ready for use.
+	// Rekey discards current key and installs a new one leaving cipher ready for use. Rekey must not hold the reference after returning.
 	//
 	// key is local: a traffic key derived by the key schedule, never peer data.
 	Rekey(key []byte) error
