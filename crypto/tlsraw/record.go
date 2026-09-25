@@ -109,8 +109,8 @@ func (hc *HalfConn) HasKeys() bool { return hc.aead != nil }
 
 // Zeroize forgets the keys. SetAEAD must be called before reuse.
 func (hc *HalfConn) Zeroize() {
-	*hc = HalfConn{
-		aead: hc.aead,
+	if hc.HasKeys() {
+		hc.aead.Zeroize()
 	}
-	hc.aead.Zeroize()
+	*hc = HalfConn{} // "Removes" keys. HasKeys returns false after Zeroize.
 }
