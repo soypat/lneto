@@ -711,6 +711,82 @@ func TestFinWait1_PartialACK_StaysInFinWait1(t *testing.T) {
 	}
 }
 
+// TestClose_PartialACKDoesNotAdvance verifies RFC 9293 §3.10.7.4: in LAST-ACK
+// and CLOSING an ACK that covers earlier data but not our FIN must not advance
+// the connection. Only an ACK of the FIN (seg.ACK == snd.NXT) closes LAST-ACK or
+// moves CLOSING to TIME-WAIT.
+func TestClose_PartialACKDoesNotAdvance(t *testing.T) {
+	const issA, issB, windowA, windowB = 1, 127, 2000, 2000
+	const dataLen = 1192
+
+	t.Run("LAST-ACK", func(t *testing.T) {
+		var tcb tcp.ControlBlock
+		tcb.HelperInitState(tcp.StateEstablished, issA, issA, windowA)
+		tcb.HelperInitRcv(issB, issB, windowB)
+		tcb.HelperExchange(t, []tcp.Exchange{
+			0: { // Local sends data.
+				Outgoing:  &tcp.Segment{SEQ: issA, ACK: issB, Flags: PSHACK, WND: windowA, DATALEN: dataLen},
+				WantState: tcp.StateEstablished,
+			},
+			1: { // Peer acknowledges the data.
+				Incoming:  &tcp.Segment{SEQ: issB, ACK: issA + dataLen, Flags: tcp.FlagACK, WND: windowB},
+				WantState: tcp.StateEstablished,
+			},
+			2: { // Peer sends FIN|ACK. Local enters CLOSE-WAIT.
+				Incoming:    &tcp.Segment{SEQ: issB, ACK: issA + dataLen, Flags: FINACK, WND: windowB},
+				WantPending: &tcp.Segment{SEQ: issA + dataLen, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
+				WantState:   tcp.StateCloseWait,
+			},
+			3: { // Local closes and sends its FIN|ACK. snd.NXT = issA+dataLen+1.
+				Outgoing:  &tcp.Segment{SEQ: issA + dataLen, ACK: issB + 1, Flags: FINACK, WND: windowA},
+				WantState: tcp.StateLastAck,
+			},
+			4: { // Partial ACK acks data but not the FIN: must stay LAST-ACK.
+				Incoming:  &tcp.Segment{SEQ: issB + 1, ACK: issA + dataLen, Flags: tcp.FlagACK, WND: windowB},
+				WantState: tcp.StateLastAck,
+			},
+			5: { // ACK of the FIN closes the connection.
+				Incoming:  &tcp.Segment{SEQ: issB + 1, ACK: issA + dataLen + 1, Flags: tcp.FlagACK, WND: windowB},
+				WantState: tcp.StateClosed,
+			},
+		})
+	})
+
+	t.Run("CLOSING", func(t *testing.T) {
+		var tcb tcp.ControlBlock
+		tcb.HelperInitState(tcp.StateEstablished, issA, issA, windowA)
+		tcb.HelperInitRcv(issB, issB, windowB)
+		tcb.HelperExchange(t, []tcp.Exchange{
+			0: { // Local sends data.
+				Outgoing:  &tcp.Segment{SEQ: issA, ACK: issB, Flags: PSHACK, WND: windowA, DATALEN: dataLen},
+				WantState: tcp.StateEstablished,
+			},
+			1: { // Local closes and sends FIN|ACK. snd.NXT = issA+dataLen+1.
+				Outgoing:  &tcp.Segment{SEQ: issA + dataLen, ACK: issB, Flags: FINACK, WND: windowA},
+				WantState: tcp.StateFinWait1,
+			},
+			2: { // Peer's FIN|ACK acks the data but not our FIN: simultaneous close.
+				// The ACK owed to the peer is left pending; sending it is avoided
+				// here because the CLOSING send path has an unrelated premature
+				// TIME-WAIT transition (a separate follow-up).
+				Incoming:    &tcp.Segment{SEQ: issB, ACK: issA + dataLen, Flags: FINACK, WND: windowB},
+				WantPending: &tcp.Segment{SEQ: issA + dataLen + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
+				WantState:   tcp.StateClosing,
+			},
+			3: { // Duplicate ACK not covering our FIN: must stay CLOSING.
+				Incoming:    &tcp.Segment{SEQ: issB + 1, ACK: issA + dataLen, Flags: tcp.FlagACK, WND: windowB},
+				WantPending: &tcp.Segment{SEQ: issA + dataLen + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
+				WantState:   tcp.StateClosing,
+			},
+			4: { // ACK of our FIN moves to TIME-WAIT.
+				Incoming:    &tcp.Segment{SEQ: issB + 1, ACK: issA + dataLen + 1, Flags: tcp.FlagACK, WND: windowB},
+				WantPending: &tcp.Segment{SEQ: issA + dataLen + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
+				WantState:   tcp.StateTimeWait,
+			},
+		})
+	})
+}
+
 func TestRcvFinWait2(t *testing.T) {
 	const windowA, windowB = 1000, 1000
 	const issA, issB = 100, 300
