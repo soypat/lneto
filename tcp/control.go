@@ -393,12 +393,17 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 		pending, err = tcb.rcvFinWait2(seg)
 	case StateCloseWait:
 	case StateLastAck:
-		if seg.Flags.HasAny(FlagACK) {
+		// RFC 9293 §3.10.7.4: close only once our FIN is acknowledged
+		// (seg.ACK == snd.NXT). An ACK covering earlier data but not the FIN
+		// must leave the connection in LAST-ACK.
+		if seg.Flags.HasAny(FlagACK) && seg.ACK == tcb.snd.NXT {
 			tcb.Abort()
 		}
 	case StateClosing:
 		// Thanks to @knieriem for finding and reporting this bug.
-		if seg.Flags.HasAny(FlagACK) {
+		// RFC 9293 §3.10.7.4: enter TIME-WAIT only once our FIN is acknowledged
+		// (seg.ACK == snd.NXT), not on any ACK.
+		if seg.Flags.HasAny(FlagACK) && seg.ACK == tcb.snd.NXT {
 			tcb._state = StateTimeWait
 		}
 	case StateTimeWait:
@@ -471,7 +476,6 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 	}
 
 	hasFIN := seg.Flags.HasAny(FlagFIN)
-	hasACK := seg.Flags.HasAny(FlagACK)
 	var newPending Flags
 	switch tcb._state {
 	case StateClosed:
@@ -484,9 +488,10 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 			tcb._state = StateFinWait1 // RFC 9293: 3.10.4 CLOSE call.
 		}
 	case StateClosing:
-		if hasACK {
-			tcb._state = StateTimeWait
-		}
+		// RFC 9293 §3.10.7.4: CLOSING leaves to TIME-WAIT only on receiving the
+		// ACK of our FIN (handled in Recv). Sending the ACK owed for the peer's
+		// FIN must not advance the state, or we would enter TIME-WAIT before our
+		// own FIN is acknowledged.
 	case StateCloseWait:
 		if hasFIN {
 			tcb._state = StateLastAck
