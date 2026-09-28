@@ -17,20 +17,19 @@ const (
 	SizeCookie = 16
 	// MinPadding is the least random padding a packet carries. Max of 255 is defined by uint8 data type.
 	minPadding = 4
-	// minPacket is the smallest packet, packet_length included and MAC excluded, RFC 4253 6.
-	minPacketLen = 12
+	// minPacketLen is the smallest packet_length value, RFC 4253 6: a 16 byte frame minus the packet_length field.
+	minPacketLen = MinFrameSize - 4
 	// MaxPayload is the largest uncompressed payload every implementation must process, RFC 4253 6.1.
 	maxPayload = 32768
 	// minBlockSize is the alignment of packets when no cipher, or a stream cipher, is in use.
 	minBlockSize = 8
-	// MaxPacket is the largest packet every implementation must process, RFC 4253 6.1.
+	// sizeGCMBlock is the AES block size, the alignment of aes-gcm@openssh.com packets.
+	sizeGCMBlock = 16
+	// maxPacket is the largest frame every implementation must process, RFC 4253 6.1.
 	// It counts packet_length, padding_length, payload, padding and MAC.
 	// Larger packets are rejected. OpenSSH and x/crypto/ssh accept up to 256KiB
 	// but only send more than this when the peer advertises a larger channel
 	// maximum packet size, so a stack using this package must not advertise one.
-
-	// maxPacket is largest packet every implementation must process.
-	// This value includes packetlen, paddinglen, payloadlen and MAC.
 	maxPacket = 35000
 	// maxIdentLen is longest identification string, cr/lf included.
 	maxIdentLen = 255
@@ -120,7 +119,8 @@ const (
 
 // Frame represents the binary over-the-wire SSH frame that may be encrypted or decrypted.
 // Fields are packet_length(4), followed by padding_length(1) followed by payload, padding and tag authentication, also known as Message Authentication Code(MAC).
-// Before Frame is decrypted the only valid methods are [PacketFrame.RawData] and [PacketFrame.LimitData].
+// packet_length is sent in the clear so before Frame is decrypted the only valid methods are
+// [Frame.LenPacket], [Frame.WireLength], [Frame.ValidateLength], [Frame.RawData] and [Frame.LimitData].
 type Frame struct {
 	buf []byte
 }
@@ -174,36 +174,40 @@ func (pf *Frame) LimitData(wirelen int) {
 	pf.buf = pf.buf[:wirelen]
 }
 
-// WireLength returns the
+// WireLength returns the length of the frame on the wire: packet_length field, packet and tag.
+// tagSizeOrOverhead is zero before keys are installed.
 func (pf Frame) WireLength(tagSizeOrOverhead uint32) int {
 	return int(4 + pf.LenPacket() + tagSizeOrOverhead)
 }
 
 // Validation.
 
-// ValidateSize checks padding and packet length to ensure the PacketFrame is well formed and returns wire length of packet.
-// tagSize is non-zero when connection is keyed such that packetLen is excluded from alignment.
-// Set blockSize==0 to omit alignment checking.
-func (pf Frame) ValidateSize(vld *lneto.Validator, tagSize, blockSize uint32) int {
+// ValidateLength checks packet_length against the limits of RFC 4253 6.1 and cipher alignment,
+// and that the buffer holds [Frame.WireLength] bytes. It reads only packet_length so it is safe
+// to call on an encrypted frame before [HalfConn.Open].
+// overhead is the tag size, zero before keys are installed, in which case packet_length
+// is included in alignment. Alignment is to the larger of blockSize and 8.
+func (pf Frame) ValidateLength(vld *lneto.Validator, overhead, blockSize uint32) {
 	plen := pf.LenPacket()
-	padding := pf.LenPadding()
-	if padding < minPadding || plen < minPacketLen ||
-		uint32(padding) > plen-2 { // ensure message type present and not part of padding.
-		vld.AddError(lneto.ErrInvalidLengthField)
+	aligned := plen + 4
+	if overhead != 0 {
+		aligned = plen // AEAD: packet_length is additional data, excluded from alignment.
 	}
-	wirelen := int(4 + plen + tagSize)
-	if plen > maxPacket-4 {
+	if plen < minPacketLen || plen > maxPacket-4-overhead ||
+		aligned%max(blockSize, minBlockSize) != 0 {
 		vld.AddError(lneto.ErrInvalidLengthField)
-	} else if wirelen > len(pf.buf) {
+	} else if pf.WireLength(overhead) > len(pf.buf) {
 		vld.AddError(lneto.ErrTruncatedFrame)
 	}
-	var block, align uint32 = minBlockSize, plen
-	connKeyed := tagSize != 0
-	if connKeyed {
-		align += 4
-	}
-	if blockSize != 0 && align%max(block, minBlockSize) != 0 {
+}
+
+// ValidateSize checks packet_length as [Frame.ValidateLength] does and padding_length so that
+// [Frame.Payload] and [Frame.Padding] do not panic. padding_length is encrypted on the wire,
+// so call ValidateSize on plaintext frames only: before [HalfConn.Seal] and after [HalfConn.Open].
+func (pf Frame) ValidateSize(vld *lneto.Validator, overhead, blockSize uint32) {
+	pf.ValidateLength(vld, overhead, blockSize)
+	padding := uint32(pf.LenPadding())
+	if padding < minPadding || padding+2 > pf.LenPacket() { // Message type present and not part of padding.
 		vld.AddError(lneto.ErrInvalidLengthField)
 	}
-	return wirelen
 }

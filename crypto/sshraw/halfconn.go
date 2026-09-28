@@ -14,7 +14,7 @@ type HalfConn struct {
 	used     uint64 // Packets protected with the current key.
 	aead     lcrypto.AEADCipher
 	seq      uint32
-	overhead uint32 // gcmTag
+	overhead uint32 // Auth tag bytes after the packet a.k.a Message Authentication Code (MAC).
 	// TODO: same as with tlsraw, benchmark if keeping a full byte-slice nonce state is better.
 	nonce [12]byte // Nonce of the next packet.
 }
@@ -48,8 +48,9 @@ func (hc *HalfConn) Zeroize() {
 	*hc = HalfConn{}
 }
 
-// Seal encrypts a complete already-validated packet in-place and returns it as it goes on the wire.
-// When HalfConn is keyed the PacketFrame will treat the last [HalfConn.Overhead] bytes as non-payload space for GCM tag.
+// Seal encrypts in-place a plaintext frame already checked with [Frame.ValidateSize] and returns its wire length.
+// The frame must be exactly [Frame.WireLength] bytes long: when HalfConn is keyed
+// the last [HalfConn.Overhead] bytes are space for the tag.
 func (hc *HalfConn) Seal(pf Frame) (int, error) {
 	pkt := pf.RawData()
 	wl := pf.WireLength(hc.overhead)
@@ -66,20 +67,33 @@ func (hc *HalfConn) Seal(pf Frame) (int, error) {
 		if len(sealed)+4 != len(pkt) {
 			panic("ssh invariant violated")
 		}
-		pkt = pkt[:4+len(sealed)]
 	}
 	hc.seq++
 	return len(pkt), nil
 }
 
+// Overhead returns size of auth tag (MAC) appended to packets.
 func (hc *HalfConn) Overhead() int {
 	return int(hc.overhead)
 }
 
-// Open authenticates and decrypts an already validated packet in-place of exactly [HalfConn.WireLen]
-// bytes and returns plaintext frame.
+// BlockSize returns the alignment packets must meet, see [Frame.ValidateLength].
+// Keyed alignment is the AES block size, the only AEAD this package supports being AES-GCM.
+func (hc *HalfConn) BlockSize() int {
+	if hc.HasKeys() {
+		return sizeGCMBlock
+	}
+	return minBlockSize
+}
+
+// Open authenticates and decrypts in-place a frame already checked with [Frame.ValidateLength]
+// and returns its wire length. After Open the frame is plaintext and should be checked with
+// [Frame.ValidateSize] before reading payload. The tag is left in place after the packet.
 func (hc *HalfConn) Open(pf Frame) (n int, err error) {
 	n = pf.WireLength(hc.overhead)
+	if n > len(pf.RawData()) {
+		return 0, lneto.ErrTruncatedFrame // Do not read past len into capacity.
+	}
 	if hc.HasKeys() {
 		if hc.used == math.MaxUint64 {
 			return 0, lneto.ErrExhausted
