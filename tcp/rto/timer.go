@@ -76,6 +76,9 @@ type Timer struct {
 	running  bool
 	deadline int64 // time (monotonic ns) at which the timer expires.
 	backoff  uint8 // consecutive timeouts, for exponential backoff.
+	// rtxOwed is set on expiry until a retransmission is actually sent, since
+	// the Handler may be unable to emit it on the Send that saw the directive.
+	rtxOwed bool
 
 	// expirations counts timeouts since Reset. It exists so a policy sharing this
 	// timer can notice a timeout it did not itself drive: a congestion controller
@@ -174,6 +177,7 @@ func (r *Timer) postRx(incoming tcp.Segment, now int64) {
 	}
 	if r.sndUNA == r.sndNXT {
 		r.running = false // §5.3: all outstanding data acknowledged.
+		r.rtxOwed = false
 	} else {
 		// §5.3: new (but not all) data acknowledged — restart the timer.
 		r.running = true
@@ -193,7 +197,14 @@ func (r *Timer) PreTx(h *tcp.Handler, outgoingOpts tcp.Frame) (newTransmitLimit 
 }
 
 func (r *Timer) preTx(now int64, una tcp.Value) (newTransmitLimit tcp.Size, rtxFrom tcp.Value, retransmit bool) {
-	if !r.running || now < r.deadline || r.sndUNA == r.sndNXT {
+	if r.sndUNA == r.sndNXT {
+		r.rtxOwed = false
+		return tcp.TransmitUnlimited, 0, false
+	}
+	if r.rtxOwed {
+		return tcp.TransmitUnlimited, una, true
+	}
+	if !r.running || now < r.deadline {
 		return tcp.TransmitUnlimited, 0, false
 	}
 	r.expirations++
@@ -202,8 +213,10 @@ func (r *Timer) preTx(now int64, una tcp.Value) (newTransmitLimit tcp.Size, rtxF
 		r.backoff++
 		r.rto = min(r.CurrentRTO()*2, rtoMax) // §5.5: RTO = RTO * 2.
 	}
+	// The deadline stays expired so NextDeadline reports the owed resend as due;
+	// postTx restarts it when the resend is sent (§5.6).
 	r.running = true
-	r.deadline = now + int64(r.CurrentRTO())
+	r.rtxOwed = true
 	return tcp.TransmitUnlimited, una, true
 }
 
@@ -229,9 +242,14 @@ func (r *Timer) postTx(outgoing tcp.Segment, now int64) {
 	}
 	if !r.sndNXT.LessThan(segEnd) {
 		// Segment does not extend the send sequence: it is a retransmission.
-		// Discard any outstanding RTT sample per Karn's algorithm. The timer was
-		// already (re)armed by PreTx on the timeout that triggered this resend.
+		// Discard any outstanding RTT sample per Karn's algorithm.
 		r.timing = false
+		if r.rtxOwed && segStart.LessThanEq(r.sndUNA) && r.sndUNA.LessThan(segEnd) {
+			// §5.4: only a resend of snd.UNA settles the owed retransmission.
+			// §5.6: restart the timer when it actually goes out.
+			r.rtxOwed = false
+			r.deadline = now + int64(r.CurrentRTO())
+		}
 		return
 	}
 	r.sndNXT = segEnd
