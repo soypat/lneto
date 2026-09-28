@@ -262,34 +262,26 @@ func (tcb *ControlBlock) HasPendingRetransmit() bool {
 	return tcb._state.txQueuedDataOpen() && tcb.dupack >= retransmitAfterDupacks && tcb.nRetransmit <= tcb.dupack-retransmitAfterDupacks
 }
 
-// RetransmitFrom rewinds snd.NXT back to newNxt so the next PendingSegment and
-// Send calls retransmit unacknowledged data from that sequence number onwards.
-// It must be paired with ringTx.RetransmitFrom to rewind the transmit buffer to
-// the same point. Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
-//
-// It reports false and changes nothing when newNxt falls outside the
-// unacknowledged range [snd.UNA, snd.NXT] or the connection cannot send data, so
-// a misbehaving [Policy] cannot corrupt the send sequence space.
-func (tcb *ControlBlock) RetransmitFrom(newNxt Value) bool {
-	if !tcb._state.txQueuedDataOpen() {
-		// Matches [State.TxDataOpen] and other states that may have data queued to make progress.
-		// Matches [ControlBlock.PendingSegment] gate (RFC 9293 §3.10.8).
-		return false
-	} else if newNxt.LessThan(tcb.snd.UNA) || tcb.snd.NXT.LessThan(newNxt) {
-		return false
+// PendingRetransmit returns a segment resending already-sent data at seq, with
+// at most payloadLen octets bounded by snd.NXT and snd.MSS. Sending it through
+// [ControlBlock.Send] leaves snd.NXT unchanged. It reports false when seq is
+// outside [snd.UNA, snd.NXT), the state cannot send data, or a control segment
+// or challenge ACK is due, which keeps priority. It does not modify the
+// ControlBlock. Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
+func (tcb *ControlBlock) PendingRetransmit(seq Value, payloadLen int) (_ Segment, ok bool) {
+	if tcb.pending[0].HasAny(flagctl) || tcb.pendingChallengeAck() || !tcb._state.txQueuedDataOpen() {
+		return Segment{}, false
+	} else if seq.LessThan(tcb.snd.UNA) || !seq.LessThan(tcb.snd.NXT) {
+		return Segment{}, false
 	}
-	tcb.snd.NXT = newNxt
-	tcb.dupack = 0
-	tcb.nRetransmit = 0
-	return true
-}
-
-// RetransmitAll rewinds snd.NXT back to snd.UNA so the next PendingSegment and
-// Send calls retransmit all unacknowledged data from the oldest sequence number
-// (go-back-N). It must be paired with ringTx.RetransmitFromUNA to rewind the
-// transmit buffer. Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
-func (tcb *ControlBlock) RetransmitAll() {
-	tcb.RetransmitFrom(tcb.snd.UNA)
+	payloadLen = min(payloadLen, int(Sizeof(seq, tcb.snd.NXT)))
+	if tcb.snd.MSS > 0 {
+		payloadLen = min(payloadLen, int(tcb.snd.MSS))
+	}
+	if payloadLen <= 0 {
+		return Segment{}, false
+	}
+	return Segment{SEQ: seq, DATALEN: Size(payloadLen), ACK: tcb.rcv.NXT, WND: tcb.rcv.WND, Flags: FlagACK}, true
 }
 
 // PendingSegment calculates a suitable next segment to send from a payload length.
@@ -639,9 +631,6 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 
 	case established && acksUnsentData:
 		// ACK for data we haven't sent. Drop and send challenge ACK.
-		// Note: after Retransmit() rewinds snd.NXT, a cumulative ACK may exceed
-		// the rewound NXT. That case is handled by Handler.RecoveryACK, not here —
-		// NXT==UNA is ambiguous (also true when no data is in flight).
 		err = errDropSegment
 		tcb.pending[0] |= FlagACK // Send ACK for unsent data; |= preserves any pending FIN.
 		if isDebug {
@@ -710,12 +699,6 @@ func (tcb *ControlBlock) handleRST(seq Value) error {
 func (tcb *ControlBlock) rstJump() Value {
 	return 100
 }
-
-// Retransmit resets snd.NXT back to snd.UNA, allowing the next PendingSegment
-// and Send calls to retransmit unacknowledged data. Must be paired with
-// ringTx.RetransmitFromUNA to rewind the transmit buffer.
-// Implements RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
-// func (tcb *ControlBlock) Retransmit() { tcb.snd.NXT = tcb.snd.UNA }
 
 // Abort sets ControlBlock state to Closed and resets all sequence numbers and pending flag.
 // No more data can be sent nor received after the connection is aborted until opened again.

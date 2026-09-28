@@ -188,7 +188,7 @@ func (r *Timer) postRx(incoming tcp.Segment, now int64) {
 // PreTx reports whether the retransmission timer has expired and, if so, applies
 // the RFC 6298 §5.4–§5.6 timeout response — discard the outstanding RTT sample
 // (Karn), back the RTO off exponentially and restart the timer — and asks the
-// connection to retransmit from snd.UNA (go-back-N). It writes no TCP options
+// connection to retransmit the segment containing snd.UNA. It writes no TCP options
 // and imposes no transmit limit: retransmission timing needs neither, and
 // congestion control belongs to a Policy composing this timer. It implements
 // [tcp.Policy].

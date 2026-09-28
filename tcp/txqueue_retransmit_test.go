@@ -57,29 +57,6 @@ func mustRemake(t *testing.T, rtx *ringTx, seq Value, want []byte) {
 	}
 }
 
-// TestRingTx_RetransmitFromBoundary rewinds to the start of the second of three
-// sent packets: the first stays sent, the rest become unsent and re-emit their
-// original bytes.
-func TestRingTx_RetransmitFromBoundary(t *testing.T) {
-	const iss, pktlen = Value(100), 4
-	rtx, stream := newRetransmitQueue(t, 64, 4, 3, pktlen, 0, iss)
-
-	sentBefore := rtx.BufferedSent()
-	rtx.RetransmitFrom(iss + pktlen) // Start of packet 2.
-	testQueueSanity(t, rtx)
-
-	if got := rtx.BufferedSent(); got != pktlen {
-		t.Fatalf("sent=%d, want %d (only packet 1 remains sent)", got, pktlen)
-	}
-	if got := rtx.BufferedUnsent(); got != sentBefore-pktlen {
-		t.Fatalf("unsent=%d, want %d", got, sentBefore-pktlen)
-	}
-	mustRemake(t, rtx, iss+pktlen, stream[pktlen:2*pktlen])
-	testQueueSanity(t, rtx)
-	mustRemake(t, rtx, iss+2*pktlen, stream[2*pktlen:3*pktlen])
-	testQueueSanity(t, rtx)
-}
-
 func TestMakePacketRetransmitWithFullQueue(t *testing.T) {
 	const iss, pktlen, npkt = Value(100), 4, 3
 	rtx, stream := newRetransmitQueue(t, 64, npkt, npkt, pktlen, pktlen, iss)
@@ -112,140 +89,113 @@ func TestMakePacketRetransmitWithFullQueue(t *testing.T) {
 	testQueueSanity(t, rtx)
 }
 
-// TestRingTx_RetransmitFromMidPacket verifies a sequence inside a packet is
-// snapped down to that packet's start: the queue tracks whole packets.
-func TestRingTx_RetransmitFromMidPacket(t *testing.T) {
+// TestRingTx_RetransmitBoundary replaces the removed rewind tests: it checks that
+// retransmitBoundary snaps a sequence to its packet start without modifying the
+// queue, and that the packet then replays its original bytes.
+func TestRingTx_RetransmitBoundary(t *testing.T) {
 	const iss, pktlen = Value(100), 4
-	rtx, stream := newRetransmitQueue(t, 64, 4, 3, pktlen, 0, iss)
-
-	rtx.RetransmitFrom(iss + pktlen + 2) // Two octets into packet 2.
-	testQueueSanity(t, rtx)
-
-	if got := rtx.BufferedSent(); got != pktlen {
-		t.Fatalf("sent=%d, want %d: rewind must floor to the packet start", got, pktlen)
-	}
-	mustRemake(t, rtx, iss+pktlen, stream[pktlen:2*pktlen])
-}
-
-// TestRingTx_RetransmitFromOldest rewinds the whole queue, which must match
-// RetransmitFromUNA.
-func TestRingTx_RetransmitFromOldest(t *testing.T) {
-	const iss, pktlen, npkt = Value(100), 4, 3
-	rtx, stream := newRetransmitQueue(t, 64, 4, npkt, pktlen, 0, iss)
-	rtx.RetransmitFrom(iss)
-	testQueueSanity(t, rtx)
-
-	viaUNA, _ := newRetransmitQueue(t, 64, 4, npkt, pktlen, 0, iss)
-	viaUNA.RetransmitFromUNA()
-	testQueueSanity(t, viaUNA)
-
-	if rtx.BufferedSent() != 0 {
-		t.Fatalf("sent=%d, want 0 after a full rewind", rtx.BufferedSent())
-	}
-	if rtx.BufferedUnsent() != npkt*pktlen {
-		t.Fatalf("unsent=%d, want %d", rtx.BufferedUnsent(), npkt*pktlen)
-	}
-	if rtx.BufferedSent() != viaUNA.BufferedSent() || rtx.BufferedUnsent() != viaUNA.BufferedUnsent() {
-		t.Fatal("RetransmitFrom(oldest) must match RetransmitFromUNA")
-	}
-	mustRemake(t, rtx, iss, stream[:pktlen])
-}
-
-// TestRingTx_RetransmitFromUnknownSeq verifies a sequence covered by no queued
-// packet leaves the queue untouched.
-func TestRingTx_RetransmitFromUnknownSeq(t *testing.T) {
-	const iss, pktlen, npkt = Value(100), 4, 3
-	rtx, _ := newRetransmitQueue(t, 64, 4, npkt, pktlen, 0, iss)
-	sent, unsent := rtx.BufferedSent(), rtx.BufferedUnsent()
-
-	rtx.RetransmitFrom(iss - 1)           // Before the queue.
-	rtx.RetransmitFrom(iss + npkt*pktlen) // One past the last octet sent.
-	rtx.RetransmitFrom(iss + 1000)        // Far beyond.
-	testQueueSanity(t, rtx)
-
-	if rtx.BufferedSent() != sent || rtx.BufferedUnsent() != unsent {
-		t.Fatalf("queue moved: sent %d→%d, unsent %d→%d", sent, rtx.BufferedSent(), unsent, rtx.BufferedUnsent())
-	}
-}
-
-// TestRingTx_RetransmitWithUnsentTail verifies a rewind reopens the unsent region
-// over the rewound packets without losing the unsent tail behind them.
-func TestRingTx_RetransmitWithUnsentTail(t *testing.T) {
-	const iss, pktlen, npkt, tail = Value(100), 4, 2, 5
-	rtx, stream := newRetransmitQueue(t, 64, 4, npkt, pktlen, tail, iss)
-	if got := rtx.BufferedUnsent(); got != tail {
-		t.Fatalf("unsent tail=%d, want %d", got, tail)
-	}
-
-	rtx.RetransmitFrom(iss + pktlen) // Rewind the second packet only.
-	testQueueSanity(t, rtx)
-
-	if got := rtx.BufferedUnsent(); got != pktlen+tail {
-		t.Fatalf("unsent=%d, want %d (rewound packet plus the tail)", got, pktlen+tail)
-	}
-	// The rewound packet re-emits first, then the tail follows in order.
-	mustRemake(t, rtx, iss+pktlen, stream[pktlen:2*pktlen])
-	testQueueSanity(t, rtx)
-	mustRemake(t, rtx, iss+2*pktlen, stream[2*pktlen:])
-}
-
-// TestRingTx_RetransmitAfterDrainedUnsent pins the write-position recovery: when
-// every octet written has been packetized the unsent region is empty, so the
-// rewind must reconstruct where data ends from the sent region.
-func TestRingTx_RetransmitAfterDrainedUnsent(t *testing.T) {
-	const iss, pktlen, npkt = Value(100), 4, 3
-	rtx, stream := newRetransmitQueue(t, 64, 4, npkt, pktlen, 0, iss)
-	if got := rtx.BufferedUnsent(); got != 0 {
-		t.Fatalf("unsent=%d, want 0: all written data was packetized", got)
-	}
-
-	rtx.RetransmitFrom(iss + pktlen)
-	testQueueSanity(t, rtx)
-
-	if got := rtx.BufferedUnsent(); got != 2*pktlen {
-		t.Fatalf("unsent=%d, want %d: rewind lost the end of the data", got, 2*pktlen)
-	}
-	mustRemake(t, rtx, iss+pktlen, stream[pktlen:2*pktlen])
-	testQueueSanity(t, rtx)
-	mustRemake(t, rtx, iss+2*pktlen, stream[2*pktlen:3*pktlen])
-}
-
-// TestRingTx_RetransmitWrapped exercises a rewind on a queue whose regions wrap
-// the end of the ring buffer.
-func TestRingTx_RetransmitWrapped(t *testing.T) {
-	const bufsize, pktlen = 16, 4
-	const iss = Value(100)
-	var rtx ringTx
-	if err := rtx.Reset(make([]byte, bufsize), 4, iss); err != nil {
-		t.Fatal(err)
-	}
-	// Push the queue most of the way around the ring, acking as we go.
-	seq := iss
-	scratch := make([]byte, pktlen)
-	for round := range 3 {
-		chunk := make([]byte, pktlen)
-		for i := range chunk {
-			chunk[i] = byte(round*pktlen + i + 1)
-		}
-		if _, err := rtx.Write(chunk); err != nil {
+	sent3 := func(t *testing.T) (*ringTx, []byte) { return newRetransmitQueue(t, 64, 4, 3, pktlen, 0, iss) }
+	tail := func(t *testing.T) (*ringTx, []byte) { return newRetransmitQueue(t, 64, 4, 2, pktlen, 5, iss) }
+	partial := func(t *testing.T) (*ringTx, []byte) {
+		rtx, stream := sent3(t)
+		if err := rtx.RecvACK(iss + pktlen + 1); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := rtx.MakePacket(scratch, seq); err != nil {
+		return rtx, stream
+	}
+	// wrapped sends a 2-octet packet then 4-octet packets, acking all but the
+	// newest, so the last packet occupies [14,16)+[0,2) of the 16-octet ring.
+	wrapped := func(t *testing.T) (*ringTx, []byte) {
+		var rtx ringTx
+		if err := rtx.Reset(make([]byte, 16), 4, iss); err != nil {
 			t.Fatal(err)
 		}
-		seq += Value(pktlen)
-		if round < 2 {
-			if err := rtx.RecvACK(seq); err != nil {
+		var stream []byte
+		seq := iss
+		for round := range 5 {
+			n := pktlen
+			if round == 0 {
+				n = 2
+			}
+			chunk := make([]byte, n)
+			for i := range chunk {
+				chunk[i] = byte(len(stream) + i + 1)
+			}
+			stream = append(stream, chunk...)
+			if _, err := rtx.Write(chunk); err != nil {
 				t.Fatal(err)
 			}
+			if _, err := rtx.MakePacket(make([]byte, n), seq); err != nil {
+				t.Fatal(err)
+			}
+			if round > 0 {
+				if err := rtx.RecvACK(seq); err != nil {
+					t.Fatal(err)
+				}
+			}
+			seq += Value(n)
+			testQueueSanity(t, &rtx)
 		}
-		testQueueSanity(t, &rtx)
+		if pkt := rtx.slist.Newest(); pkt.end >= pkt.off {
+			t.Fatalf("packet [%d,%d) does not wrap the ring", pkt.off, pkt.end)
+		}
+		return &rtx, stream
 	}
-	// Two packets outstanding, straddling the wrap. Rewind the newest.
-	rewindSeq := seq - Value(pktlen)
-	want := append([]byte(nil), scratch...)
-	rtx.RetransmitFrom(rewindSeq)
-	testQueueSanity(t, &rtx)
-	mustRemake(t, &rtx, rewindSeq, want)
-	testQueueSanity(t, &rtx)
+	for _, tc := range []struct {
+		name    string
+		setup   func(*testing.T) (*ringTx, []byte)
+		seq     Value
+		want    Value
+		wantOK  bool
+		wantLen int
+	}{
+		{"boundary(RetransmitFromBoundary)", sent3, iss + pktlen, iss + pktlen, true, pktlen},
+		{"mid-packet(RetransmitFromMidPacket)", sent3, iss + pktlen + 2, iss + pktlen, true, pktlen},
+		{"oldest(RetransmitFromOldest)", sent3, iss, iss, true, pktlen},
+		{"before-queue(RetransmitFromUnknownSeq)", sent3, iss - 1, 0, false, 0},
+		{"past-sent(RetransmitFromUnknownSeq)", sent3, iss + 3*pktlen, 0, false, 0},
+		{"far-beyond(RetransmitFromUnknownSeq)", sent3, iss + 1000, 0, false, 0},
+		{"unsent-tail(RetransmitWithUnsentTail)", tail, iss + pktlen, iss + pktlen, true, pktlen},
+		{"drained-unsent(RetransmitAfterDrainedUnsent)", sent3, iss + pktlen, iss + pktlen, true, pktlen},
+		{"wrapped(RetransmitWrapped)", wrapped, iss + 2 + 3*pktlen + 1, iss + 2 + 3*pktlen, true, pktlen},
+		{"partial-ack", partial, iss + pktlen + 2, iss + pktlen + 1, true, pktlen - 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rtx, stream := tc.setup(t)
+			uo, ue, so, se := rtx.lims()
+			pkts := slices.Clone(rtx.slist.pkts)
+			sent, unsent := rtx.BufferedSent(), rtx.BufferedUnsent()
+
+			got, ok := rtx.retransmitBoundary(tc.seq)
+			if got != tc.want || ok != tc.wantOK {
+				t.Fatalf("retransmitBoundary(%d)=(%d,%v), want (%d,%v)", tc.seq, got, ok, tc.want, tc.wantOK)
+			}
+			if ok {
+				start := int(got - iss)
+				mustRemake(t, rtx, got, stream[start:start+tc.wantLen])
+			}
+			if gotUO, gotUE, gotSO, gotSE := rtx.lims(); gotUO != uo || gotUE != ue || gotSO != so || gotSE != se {
+				t.Fatal("queue buffer boundaries changed")
+			}
+			if !slices.Equal(rtx.slist.pkts, pkts) {
+				t.Fatal("tracked packets changed")
+			}
+			if rtx.BufferedSent() != sent || rtx.BufferedUnsent() != unsent {
+				t.Fatalf("sent %d→%d, unsent %d→%d", sent, rtx.BufferedSent(), unsent, rtx.BufferedUnsent())
+			}
+			testQueueSanity(t, rtx)
+
+			// New data resumes at the high-water mark with exactly the unsent tail.
+			hwm, _ := rtx.sentEndSeq()
+			buf := make([]byte, len(stream))
+			n, err := rtx.MakePacket(buf, hwm)
+			if err != nil {
+				t.Fatalf("MakePacket at high-water mark %d: %v", hwm, err)
+			}
+			if tail := stream[int(hwm-iss):]; !bytes.Equal(buf[:n], tail) {
+				t.Fatalf("MakePacket at high-water mark: got %v, want %v", buf[:n], tail)
+			}
+			testQueueSanity(t, rtx)
+		})
+	}
 }

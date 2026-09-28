@@ -330,9 +330,8 @@ func TestPolicy_PreRxDropsSegment(t *testing.T) {
 	}
 }
 
-// TestPolicy_PreTxRetransmit verifies a PreTx retransmit directive drives
-// go-back-N: the Handler rewinds the send sequence and the transmit buffer
-// together and re-emits already-sent, unacknowledged data from snd.UNA.
+// TestPolicy_PreTxRetransmit verifies a PreTx retransmit directive re-emits
+// already-sent, unacknowledged data from snd.UNA.
 func TestPolicy_PreTxRetransmit(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	rng := rand.New(rand.NewSource(5))
