@@ -339,8 +339,12 @@ func TestExchange_rfc9293_figure13(t *testing.T) {
 			WantState:   tcp.StateClosing,
 			WantPending: &tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
 		},
-		2: { // A sends ACK to B.
+		2: { // A sends the ACK of B's FIN; its own FIN is not yet acknowledged, so it stays CLOSING.
 			Outgoing:  &tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
+			WantState: tcp.StateClosing,
+		},
+		3: { // A receives B's ACK of A's FIN (ACK == snd.NXT): enter TIME-WAIT.
+			Incoming:  &tcp.Segment{SEQ: issB + 1, ACK: issA + 1, Flags: tcp.FlagACK, WND: windowB},
 			WantState: tcp.StateTimeWait,
 		},
 	}

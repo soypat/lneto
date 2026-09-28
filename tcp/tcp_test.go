@@ -431,9 +431,14 @@ func TestExchangeTest_rfc9293_figure13(t *testing.T) {
 				AState:   tcp.StateClosing,
 				APending: &tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
 			},
-			2: { // A sends ACK to B.
+			2: { // A sends the ACK of B's FIN. Its own FIN is not yet acknowledged, so it stays CLOSING.
 				Seg:    tcp.Segment{SEQ: issA + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
 				Action: tcp.StepASends,
+				AState: tcp.StateClosing,
+			},
+			3: { // A receives B's ACK of A's FIN (ACK == snd.NXT): enter TIME-WAIT.
+				Seg:    tcp.Segment{SEQ: issB + 1, ACK: issA + 1, Flags: tcp.FlagACK, WND: windowB},
+				Action: tcp.StepBSends,
 				AState: tcp.StateTimeWait,
 			},
 		},
@@ -766,9 +771,8 @@ func TestClose_PartialACKDoesNotAdvance(t *testing.T) {
 				WantState: tcp.StateFinWait1,
 			},
 			2: { // Peer's FIN|ACK acks the data but not our FIN: simultaneous close.
-				// The ACK owed to the peer is left pending; sending it is avoided
-				// here because the CLOSING send path has an unrelated premature
-				// TIME-WAIT transition (a separate follow-up).
+				// The ACK owed to the peer is left pending to isolate the
+				// receive-side transition being tested here.
 				Incoming:    &tcp.Segment{SEQ: issB, ACK: issA + dataLen, Flags: FINACK, WND: windowB},
 				WantPending: &tcp.Segment{SEQ: issA + dataLen + 1, ACK: issB + 1, Flags: tcp.FlagACK, WND: windowA},
 				WantState:   tcp.StateClosing,
