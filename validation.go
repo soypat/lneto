@@ -2,7 +2,6 @@ package lneto
 
 import (
 	"errors"
-	"fmt"
 	"strconv"
 )
 
@@ -82,7 +81,7 @@ type BitPosErr struct {
 }
 
 func (bpe *BitPosErr) Error() string {
-	return fmt.Sprintf("%s at bits %d..%d", bpe.Err.Error(), bpe.BitStart, bpe.BitStart+bpe.BitLen)
+	return bpe.Err.Error()
 }
 
 func (bpe *BitPosErr) AppendError(dst []byte) []byte {

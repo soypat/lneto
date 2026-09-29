@@ -1,12 +1,19 @@
 package xnet
 
 import (
+	"context"
+	"fmt"
+	"net"
 	"net/netip"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/tcp"
+	"github.com/soypat/lneto/tcp/rto"
 )
 
 func TestStackAsyncListener_SingleConnection(t *testing.T) {
@@ -270,6 +277,67 @@ func TestListener_Close(t *testing.T) {
 	}
 }
 
+// TestTCPListener_CloseUnblocksAccept covers the net.Listener wrapper's Accept
+// poll loop being ended by a Close from another goroutine.
+func TestTCPListener_CloseUnblocksAccept(t *testing.T) {
+	const svPort uint16 = 80
+
+	pool, err := NewTCPPool(TCPPoolConfig{
+		PoolSize:           1,
+		QueueSize:          4,
+		TxBufSize:          512,
+		RxBufSize:          512,
+		EstablishedTimeout: 10e9,
+		ClosingTimeout:     10e9,
+		NewBackoff:         func() lneto.BackoffStrategy { return backoffYield },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var l tcplistener
+	// Sleep rather than yield between polls so Accept is genuinely parked in the
+	// loop when Close lands, instead of spinning a core for the whole test.
+	l.sleep = func(consecutiveBackoffs uint) time.Duration { return time.Millisecond }
+	l.localAddr = net.TCPAddrFromAddrPort(netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 0, 0, 1}), svPort))
+	err = l.l.Reset(svPort, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No stack is driving this listener, so Accept can only ever block: nothing
+	// will become ready and the sole way out is the Close below.
+	accepted := make(chan error, 1)
+	go func() {
+		c, err := l.Accept()
+		if c != nil {
+			c.Close()
+		}
+		accepted <- err
+	}()
+	time.Sleep(20 * time.Millisecond) // Let Accept reach its poll loop.
+
+	if err := l.Close(); err != nil {
+		t.Fatal("Close while Accept is blocked:", err)
+	}
+	select {
+	case err := <-accepted:
+		if err != net.ErrClosed {
+			t.Fatalf("blocked Accept: want net.ErrClosed, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Accept did not return after Close")
+	}
+
+	// A later Accept reports the close rather than blocking again.
+	if _, err := l.Accept(); err != net.ErrClosed {
+		t.Fatalf("Accept after Close: want net.ErrClosed, got %v", err)
+	}
+	if err := l.Close(); err != net.ErrClosed {
+		t.Fatalf("double Close: want net.ErrClosed, got %v", err)
+	}
+}
+
 func TestListener_ResetAfterClose(t *testing.T) {
 	const svPort uint16 = 80
 
@@ -304,5 +372,193 @@ func TestListener_ResetAfterClose(t *testing.T) {
 	}
 	if listener.LocalPort() != svPort {
 		t.Fatalf("expected port %d after re-Reset, got %d", svPort, listener.LocalPort())
+	}
+}
+
+// TestTCPRetransmitsLostSegment drops one data segment and requires bytes to arrive anyway.
+// This in particular tests the RTO [tcp.Policy] since tcp
+// package by itself will not trigger a retransmission unless dupacks are received.
+func TestTCPRetransmitsLostSegment(t *testing.T) {
+	const (
+		MTU     = ethernet.MaxMTU
+		svPort  = 80
+		bufSize = 2 << 10
+		want    = "this segment is lost in transit"
+		// A quiet round means both sides are waiting on the network, which is
+		// what a lost segment looks like: only then does the clock move, so the
+		// RTO expires in a bounded number of rounds instead of in real time.
+		quietStep = 100 * time.Millisecond
+		maxRounds = 600
+		// Headers total 54 bytes, so a larger frame carries payload. Dropping a
+		// bare ACK would exercise the other direction's recovery instead.
+		minDataFrame = 14 + 20 + 20 + 8
+	)
+	client, sv := new(StackAsync), new(StackAsync)
+	if err := client.Reset(StackConfig{
+		Hostname:          "rtx-client",
+		RandSeed:          11,
+		StaticAddress4:    [4]byte{10, 0, 0, 90},
+		MaxActiveTCPPorts: 2,
+		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 90},
+		MTU:               MTU,
+		ICMPQueueLimit:    2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sv.Reset(StackConfig{
+		Hostname:          "rtx-server",
+		RandSeed:          ^int64(11),
+		StaticAddress4:    [4]byte{10, 0, 0, 91},
+		MaxActiveTCPPorts: 2,
+		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 91},
+		MTU:               MTU,
+		ICMPQueueLimit:    2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client.SetGatewayHardwareAddr(sv.HardwareAddr())
+	sv.SetGatewayHardwareAddr(client.HardwareAddr())
+
+	tsched := ltesto.NewSched(t)
+	svGoro, clGoro := tsched.Goro(), tsched.Goro()
+
+	// Simulated monotonic clock. Only the driver writes it, and only while every
+	// scheduled goroutine is parked, so it needs no synchronization of its own.
+	var now int64
+	nanotime := func() int64 { return now }
+
+	// Each side backs off into its own scheduler handle, so the driver can park
+	// and resume the two independently.
+	newPool := func(yield lneto.BackoffStrategy) TCPPoolConfig {
+		return TCPPoolConfig{
+			PoolSize: 2, QueueSize: 4,
+			TxBufSize: bufSize, RxBufSize: bufSize,
+			// Well past the simulated time this test spends, so the pool never
+			// reaps a connection out from under the retransmission.
+			EstablishedTimeout: 120 * time.Second,
+			ClosingTimeout:     120 * time.Second,
+			NanoTime:           nanotime,
+			NewBackoff:         func() lneto.BackoffStrategy { return yield },
+			NewPolicy: func() tcp.Policy {
+				timer := new(rto.Timer)
+				if err := timer.Configure(nanotime); err != nil {
+					t.Error(err)
+				}
+				return timer
+			},
+		}
+	}
+	svGo := sv.StackBlocking(svGoro.Yield).StackGo(StackGoConfig{
+		ListenerPoolConfig: newPool(svGoro.Yield),
+	})
+	clGo := client.StackBlocking(clGoro.Yield).StackGo(StackGoConfig{
+		ListenerPoolConfig: newPool(clGoro.Yield),
+		TCPDialTimeout:     60 * time.Second,
+		TCPDialRetries:     1,
+	})
+	svGo.blk._nanotime = nanotime
+	clGo.blk._nanotime = nanotime
+
+	lsAny, err := svGo.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockSTREAM,
+		netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort), netip.AddrPort{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener := lsAny.(net.Listener)
+	defer listener.Close()
+
+	// dropNext arms the driver to swallow the next server→client data frame. It
+	// is handed between the server goroutine and the driver by the scheduler
+	// handoff, which orders every access to it.
+	var dropNext, dropped bool
+
+	go func() {
+		c, err := listener.Accept()
+		if err != nil {
+			svGoro.FinishWithErr(err)
+			return
+		}
+		dropNext = true // The very next data frame is lost in transit.
+		_, err = c.Write([]byte(want))
+		c.Close() // Closing here is what makes #182's FIN-WAIT-1 retransmit matter.
+		svGoro.FinishWithErr(err)
+	}()
+
+	raddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort)
+	go func() {
+		cAny, err := clGo.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockSTREAM,
+			netip.AddrPort{}, raddr)
+		if err != nil {
+			clGoro.FinishWithErr(err)
+			return
+		}
+		conn := cAny.(net.Conn)
+		got := make([]byte, 0, len(want))
+		rb := make([]byte, 64)
+		for len(got) < len(want) {
+			n, err := conn.Read(rb)
+			got = append(got, rb[:n]...)
+			if err != nil {
+				clGoro.FinishWithErr(fmt.Errorf("read %d/%d bytes: %w", len(got), len(want), err))
+				return
+			}
+		}
+		if string(got) != want {
+			clGoro.FinishWithErr(fmt.Errorf("read %q, want %q", got, want))
+			return
+		}
+		// Closed before finishing: a Yield after FinishWithErr would never be
+		// serviced, since the driver stops resuming a goroutine it has reaped.
+		conn.Close()
+		clGoro.Finish()
+	}()
+
+	var buf [MTU + ethernet.MaxOverheadSize]byte
+	// pump moves one frame each way, dropping the armed one. Only ever called
+	// with both goroutines parked.
+	// Ingress errors are not fatal here: once a segment is dropped the frames
+	// behind it arrive past rcv.nxt and are rejected, which is precisely the
+	// stall the retransmission has to break. Egress errors are real faults.
+	pump := func() (moved bool) {
+		n, err := client.EgressEthernet(buf[:])
+		if err != nil {
+			t.Fatal("client egress:", err)
+		} else if n > 0 {
+			sv.IngressEthernet(buf[:n])
+			moved = true
+		}
+		n, err = sv.EgressEthernet(buf[:])
+		if err != nil {
+			t.Fatal("server egress:", err)
+		} else if n > 0 {
+			if dropNext && n > minDataFrame {
+				dropNext, dropped = false, true
+			} else {
+				client.IngressEthernet(buf[:n])
+			}
+			moved = true
+		}
+		return moved
+	}
+
+	for round := 0; ; round++ {
+		if round == maxRounds {
+			t.Fatalf("no retransmission after %d rounds and %v of simulated time (dropped=%v): is a Policy installed?",
+				maxRounds, time.Duration(now), dropped)
+		}
+		allFinished, err := tsched.AwaitAllParked()
+		if err != nil {
+			t.Fatalf("after losing one segment (dropped=%v): %v", dropped, err)
+		}
+		if allFinished {
+			break
+		}
+		if !pump() {
+			now += int64(quietStep) // Both sides idle: let the RTO age.
+		}
+		tsched.YieldToAllParked()
+	}
+	if !dropped {
+		t.Fatal("no frame was dropped, so the test did not exercise retransmission")
 	}
 }

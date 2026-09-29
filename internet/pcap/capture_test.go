@@ -23,7 +23,7 @@ import (
 const httpProtocol = "HTTP/1.1"
 
 func makeHttpPayload(body string) ([]byte, error) {
-	var hdr httpraw.Header
+	var hdr httpraw.HeaderV1
 	hdr.SetProtocol(httpProtocol)
 	hdr.SetStatus("200", "OK")
 	hdr.Set("Cookie", "ABC=123")

@@ -28,11 +28,11 @@ const _MsgType_name = "solicitadvertiserequestconfirmrenewrebindreplyreleasedecl
 var _MsgType_index = [...]uint8{0, 7, 16, 23, 30, 35, 41, 46, 53, 60, 71, 85, 95, 105}
 
 func (i MsgType) String() string {
-	i -= 1
-	if i >= MsgType(len(_MsgType_index)-1) {
-		return "MsgType(" + strconv.FormatInt(int64(i+1), 10) + ")"
+	idx := int(i) - 1
+	if i < 1 || idx >= len(_MsgType_index)-1 {
+		return "MsgType(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _MsgType_name[_MsgType_index[i]:_MsgType_index[i+1]]
+	return _MsgType_name[_MsgType_index[idx]:_MsgType_index[idx+1]]
 }
 func _() {
 	// An "invalid array index" compiler error signifies that the constant values have changed.
@@ -51,11 +51,11 @@ const _ClientState_name = "initsolicitingrequestingboundrenewingrebinding"
 var _ClientState_index = [...]uint8{0, 4, 14, 24, 29, 37, 46}
 
 func (i ClientState) String() string {
-	i -= 1
-	if i >= ClientState(len(_ClientState_index)-1) {
-		return "ClientState(" + strconv.FormatInt(int64(i+1), 10) + ")"
+	idx := int(i) - 1
+	if i < 1 || idx >= len(_ClientState_index)-1 {
+		return "ClientState(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _ClientState_name[_ClientState_index[i]:_ClientState_index[i+1]]
+	return _ClientState_name[_ClientState_index[idx]:_ClientState_index[idx+1]]
 }
 func _() {
 	// An "invalid array index" compiler error signifies that the constant values have changed.
@@ -134,10 +134,11 @@ const _StatusCode_name = "successunspec-failno-addrs-availno-bindingnot-on-linku
 var _StatusCode_index = [...]uint8{0, 7, 18, 32, 42, 53, 66}
 
 func (i StatusCode) String() string {
-	if i >= StatusCode(len(_StatusCode_index)-1) {
+	idx := int(i) - 0
+	if i < 0 || idx >= len(_StatusCode_index)-1 {
 		return "StatusCode(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _StatusCode_name[_StatusCode_index[i]:_StatusCode_index[i+1]]
+	return _StatusCode_name[_StatusCode_index[idx]:_StatusCode_index[idx+1]]
 }
 func _() {
 	// An "invalid array index" compiler error signifies that the constant values have changed.
@@ -153,9 +154,9 @@ const _DUIDType_name = "duid-lltduid-enduid-ll"
 var _DUIDType_index = [...]uint8{0, 8, 15, 22}
 
 func (i DUIDType) String() string {
-	i -= 1
-	if i >= DUIDType(len(_DUIDType_index)-1) {
-		return "DUIDType(" + strconv.FormatInt(int64(i+1), 10) + ")"
+	idx := int(i) - 1
+	if i < 1 || idx >= len(_DUIDType_index)-1 {
+		return "DUIDType(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _DUIDType_name[_DUIDType_index[i]:_DUIDType_index[i+1]]
+	return _DUIDType_name[_DUIDType_index[idx]:_DUIDType_index[idx+1]]
 }

@@ -2,27 +2,27 @@ package httpraw
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/soypat/lneto"
 )
 
 func TestTryParse_IncrementalRequest(t *testing.T) {
 	// Full HTTP request split across multiple ReadFromBytes calls.
 	full := "GET /index.html HTTP/1.1\r\nHost: example.com\r\nContent-Type: text/html\r\n\r\nbody here"
-	var hdr Header
-	hdr.Reset(make([]byte, 0, 256))
+	var hdr HeaderV1
+	hdr.Reset(make([]byte, 0, 256), defaultKVCap)
 
 	// Feed data in small chunks to exercise incremental parsing.
 	chunks := splitInto(full, 10)
 	var done bool
 	var doneIdx int
 	for i, chunk := range chunks {
-		n, err := hdr.ReadFromBytes([]byte(chunk))
+		err := hdr.ReadFromBytes([]byte(chunk))
 		if err != nil {
 			t.Fatalf("ReadFromBytes: %v", err)
-		}
-		if n != len(chunk) {
-			t.Fatalf("expected %d bytes read, got %d", len(chunk), n)
 		}
 
 		var needMore bool
@@ -52,19 +52,16 @@ func TestTryParse_IncrementalRequest(t *testing.T) {
 	if string(hdr.Method()) != "GET" {
 		t.Errorf("method = %q; want GET", hdr.Method())
 	}
-	if string(hdr.RequestURI()) != "/index.html" {
-		t.Errorf("URI = %q; want /index.html", hdr.RequestURI())
+	if string(hdr.RequestTarget()) != "/index.html" {
+		t.Errorf("URI = %q; want /index.html", hdr.RequestTarget())
 	}
 
 	// Verify headers via ForEach.
 	headers := make(map[string]string)
-	err := hdr.ForEach(func(key, value []byte) error {
+	hdr.ForEach(func(key, value []byte) bool {
 		headers[string(key)] = string(value)
-		return nil
+		return true
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if headers["Host"] != "example.com" {
 		t.Errorf("Host = %q; want example.com", headers["Host"])
 	}
@@ -84,8 +81,8 @@ func TestTryParse_IncrementalRequest(t *testing.T) {
 
 func TestTryParse_IncrementalResponse(t *testing.T) {
 	full := "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nServer: lneto\r\n\r\nhello"
-	var hdr Header
-	hdr.Reset(make([]byte, 0, 256))
+	var hdr HeaderV1
+	hdr.Reset(make([]byte, 0, 256), defaultKVCap)
 
 	chunks := splitInto(full, 8)
 	var done bool
@@ -136,8 +133,8 @@ func TestReadFromLimited(t *testing.T) {
 	data := "GET / HTTP/1.1\r\nHost: test\r\n\r\n"
 	r := strings.NewReader(data)
 
-	var hdr Header
-	hdr.Reset(make([]byte, 0, 256))
+	var hdr HeaderV1
+	hdr.Reset(make([]byte, 0, 256), defaultKVCap)
 
 	// Read in one shot.
 	n, err := hdr.ReadFromLimited(r, 256)
@@ -162,8 +159,8 @@ func TestReadFromLimited(t *testing.T) {
 }
 
 func TestReadFromLimited_MaxBytes(t *testing.T) {
-	var hdr Header
-	hdr.Reset(make([]byte, 0, 256))
+	var hdr HeaderV1
+	hdr.Reset(make([]byte, 0, 256), defaultKVCap)
 
 	// Zero maxBytesToRead should error.
 	_, err := hdr.ReadFromLimited(strings.NewReader("data"), 0)
@@ -173,18 +170,18 @@ func TestReadFromLimited_MaxBytes(t *testing.T) {
 }
 
 func TestReadFromBytes_Empty(t *testing.T) {
-	var hdr Header
-	hdr.Reset(make([]byte, 0, 256))
+	var hdr HeaderV1
+	hdr.Reset(make([]byte, 0, 256), defaultKVCap)
 
-	_, err := hdr.ReadFromBytes(nil)
+	err := hdr.ReadFromBytes(nil)
 	if err == nil {
 		t.Fatal("expected error for empty bytes")
 	}
 }
 
 func TestBufferFreeAndCapacity(t *testing.T) {
-	var hdr Header
-	hdr.Reset(make([]byte, 0, 100))
+	var hdr HeaderV1
+	hdr.Reset(make([]byte, 0, 100), defaultKVCap)
 
 	if hdr.BufferCapacity() != 100 {
 		t.Errorf("capacity = %d; want 100", hdr.BufferCapacity())
@@ -200,17 +197,16 @@ func TestBufferFreeAndCapacity(t *testing.T) {
 }
 
 func TestEnableBufferGrowth(t *testing.T) {
-	var hdr Header
+	var hdr HeaderV1
 	buf := make([]byte, 0, 64)
-	hdr.Reset(buf)
-	hdr.EnableBufferGrowth(false)
-
+	hdr.Reset(buf, defaultKVCap)
+	hdr.ConfigBufferGrowth(false)
 	// With growth disabled, reading more than capacity should fail.
 	big := make([]byte, 128)
 	for i := range big {
 		big[i] = 'A'
 	}
-	_, err := hdr.ReadFromBytes(big)
+	err := hdr.ReadFromBytes(big)
 	if err == nil {
 		t.Fatal("expected error when buffer growth disabled and data exceeds capacity")
 	}
@@ -218,7 +214,7 @@ func TestEnableBufferGrowth(t *testing.T) {
 
 func TestHeader_Add(t *testing.T) {
 	full := "GET / HTTP/1.1\r\nHost: test\r\n\r\n"
-	var hdr Header
+	var hdr HeaderV1
 	err := hdr.ParseBytes(false, []byte(full))
 	if err != nil {
 		t.Fatal(err)
@@ -229,11 +225,11 @@ func TestHeader_Add(t *testing.T) {
 
 	// ForEach should find both.
 	var values []string
-	hdr.ForEach(func(key, value []byte) error {
+	hdr.ForEach(func(key, value []byte) bool {
 		if string(key) == "X-Custom" {
 			values = append(values, string(value))
 		}
-		return nil
+		return true
 	})
 	if len(values) != 2 {
 		t.Fatalf("expected 2 X-Custom headers, got %d", len(values))
@@ -245,7 +241,7 @@ func TestHeader_Add(t *testing.T) {
 
 func TestHeader_SetBytes(t *testing.T) {
 	full := "GET / HTTP/1.1\r\nHost: test\r\n\r\n"
-	var hdr Header
+	var hdr HeaderV1
 	err := hdr.ParseBytes(false, []byte(full))
 	if err != nil {
 		t.Fatal(err)
@@ -261,7 +257,7 @@ func TestHeader_SetBytes(t *testing.T) {
 func TestConnectionClose(t *testing.T) {
 	t.Run("HTTP11_NoConnectionHeader", func(t *testing.T) {
 		full := "GET / HTTP/1.1\r\nHost: test\r\n\r\n"
-		var hdr Header
+		var hdr HeaderV1
 		hdr.ParseBytes(false, []byte(full))
 		if hdr.ConnectionClose() {
 			t.Error("HTTP/1.1 without Connection:close should not close")
@@ -270,7 +266,7 @@ func TestConnectionClose(t *testing.T) {
 
 	t.Run("ExplicitClose", func(t *testing.T) {
 		full := "GET / HTTP/1.1\r\nConnection: close\r\nHost: test\r\n\r\n"
-		var hdr Header
+		var hdr HeaderV1
 		hdr.ParseBytes(false, []byte(full))
 		if !hdr.ConnectionClose() {
 			t.Error("Connection:close header should trigger close")
@@ -279,7 +275,7 @@ func TestConnectionClose(t *testing.T) {
 
 	t.Run("HTTP10_NoKeepAlive", func(t *testing.T) {
 		full := "GET / HTTP/1.0\r\nHost: test\r\n\r\n"
-		var hdr Header
+		var hdr HeaderV1
 		hdr.ParseBytes(false, []byte(full))
 		if !hdr.ConnectionClose() {
 			t.Error("HTTP/1.0 without keep-alive should close")
@@ -288,7 +284,7 @@ func TestConnectionClose(t *testing.T) {
 
 	t.Run("HTTP10_KeepAlive", func(t *testing.T) {
 		full := "GET / HTTP/1.0\r\nConnection: keep-alive\r\nHost: test\r\n\r\n"
-		var hdr Header
+		var hdr HeaderV1
 		hdr.ParseBytes(false, []byte(full))
 		if hdr.ConnectionClose() {
 			t.Error("HTTP/1.0 with keep-alive should not close")
@@ -298,7 +294,7 @@ func TestConnectionClose(t *testing.T) {
 
 func TestTryParse_AlreadyParsed(t *testing.T) {
 	full := "GET / HTTP/1.1\r\nHost: test\r\n\r\n"
-	var hdr Header
+	var hdr HeaderV1
 	hdr.ParseBytes(false, []byte(full))
 
 	// Calling TryParse again should return error.
@@ -310,7 +306,7 @@ func TestTryParse_AlreadyParsed(t *testing.T) {
 
 func TestParseResponse_BadStatusCode(t *testing.T) {
 	full := "HTTP/1.1 abc Bad\r\n\r\n"
-	var hdr Header
+	var hdr HeaderV1
 	err := hdr.ParseBytes(true, []byte(full))
 	if err == nil {
 		t.Fatal("expected error for non-numeric status code")
@@ -331,6 +327,14 @@ func TestCookie_ParseBytes(t *testing.T) {
 	}
 	if string(c.Get("Path")) != "/" {
 		t.Errorf("Path = %q; want /", c.Get("Path"))
+	}
+	// The first pair sits at buffer offset 0, which a presence check keyed on
+	// the offset rather than the length reads as absent.
+	if string(c.Get("session")) != "abc123" {
+		t.Errorf("Get(session) = %q; want abc123", c.Get("session"))
+	}
+	if !c.HasKeyOrSingleValue("session") {
+		t.Error("expected first pair to be present by key")
 	}
 	if !c.HasKeyOrSingleValue("Secure") {
 		t.Error("expected Secure flag")
@@ -357,13 +361,10 @@ func TestCookie_ForEach(t *testing.T) {
 	c.ParseBytes([]byte("a=1; b=2; c=3"))
 
 	var keys []string
-	err := c.ForEach(func(key, value []byte) error {
+	c.ForEach(func(key, value []byte) bool {
 		keys = append(keys, string(key))
-		return nil
+		return true
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if len(keys) != 3 {
 		t.Fatalf("expected 3 cookie entries, got %d", len(keys))
 	}
@@ -372,7 +373,7 @@ func TestCookie_ForEach(t *testing.T) {
 func TestHeader_MultilineValue(t *testing.T) {
 	// RFC 7230: obsolete line folding with \r\n followed by space/tab.
 	full := "GET / HTTP/1.1\r\nX-Multi: line1\r\n\tline2\r\nHost: test\r\n\r\n"
-	var hdr Header
+	var hdr HeaderV1
 	err := hdr.ParseBytes(false, []byte(full))
 	if err != nil {
 		t.Fatal(err)
@@ -388,8 +389,8 @@ func TestHeader_MultilineValue(t *testing.T) {
 }
 
 func TestHeader_ResponseRoundTrip(t *testing.T) {
-	var hdr Header
-	hdr.Reset(make([]byte, 0, 256))
+	var hdr HeaderV1
+	hdr.Reset(make([]byte, 0, 256), defaultKVCap)
 	hdr.SetProtocol("HTTP/1.1")
 	hdr.SetStatus("404", "Not Found")
 	hdr.Add("Content-Type", "text/plain")
@@ -413,7 +414,7 @@ func TestHeader_ResponseRoundTrip(t *testing.T) {
 	}
 
 	// Parse back the generated response.
-	var hdr2 Header
+	var hdr2 HeaderV1
 	err = hdr2.ParseBytes(true, buf)
 	if err != nil {
 		t.Fatalf("re-parse response: %v", err)
@@ -428,11 +429,11 @@ func TestHeader_ResponseRoundTrip(t *testing.T) {
 }
 
 func TestHeader_RequestRoundTrip(t *testing.T) {
-	var hdr Header
-	hdr.Reset(make([]byte, 0, 256))
+	var hdr HeaderV1
+	hdr.Reset(make([]byte, 0, 256), defaultKVCap)
 	hdr.SetProtocol("HTTP/1.1")
 	hdr.SetMethod("POST")
-	hdr.SetRequestURI("/api/data")
+	hdr.SetRequestTarget("/api/data")
 	hdr.Add("Host", "example.com")
 	hdr.Add("Content-Type", "application/json")
 
@@ -446,7 +447,7 @@ func TestHeader_RequestRoundTrip(t *testing.T) {
 	}
 
 	// Parse back the generated request.
-	var hdr2 Header
+	var hdr2 HeaderV1
 	err = hdr2.ParseBytes(false, buf)
 	if err != nil {
 		t.Fatalf("re-parse request: %v", err)
@@ -454,8 +455,8 @@ func TestHeader_RequestRoundTrip(t *testing.T) {
 	if string(hdr2.Method()) != "POST" {
 		t.Errorf("re-parsed method = %q; want POST", hdr2.Method())
 	}
-	if string(hdr2.RequestURI()) != "/api/data" {
-		t.Errorf("re-parsed URI = %q; want /api/data", hdr2.RequestURI())
+	if string(hdr2.RequestTarget()) != "/api/data" {
+		t.Errorf("re-parsed URI = %q; want /api/data", hdr2.RequestTarget())
 	}
 	if string(hdr2.Get("Host")) != "example.com" {
 		t.Errorf("re-parsed Host = %q; want example.com", hdr2.Get("Host"))
@@ -465,7 +466,7 @@ func TestHeader_RequestRoundTrip(t *testing.T) {
 func TestParseResponse_StatusCodeOnly(t *testing.T) {
 	// Response with status code but no status text.
 	full := "HTTP/1.1 204\r\n\r\n"
-	var hdr Header
+	var hdr HeaderV1
 	err := hdr.ParseBytes(true, []byte(full))
 	if err != nil {
 		t.Fatal(err)
@@ -479,7 +480,7 @@ func TestParseResponse_StatusCodeOnly(t *testing.T) {
 
 func TestParseResponse_HTTP10(t *testing.T) {
 	full := "HTTP/1.0 200 OK\r\nServer: old\r\n\r\n"
-	var hdr Header
+	var hdr HeaderV1
 	err := hdr.ParseBytes(true, []byte(full))
 	if err != nil {
 		t.Fatal(err)
@@ -494,19 +495,23 @@ func TestParseResponse_HTTP10(t *testing.T) {
 }
 
 func TestParseRequest_NoProtocol(t *testing.T) {
-	// HTTP/0.9 style: just method and URI, no version.
+	// HTTP/0.9 style: just method and URI, no version. Refused, but the
+	// request-line it did read stays readable so a caller can answer 400 and say
+	// what it saw.
 	full := "GET /simple\r\nHost: test\r\n\r\n"
-	var hdr Header
+	var hdr HeaderV1
 	err := hdr.ParseBytes(false, []byte(full))
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, lneto.ErrUnsupported) {
+		t.Fatalf("want lneto.ErrUnsupported for a version-less request, got %v", err)
 	}
 	if string(hdr.Method()) != "GET" {
 		t.Errorf("method = %q; want GET", hdr.Method())
 	}
-	if string(hdr.RequestURI()) != "/simple" {
-		t.Errorf("URI = %q; want /simple", hdr.RequestURI())
+	if string(hdr.RequestTarget()) != "/simple" {
+		t.Errorf("URI = %q; want /simple", hdr.RequestTarget())
 	}
+	// An empty protocol is what tells HTTP/0.9 apart from a named version, which
+	// is how [httphi] picks 400 over 505.
 	if hdr.Protocol() != nil {
 		t.Errorf("protocol should be nil for version-less request, got %q", hdr.Protocol())
 	}
@@ -523,7 +528,7 @@ func TestCookie_QuotedValue(t *testing.T) {
 func TestParseRequest_InvalidHeaderSpaceBeforeColon(t *testing.T) {
 	// RFC 7230 §3.2.4: No whitespace allowed between header name and colon.
 	full := "GET / HTTP/1.1\r\nBad Header : value\r\n\r\n"
-	var hdr Header
+	var hdr HeaderV1
 	err := hdr.ParseBytes(false, []byte(full))
 	if err == nil {
 		t.Fatal("expected error for space before colon in header name")
@@ -538,4 +543,105 @@ func splitInto(s string, n int) []string {
 		s = s[end:]
 	}
 	return chunks
+}
+
+// Connection is a case-insensitive list of case-insensitive tokens, RFC 9110
+// 7.6.1, and its field name folds like any other, RFC 9110 5.1. Missing a close
+// token keeps serving a peer that asked to hang up; missing keep-alive hangs up
+// on an HTTP/1.0 peer that asked to stay.
+func TestConnectionCloseFolded(t *testing.T) {
+	for _, test := range []struct {
+		proto     string
+		field     string
+		wantClose bool
+	}{
+		{proto: "HTTP/1.1", field: "Connection: close", wantClose: true},
+		{proto: "HTTP/1.1", field: "connection: close", wantClose: true},
+		{proto: "HTTP/1.1", field: "CONNECTION: close", wantClose: true},
+		{proto: "HTTP/1.1", field: "Connection: Close", wantClose: true},
+		{proto: "HTTP/1.1", field: "Connection: CLOSE", wantClose: true},
+		{proto: "HTTP/1.1", field: "Connection: keep-alive, close", wantClose: true},
+		{proto: "HTTP/1.1", field: "Connection: close, keep-alive", wantClose: true},
+		{proto: "HTTP/1.1", field: "Connection: TE, Close", wantClose: true},
+		// A token that merely contains "close" is not the close token.
+		{proto: "HTTP/1.1", field: "Connection: closed", wantClose: false},
+		{proto: "HTTP/1.1", field: "Connection: keep-alive", wantClose: false},
+		// HTTP/1.0 closes unless the peer asks to keep the connection.
+		{proto: "HTTP/1.0", field: "Connection: keep-alive", wantClose: false},
+		{proto: "HTTP/1.0", field: "connection: keep-alive", wantClose: false},
+		{proto: "HTTP/1.0", field: "Connection: Keep-Alive", wantClose: false},
+		{proto: "HTTP/1.0", field: "Connection: TE, keep-alive", wantClose: false},
+		{proto: "HTTP/1.0", field: "Host: h", wantClose: true},
+	} {
+		t.Run(test.proto+" "+test.field, func(t *testing.T) {
+			var hdr HeaderV1
+			full := "GET / " + test.proto + "\r\nHost: h\r\n" + test.field + "\r\n\r\n"
+			if err := hdr.ParseBytes(false, []byte(full)); err != nil {
+				t.Fatal(err)
+			}
+			if got := hdr.ConnectionClose(); got != test.wantClose {
+				t.Errorf("want ConnectionClose=%v, got %v", test.wantClose, got)
+			}
+		})
+	}
+}
+
+// HeaderV1 speaks HTTP/1.x and nothing else, so a request or response naming
+// another version is refused on the first line. That skips the field loop, which
+// is where nearly all the parse cost is, and refuses the h2c preface a modern
+// client opens with before it is mistaken for a request.
+func TestHeaderV1RejectsUnsupportedVersion(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		raw        string
+		asResponse bool
+	}{
+		{name: "request http2", raw: "GET / HTTP/2.0\r\nHost: h\r\n\r\n"},
+		{name: "request http3", raw: "GET / HTTP/3.0\r\nHost: h\r\n\r\n"},
+		{name: "h2c preface", raw: "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"},
+		{name: "request http09 no version", raw: "GET /index.html\r\nHost: h\r\n\r\n"},
+		{name: "request bogus proto", raw: "GET / BANANA\r\nHost: h\r\n\r\n"},
+		{name: "response http2", raw: "HTTP/2.0 200 OK\r\nServer: s\r\n\r\n", asResponse: true},
+		{name: "response http09", raw: "HTTP/0.9 200 OK\r\nServer: s\r\n\r\n", asResponse: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var h HeaderV1
+			err := h.ParseBytes(test.asResponse, []byte(test.raw))
+			if !errors.Is(err, lneto.ErrUnsupported) {
+				t.Fatalf("want lneto.ErrUnsupported, got %v", err)
+			}
+			// The field loop must not have run: refusing early is the point.
+			fields := 0
+			h.ForEach(func(key, value []byte) bool { fields++; return true })
+			if fields != 0 {
+				t.Errorf("want no fields parsed, got %d", fields)
+			}
+			if h.ParsingSuccess() {
+				t.Error("a refused header must not report a successful parse")
+			}
+		})
+	}
+}
+
+// Both HTTP/1 versions stay supported: only non-1.x is refused.
+func TestHeaderV1AcceptsV1Versions(t *testing.T) {
+	for _, test := range []struct {
+		raw        string
+		asResponse bool
+	}{
+		{raw: "GET / HTTP/1.1\r\nHost: h\r\n\r\n"},
+		{raw: "GET / HTTP/1.0\r\nHost: h\r\n\r\n"},
+		{raw: "HTTP/1.1 200 OK\r\nServer: s\r\n\r\n", asResponse: true},
+		{raw: "HTTP/1.0 200 OK\r\nServer: s\r\n\r\n", asResponse: true},
+	} {
+		t.Run(test.raw[:12], func(t *testing.T) {
+			var h HeaderV1
+			if err := h.ParseBytes(test.asResponse, []byte(test.raw)); err != nil {
+				t.Fatalf("want parsed, got %v", err)
+			}
+			if !h.ParsingSuccess() {
+				t.Error("want a successful parse")
+			}
+		})
+	}
 }

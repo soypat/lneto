@@ -44,6 +44,9 @@ type Frame struct {
 	buf []byte
 }
 
+// RawData returns the underlying frame buffer.
+func (frm Frame) RawData() []byte { return frm.buf }
+
 // OptionsPayload returns the options portion of the DHCP frame. May be zero lengthed.
 func (frm Frame) OptionsPayload() []byte {
 	return frm.buf[OptionsOffset:]

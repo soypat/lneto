@@ -102,8 +102,9 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 	isDial := raddr.IsValid() && !raddr.Addr().IsUnspecified()
 	if laddr.Port() == 0 {
 		// Auto-assign an ephemeral port for both outbound dials and for listeners
-		// that did not request a fixed port.
-		laddr = netip.AddrPortFrom(laddr.Addr(), uint16(49152+s.blk.async.Prand32()%16384))
+		// that did not request a fixed port. Sequential, not random: see
+		// [StackAsync.ephemeralPort] for why random selection breaks dial churn.
+		laddr = netip.AddrPortFrom(laddr.Addr(), s.blk.async.ephemeralPort())
 	}
 	if laddr.Addr().IsUnspecified() {
 		// Fill in the stack's configured address for the requested family.
@@ -162,11 +163,9 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			return nil, err
 		}
 		uc := udpconn{
-			Conn: &conn,
-			// TODO: use udpaddr until UDPAddrFromAddrPort added to tinygo.
-			// https://github.com/tinygo-org/net/issues/45
-			localAddr: udpaddr(laddr),
-			raddr:     udpaddr(raddr),
+			Conn:      &conn,
+			localAddr: net.UDPAddrFromAddrPort(laddr),
+			raddr:     net.UDPAddrFromAddrPort(raddr),
 		}
 		return uc, nil
 	case "tcp", "tcp4", "tcp6":
@@ -177,13 +176,19 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 		if isDial {
 			var conn tcp.Conn
 			// DIAL TCP: active connection a.k.a TCP Client branch.
-			err = conn.Configure(tcp.ConnConfig{
+			conncfg := tcp.ConnConfig{
 				// TODO(pato): Eventually add UDP configuration. we use TCP for now for simplicity's sake.
 				TxBuf:             make([]byte, s.plcfg.TxBufSize),
 				RxBuf:             make([]byte, s.plcfg.RxBufSize),
 				TxPacketQueueSize: s.plcfg.QueueSize,
 				RWBackoff:         s.plcfg.NewBackoff(),
-			})
+			}
+			if s.plcfg.NewPolicy != nil {
+				// A dialed connection needs loss recovery as much as a pooled
+				// one. See [TCPPoolConfig.NewPolicy].
+				conncfg.Policy = s.plcfg.NewPolicy()
+			}
+			err = conn.Configure(conncfg)
 			if err != nil {
 				return nil, err
 			}
@@ -285,9 +290,9 @@ func (u *udppktconn) Write(b []byte) (int, error) {
 }
 func (u *udppktconn) RemoteAddr() net.Addr { return nil }
 
+// tcplistener adapts [tcp.Listener] to [net.Listener].
 type tcplistener struct {
 	l         tcp.Listener
-	closed    bool
 	sleep     lneto.BackoffStrategy
 	localAddr net.Addr
 }
@@ -303,42 +308,26 @@ func (l *tcplistener) Addr() net.Addr {
 
 func (l *tcplistener) Shutdown() { l.Close() }
 
+// Accept blocks until the next connection is accepted and returned or until it is closed.
+// It ignores [lneto.ErrExhausted] which cause dropped connections.
 func (l *tcplistener) Accept() (net.Conn, error) {
-	if l.closed {
-		return nil, net.ErrClosed
-	}
 	var backoffs uint
 	for {
-		if l.closed {
-			return nil, net.ErrClosed
-		}
-		n := l.l.NumberOfReadyToAccept()
-		if n == 0 {
-			backoff(l.sleep, backoffs)
-			backoffs++
-			continue
-		}
-		backoffs = 0
 		c, _, err := l.l.TryAccept()
-		if err != nil {
-			return nil, err
+		if err == nil {
+			return tcpconn{
+				Conn:      c,
+				localAddr: l.localAddr,
+			}, nil
+		} else if err != lneto.ErrExhausted {
+			return nil, err // net.ErrClosed or failure.
 		}
-		cc := tcpconn{
-			Conn:      c,
-			localAddr: l.localAddr,
-		}
-		return cc, nil
+		backoff(l.sleep, backoffs)
+		backoffs++
 	}
 }
 
-func (l *tcplistener) Close() error {
-	if l.closed {
-		return net.ErrClosed
-	}
-	err := l.l.Close()
-	l.closed = true
-	return err
-}
+func (l *tcplistener) Close() error { return l.l.Close() }
 
 type tcpconn struct {
 	*tcp.Conn
@@ -383,13 +372,6 @@ func (c udpconn) ReadFrom(b []byte) (int, net.Addr, error) {
 
 func (c udpconn) WriteTo(b []byte, _ net.Addr) (int, error) {
 	return c.Conn.Write(b) // connected UDP: always writes to dialed remote
-}
-func udpaddr(addr netip.AddrPort) net.Addr {
-	return &net.UDPAddr{
-		IP:   addr.Addr().AsSlice(),
-		Zone: addr.Addr().Zone(),
-		Port: int(addr.Port()),
-	}
 }
 
 // parseNetAddr converts a [net.Addr] to a [netip.AddrPort]. A nil or empty IP

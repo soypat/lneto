@@ -26,10 +26,11 @@ const _State_name = "CLOSEDLISTENSYN-RECEIVEDSYN-SENTESTABLISHEDFIN-WAIT-1FIN-WA
 var _State_index = [...]uint8{0, 6, 12, 24, 32, 43, 53, 63, 70, 79, 89, 97}
 
 func (i State) String() string {
-	if i >= State(len(_State_index)-1) {
+	idx := int(i) - 0
+	if i < 0 || idx >= len(_State_index)-1 {
 		return "State(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _State_name[_State_index[i]:_State_index[i+1]]
+	return _State_name[_State_index[idx]:_State_index[idx+1]]
 }
 func _() {
 	// An "invalid array index" compiler error signifies that the constant values have changed.

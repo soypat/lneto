@@ -53,6 +53,10 @@ type StackAsync struct {
 	lookup  dns.Message
 	dnssv   netip.Addr
 
+	// ephPort drives sequential ephemeral-port allocation (see
+	// [StackAsync.ephemeralPort]); zero means not yet seeded.
+	ephPort uint32
+
 	ntpUDP internet.StackUDPPort
 	ntp    ntp.Client
 
@@ -69,6 +73,8 @@ type StackAsync struct {
 
 	ipv6enabled bool
 	stack6      Stack6
+
+	log *slog.Logger
 }
 
 type StackConfig struct {
@@ -105,6 +111,9 @@ type StackConfig struct {
 	AcceptMulticast bool
 	// Accept broadcast IPv4 packets. Needed for managing access points and DHCPv4 servers.
 	AcceptIPv4Broadcast bool
+	// Logger receives the stack's Debug and DebugErr output. A nil Logger silences
+	// them; the heap allocation probe still runs so allocation bisection keeps working.
+	Logger *slog.Logger
 }
 
 func (cfg *StackConfig) id() uint16 {
@@ -120,8 +129,8 @@ func (s *StackAsync) IngressEthernet(ethernetFrame []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stats.TotalReceived += uint64(len(ethernetFrame))
-	err := s.link.Demux(ethernetFrame, 0)
 	debugPacket("IN ", ethernetFrame)
+	err := s.link.Demux(ethernetFrame, 0)
 	if err == nil {
 		s.arpt.learnFromIngressEthernet(ethernetFrame)
 	}
@@ -202,6 +211,7 @@ func (s *StackAsync) Reset(cfg StackConfig) (err error) {
 	defer s.mu.Unlock()
 	s.prng = uint32(cfg.RandSeed)
 	s.hostname = cfg.Hostname
+	s.log = cfg.Logger
 	// Treat last character of hostname as number.
 	id := cfg.id()
 	linkNodes := 2 // ARP and IPv4 nodes
@@ -344,6 +354,23 @@ func (s *StackAsync) Prand32() (randval uint32) {
 	randval = s.prand32()
 	s.mu.Unlock()
 	return randval
+}
+
+// ephemeralPort returns the next port of the IANA dynamic range (49152-65535,
+// RFC 6335 §6), allocated sequentially from a random per-stack start so a port is
+// revisited only after the full 16384-port cycle. Random selection instead reuses
+// a recent port at birthday-paradox rates, and a reused 4-tuple can collide with
+// state the previous conversation left behind (a TIME-WAIT, a NAT flow entry)
+// which swallows the new SYN.
+func (s *StackAsync) ephemeralPort() uint16 {
+	s.mu.Lock()
+	if s.ephPort == 0 {
+		s.ephPort = s.prand32()%16384 | 1
+	}
+	port := 49152 + s.ephPort%16384
+	s.ephPort++
+	s.mu.Unlock()
+	return uint16(port)
 }
 
 func (s *StackAsync) prand32() uint32 {
@@ -624,6 +651,9 @@ func (s *StackAsync) StartLookupIPType(host string, qtype dns.Type) error {
 			s.ednsopt,
 		},
 		EnableRecursion: true,
+		// Leave headroom above the address buffer for CNAME records, which
+		// occupy answer slots before the addresses they alias.
+		MaxResponseAnswers: uint16(len(s.addrbufnip)) + 8,
 	})
 	if err != nil {
 		return err
@@ -843,20 +873,39 @@ func addr4(addr [4]byte, ok bool) netip.Addr {
 }
 
 // Debug prints debugging and heap information.
+//
+// The heap allocation probe runs unconditionally; only the log line is gated on
+// the configured Logger's level. Building the slog.Attr list allocates, so the
+// gate must come first or the allocation happens even when nothing is logged.
 func (s *StackAsync) Debug(msg string) {
-	internal.LogAttrsAndAllocs(msg, slog.Default(), slog.LevelDebug, "stackasync",
+	internal.LogAllocs(msg)
+	if !internal.LogEnabled(s.log, slog.LevelDebug) {
+		return
+	}
+	internal.LogAttrsAndAllocs(msg, s.log, slog.LevelDebug, "stackasync",
 		slog.String("umsg", msg),
 		slog.Uint64("sent", s.stats.TotalSent),
 		slog.Uint64("recv", s.stats.TotalReceived),
 	)
 }
 
-// DebugErr prints debugging and heap information.
+// DebugErr prints debugging and heap information with [slog.LevelError] level. See [StackAsync.Debug] on gating.
 func (s *StackAsync) DebugErr(msg, err string) {
-	internal.LogAttrsAndAllocs(msg, slog.Default(), slog.LevelError, "stackasync",
+	internal.LogAllocs(msg)
+	if !internal.LogEnabled(s.log, slog.LevelError) {
+		return
+	}
+	internal.LogAttrsAndAllocs(msg, s.log, slog.LevelError, "stackasync",
 		slog.String("umsg", msg),
 		slog.String("err", err),
 		slog.Uint64("sent", s.stats.TotalSent),
 		slog.Uint64("recv", s.stats.TotalReceived),
 	)
+}
+
+// LogAllocs is an lneto-tracked allocation logger. If there was an allocation between this call and a previous call
+// to LogAllocs it will be printed. This is called globally by StackAsync.Debug methods and by all logging calls in lneto
+// when build tag debugheaplog is set.
+func LogAllocs(msg string) {
+	internal.LogAllocs(msg)
 }

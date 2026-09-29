@@ -3,7 +3,6 @@ package dhcpv4
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -220,10 +219,10 @@ func (sv *Server) Demux(carrierData []byte, frameOffset int) error {
 		}
 
 	default:
-		err = fmt.Errorf("unhandled message type %s", msgType.String())
+		err = errors.New("unhandled message type: " + msgType.String())
 	}
 	if err != nil {
-		return fmt.Errorf("msgtype=%s client=%+v: %w", msgType.String(), client, err)
+		return errors.New("dhcpv4 server demux fail on " + msgType.String())
 	}
 	sv.hosts[clientIDRaw] = client
 	return nil

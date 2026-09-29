@@ -44,6 +44,10 @@ type SegmentStep struct {
 	// Pending segments after the step (nil if none expected).
 	APending *Segment
 	BPending *Segment
+
+	// WantErr is the error the receiver must return for this step, matched with
+	// errors.Is. Nil requires a non-error receive (dropped errors are logged).
+	WantErr error
 }
 
 // Run executes the test from both peers' perspectives as subtests.
@@ -126,9 +130,14 @@ func (tcb *ControlBlock) HelperSteps(t *testing.T, steps []SegmentStep, isPeerA 
 				} else if gotSent != seg.LEN() {
 					t.Fatalf(pfx+"[%d] snd: expected %d data sent, calculated inflight %d", i, seg.LEN(), gotSent)
 				}
-			} else if tcb._state != StateTimeWait { // TODO: should we support receiving in TimeWait?
+			} else {
 				err := tcb.Recv(seg)
-				if err != nil {
+				switch {
+				case st.WantErr != nil:
+					if !errors.Is(err, st.WantErr) {
+						t.Fatalf(pfx+"[%d] rcv: got err %v, want %v\nseg=%+v", i, err, st.WantErr, seg)
+					}
+				case err != nil:
 					msg := fmt.Sprintf(pfx+"[%d] rcv: %s\nseg=%+v\nrcv=%+v\nsnd=%+v", i, err, seg, tcb.rcv, tcb.snd)
 					if IsDroppedErr(err) {
 						t.Log(msg)

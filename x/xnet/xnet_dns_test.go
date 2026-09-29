@@ -156,6 +156,14 @@ func buildDNSResponsePacket(t *testing.T, txid uint16, dstPort uint16, hostname 
 			dns.NewResource(name, dns.TypeA, dns.ClassINET, 300, addr.AsSlice()),
 		},
 	}
+	return buildDNSMsgResponsePacket(t, txid, dstPort, msg, srcIP, srcMAC, dstIP, dstMAC, buf)
+}
+
+// buildDNSMsgResponsePacket wraps a DNS response message into a complete
+// Ethernet+IP+UDP packet with valid checksums.
+func buildDNSMsgResponsePacket(t *testing.T, txid uint16, dstPort uint16, msg dns.Message,
+	srcIP netip.Addr, srcMAC [6]byte, dstIP netip.Addr, dstMAC [6]byte, buf []byte) ([]byte, error) {
+	t.Helper()
 
 	// Response flags: QR=1 (response), RD=1 (recursion desired), RA=1 (recursion available).
 	responseFlags := dns.HeaderFlags(1<<15 | 1<<8 | 1<<7)
@@ -237,3 +245,97 @@ var errBaseLenDNS = func() error {
 }()
 
 var errInvalidEtherType = errors.New("invalid ethernet type")
+
+// TestDNS_CNAMEResponse verifies that a DNS response containing a CNAME record
+// followed by an A record for the canonical name resolves to the A record's
+// address: the CNAME RDATA must not be misinterpreted as an IP address.
+func TestDNS_CNAMEResponse(t *testing.T) {
+	const seed = 9876
+	const MTU = ethernet.MaxMTU
+
+	client := new(StackAsync)
+	dnsServerAddr := netip.AddrFrom4([4]byte{8, 8, 8, 8})
+	clientAddr := netip.AddrFrom4([4]byte{10, 0, 0, 100})
+	clientMAC := [6]byte{0xde, 0xad, 0xbe, 0xef, 0x00, 0x01}
+	dnsServerMAC := [6]byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}
+
+	err := client.Reset(StackConfig{
+		Hostname:        "DNSClient",
+		RandSeed:        seed,
+		StaticAddress4:  clientAddr.As4(),
+		DNSServer:       dnsServerAddr,
+		HardwareAddress: clientMAC,
+		MTU:             uint16(MTU),
+	})
+	if err != nil {
+		t.Fatal("client Reset failed:", err)
+	}
+	client.SetGatewayHardwareAddr(dnsServerMAC)
+
+	const hostname = "www.example.com"
+	const alias = "cdn.example.net"
+	wantAddr := netip.MustParseAddr("192.0.2.200")
+
+	err = client.StartLookupIP(hostname)
+	if err != nil {
+		t.Fatal("StartLookupIP failed:", err)
+	}
+
+	const carrierDataSize = ethernet.MaxFrameLength
+	var buf [carrierDataSize]byte
+
+	// Client sends DNS query for www.example.com.
+	n, err := client.EgressEthernet(buf[:])
+	if err != nil || n == 0 {
+		t.Fatal("expected DNS query packet from client:", err, n)
+	}
+	txid, clientPort, err := extractDNSTxIDAndPort(buf[:n])
+	if err != nil {
+		t.Fatal("failed to extract DNS txid:", err)
+	}
+
+	// Respond with a CNAME record www.example.com -> cdn.example.net
+	// followed by the A record for cdn.example.net.
+	owner, err := dns.NewName(hostname)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasName, err := dns.NewName(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasWire, err := aliasName.AppendTo(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := dns.Message{
+		Questions: []dns.Question{{
+			Name:  owner,
+			Type:  dns.TypeA,
+			Class: dns.ClassINET,
+		}},
+		Answers: []dns.Resource{
+			dns.NewResource(owner, dns.TypeCNAME, dns.ClassINET, 300, aliasWire),
+			dns.NewResource(aliasName, dns.TypeA, dns.ClassINET, 300, wantAddr.AsSlice()),
+		},
+	}
+	responsePkt, err := buildDNSMsgResponsePacket(t, txid, clientPort, msg,
+		dnsServerAddr, dnsServerMAC, clientAddr, clientMAC, buf[:])
+	if err != nil {
+		t.Fatal("failed to build CNAME response packet:", err)
+	}
+	if err = client.IngressEthernet(responsePkt); err != nil {
+		t.Fatal("client Demux of CNAME response failed:", err)
+	}
+
+	addrs, done, err := client.ResultLookupIP(hostname)
+	if err != nil {
+		t.Fatal("ResultLookupIP error:", err)
+	}
+	if !done {
+		t.Fatal("DNS lookup not done after receiving CNAME response")
+	}
+	if !slices.Contains(addrs, wantAddr) {
+		t.Errorf("expected address %s not found in result %v", wantAddr, addrs)
+	}
+}

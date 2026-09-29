@@ -25,9 +25,9 @@ func run() error {
 	flag.IntVar(&port, "lport", 13337, "Local port over which to hit server")
 	flag.Parse()
 	// Prepare GET request.
-	var hdr httpraw.Header
+	var hdr httpraw.HeaderV1
 	hdr.SetMethod("GET")
-	hdr.SetRequestURI("/")
+	hdr.SetRequestTarget("/")
 	hdr.SetProtocol("HTTP/1.1")
 	req, err := hdr.AppendRequest(nil)
 	if err != nil {
@@ -50,7 +50,7 @@ func run() error {
 	}()
 	fmt.Println(time.Now().Format("15:04:05.000"), "writing...")
 	conn.Write(req)
-	hdr.Reset(nil)
+	hdr.Reset(nil, 0) // No preallocation. Both key/value and raw buffer will grow and allocate.
 	var needMore bool = true
 	for needMore {
 		_, err = hdr.ReadFromLimited(conn, 1024)

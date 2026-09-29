@@ -25,6 +25,15 @@ const (
 	MinimumMTU = MinimumFrameLength - sizeHeaderNoVLAN
 )
 
+// String returns the colon-separated hexadecimal text representation of a hardware address.
+func String(hwAddr [6]byte) string {
+	// See net/netip's (Addr).string4 pattern.
+	var buf [maxAddrStringLen]byte
+	return string(AppendAddr(buf[:0], hwAddr))
+}
+
+const maxAddrStringLen = len("ff:ff:ff:ff:ff:ff")
+
 // AppendAddr appends the text representation of the hardware address to the destination buffer.
 func AppendAddr(dst []byte, hwAddr [6]byte) []byte {
 	for i, b := range hwAddr {

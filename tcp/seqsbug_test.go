@@ -329,7 +329,7 @@ func TestWindowReject_ChallengeACK(t *testing.T) {
 			SEQ:   issB + 512,
 			ACK:   issA,
 			Flags: FlagACK,
-			WND:   Size(1 << 17), // > MaxUint16.
+			WND:   Size(maxWindow + 1), // beyond even the largest scaled window (RFC 7323).
 		}
 		err := tcb.Recv(seg)
 		if err == nil {

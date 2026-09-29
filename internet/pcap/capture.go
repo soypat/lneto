@@ -35,7 +35,7 @@ var (
 )
 
 type PacketBreakdown struct {
-	hdr  httpraw.Header
+	hdr  httpraw.HeaderV1
 	dmsg dns.Message
 	vld  lneto.Validator
 	// SubfieldLimit will limit the number of captured subfields to the value it has.
@@ -771,6 +771,11 @@ func httpBodyClass(contentType, body []byte) FieldClass {
 	return FieldClassText
 }
 
+// maxCapturedHeaderFields bounds the field table a captured HTTP header is
+// parsed into. Captures are read once and discarded, so the table is sized for
+// a realistic request rather than for whatever the capture happens to hold.
+const maxCapturedHeaderFields = 64
+
 func (pc *PacketBreakdown) CaptureHTTP(dst []Frame, pkt []byte, bitOffset int) ([]Frame, error) {
 	debuglog("pcap:http:start")
 	const httpProtocol = "HTTP"
@@ -780,10 +785,10 @@ func (pc *PacketBreakdown) CaptureHTTP(dst []Frame, pkt []byte, bitOffset int) (
 	const asResponse = true
 	const asRequest = false
 	httpData := pkt[bitOffset/8:]
-	pc.hdr.Reset(httpData)
+	pc.hdr.Reset(httpData, maxCapturedHeaderFields)
 	err := pc.hdr.Parse(asResponse)
 	if err != nil {
-		pc.hdr.Reset(httpData)
+		pc.hdr.Reset(httpData, 0)     // Field table already sized, reuse it.
 		err = pc.hdr.Parse(asRequest) // try as request.
 	}
 	if err != nil {
@@ -988,16 +993,13 @@ func (frm Frame) AppendString(b []byte) []byte {
 	bitlen := frm.LenBits()
 	b = append(b, frm.Protocol...)
 	if bitlen%8 == 0 {
-		b = append(b, " len="...)
-		b = strconv.AppendInt(b, int64(bitlen/8), 10)
+		b = internal.AppendStrDecimal(b, " len=", int64(bitlen/8))
 	} else {
-		b = append(b, " bits="...)
-		b = strconv.AppendInt(b, int64(bitlen), 10)
+		b = internal.AppendStrDecimal(b, " bits=", int64(bitlen))
 	}
 	iopt, err := frm.FieldByClass(FieldClassOptions)
 	if err == nil {
-		b = append(b, " optlen="...)
-		b = strconv.AppendInt(b, int64((frm.Fields[iopt].BitLength+7)/8), 10)
+		b = internal.AppendStrDecimal(b, " optlen=", int64((frm.Fields[iopt].BitLength+7)/8))
 	}
 	for _, err := range frm.Errors {
 		b = append(b, ' ')

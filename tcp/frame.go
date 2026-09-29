@@ -2,10 +2,10 @@ package tcp
 
 import (
 	"encoding/binary"
-	"fmt"
 	"math"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/internal"
 )
 
 const (
@@ -170,7 +170,12 @@ func (tfrm Frame) String() string {
 	src := tfrm.SourcePort()
 	dst := tfrm.DestinationPort()
 	seg := tfrm.Segment(len(tfrm.Payload()))
-	return fmt.Sprintf("TCP :%d -> :%d %s", src, dst, seg.String())
+	b := make([]byte, 0, 64)
+	b = append(b, "TCP "...)
+	b = internal.AppendStrDecimal(b, " src=", int64(src))
+	b = internal.AppendStrDecimal(b, " dst=", int64(dst))
+	b = append(b, ' ')
+	return string(seg.AppendString(b))
 }
 
 //

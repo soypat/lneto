@@ -119,10 +119,11 @@ const _RCode_name = "successformat errorserver failurename errornot implementedr
 var _RCode_index = [...]uint8{0, 7, 19, 33, 43, 58, 65}
 
 func (i RCode) String() string {
-	if i >= RCode(len(_RCode_index)-1) {
+	idx := int(i) - 0
+	if i < 0 || idx >= len(_RCode_index)-1 {
 		return "RCode(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _RCode_name[_RCode_index[i]:_RCode_index[i+1]]
+	return _RCode_name[_RCode_index[idx]:_RCode_index[idx+1]]
 }
 func _() {
 	// An "invalid array index" compiler error signifies that the constant values have changed.
@@ -138,8 +139,9 @@ const _OpCode_name = "Standard queryInverse queryServer status request"
 var _OpCode_index = [...]uint8{0, 14, 27, 48}
 
 func (i OpCode) String() string {
-	if i >= OpCode(len(_OpCode_index)-1) {
+	idx := int(i) - 0
+	if i < 0 || idx >= len(_OpCode_index)-1 {
 		return "OpCode(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _OpCode_name[_OpCode_index[i]:_OpCode_index[i+1]]
+	return _OpCode_name[_OpCode_index[idx]:_OpCode_index[idx+1]]
 }

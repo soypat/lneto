@@ -106,10 +106,11 @@ const _Op_name = "undefinedrequestreply"
 var _Op_index = [...]uint8{0, 9, 16, 21}
 
 func (i Op) String() string {
-	if i >= Op(len(_Op_index)-1) {
+	idx := int(i) - 0
+	if i < 0 || idx >= len(_Op_index)-1 {
 		return "Op(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _Op_name[_Op_index[i]:_Op_index[i+1]]
+	return _Op_name[_Op_index[idx]:_Op_index[idx+1]]
 }
 func _() {
 	// An "invalid array index" compiler error signifies that the constant values have changed.
@@ -131,10 +132,11 @@ const _MessageType_name = "undefineddiscoverofferrequestdeclineacknakreleaseinfo
 var _MessageType_index = [...]uint8{0, 9, 17, 22, 29, 36, 39, 42, 49, 55}
 
 func (i MessageType) String() string {
-	if i >= MessageType(len(_MessageType_index)-1) {
+	idx := int(i) - 0
+	if i < 0 || idx >= len(_MessageType_index)-1 {
 		return "MessageType(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _MessageType_name[_MessageType_index[i]:_MessageType_index[i+1]]
+	return _MessageType_name[_MessageType_index[idx]:_MessageType_index[idx+1]]
 }
 func _() {
 	// An "invalid array index" compiler error signifies that the constant values have changed.
@@ -155,9 +157,9 @@ const _ClientState_name = "initselectingrequestingboundrenewingrebindinginit-reb
 var _ClientState_index = [...]uint8{0, 4, 13, 23, 28, 36, 45, 56, 65}
 
 func (i ClientState) String() string {
-	i -= 1
-	if i >= ClientState(len(_ClientState_index)-1) {
-		return "ClientState(" + strconv.FormatInt(int64(i+1), 10) + ")"
+	idx := int(i) - 1
+	if i < 1 || idx >= len(_ClientState_index)-1 {
+		return "ClientState(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _ClientState_name[_ClientState_index[i]:_ClientState_index[i+1]]
+	return _ClientState_name[_ClientState_index[idx]:_ClientState_index[idx+1]]
 }

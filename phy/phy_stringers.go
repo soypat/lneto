@@ -29,8 +29,9 @@ const _LinkMode_name = "down10M-H10M-F100M-H100M-F100M-T41000M-H1000M-F2.5G-F5G-
 var _LinkMode_index = [...]uint8{0, 4, 9, 14, 20, 26, 33, 40, 47, 53, 57, 62, 67, 72, 78}
 
 func (i LinkMode) String() string {
-	if i >= LinkMode(len(_LinkMode_index)-1) {
+	idx := int(i) - 0
+	if i < 0 || idx >= len(_LinkMode_index)-1 {
 		return "LinkMode(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _LinkMode_name[_LinkMode_index[i]:_LinkMode_index[i+1]]
+	return _LinkMode_name[_LinkMode_index[idx]:_LinkMode_index[idx+1]]
 }

@@ -1196,3 +1196,124 @@ func TestEgressIP_TCPMSSAdvertisesMTU(t *testing.T) {
 		t.Errorf("advertised MSS = %d, want %d (MTU %d - 40)", gotMSS, wantMSS, mtu)
 	}
 }
+
+// TestEphemeralPortSequence checks no ephemeral port is reused before the whole
+// 16384-port dynamic range has cycled, which is what keeps a redial off the
+// teardown state (TIME-WAIT, NAT flow entries) of the conversation before it.
+func TestEphemeralPortSequence(t *testing.T) {
+	s := new(StackAsync)
+	err := s.Reset(StackConfig{
+		Hostname:          "eph",
+		RandSeed:          42,
+		StaticAddress4:    [4]byte{10, 0, 0, 50},
+		MaxActiveTCPPorts: 1,
+		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 50},
+		MTU:               ethernet.MaxMTU,
+		ICMPQueueLimit:    2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const cycle = 16384
+	var seen [cycle]bool
+	for i := range cycle {
+		port := s.ephemeralPort()
+		if port < 49152 {
+			t.Fatalf("port %d below dynamic range (RFC 6335)", port)
+		}
+		idx := port - 49152
+		if seen[idx] {
+			t.Fatalf("port %d reused after only %d allocations (want full %d cycle)", port, i, cycle)
+		}
+		seen[idx] = true
+	}
+	// The cycle is exhausted: the next allocation may legitimately reuse.
+	if got := s.ephemeralPort(); got < 49152 {
+		t.Fatalf("post-cycle port %d below dynamic range", got)
+	}
+}
+
+// TestStackGoTCPDialSurvivesManyWaitIterations checks the dial wait ends on its
+// deadline and not on an iteration count: the peer stays silent for several
+// times the former maxIter while simulated time advances by a fraction of the
+// timeout, and the dial must still establish once the handshake is serviced.
+func TestStackGoTCPDialSurvivesManyWaitIterations(t *testing.T) {
+	const seed = 91011
+	const MTU = ethernet.MaxMTU
+	const tcptimeout = time.Second
+	const quietIters = 4000 // well past the former iteration cap
+	client, sv, _, svconn := newTCPStacks(t, seed, MTU)
+	err := sv.ListenTCP4(svconn, 22)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tsched := ltesto.NewSched(t)
+	tgoro := tsched.Goro()
+	sg := client.StackBlocking(tgoro.Yield).StackGo(StackGoConfig{
+		ListenerPoolConfig: TCPPoolConfig{
+			QueueSize: 4,
+			TxBufSize: MTU,
+			RxBufSize: MTU,
+			NewBackoff: func() lneto.BackoffStrategy {
+				return backoffYield
+			},
+		},
+		TCPDialTimeout: tcptimeout,
+		TCPDialRetries: 1,
+	})
+	// Simulated clock: the quiet phase below advances less than 5% of the dial
+	// timeout, so a timeout error there can only come from iteration counting.
+	var now time.Duration
+	sg.blk._nanotime = func() int64 { return int64(now) }
+
+	laddr := netip.AddrPortFrom(netip.AddrFrom4(client.Addr4()), 1234)
+	raddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), 22)
+	go func() {
+		_, err := sg.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockSTREAM, laddr, raddr)
+		tgoro.FinishWithErr(err)
+	}()
+
+	// Quiet phase: no packets serviced, so the dialer only spins.
+	for i := range quietIters {
+		done, err := tsched.AwaitGoroYieldOrDone()
+		if done {
+			t.Fatalf("dial gave up during quiet phase after %d iterations: %v", i, err)
+		}
+		now += tcptimeout / 100000
+		tsched.YieldToGoro()
+	}
+
+	// Handshake phase: pump packets until the dial completes, bounded rounds so
+	// a broken handshake fails loudly.
+	var buf [ethernet.MaxMTU + ethernet.MaxOverheadSize]byte
+	for range 64 {
+		done, err := tsched.AwaitGoroYieldOrDone()
+		if done {
+			if err != nil {
+				t.Fatalf("dial failed after handshake serviced: %v", err)
+			}
+			return // Established under deadline: test success.
+		}
+		n, err := client.EgressEthernet(buf[:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n > 0 {
+			if err := sv.IngressEthernet(buf[:n]); err != nil {
+				t.Fatal(err)
+			}
+		}
+		n, err = sv.EgressEthernet(buf[:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n > 0 {
+			if err := client.IngressEthernet(buf[:n]); err != nil {
+				t.Fatal(err)
+			}
+		}
+		now += tcptimeout / 100000
+		tsched.YieldToGoro()
+	}
+	t.Fatal("dial did not establish within handshake rounds")
+}

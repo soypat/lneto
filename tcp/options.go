@@ -82,7 +82,7 @@ func (op OptionCodec) PutOption16(dst []byte, kind OptionKind, v uint16) (int, e
 }
 
 func (op OptionCodec) PutOption32(dst []byte, kind OptionKind, v uint32) (int, error) {
-	return op.PutOption(dst, kind, byte(v>>24), byte(v>>16), byte(v>>7), byte(v))
+	return op.PutOption(dst, kind, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
 }
 
 func (op OptionCodec) PutOption(dst []byte, kind OptionKind, data ...byte) (int, error) {
@@ -100,49 +100,65 @@ func (op OptionCodec) PutOption(dst []byte, kind OptionKind, data ...byte) (int,
 	return putSize, nil
 }
 
-func (op OptionCodec) ForEachOption(opts []byte, fn func(OptionKind, []byte) error) error {
-	off := 0
-	skipSizeValidation := op.Flags.HasAny(OptFlagSkipSizeValidation)
-	skipObsolete := op.Flags.HasAny(OptFlagSkipObsolete)
-	for off < len(opts) && opts[off] != 0 {
-		kind := OptionKind(opts[off])
-		off++
-		if kind == OptNop {
-			continue
-		}
-		if len(opts[off:]) < 1 {
-			return lneto.ErrTruncatedFrame
-		}
-		size := int(opts[off]) // Total option length including kind and length bytes.
-		off++
-		dataLen := size - 2 // Data bytes after kind and length.
-		if dataLen < 0 || len(opts[off:]) < dataLen {
-			return lneto.ErrTruncatedFrame
-		}
-
-		if !skipSizeValidation {
-			expectSize := -1
-			switch kind {
-			case OptTimestamps:
-				expectSize = 10
-			case OptMaxSegmentSize, OptUserTimeout:
-				expectSize = 4
-			case OptWindowScale:
-				expectSize = 3
-			case OptSACKPermitted:
-				expectSize = 2
-			}
-			if expectSize != -1 && size != expectSize {
-				return lneto.ErrInvalidLengthField
-			}
-		}
-		if !(skipObsolete && kind.IsObsolete()) {
-			err := fn(kind, opts[off:off+dataLen])
-			if err != nil {
-				return err
-			}
-		}
-		off += dataLen
+// Next parses the next option in opts and returns it along with the remaining buffer.
+// Will skip obsolete options and can validate given flags are set.
+// Parser must stop calling Next after [OptEnd] returned.
+func (op OptionCodec) Next(opts []byte) (kind OptionKind, optData, remainingOpts []byte, err error) {
+REDO:
+	if len(opts) == 0 || opts[0] == 0 {
+		return OptEnd, nil, nil, nil
 	}
-	return nil
+	var size int
+	kind = OptionKind(opts[0])
+	if kind == OptNop {
+		return kind, nil, opts[1:], nil
+	} else if len(opts) == 1 {
+		return kind, nil, nil, lneto.ErrTruncatedFrame
+	}
+	size = int(opts[1])
+	if size > len(opts) {
+		return kind, nil, nil, lneto.ErrTruncatedFrame
+	} else if size < 2 {
+		return kind, nil, nil, lneto.ErrInvalidLengthField
+	}
+	optData = opts[2:size]
+	remainingOpts = opts[size:]
+	if op.Flags.HasAny(OptFlagSkipObsolete) && kind.IsObsolete() {
+		opts = remainingOpts
+		goto REDO
+	}
+	if !op.Flags.HasAny(OptFlagSkipSizeValidation) {
+		var expectSize int
+		switch kind {
+		case OptTimestamps:
+			expectSize = 10
+		case OptMaxSegmentSize, OptUserTimeout:
+			expectSize = 4
+		case OptWindowScale:
+			expectSize = 3
+		case OptSACKPermitted:
+			expectSize = 2
+		}
+		if expectSize != 0 && size != expectSize {
+			err = lneto.ErrInvalidLengthField
+		}
+	}
+	return kind, optData, remainingOpts, err
+}
+
+// ForEachOption calls fn on all non-End/Nop options in opts. Will skip obsolete options if flag set.
+func (op OptionCodec) ForEachOption(opts []byte, fn func(OptionKind, []byte) error) (err error) {
+	var kind OptionKind = 1
+	var data []byte
+	for kind != 0 {
+		kind, data, opts, err = op.Next(opts)
+		if err != nil {
+			break
+		} else if kind <= OptNop {
+			continue
+		} else if err = fn(kind, data); err != nil {
+			break
+		}
+	}
+	return err
 }

@@ -18,6 +18,12 @@ func IsMulticast(addr [4]byte) bool {
 	return addr[0]&0xf0 == 0xe0
 }
 
+// UnspecifiedAddr returns the unspecified address: 0.0.0.0
+func UnspecifiedAddr() [4]byte { return [4]byte{0, 0, 0, 0} }
+
+// BroadcastAddr returns the broadcast address: 255.255.255.255
+func BroadcastAddr() [4]byte { return [4]byte{255, 255, 255, 255} }
+
 // IsBroadcast reports whether addr is the limited broadcast address
 // 255.255.255.255 used to address all hosts on the local network segment
 // as defined in [RFC919]. It does not detect directed (subnet) broadcast
@@ -26,7 +32,7 @@ func IsMulticast(addr [4]byte) bool {
 //
 // [RFC919]: https://datatracker.ietf.org/doc/html/rfc919
 func IsBroadcast(addr [4]byte) bool {
-	return addr == [4]byte{255, 255, 255, 255}
+	return addr == BroadcastAddr()
 }
 
 // IsLinkLocal reports whether addr is within the IPv4 link-local prefix
@@ -113,3 +119,12 @@ func AppendFormatAddr(dst []byte, addr [4]byte) []byte {
 	}
 	return dst
 }
+
+// String returns the dotted-decimal text representation of an IPv4 address.
+func String(addr [4]byte) string {
+	// See net/netip's (Addr).string4 pattern.
+	var buf [maxAddrStringLen]byte
+	return string(AppendFormatAddr(buf[:0], addr))
+}
+
+const maxAddrStringLen = len("255.255.255.255")

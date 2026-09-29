@@ -1,6 +1,5 @@
 # lneto
 [![go.dev reference](https://pkg.go.dev/badge/github.com/soypat/lneto)](https://pkg.go.dev/github.com/soypat/lneto)
-[![Go Report Card](https://goreportcard.com/badge/github.com/soypat/lneto)](https://goreportcard.com/report/github.com/soypat/lneto)
 [![codecov](https://codecov.io/gh/soypat/lneto/branch/main/graph/badge.svg)](https://codecov.io/gh/soypat/lneto)
 [![Go](https://github.com/soypat/lneto/actions/workflows/ci.yaml/badge.svg)](https://github.com/soypat/lneto/actions/workflows/ci.yaml)
 [![sourcegraph](https://sourcegraph.com/github.com/soypat/lneto/-/badge.svg)](https://github.com/soypat/lneto/network/dependents)
@@ -16,6 +15,7 @@ Userspace networking primitives.
     - Zero scheduling required. No goroutines/channels use in Lneto. Can be run in event loop.
 - Heapless packet processing
     - [`httpraw`](https://github.com/soypat/lneto/tree/main/http/httpraw) is likely the most performant HTTP/1.1 processing package in the Go ecosystem. Based on [`fasthttp`](https://github.com/valyala/fasthttp) but simpler and more thoughtful memory use.
+    - [`httφ`](https://github.com/soypat/lneto/tree/main/http/httphi) - Heapless HTTP router and zero-copy response writing with Go's standard library API.
 - Lean memory footprint
     - HTTP header struct is 80 bytes with no runtime usage nor heap usage other than buffer
     - Entire Ethernet+IPv4+UDP+DHCP+DNS+NTP stack in ~2kB RAM.
@@ -291,3 +291,11 @@ The document has moved
 </BODY></HTML>
 success
 ```
+
+## Reference
+
+### Build tags
+
+- `debugheaplog`: All logging calls are enabled and all will print out heap information. Warning: Heavy cost on some TinyGo garbage collectors which do not cache the GC statistics
+- `noslog`: All slog package logging calls omitted.
+- `xnetdebug`: Packet capture printing to standard output enabled on `xnet.StackAsync` Ethernet and IP receive and send methods

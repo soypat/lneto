@@ -274,7 +274,7 @@ func handleConnNet(conn net.Conn) error {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
 
-	var hdr httpraw.Header
+	var hdr httpraw.HeaderV1
 	needMore := true
 	for needMore {
 		_, err := hdr.ReadFromLimited(conn, 1024)
@@ -288,10 +288,10 @@ func handleConnNet(conn net.Conn) error {
 		}
 	}
 	method := string(hdr.Method())
-	uri := string(hdr.RequestURI())
+	uri := string(hdr.RequestTarget())
 	fmt.Printf("< %s %s\n", method, uri)
 
-	var resp httpraw.Header
+	var resp httpraw.HeaderV1
 	resp.SetProtocol("HTTP/1.1")
 	resp.SetStatus("200", "OK")
 	resp.Set("Content-Type", "text/html")
@@ -368,9 +368,9 @@ func mockClient(stack *xnet.StackAsync, port uint16, subnet netip.Prefix) {
 		panic("mock client deadline exceeded to establish")
 	}
 
-	var hdr httpraw.Header
+	var hdr httpraw.HeaderV1
 	hdr.SetMethod("GET")
-	hdr.SetRequestURI("/")
+	hdr.SetRequestTarget("/")
 	hdr.SetProtocol("HTTP/1.1")
 	hdr.Set("Host", string(ipv4.AppendFormatAddr(nil, stack.Addr4())))
 	hdr.Set("User-Agent", "lneto-mock")
