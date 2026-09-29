@@ -104,9 +104,13 @@ type Credential interface {
 // matching (name or address) and expiry so the policy cannot be configured apart, and keeps
 // X.509 parsing out of lneto. Counterpart of [Credential]. Verifier can be used concurrently.
 type Verifier interface {
-	// VerifyPeer returns nil to accept the peer. Nil return signals that sig is the leaf key's signature of msg under the scheme.
-	// Do not retain or modify slices.
+	// VerifyPeer returns nil when following is true:
+	//  - chainView can be followed to trust anchor (checked for expiry).
+	//  - leaf's EKU allows for the peer's role.
+	//  - the leaf matches expectName (DNS/IP identity valid).
+	//  - sig is the leaf key's signature of msg under argument scheme.
 	//
+	// Arguments:
 	//  - chainView is remote [CertChain] and potentially adversarial.
 	//  - scheme is peer's [Credential.Scheme] of CertificateVerify. VerifyPeer checks if it suits the leaf's key type.
 	//  - peerIsServer=true signals chainView is server(peer) so leaf must allow serverAuth.
@@ -114,6 +118,7 @@ type Verifier interface {
 	//  - expectName is expected DNS name or IP literal (i.e:"10.0.0.1") configured before connection when peerIsServer=true.
 	//	- msg is RFC 8446 4.4.3 content: [64B pfx, context string, 0x00, handshake transcript hash]
 	//  - sig is remote peer's [Credential.Sign]. Treat as adversarial.
+	// Do not retain or modify slices.
 	VerifyPeer(chainView CertChain, scheme uint16, peerIsServer bool, expectName, msg, sig []byte) error
 }
 

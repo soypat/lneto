@@ -43,7 +43,7 @@ type KeySchedule struct {
 	paranoid bool
 }
 
-// Configure starts a new handshake at the early secret. transcript and mac must be distinct hashes.
+// Configure starts a new handshake at the early secret. transcript and mac must distinct instances of same hash algorithm.
 func (ks *KeySchedule) Configure(transcript, mac hash.Hash, paranoid bool) error {
 	size, block := mac.Size(), mac.BlockSize()
 	if block < size || size != transcript.Size() || block != transcript.BlockSize() {

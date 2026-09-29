@@ -26,7 +26,7 @@ type HalfConn struct {
 // restarts the sequence number. Call [HalfConn.Zeroize] first when replacing an already installed AEAD.
 func (hc *HalfConn) SetAEAD(aead lcrypto.AEADCipher, iv *[12]byte) error {
 	tag := aead.Overhead()
-	if aead.NonceSize() != len(iv) || tag < 8 || tag > SizeAEADTag {
+	if aead.NonceSize() != len(iv) || (tag != 8 && tag != SizeAEADTag) {
 		return lneto.ErrInvalidConfig
 	}
 	hc.seq = 0
