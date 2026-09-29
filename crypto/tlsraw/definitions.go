@@ -27,7 +27,7 @@ const (
 	MaxCiphertext = 1<<14 + 256 // 16640
 	// MaxRecord is the largest legal record as it appears on the wire.
 	MaxRecord = SizeHeaderRecord + MaxCiphertext // 16645
-	// SizeAEADTag is the authentication tag size of every TLS 1.3 AEAD.
+	// SizeAEADTag is the largest authentication tag of the TLS 1.3 AEADs; CCM_8 uses 8.
 	SizeAEADTag = 16
 	// MinRecordSizeLimit is the smallest value a peer may advertise in the record_size_limit extension of RFC 8449 4.
 	MinRecordSizeLimit = 64
