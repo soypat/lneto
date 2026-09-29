@@ -1,0 +1,130 @@
+package tlsraw
+
+import (
+	"encoding/binary"
+	"math"
+
+	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/crypto/internal/lcrypto"
+)
+
+// HalfConn protects the records of one direction, RFC 8446 5.2. It works with any
+// AEAD of the TLS 1.3 suites: 12 byte nonce and 8 (CCM_8) or 16 byte tag, checked
+// by SetAEAD. Seal and Open do not allocate and work in place. Buffers passed to
+// an AEAD escape to the heap, so the nonce lives in the struct.
+type HalfConn struct {
+	// TODO(soypat): seq, iv and nonce are redundant; any one is derivable from the
+	// other two, saving 8 bytes here (48->40 after alignment). Benchmark the stdlib
+	// XOR-in/out-of-iv pattern against this copy before dropping a field.
+	seq   uint64
+	aead  lcrypto.AEADCipher
+	iv    [12]byte
+	nonce [12]byte // Per-record nonce: iv XOR sequence number.
+}
+
+// SetAEAD installs the AEAD keyed with a traffic key and the matching IV, and
+// restarts the sequence number. Call [HalfConn.Zeroize] first when replacing an already installed AEAD.
+func (hc *HalfConn) SetAEAD(aead lcrypto.AEADCipher, iv *[12]byte) error {
+	tag := aead.Overhead()
+	if aead.NonceSize() != len(iv) || (tag != 8 && tag != SizeAEADTag) {
+		return lneto.ErrInvalidConfig
+	}
+	hc.seq = 0
+	hc.aead = aead
+	hc.iv = *iv
+	return nil
+}
+
+// Seal protects the content in rec[SizeHeaderRecord:] in place and returns the
+// complete record. rec's capacity must fit Overhead more bytes.
+func (hc *HalfConn) Seal(rec []byte, ct ContentType) ([]byte, error) {
+	if !hc.HasKeys() {
+		return nil, lneto.ErrBadState // zeroed; Needs SetAEAD to install the keys.
+	}
+	if len(rec) < SizeHeaderRecord {
+		return nil, lneto.ErrShortBuffer
+	} else if cap(rec)-len(rec) < hc.Overhead() {
+		return nil, lneto.ErrShortBuffer
+	} else if len(rec)-SizeHeaderRecord > MaxPlaintext {
+		return nil, lneto.ErrInvalidLengthField
+	}
+	if err := hc.nextNonce(); err != nil {
+		return nil, err
+	}
+	rec = append(rec, byte(ct)) // TLSInnerPlaintext without padding.
+	rec[0] = byte(ContentTypeApplicationData)
+	binary.BigEndian.PutUint16(rec[1:3], VersionTLS12)
+	binary.BigEndian.PutUint16(rec[3:5], uint16(len(rec)-SizeHeaderRecord+hc.aead.Overhead()))
+	sealed := hc.aead.Seal(rec[SizeHeaderRecord:SizeHeaderRecord], hc.nonce[:], rec[SizeHeaderRecord:], rec[:SizeHeaderRecord])
+	return rec[:SizeHeaderRecord+len(sealed)], nil
+}
+
+// Open decrypts a complete record in place and returns its content and real content type.
+func (hc *HalfConn) Open(rec []byte) (content []byte, ct ContentType, err error) {
+	if !hc.HasKeys() {
+		return nil, 0, lneto.ErrBadState // zeroed; Needs SetAEAD to install the keys.
+	}
+	if len(rec) < SizeHeaderRecord+hc.Overhead() {
+		return nil, 0, lneto.ErrTruncatedFrame
+	} else if ContentType(rec[0]) != ContentTypeApplicationData {
+		return nil, 0, lneto.ErrInvalidField
+	}
+	n := int(binary.BigEndian.Uint16(rec[3:5]))
+	if n != len(rec)-SizeHeaderRecord || n > MaxCiphertext {
+		return nil, 0, lneto.ErrInvalidLengthField
+	}
+	if err = hc.nextNonce(); err != nil {
+		return nil, 0, err
+	}
+	plain, err := hc.aead.Open(rec[SizeHeaderRecord:SizeHeaderRecord], hc.nonce[:], rec[SizeHeaderRecord:], rec[:SizeHeaderRecord])
+	if err != nil {
+		return nil, 0, err
+	} else if len(plain) > MaxPlaintext+1 {
+		return nil, 0, lneto.ErrInvalidLengthField // TLSInnerPlaintext limit counts the content type and padding, RFC 8446 5.2.
+	}
+	// Content type is the last non-zero byte; zeros after it are padding.
+	i := len(plain) - 1
+	for i >= 0 && plain[i] == 0 {
+		i--
+	}
+	if i < 0 {
+		return nil, 0, lneto.ErrInvalidField
+	}
+	return plain[:i], ContentType(plain[i]), nil
+}
+
+// nextNonce sets the nonce of the next record and advances the sequence number.
+func (hc *HalfConn) nextNonce() error {
+	if hc.seq == math.MaxUint64 {
+		return lneto.ErrExhausted // Sequence numbers must not wrap; rekey instead.
+	}
+	hc.nonce = hc.iv
+	var seq [8]byte
+	binary.BigEndian.PutUint64(seq[:], hc.seq)
+	for i := range seq {
+		hc.nonce[4+i] ^= seq[i]
+	}
+	hc.seq++
+	return nil
+}
+
+// Overhead returns the bytes Seal adds after the content: the content type byte
+// and the AEAD tag. It is 0 when HasKeys is false.
+func (hc *HalfConn) Overhead() int {
+	if !hc.HasKeys() {
+		return 0
+	}
+	return 1 + hc.aead.Overhead()
+}
+
+// HasKeys reports whether SetAEAD installed keys since the last Zeroize.
+func (hc *HalfConn) HasKeys() bool { return hc.aead != nil }
+
+// Zeroize zeroes state and calls Zeroize on the AEAD.
+// After calling Zeroize SetAEAD must be called before reuse.
+func (hc *HalfConn) Zeroize() {
+	if hc.HasKeys() {
+		hc.aead.Zeroize()
+	}
+	*hc = HalfConn{} // "Removes" keys. HasKeys returns false after Zeroize.
+}

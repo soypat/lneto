@@ -100,7 +100,10 @@ func (s *StackBerkeley) Socket(domain int, stype int, protocol int) (sockfd int,
 }
 
 // Connect establishes an active connection to the given host and address.
-// host is used for TLS SNI; ip carries the numeric address and port.
+// ip carries the numeric address and port. host is the expected peer identity for
+// IPPROTO_TLS: a DNS name, or empty when the peer is identified by ip alone, in which
+// case the leaf certificate must carry a matching iPAddress SAN and no server_name
+// extension is sent (RFC 6066 3 forbids IP literals there).
 // Promotes sockfd from pending to an active connection.
 func (s *StackBerkeley) Connect(sockfd int, host string, ip netip.AddrPort) error {
 	s.mu.Lock()
