@@ -6,6 +6,7 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/crypto/internal/lcrypto"
+	"github.com/soypat/lneto/internal"
 )
 
 const (
@@ -58,6 +59,10 @@ func (ks *KeySchedule) Configure(transcript, mac hash.Hash, paranoid bool) error
 	mac.Reset()
 	mac.Sum(ks.empty[:0]) // Empty hash for advance.
 	ks.Zeroize()
+	transcript.Sum(ks.scratch[:0])
+	if !internal.BytesEqual(ks.empty[:size], ks.scratch[:size]) {
+		return lneto.ErrInvalidConfig // hash.Hashes are not same algorithm.
+	}
 	return nil
 }
 

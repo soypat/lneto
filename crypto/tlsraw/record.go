@@ -23,8 +23,7 @@ type HalfConn struct {
 }
 
 // SetAEAD installs the AEAD keyed with a traffic key and the matching IV, and
-// restarts the sequence number. The caller owns construction of aead so that
-// lneto never allocates cipher state.
+// restarts the sequence number. Call [HalfConn.Zeroize] first when replacing an already installed AEAD.
 func (hc *HalfConn) SetAEAD(aead lcrypto.AEADCipher, iv *[12]byte) error {
 	tag := aead.Overhead()
 	if aead.NonceSize() != len(iv) || tag < 8 || tag > SizeAEADTag {
@@ -121,7 +120,8 @@ func (hc *HalfConn) Overhead() int {
 // HasKeys reports whether SetAEAD installed keys since the last Zeroize.
 func (hc *HalfConn) HasKeys() bool { return hc.aead != nil }
 
-// Zeroize forgets the keys. SetAEAD must be called before reuse.
+// Zeroize zeroes state and calls Zeroize on the AEAD.
+// After calling Zeroize SetAEAD must be called before reuse.
 func (hc *HalfConn) Zeroize() {
 	if hc.HasKeys() {
 		hc.aead.Zeroize()
