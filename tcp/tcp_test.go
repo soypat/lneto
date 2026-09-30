@@ -791,6 +791,35 @@ func TestClose_PartialACKDoesNotAdvance(t *testing.T) {
 	})
 }
 
+// TestExchangeTest_ZeroWindowProbesDoNotAbort verifies that data at RCV.NXT
+// against a zero receive window is refused and acknowledged without counting
+// toward the challenge-ACK abort (RFC 9293 §3.10.7.4, RFC 1122 §4.2.2.17).
+func TestExchangeTest_ZeroWindowProbesDoNotAbort(t *testing.T) {
+	const issA, issB, windowB = 100, 300, 1000
+	probe := tcp.Segment{SEQ: issB, ACK: issA, Flags: tcp.FlagACK, WND: windowB, DATALEN: 1}
+	probeRST := probe
+	probeRST.Flags |= tcp.FlagRST
+	ack := tcp.Segment{SEQ: issA, ACK: issB, Flags: tcp.FlagACK}
+	var steps []tcp.SegmentStep
+	for range 20 {
+		steps = append(steps,
+			tcp.SegmentStep{Seg: probe, Action: tcp.StepBSends, AState: tcp.StateEstablished, APending: &ack, WantErr: tcp.ErrZeroWindow},
+			tcp.SegmentStep{Seg: ack, Action: tcp.StepASends, AState: tcp.StateEstablished},
+		)
+	}
+	steps = append(steps, tcp.SegmentStep{Seg: probeRST, Action: tcp.StepBSends, AState: tcp.StateEstablished, WantErr: tcp.ErrZeroWindow})
+	test := tcp.ExchangeTest{
+		ISSA:       issA,
+		ISSB:       issB,
+		WindowA:    0,
+		WindowB:    windowB,
+		InitStateA: tcp.StateEstablished,
+		InitStateB: tcp.StateEstablished,
+		Steps:      steps,
+	}
+	test.RunA(t)
+}
+
 func TestRcvFinWait2(t *testing.T) {
 	const windowA, windowB = 1000, 1000
 	const issA, issB = 100, 300
