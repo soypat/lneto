@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/dns"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -61,7 +62,7 @@ func (s StackRetrying) DoNTP(ntpHost netip.Addr, timeout time.Duration, retries 
 	}
 	return -1, errRetriesExceeded
 }
-func (s StackRetrying) DoLookupIP(host string, timeout time.Duration, retries int) (addrs []netip.Addr, err error) {
+func (s StackRetrying) DoLookupIP(host dns.Name, timeout time.Duration, retries int) (addrs []netip.Addr, err error) {
 	if !s.block.async.dnssv.IsValid() {
 		return nil, errNoDNSServer
 	}

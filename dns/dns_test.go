@@ -25,7 +25,8 @@ func TestNameString(t *testing.T) {
 
 func TestNameAppendDecode(t *testing.T) {
 	const domain = "foo.bar.org"
-	name, err := NewName(domain)
+	var name Name
+	err := name.Parse(domain)
 	if err != nil {
 		t.Fatal(err)
 	} else if name.String() != domain+"." {
@@ -289,7 +290,7 @@ func TestClient_CNAMEResponse(t *testing.T) {
 		t.Fatal("failed to demux DNS response:", err)
 	}
 	var addrs [4]netip.Addr
-	n, err := client.ResponseAnswerLookup(addrs[:], hostname)
+	n, err := client.ResponseAnswerLookup(addrs[:], name)
 	if err != nil {
 		t.Fatal("failed to look up DNS response answers:", err)
 	}
@@ -375,7 +376,7 @@ func TestMessage_WriteAnswers(t *testing.T) {
 				t.Fatal("decode:", incomplete, err)
 			}
 			var addrs [4]netip.Addr
-			n, err := msg.WriteAnswers(addrs[:], tt.host)
+			n, err := msg.WriteAnswers(addrs[:], MustNewName(tt.host))
 			if err != nil {
 				t.Fatal("write answers:", err)
 			}
@@ -386,6 +387,66 @@ func TestMessage_WriteAnswers(t *testing.T) {
 				if addrs[i] != want {
 					t.Errorf("address %d: expected %v, got %v", i, want, addrs[i])
 				}
+			}
+		})
+	}
+}
+
+func TestMessage_CanonicalName(t *testing.T) {
+	const host = "a.com"
+	cname := func(owner, target string) Resource {
+		tname := MustNewName(target)
+		data, err := tname.AppendTo(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return NewResource(MustNewName(owner), TypeCNAME, ClassINET, 10, data)
+	}
+	a := func(owner string) Resource {
+		return NewResource(MustNewName(owner), TypeA, ClassINET, 10, []byte{1, 2, 3, 4})
+	}
+	tests := []struct {
+		name    string
+		answers []Resource
+		want    string // Empty means zero Name.
+		anyWant bool   // Only check termination.
+	}{
+		{name: "no CNAME", answers: []Resource{a("a.com")}},
+		{name: "CNAME only", answers: []Resource{cname("a.com", "b.com")}, want: "b.com"},
+		{name: "CNAME chain", answers: []Resource{cname("a.com", "b.com"), cname("b.com", "c.com")}, want: "c.com"},
+		{name: "CNAME target case differs", answers: []Resource{cname("a.com", "B.CoM"), cname("b.com", "c.com")}, want: "c.com"},
+		{name: "CNAME cycle terminates", answers: []Resource{cname("a.com", "b.com"), cname("b.com", "a.com")}, anyWant: true},
+	}
+	// Response flags: QR=1 (response), RD=1, RA=1.
+	responseFlags := HeaderFlags(1<<15 | 1<<8 | 1<<7)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := Message{
+				Questions: []Question{{Name: MustNewName(host), Type: TypeA, Class: ClassINET}},
+				Answers:   tt.answers,
+			}
+			wire, err := response.AppendTo(nil, 0xabcd, responseFlags)
+			if err != nil {
+				t.Fatal("encode:", err)
+			}
+			var msg Message
+			msg.LimitResourceDecoding(1, 4, 0, 0)
+			_, incomplete, err := msg.Decode(wire)
+			if incomplete || err != nil {
+				t.Fatal("decode:", incomplete, err)
+			}
+			got := msg.CanonicalName(MustNewName(host))
+			if tt.anyWant {
+				return
+			}
+			if tt.want == "" {
+				if got.Len() != 0 {
+					t.Fatalf("expected zero Name, got %q", got.String())
+				}
+				return
+			}
+			if !NamesEqualFold(got, MustNewName(tt.want)) {
+				t.Fatalf("expected %q, got %q", tt.want, got.String())
 			}
 		})
 	}
@@ -460,7 +521,7 @@ func TestClient_ReceivesDNSResponse(t *testing.T) {
 			}
 
 			var addrs [maxAnswers]netip.Addr
-			answers, err := client.ResponseAnswerLookup(addrs[:], hostname)
+			answers, err := client.ResponseAnswerLookup(addrs[:], name)
 			if err != nil {
 				t.Fatal("failed to look up DNS response answers:", err)
 			}
