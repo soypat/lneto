@@ -52,9 +52,9 @@ type HalfConn struct {
 	_useAEAD bool     // cipherA is in use, else cipherF.
 }
 
-// SetAEAD installs aead, keyed with the derived key, and the matching IV. strict
+// SetCipherAEAD installs aead, keyed with the derived key, and the matching IV. strict
 // restarts sequence numbers, see [HalfConn.Seq].
-func (hc *HalfConn) SetAEAD(aead lcrypto.AEADCipher, iv *[12]byte, strict bool) error {
+func (hc *HalfConn) SetCipherAEAD(aead lcrypto.AEADCipher, iv *[12]byte, strict bool) error {
 	overhead := aead.Overhead()
 	if aead.NonceSize() != len(iv) || overhead == 0 {
 		return lneto.ErrInvalidConfig
@@ -66,13 +66,13 @@ func (hc *HalfConn) SetAEAD(aead lcrypto.AEADCipher, iv *[12]byte, strict bool) 
 	return nil
 }
 
-// SetFrameCipher installs pc, keyed with the derived key. strict restarts sequence
+// SetCipherFrame installs pc, keyed with the derived key. strict restarts sequence
 // numbers, see [HalfConn.Seq]. pc derives its nonces from sequence numbers and
 // protects at most 2^32 packets, so no nonce repeats even across a wrap.
 //
 // Without strict key exchange a FrameCipher is open to the Terrapin attack
 // (CVE-2023-48795); callers may want to refuse it then.
-func (hc *HalfConn) SetFrameCipher(pc CipherFrame, strict bool) error {
+func (hc *HalfConn) SetCipherFrame(pc CipherFrame, strict bool) error {
 	overhead := pc.Overhead()
 	if overhead <= 0 || pc.BlockSize() <= 0 {
 		return lneto.ErrInvalidConfig
