@@ -592,6 +592,62 @@ func TestTxBufferFreedOnACK(t *testing.T) {
 	}
 }
 
+// TestHandler_ZeroWindowProbeACKed verifies a probe arriving after a zero window
+// was advertised for a full receive buffer is refused and acknowledged with the
+// current window instead of being silently dropped. A probe with RST draws no ACK.
+func TestHandler_ZeroWindowProbeACKed(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	client, server := newHandler(t, mtu, 4), newHandler(t, mtu, 4)
+	if err := server.SetBuffers(nil, make([]byte, 256), 0); err != nil {
+		t.Fatal(err)
+	}
+	setupClientServer(t, rand.New(rand.NewSource(99)), client, server)
+	var buf [mtu]byte
+	establish(t, client, server, buf[:])
+	fill := make([]byte, server.FreeInput())
+	if _, err := client.Write(fill); err != nil {
+		t.Fatal(err)
+	}
+	n, err := client.Send(buf[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Recv(buf[:n]); err != nil {
+		t.Fatal(err)
+	}
+	n, err = server.Send(buf[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	zeroACK := mustSegment(t, buf[:n], 0)
+	if zeroACK.WND != 0 {
+		t.Fatalf("want zero-window ACK, got %v", zeroACK)
+	}
+	for _, flags := range []Flags{FlagACK, FlagRST | FlagACK} {
+		probe := make([]byte, sizeHeaderTCP+1)
+		frame, _ := NewFrame(probe)
+		frame.SetSourcePort(client.LocalPort())
+		frame.SetDestinationPort(server.LocalPort())
+		frame.SetSegment(Segment{SEQ: zeroACK.ACK, ACK: zeroACK.SEQ, WND: mtu, Flags: flags, DATALEN: 1}, 5)
+		if err := server.Recv(probe); err == nil {
+			t.Fatalf("%s probe accepted by full buffer", flags)
+		}
+		n, err = server.Send(buf[:])
+		wantN := 0
+		if flags == FlagACK {
+			wantN = sizeHeaderTCP
+		}
+		if err != nil || n != wantN {
+			t.Fatalf("%s probe reply: Send = %d, %v; want %d", flags, n, err, wantN)
+		} else if n != 0 && mustSegment(t, buf[:n], 0) != zeroACK {
+			t.Fatalf("probe reply = %v; want %v", mustSegment(t, buf[:n], 0), zeroACK)
+		}
+	}
+	if server.BufferedInput() != len(fill) || server.ControlBlock().RecvNext() != zeroACK.ACK {
+		t.Fatal("refused probe changed buffered data or RCV.NXT")
+	}
+}
+
 // TestWindowUpdateAfterRead verifies that after the application reads data from
 // a full receive buffer (Window=0), the TCP stack queues a window update ACK
 // so the remote peer can resume sending. This is a regression test for a
