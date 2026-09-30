@@ -201,12 +201,12 @@ func installKeys(t *testing.T, hc *HalfConn, mode string, strict bool) {
 	case "gcm":
 		aead := rfc8448.NewAES128GCM()
 		if err = aead.Rekey(bytes.Repeat([]byte{0x11}, 16)); err == nil {
-			err = hc.SetAEAD(aead, &iv, strict)
+			err = hc.SetCipherAEAD(aead, &iv, strict)
 		}
 	case "packet":
 		pc := new(ctrHMAC)
 		if err = pc.Rekey(bytes.Repeat([]byte{0x22}, 64)); err == nil {
-			err = hc.SetFrameCipher(pc, strict)
+			err = hc.SetCipherFrame(pc, strict)
 		}
 	default:
 		t.Fatal("unknown mode", mode)
