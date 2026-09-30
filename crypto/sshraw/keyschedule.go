@@ -57,52 +57,62 @@ type KeySchedule struct {
 // InstallCipherAEADKeys derives packet protection key and IV of the exchange and installs them on hc with aead, RFC 4253 7.2.
 // This ensures the key lifetime is contained within this function call and cleared on return.
 //   - keyLen is negotiated cipher's AEAD key length
-//   - keyLetter and ivLetter are the key and IV letters of hc's direction: 'C','A' client to server; 'D','B' server to client
+//   - clientToServer is hc's direction: true for client to server, false for server to client
 //   - strict is true when strict key exchange was agreed, see [HalfConn.Seq]
 //
-// On error hc is left untouched or Zeroize'd. InstallCipherAEADKeys is equivalent to
+// On error hc is left untouched or Zeroize'd. InstallCipherAEADKeys is equivalent to (client to server shown)
 //
 //	var key [keyLen]byte
 //	var iv [12]byte
-//	ks.Derive(iv[:], ivLetter)
-//	ks.Derive(key[:], keyLetter)
+//	ks.Derive(iv[:], IVClientToServer)
+//	ks.Derive(key[:], KeyClientToServer)
 //	aead.Rekey(key[:])
 //	hc.SetCipherAEAD(aead, &iv, strict)
 //	clear(key[:])
-func (ks *KeySchedule) InstallCipherAEADKeys(hc *HalfConn, aead lcrypto.AEADCipher, keyLen int, ivLetter byte, letter KeyLetter, strict bool) error {
+func (ks *KeySchedule) InstallCipherAEADKeys(hc *HalfConn, aead lcrypto.AEADCipher, keyLen int, clientToServer, strict bool) error {
 	if err := ks.canInstall(keyLen); err != nil {
 		return err
 	}
-	ks.Derive(ks.iv[:], letter)
+	ivLetter, keyLetter := directionLetters(clientToServer)
+	ks.Derive(ks.iv[:], ivLetter)
 	err := hc.SetCipherAEAD(aead, &ks.iv, strict)
 	clear(ks.iv[:])
 	if err != nil {
 		return err
 	}
-	return ks.rekey(hc, aead, keyLen, letter)
+	return ks.rekey(hc, aead, keyLen, keyLetter)
 }
 
 // InstallCipherFrameKeys derives packet protection key of the exchange and installs it on hc with pc, RFC 4253 7.2.
 // This ensures the key lifetime is contained within this function call and cleared on return.
 // A [CipherFrame] derives its nonces from sequence numbers, so no IV is derived.
 //   - keyLen is negotiated cipher's key length: 64 for chacha20-poly1305@openssh.com
-//   - keyLetter is the key letter of hc's direction: 'C' client to server, 'D' server to client
+//   - clientToServer is hc's direction: true for client to server, false for server to client
 //   - strict is true when strict key exchange was agreed, see [HalfConn.Seq]
 //
-// On error hc is left untouched or Zeroize'd. InstallCipherFrameKeys is equivalent to
+// On error hc is left untouched or Zeroize'd. InstallCipherFrameKeys is equivalent to (client to server shown)
 //
 //	var key [keyLen]byte
-//	ks.Derive(key[:], keyLetter)
+//	ks.Derive(key[:], KeyClientToServer)
 //	pc.Rekey(key[:])
 //	hc.SetCipherFrame(pc, strict)
 //	clear(key[:])
-func (ks *KeySchedule) InstallCipherFrameKeys(hc *HalfConn, pc CipherFrame, keyLen int, letter KeyLetter, strict bool) error {
+func (ks *KeySchedule) InstallCipherFrameKeys(hc *HalfConn, pc CipherFrame, keyLen int, clientToServer, strict bool) error {
 	if err := ks.canInstall(keyLen); err != nil {
 		return err
 	} else if err = hc.SetCipherFrame(pc, strict); err != nil {
 		return err
 	}
-	return ks.rekey(hc, pc, keyLen, letter)
+	_, keyLetter := directionLetters(clientToServer)
+	return ks.rekey(hc, pc, keyLen, keyLetter)
+}
+
+// directionLetters returns the IV and encryption key letters of a direction, RFC 4253 7.2.
+func directionLetters(clientToServer bool) (iv, key KeyLetter) {
+	if clientToServer {
+		return IVClientToServer, KeyClientToServer
+	}
+	return IVServerToClient, KeyServerToClient
 }
 
 // Configure uses h as the hash of the negotiated key exchange method and wipes all KeySchedule state.
