@@ -133,3 +133,25 @@ func (r *reassembly) reassemble(rx *internal.Ring, nxt Value) Size {
 	r.held = r.held[:0]
 	return delivered
 }
+
+// ReassemblyView is a live, read-only view of held out-of-order data in TCP
+// sequence order. It must not be read concurrently with changes to its Handler.
+// The zero value is an empty view.
+type ReassemblyView struct {
+	r *reassembly
+}
+
+// Len returns the number of held blocks.
+func (v ReassemblyView) Len() int {
+	if v.r == nil {
+		return 0
+	}
+	return len(v.r.held)
+}
+
+// Block returns the i'th block as the half-open sequence range [start, end).
+// It panics if i is outside [0, Len()). Adjacent blocks remain separate.
+func (v ReassemblyView) Block(i int) (start, end Value) {
+	seg := v.r.held[i]
+	return seg.seq, Add(seg.seq, Size(seg.n))
+}

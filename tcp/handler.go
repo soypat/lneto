@@ -93,6 +93,10 @@ func (h *Handler) policyEnabled() bool { return h.policy != nil }
 // [Policy] can read the sequence spaces. Not for modification.
 func (h *Handler) ControlBlock() *ControlBlock { return &h.scb }
 
+// Reassembly returns a live, read-only view of the held out-of-order data.
+// The view shares the Handler's lifetime and concurrency requirements.
+func (h *Handler) Reassembly() ReassemblyView { return ReassemblyView{r: &h.reasm} }
+
 // LocalPort returns the local port of the connection. Returns 0 if the connection is closed and uninitialized.
 func (h *Handler) LocalPort() uint16 {
 	return h.localPort
