@@ -119,8 +119,14 @@ const (
 
 // Frame represents the binary over-the-wire SSH frame that may be encrypted or decrypted.
 // Fields are packet_length(4), followed by padding_length(1) followed by payload, padding and tag authentication, also known as Message Authentication Code(MAC).
-// packet_length is sent in the clear so before Frame is decrypted the only valid methods are
-// [Frame.LenPacket], [Frame.WireLength], [Frame.ValidateLength], [Frame.RawData] and [Frame.LimitData].
+//
+// RFC 4253 6 encrypts packet_length along with the rest of the packet, as
+// chacha20-poly1305@openssh.com does with a key of its own, while
+// aes-gcm@openssh.com sends it in the clear, RFC 5647 7.3. So on a frame as
+// received, before [HalfConn.Open], read the length with [HalfConn.LenPacket]
+// and check it with [HalfConn.ValidateLength]; besides those only [Frame.RawData]
+// and [Frame.LimitData] are valid. After Open, or before [HalfConn.Seal], the
+// frame is plaintext and every method is valid.
 type Frame struct {
 	buf []byte
 }
@@ -182,21 +188,32 @@ func (pf Frame) WireLength(tagSizeOrOverhead uint32) int {
 
 // Validation.
 
-// ValidateLength checks packet_length against the limits of RFC 4253 6.1 and cipher alignment,
-// and that the buffer holds [Frame.WireLength] bytes. It reads only packet_length so it is safe
-// to call on an encrypted frame before [HalfConn.Open].
+// ValidateLength checks the plaintext packet_length against the limits of RFC 4253 6.1 and
+// cipher alignment, and that the buffer holds [Frame.WireLength] bytes. On a frame as received,
+// before [HalfConn.Open], use [HalfConn.ValidateLength]: packet_length may be encrypted.
 // overhead is the tag size, zero before keys are installed, in which case packet_length
 // is included in alignment. Alignment is to the larger of blockSize and 8.
 func (pf Frame) ValidateLength(vld *lneto.Validator, overhead, blockSize uint32) {
-	plen := pf.LenPacket()
-	aligned := plen + 4
+	validateLength(vld, pf.LenPacket(), overhead, blockSize, len(pf.buf))
+}
+
+// validateLength checks packet_length plen of a frame of buflen bytes. Every keyed mode
+// supported excludes packet_length from alignment: aes-gcm@openssh.com sends it as additional
+// data, chacha20-poly1305@openssh.com encrypts it with a key of its own. The encrypt-and-MAC
+// ciphers of RFC 4253 6, which align it, are not supported.
+func validateLength(vld *lneto.Validator, plen, overhead, blockSize uint32, buflen int) {
+	aligned, minLen := plen+4, uint32(minPacketLen)
 	if overhead != 0 {
-		aligned = plen // AEAD: packet_length is additional data, excluded from alignment.
+		// RFC 4253 6's 16 byte minimum packet is not honored by peers when packet_length is
+		// excluded from alignment: OpenSSH and x/crypto/ssh send 12 byte chacha20-poly1305
+		// packets for 1 byte payloads. Require room for padding_length, message type and
+		// padding; alignment does the rest.
+		aligned, minLen = plen, 1+1+minPadding
 	}
-	if plen < minPacketLen || plen > maxPacket-4-overhead ||
+	if plen < minLen || plen > maxPacket-4-overhead ||
 		aligned%max(blockSize, minBlockSize) != 0 {
 		vld.AddError(lneto.ErrInvalidLengthField)
-	} else if pf.WireLength(overhead) > len(pf.buf) {
+	} else if int(4+plen+overhead) > buflen {
 		vld.AddError(lneto.ErrTruncatedFrame)
 	}
 }
