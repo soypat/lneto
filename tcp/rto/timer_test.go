@@ -129,6 +129,86 @@ func TestRTO_RetransmitOnTimeout(t *testing.T) {
 	}
 }
 
+// TestRTO_RetransmitOwedUntilSent verifies a timeout keeps directing the resend
+// until a retransmission is actually emitted, without backing off again.
+func TestRTO_RetransmitOwedUntilSent(t *testing.T) {
+	r := newRTO()
+	const iss = uint32(1000)
+	r.postTx(dataSeg(iss, 100), 0)
+
+	now := int64(rtoInitial)
+	if _, _, rtx := r.preTx(now, tcp.Value(iss)); !rtx {
+		t.Fatal("RTO must fire at the deadline with data outstanding")
+	}
+	rto, exp, backoff := r.CurrentRTO(), r.Expirations(), r.backoff
+
+	// The Handler could not emit the resend (e.g. a control segment took priority).
+	now += rtoMs
+	if d := r.NextDeadline(); d == 0 || d > now {
+		t.Errorf("deadline=%d while a resend is owed, want due at or before %d", d, now)
+	}
+	_, from, rtx := r.preTx(now, tcp.Value(iss))
+	if !rtx {
+		t.Fatal("unsent retransmission was dropped until the next RTO")
+	}
+	if from != tcp.Value(iss) {
+		t.Errorf("retransmit from %d, want snd.UNA=%d", from, iss)
+	}
+	if r.CurrentRTO() != rto || r.Expirations() != exp || r.backoff != backoff {
+		t.Errorf("repeat directive backed off again: rto=%v exp=%d backoff=%d, want %v %d %d",
+			r.CurrentRTO(), r.Expirations(), r.backoff, rto, exp, backoff)
+	}
+
+	r.postTx(dataSeg(iss, 100), now)
+	if _, _, rtx := r.preTx(now, tcp.Value(iss)); rtx {
+		t.Error("retransmit still directed after it was sent")
+	}
+	if r.NextDeadline() != now+int64(r.CurrentRTO()) {
+		t.Errorf("deadline=%d, want restarted at resend %d", r.NextDeadline(), now+int64(r.CurrentRTO()))
+	}
+	if _, _, rtx := r.preTx(r.NextDeadline(), tcp.Value(iss)); !rtx {
+		t.Error("RTO must fire again at the next deadline")
+	}
+}
+
+// TestRTO_RetransmitOwedUntilUNASent verifies only a resend covering snd.UNA
+// settles the owed retransmission (RFC 6298 §5.4), not one of later data.
+func TestRTO_RetransmitOwedUntilUNASent(t *testing.T) {
+	r := newRTO()
+	const iss = uint32(1000)
+	r.postTx(dataSeg(iss, 100), 0)
+	r.postTx(dataSeg(iss+100, 100), 0)
+	now := int64(rtoInitial)
+	if _, _, rtx := r.preTx(now, tcp.Value(iss)); !rtx {
+		t.Fatal("RTO must fire at the deadline with data outstanding")
+	}
+	now += rtoMs
+	r.postTx(dataSeg(iss+100, 100), now)
+	if _, _, rtx := r.preTx(now, tcp.Value(iss)); !rtx {
+		t.Fatal("resend not covering snd.UNA cleared the owed retransmission")
+	}
+	r.postTx(dataSeg(iss, 100), now)
+	if _, _, rtx := r.preTx(now, tcp.Value(iss)); rtx {
+		t.Error("resend covering snd.UNA did not clear the owed retransmission")
+	}
+	if r.NextDeadline() != now+int64(r.CurrentRTO()) {
+		t.Errorf("deadline=%d, want restarted at resend %d", r.NextDeadline(), now+int64(r.CurrentRTO()))
+	}
+}
+
+// TestRTO_RetransmitOwedClearedByAck verifies an owed retransmission is dropped
+// once everything outstanding is acknowledged.
+func TestRTO_RetransmitOwedClearedByAck(t *testing.T) {
+	r := newRTO()
+	const iss = uint32(1000)
+	r.postTx(dataSeg(iss, 100), 0)
+	r.preTx(int64(rtoInitial), tcp.Value(iss))
+	r.postRx(ackSeg(iss+100), int64(rtoInitial)+rtoMs)
+	if _, _, rtx := r.preTx(int64(rtoInitial)+2*rtoMs, tcp.Value(iss+100)); rtx {
+		t.Error("retransmit directed with nothing outstanding")
+	}
+}
+
 // TestRTO_KarnNoSampleOnRetransmittedAck verifies that after a retransmission the
 // ACK does not produce an RTT sample (Karn's algorithm).
 func TestRTO_KarnNoSampleOnRetransmittedAck(t *testing.T) {

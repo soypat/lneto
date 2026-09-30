@@ -395,6 +395,8 @@ func (h *Handler) Send(b []byte) (int, error) {
 	}
 	offset := uint8(5)
 	txLimit := TransmitUnlimited
+	var rtxAt Value
+	var rtx bool
 	if h.policyEnabled() {
 		// Hand the Policy a defined frame: zeroed header at the minimum offset.
 		// It may append options and raise the offset, which is read back below.
@@ -405,12 +407,8 @@ func (h *Handler) Send(b []byte) (int, error) {
 		if limit == 0 {
 			h.info("tcp.Policy:newTxLimit=0") // Can cause headaches for users.
 		}
-		if doRtx && h.scb.RetransmitFrom(rtxFrom) {
-			// Retransmission directed by the Policy: rewind the transmit buffer
-			// to match the send sequence so unacknowledged data is resent. Done
-			// before the early short-circuit below so an expired RTO
-			// retransmits even with no new data queued.
-			h.bufTx.RetransmitFrom(rtxFrom)
+		if doRtx {
+			rtxAt, rtx = h.bufTx.retransmitBoundary(rtxFrom)
 		}
 		if o, _ := tfrm.OffsetAndFlags(); o > offset && int(o)*4 < len(b) {
 			offset = o
@@ -419,17 +417,18 @@ func (h *Handler) Send(b []byte) (int, error) {
 	awaitingSyn := h.AwaitingSynSend()
 	requeueControl := h.requeueControl
 	buffered := h.bufTx.BufferedUnsent()
-	if h.scb.State() == StateCloseWait && !h.closing && buffered == 0 && !h.scb.HasPending() {
+	hasPending := rtx || h.scb.HasPending() // A directed resend is pending work even with nothing queued.
+	if h.scb.State() == StateCloseWait && !h.closing && buffered == 0 && !hasPending {
 		// Remote closed with no application data left to send: initiate our own close.
 		// Checked here (not in Recv) so the application can still write in CLOSE-WAIT
 		// before Send is called, implementing the half-close per RFC 9293 §3.5.
 		h.closing = true
 	}
-	if !awaitingSyn && !requeueControl && buffered == 0 && !h.closing && !h.scb.HasPending() {
+	if !awaitingSyn && !requeueControl && buffered == 0 && !h.closing && !hasPending {
 		// Early nop short circuit.
 		return 0, nil
 	}
-	if buffered == 0 && h.closing && (h.scb.State() != StateCloseWait || !h.scb.HasPending()) {
+	if buffered == 0 && h.closing && (h.scb.State() != StateCloseWait || !hasPending) {
 		// If Close called and no more data to be sent, terminate connection.
 		// In CLOSE-WAIT: wait until the pending ACK is sent first, since scb.Close()
 		// overwrites pending with [FIN|ACK] (unlike ESTABLISHED which merges via bitmask).
@@ -469,11 +468,17 @@ func (h *Handler) Send(b []byte) (int, error) {
 	} else {
 		var ok bool
 		maxPayload := len(b) - optHead
-		if txLimit < Size(maxPayload) && !h.nextSegmentIsRetransmit() {
-			// Policy clamped new data.
-			maxPayload = int(txLimit)
+		if rtx {
+			// Resends are not new data, so txLimit does not apply.
+			segment, ok = h.scb.PendingRetransmit(rtxAt, maxPayload)
 		}
-		segment, ok = h.scb.PendingSegment(maxPayload)
+		if !ok {
+			if txLimit < Size(maxPayload) {
+				// Policy clamped new data.
+				maxPayload = int(txLimit)
+			}
+			segment, ok = h.scb.PendingSegment(maxPayload)
+		}
 		segment.WND = h.recvWindow()
 		if !ok {
 			// No pending control segment or data to send. Yield.
@@ -521,14 +526,6 @@ func (h *Handler) Send(b []byte) (int, error) {
 		h.Abort()
 	}
 	return datalen, nil
-}
-
-// nextSegmentIsRetransmit reports whether the next data segment would resend
-// already-transmitted bytes rather than open new sequence space. Used to let a
-// retransmission through while a [Policy] holds new data back.
-func (h *Handler) nextSegmentIsRetransmit() bool {
-	endSeq, hasSent := h.bufTx.sentEndSeq()
-	return hasSent && h.scb.snd.NXT.LessThan(endSeq)
 }
 
 // NextSegmentSYN returns syn=true if next outgoing segment is a handshake SYN.

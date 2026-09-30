@@ -15,7 +15,10 @@ type Policy interface {
 	// PreTx is called before writing to a frame.
 	// The outgoing frame options can be set by the Policy and will be respected if Frame offset >5.
 	// Keep in mind Handler will add options PreTx already added, these options are best overwritten in PostTx.
-	// retransmitFrom is ignored unless within [snd.UNA, snd.NXT] and returned retransmit==true.
+	// retransmitFrom is ignored unless within [snd.UNA, snd.NXT) and returned retransmit==true.
+	// It resends one segment starting at the queued packet containing retransmitFrom.
+	// The request applies only to this call: if it cannot be emitted (a control segment
+	// takes priority or there is no payload room) the Policy must return it again later.
 	// newTransmitLimit sets the maximum number of new bytes to send over the wire (congestion control).
 	// If not implementing congestion control then newTransmitLimit=[TransmitUnlimited].
 	PreTx(h *Handler, outgoingOpts Frame) (newTransmitLimit Size, retransmitFrom Value, retransmit bool)

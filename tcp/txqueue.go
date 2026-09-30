@@ -214,48 +214,18 @@ func (rtx *ringTx) ring(off, end int) internal.Ring {
 // Result of addEnd will never be 0 unless arguments are (0,0).
 func (rtx *ringTx) addEnd(a, b int) int { return addEnd(a, b, len(rtx.rawbuf)) }
 
-// RetransmitFromUNA rewinds the transmit queue so that all sent-but-unacked
-// data becomes unsent again. The next MakePacket call will re-send starting
-// from snd.UNA. This is the smoltcp-style pointer-rewind approach: no extra
-// mode flag, Send() has a single code path.
-//
-// Implements "send the segment at the front of the retransmission queue"
-// per RFC 9293 §3.10.8 (RETRANSMISSION TIMEOUT).
-func (rtx *ringTx) RetransmitFromUNA() {
-	oldest := rtx.slist.Oldest()
-	if oldest == nil {
-		return // Nothing in the retransmission queue.
+// retransmitBoundary returns the start sequence of the queued packet containing
+// start, since [ringTx.MakePacket] resends a packet only by its exact start.
+// ok is false when no queued packet contains start. The queue is not modified.
+// A resend smaller than the packet sends only its head; a later request for the
+// tail snaps back to the head again.
+func (rtx *ringTx) retransmitBoundary(start Value) (boundary Value, ok bool) {
+	for i := range rtx.slist.pkts {
+		if pkt := &rtx.slist.pkts[i]; start.InWindow(pkt.seq, pkt.size) {
+			return pkt.seq, true
+		}
 	}
-	rtx.RetransmitFrom(oldest.seq)
-}
-
-// RetransmitFrom rewinds the transmit queue so sent-but-unacked data from seq onward
-// becomes unsent again causing next [ringTx.MakePacket] to resend them.
-//
-// Must be called when [ControlBlock.RetransmitFrom] returns true so the
-// ring and control block state are coherent.
-func (rtx *ringTx) RetransmitFrom(seq Value) {
-	pkt := rtx.slist.packetContaining(seq)
-	if pkt == nil {
-		return // seq not in the retransmission queue.
-	}
-	rewindOff, rewindSeq := pkt.off, pkt.seq
-	// The write position is unsentend, except when the unsent region is empty
-	// (unsentend==0) in which case data ends where the sent region ends. Capture
-	// it before reopening the unsent region over the rewound packets.
-	writeEnd := rtx.unsentend
-	if writeEnd == 0 {
-		writeEnd = rtx.sentend
-	}
-	if rewindOff == rtx.sentoff {
-		rtx.sentoff = 0 // Whole queue rewound: sent region becomes empty.
-		rtx.sentend = 0
-	} else {
-		rtx.sentend = rewindOff
-	}
-	rtx.unsentoff = rewindOff
-	rtx.unsentend = writeEnd
-	rtx.slist.truncateFrom(rewindSeq)
+	return 0, false // Not in the retransmission queue.
 }
 
 func (rtx *ringTx) consolidateBufs() {
@@ -346,35 +316,6 @@ func (sl *sentlist) EndSeq() Value {
 
 func (sl *sentlist) Free() int {
 	return cap(sl.pkts) - len(sl.pkts)
-}
-
-// packetContaining returns the queued packet whose sequence range covers seq, or
-// nil when no packet does.
-func (sl *sentlist) packetContaining(seq Value) *ringidx {
-	for i := range sl.pkts {
-		pkt := &sl.pkts[i]
-		if pkt.seq.LessThanEq(seq) && seq.LessThan(pkt.endSeq()) {
-			return pkt
-		}
-	}
-	return nil
-}
-
-// truncateFrom drops the packet starting at seq and every packet sent after it,
-// so their data can be re-queued as unsent. seq must be a packet start sequence
-// (see [sentlist.packetContaining]). When no packet survives, the auxiliary
-// sequence counter is rewound to seq so [sentlist.EndSeq] keeps reporting where
-// the next packet begins.
-func (sl *sentlist) truncateFrom(seq Value) {
-	for i := range sl.pkts {
-		if sl.pkts[i].seq == seq {
-			sl.pkts = sl.pkts[:i]
-			if i == 0 {
-				sl.ssn = seq
-			}
-			return
-		}
-	}
 }
 
 func (sl *sentlist) AddPacket(datalen, off, bufsize int, seq Value) *ringidx {
