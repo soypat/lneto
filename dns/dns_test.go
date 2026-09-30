@@ -1,6 +1,7 @@
 package dns
 
 import (
+	"math"
 	"net/netip"
 	"slices"
 	"strings"
@@ -256,6 +257,10 @@ func TestMessage_Validate(t *testing.T) {
 		}},
 		{desc: "two OPT", wantErr: true, msg: Message{
 			Additionals: []Resource{opt, opt},
+		}},
+		{desc: "max rdata overflows message", wantErr: true, msg: Message{
+			// RDLENGTH fits uint16 but name+10+RDLENGTH does not.
+			Answers: []Resource{NewResource(name, TypeTXT, ClassINET, 60, make([]byte, math.MaxUint16))},
 		}},
 	}
 	for _, tt := range tests {

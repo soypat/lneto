@@ -381,18 +381,15 @@ func (m *Message) Len() uint16 {
 
 // lenResources returns the wire length of all sections. It is an int so
 // [Message.Validate] can detect messages that overflow the uint16 [Message.Len].
+// Each record is summed as an int too: [Resource.Len] wraps for RDLENGTH near 65535.
 func (m *Message) lenResources() (l int) {
 	for i := range m.Questions {
-		l += int(m.Questions[i].Len())
+		l += len(m.Questions[i].Name.data) + 4
 	}
-	for i := range m.Answers {
-		l += int(m.Answers[i].Len())
-	}
-	for i := range m.Authorities {
-		l += int(m.Authorities[i].Len())
-	}
-	for i := range m.Additionals {
-		l += int(m.Additionals[i].Len())
+	for _, rs := range [...][]Resource{m.Answers, m.Authorities, m.Additionals} {
+		for i := range rs {
+			l += rs[i].wireLen()
+		}
 	}
 	return l
 }
@@ -700,9 +697,12 @@ func (r *Resource) appendTo(buf []byte) (_ []byte, err error) {
 	return buf, nil
 }
 
-func (r *Resource) Len() uint16 {
-	return r.header.Name.Len() + 10 + uint16(len(r.data))
-}
+// Len returns the length over-the-wire of the encoded Resource.
+// It wraps if the resource does not fit in a DNS message, see [Message.Validate].
+func (r *Resource) Len() uint16 { return uint16(r.wireLen()) }
+
+// wireLen returns the length over-the-wire of the encoded Resource without wrapping.
+func (r *Resource) wireLen() int { return len(r.header.Name.data) + 10 + len(r.data) }
 
 func (rhdr *ResourceHeader) Decode(msg []byte, off uint16) (uint16, error) {
 	off, err := rhdr.Name.Decode(msg, off)
