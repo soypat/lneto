@@ -12,9 +12,10 @@ import (
 
 type Client struct {
 	connID          uint64
+	msg             Message
+	vld             lneto.Validator
 	txid            uint16
 	lport           uint16
-	msg             Message
 	respFlags       HeaderFlags
 	state           StateClientQuery
 	enableRecursion bool
@@ -50,6 +51,11 @@ func (c *Client) StartResolve(localPort, txid uint16, cfg ResolveConfig) error {
 	c.msg.LimitResourceDecoding(uint16(nd), maxAns, 0, 0)
 	c.msg.AddQuestions(cfg.Questions)
 	c.msg.AddAdditionals(cfg.Additional)
+	c.msg.Validate(&c.vld)
+	if err := c.vld.ErrPop(); err != nil {
+		c.Abort()
+		return err
+	}
 	return nil
 }
 

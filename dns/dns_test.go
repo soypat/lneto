@@ -1,7 +1,9 @@
 package dns
 
 import (
+	"math"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 
@@ -213,6 +215,61 @@ func TestDecodeMessage(t *testing.T) {
 	off, incomplete, err := msg.Decode(data)
 	if incomplete || err != nil {
 		t.Fatal(incomplete, err, off)
+	}
+	var vld lneto.Validator
+	msg.Validate(&vld)
+	if err := vld.ErrPop(); err != nil {
+		t.Fatal("decoded message failed validation:", err)
+	}
+}
+
+func TestMessage_Validate(t *testing.T) {
+	name := MustNewName("example.com")
+	var opt Resource
+	opt.SetEDNS0(512, 0, 0, nil)
+	tests := []struct {
+		desc    string
+		msg     Message
+		wantErr bool
+	}{
+		{desc: "ok", msg: Message{
+			Questions:   []Question{{Name: name, Type: TypeA, Class: ClassINET}},
+			Answers:     []Resource{NewResource(name, TypeA, ClassINET, 60, []byte{1, 2, 3, 4})},
+			Additionals: []Resource{opt},
+		}},
+		{desc: "empty name", wantErr: true, msg: Message{
+			Questions: []Question{{Type: TypeA, Class: ClassINET}},
+		}},
+		{desc: "compressed name", wantErr: true, msg: Message{
+			Questions: []Question{{Name: Name{data: []byte{0xc0, 0x00}}, Type: TypeA, Class: ClassINET}},
+		}},
+		{desc: "trailing name data", wantErr: true, msg: Message{
+			Questions: []Question{{Name: Name{data: append(slices.Clone(name.data), 0)}, Type: TypeA, Class: ClassINET}},
+		}},
+		{desc: "bad A length", wantErr: true, msg: Message{
+			Answers: []Resource{NewResource(name, TypeA, ClassINET, 60, []byte{1, 2, 3})},
+		}},
+		{desc: "length mismatch", wantErr: true, msg: Message{
+			Answers: []Resource{{header: ResourceHeader{Name: name, Type: TypeA, Class: ClassINET, Length: 5}, data: []byte{1, 2, 3, 4}}},
+		}},
+		{desc: "OPT in answers", wantErr: true, msg: Message{
+			Answers: []Resource{opt},
+		}},
+		{desc: "two OPT", wantErr: true, msg: Message{
+			Additionals: []Resource{opt, opt},
+		}},
+		{desc: "max rdata overflows message", wantErr: true, msg: Message{
+			// RDLENGTH fits uint16 but name+10+RDLENGTH does not.
+			Answers: []Resource{NewResource(name, TypeTXT, ClassINET, 60, make([]byte, math.MaxUint16))},
+		}},
+	}
+	for _, tt := range tests {
+		var vld lneto.Validator
+		tt.msg.Validate(&vld)
+		err := vld.ErrPop()
+		if (err != nil) != tt.wantErr {
+			t.Errorf("%s: got err=%v, wantErr=%v", tt.desc, err, tt.wantErr)
+		}
 	}
 }
 

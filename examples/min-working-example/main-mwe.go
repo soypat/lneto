@@ -130,6 +130,7 @@ func run(ctx context.Context, stack *xnet.StackAsync) error {
 		conn, err := listener.Accept()
 		if err != nil {
 			err = makeMsgErr("listener.Accept failed", err)
+			break
 		}
 		go handleConn(conn)
 	}

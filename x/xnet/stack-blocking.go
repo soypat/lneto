@@ -155,10 +155,13 @@ func (s StackBlocking) DoLookupIP(host dns.Name, timeout time.Duration) (addrs [
 	return s.DoLookupIPType(host, timeout, dns.TypeA)
 }
 
+// maxCNAMEqueries is the maximum number of queries DoLookupIPType sends while
+// following CNAME-only answers, including the query for the original host.
+const maxCNAMEqueries = 3
+
 // DoLookupIPType resolves host for the given record type (dns.TypeA or dns.TypeAAAA),
 // blocking until a response arrives or the timeout elapses.
 func (s StackBlocking) DoLookupIPType(host dns.Name, timeout time.Duration, qtype dns.Type) (addrs []netip.Addr, err error) {
-	const maxCNAMEqueries = 3
 	deadline := s.deadlineTO(timeout)
 	var cname dns.Name // Owns its buffer: the next query overwrites the response.
 	for range maxCNAMEqueries {
