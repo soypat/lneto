@@ -1,0 +1,244 @@
+# Lneto docs
+Lneto: to network, anywhere.
+
+## Install
+How to install package with newer versions of Go (+1.16):
+```sh
+go mod download github.com/soypat/lneto@latest
+```
+
+## Protocol Support Matrix
+
+> **Generated 2026-04-27.** This table may not always reflect the current state of the codebase.
+> Allocation figures are derived from benchmark tests run on amd64.
+> `—` denotes no standalone benchmark exists for that protocol; those packages follow the same zero-allocation design principle documented in the codebase.
+
+| Protocol | RFC / Spec | Status | Package | Allocs/op | Notes |
+|----------|-----------|:------:|---------|:---------:|-------|
+| Ethernet II | IEEE 802.3 | ✅ | `ethernet` | 0 ¹ | Frame parsing, CRC-32 |
+| ARP | RFC 826 | ✅ | `arp` | 0 ¹ | Request/reply, hardware address cache |
+| IPv4 | RFC 791 | ✅ | `ipv4` | 0 ² | Frame parsing, ones-complement checksum |
+| ICMPv4 | RFC 792 | ✅ | `ipv4/icmpv4` | — | Echo (ping) client handler |
+| UDP | RFC 768 | ✅ | `udp` | — | Handler + thread-safe `Conn` |
+| TCP | RFC 9293 | ✅ | `tcp` | 0 ²³ | Full state machine, SYN cookies, retransmit queue, `Conn`/`Listener` |
+| DNS | RFC 1035 | ✅ | `dns` | — | Client (A/AAAA query) |
+| DHCPv4 | RFC 2131 | ✅ | `dhcp/dhcpv4` | — | Client + Server |
+| IPv4 Link-Local (APIPA) | RFC 3927 | ✅ | `ipv4/linklocal4` | 0 | Heapless claim-and-defend state machine for 169.254.x.x |
+| NTP | RFC 5905 | ✅ | `ntp` | — | Client |
+| NTS | RFC 8915 | ✅ | `x/nts` | — | Client + Server; key exchange over TLS 1.3, authenticated NTP. Requires caller-supplied AEAD_AES_SIV_CMAC_256 |
+| mDNS | RFC 6762 | ✅ | `dns/mdns` | — | Client (service announcement + query) |
+| HTTP/1.1 headers | RFC 9110, RFC 9112 | ✅ | `http/httpraw` | 2 ⁴ | Header parse/format; no field normalization |
+| Ethernet PHY/MDIO | IEEE 802.3 cl.22/45 | ✅ | `phy` | — | Bare-metal PHY management via MDIO |
+| IPv6 | RFC 8200 | ✅ | `ipv6` | — | Frame parsing and stack handling |
+| ICMPv6 | RFC 4443 | ✅ | `ipv6/icmpv6` | — | Echo+NDP frame parsing and stack handling |
+| DHCPv6 DNS Configuration | RFC 3646 | 🟡 | `dhcp/dhcpv6` | — | Recursive DNS server and domain search options parsed and exposed |
+| DHCPv6 NTP Configuration | RFC 5908 | ✅ | `dhcp/dhcpv6` | — | NTP server address, multicast address, and FQDN suboptions parsed and exposed |
+| DHCPv6 | RFC 8415 | 🟡 | `dhcp/dhcpv6` | — | Client IA_NA/IA_PD request handling and reconfigure-renew; no relay agent or dynamic server pools |
+| TLS 1.3 | RFC 8446 | 🟡 | `crypto/tlsraw` | 0 | TLS low-level record parsing and packet capture. No server/client state. |
+
+¹ `BenchmarkARPExchange` — full ARP request/response exchange over Ethernet: **0 B/op, 0 allocs/op**
+² `BenchmarkTCPHandshake` — TCP 3-way handshake over Ethernet/IPv4: **0 B/op, 0 allocs/op**
+³ `BenchmarkSYNCookie_Generate` / `BenchmarkSYNCookie_Validate` — SYN cookie generation and validation: **0 B/op, 0 allocs/op each**
+⁴ `BenchmarkParseBytes` — HTTP/1.1 request header + body parsing: **240 B/op, 2 allocs/op**
+
+## Benchmarks
+Go and TinyGo compiler tested with ARP and TCP exchanges with all Ethernet/IPv4 stack functionality:
+```
+go test -bench=. -benchmem ./x/xnet
+goos: linux
+goarch: amd64
+pkg: github.com/soypat/lneto/x/xnet
+cpu: 12th Gen Intel(R) Core(TM) i5-12400F
+BenchmarkARPExchange-12          6122306               177.1 ns/op             0 B/op          0 allocs/op
+BenchmarkTCPHandshake-12          987534              1200 ns/op               0 B/op          0 allocs/op
+PASS
+ok      github.com/soypat/lneto/x/xnet  2.589s
+
+tinygo test -opt=2 -bench=. -benchmem ./x/xnet      
+BenchmarkARPExchange     2729166               435.9 ns/op           144 B/op          0 allocs/op
+BenchmarkTCPHandshake    1000000              1174 ns/op             192 B/op          0 allocs/op
+PASS
+ok      github.com/soypat/lneto/x/xnet  2.926s
+```
+
+## Example programs
+
+### [`min-working-example`](./examples/min-working-example/) - Quick lneto showcase
+Get a quick showcase of how lneto's workhorse StackAsync can be configured and how to get a equivalent-to `net.Listener` server up and running.
+
+### `xcurl` example
+You may try lneto out on linux with the [xcurl example](./examples/xcurl/) which gets an HTTP page by doing all the low-level networking part using absolutely no standard library.
+
+- DHCP client address lease
+- ARP address resolution
+- DNS address resolution of requested host
+- HTTP over TCP/IPv4/Ethernet connection using
+- NTP time check (optional)
+- Print packet captures using lneto's [internet/pcap](./internet/pcap) package
+- Optional fixed TCP source port with `-port`, useful when debugging raw-socket interactions with the host OS
+
+See Developing section below for more information.
+
+### Binary size comparisons
+All examples include IPv4, ARP, ICMP, TCP and UDP functionality. Go and TinyGo default build flags used. **DNC**= Does Not Compile.
+```sh
+go run ./examples/gen/gen-binary-bench # generate table
+```
+
+| Program | Extra Protocols | Packet capture printing | amd64 Go | WASM Go | amd64 TinyGo | WASM TinyGo | Pico TinyGo |
+|---|:---:|:---:|---|---|---|---|---|
+| [Lneto Only TCP](./examples/min-working-example/) | DHCP | ❌ | 3.8MB | 4.3MB | 2.4MB | 1.4MB | 264kB |
+| [Lneto Stack](./examples/min-working-example/) | DNS,NTP,DHCP | ✅ | 4.0MB | 4.6MB | 2.6MB | 1.6MB | 338kB |
+| [Gvisor MWE w/ go-net](./examples/_import_examples/gvisor-mwe/) | None | ❌ | 6.6MB | 7.5MB | DNC | DNC | DNC |
+*Size for Pico is not size on flash, but rather the size of `.bin` file produced by TinyGo compiler.
+
+
+## API Reference
+
+### Build tags
+
+- `debugheaplog`: All logging calls are enabled and all will print out heap information. Warning: Heavy cost on some TinyGo garbage collectors which do not cache the GC statistics
+- `noslog`: All slog package logging calls omitted.
+- `xnetdebug`: Packet capture printing to standard output enabled on `xnet.StackAsync` Ethernet and IP receive and send methods
+
+### Abstractions
+The following interface is implemented by networking stack nodes and the stack themselves.
+
+```go
+type StackNode interface {
+    // Encapsulate receives a buffer the receiver must fill with data.
+    // The receiver's start byte is at carrierData[offsetToFrame].
+	Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error)
+	// Demux receives a buffer the receiver must decode and pass on to corresponding child StackNode(s).
+    // The receiver's start byte is at carrierData[offsetToFrame].
+	Demux(carrierData []byte, offsetToFrame int) error
+    // LocalPort returns the port of the node if applicable or zero. Used for UDP/TCP nodes.
+	LocalPort() uint16
+    // Protocol returns the protocol of this node if applicable or zero. Usually either a ethernet.Type (EtherType) or lneto.IPProto (IP Protocol number).
+	Protocol() uint64
+    // ConnectionID returns a pointer to the connection ID of the StackNode.
+    // A change in the ID means the node is no longer valid and should be discarded.
+    // A change in the ID could mean the connection was closed by the user or that the node will not send nor receive any more data over said connection ID.
+	ConnectionID() *uint64
+}
+```
+
+
+## Developing (linux)
+
+When testing lneto through a Linux network interface, disable receive offloading if packets are unexpectedly dropped with checksum errors. Generic receive offload (GRO) can merge TCP frames before delivery to raw sockets without recalculating the full checksum.
+
+```sh
+sudo ethtool -K <network-interface> gro off
+```
+
+Depending on the interface and driver, other offloading features may also need to be disabled.
+
+When running `xcurl` directly on a normal Linux interface (for example `-i wlan0` or `-i eth0`), lneto shares the host interface IP and MAC address. The Linux TCP stack also sees incoming packets for that IP. If xcurl's TCP handshake succeeds but the HTTP request is followed by a TCP RST from the server, the host kernel may have sent its own outbound RST for xcurl's raw TCP flow because no kernel socket owns that source port.
+
+For a short validation test, use a fixed xcurl source port and temporarily drop kernel-generated outbound RSTs for that port:
+
+```sh
+go build -o examples/xcurl/xcurl ./examples/xcurl
+sudo iptables -I OUTPUT -p tcp --sport 2300 --tcp-flags RST RST -j DROP
+sudo ./examples/xcurl/xcurl -i <network-interface> -port 2300 -host example.com
+sudo iptables -D OUTPUT -p tcp --sport 2300 --tcp-flags RST RST -j DROP
+```
+
+This is a debugging workaround, not the preferred operating mode. Prefer `-ihttp`, a TAP interface, a network namespace, or an otherwise isolated interface/IP when testing xcurl without host TCP stack interference.
+
+- [`examples/httptap`](./examples/httptap) (linux only, root privilidges required) Program opens a TAP interface and assigns an IP address to it and exposes the interface via a HTTP interface. This program is run with root privilidges to facilitate debugging of lneto since no root privilidges are required to interact with the HTTP interface exposed.
+    - `POST http://127.0.0.1:7070/send`: Receives a POST with request body containing JSON string of data to send over TAP interface. Response contains only status code.
+    - `GET http://127.0.0.1:7070/recv`: Receives a GET request. Response contains a JSON string of oldest unread TAP interface packet. If string is empty then there is no more data to read.
+
+- [`xcurl`](./examples/xcurl) Contains example of a application that uses lneto and can attach to a linux tap/bridge interface or a [httptap](./examples/httptap)(with -ihttp flag) to work. When using httptap can be run as non-root user to be debugged comfortably.
+    - Example: `go run ./examples/xcurl -host google.com -ihttp`
+
+
+
+### Quick run xcurl
+Run xcurl over httptap interface. Requires running two programs in separate shell/consoles in linux:
+```sh
+# Build+Run HTTP Tap server from one shell, this will expose the `tap0` TAP interface over an HTTP interface at http://127.0.0.1:7070 on /recv and /send endpoints.
+go build ./examples/httptap && sudo ./httpap
+```
+No privilidge escalation required for xcurl using `-ihttp` flag which taps using `httptap`:
+```sh
+go run ./examples/xcurl -host google.com -ihttp
+```
+
+### Wireshark and Packet Capture API
+Using the provided method of interfacing mean's you'll always be able to easily reach the TAP interface on your machine over HTTP from any process, be it Python or Go. To visualize the packets over the interface we suggest using **Wireshark** and selecting the `tap0` interface which will show all activity over the HTTP TAP interface created with [`./examples/httptap`](./examples/httptap/main.go).
+
+Alternatively there's the [`internet/pcap`](./internet/pcap) package that does the same thing as Wireshark but as a Go API. Here's the result of running xcurl example with pcap logging:
+
+
+```log
+go run ./examples/xcurl -host google.com -ihttp -ntp
+softrand 1767229198
+NIC hardware address: d8:5e:d3:43:03:eb bridgeHW: d8:5e:d3:43:03:eb mtu: 1500 addr: 192.168.1.53/24
+OUT 328 [Ethernet len=14; destination=ff:ff:ff:ff:ff:ff; source=us | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=us; destination=255.255.255.255 | UDP [RFC768] len=8; (Source port)=68; (Destination port)=67 | DHCPv4 len=285; op=1; Flags=0x0000; (Client Address)=us; (Offered Address)=us; (Server Next Address)=255.255.255.255; (Relay Agent Address)=us; (Client Hardware Address)=d85e:d343:3eb::]
+IN   98 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=192.168.1.1; destination=192.168.1.53 | ICMP [RFC792] len=64]
+IN   98 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=192.168.1.1; destination=192.168.1.53 | ICMP [RFC792] len=64]
+IN   98 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=192.168.1.1; destination=192.168.1.53 | ICMP [RFC792] len=64]
+IN   98 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=192.168.1.1; destination=192.168.1.53 | ICMP [RFC792] len=64]
+IN   98 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=192.168.1.1; destination=192.168.1.53 | ICMP [RFC792] len=64]
+IN   98 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=192.168.1.1; destination=192.168.1.53 | ICMP [RFC792] len=64]
+IN   60 [Ethernet len=14; destination=ff:ff:ff:ff:ff:ff; source=e8:4d:74:9f:61:4a | ARP len=28; op=1; (Sender hardware address)=e8:4d:74:9f:61:4a; (Sender protocol address)=192.168.1.1; (Target hardware address)=00:00:00:00:00:00; (Target protocol address)=192.168.1.53]
+IN  590 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x0000; source=192.168.1.1; destination=192.168.1.53 | UDP [RFC768] len=8; (Source port)=67; (Destination port)=68 | DHCPv4 len=273; op=2; Flags=0x0000; (Client Address)=us; (Offered Address)=192.168.1.53; (Server Next Address)=us; (Relay Agent Address)=us; (Client Hardware Address)=d85e:d343:3eb::]
+OUT 326 [Ethernet len=14; destination=ff:ff:ff:ff:ff:ff; source=us | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=us; destination=255.255.255.255 | UDP [RFC768] len=8; (Source port)=68; (Destination port)=67 | DHCPv4 len=283; op=1; Flags=0x0000; (Client Address)=us; (Offered Address)=192.168.1.53; (Server Next Address)=us; (Relay Agent Address)=us; (Client Hardware Address)=d85e:d343:3eb::]
+IN  590 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x0000; source=192.168.1.1; destination=192.168.1.53 | UDP [RFC768] len=8; (Source port)=67; (Destination port)=68 | DHCPv4 len=273; op=2; Flags=0x0000; (Client Address)=us; (Offered Address)=192.168.1.53; (Server Next Address)=us; (Relay Agent Address)=us; (Client Hardware Address)=d85e:d343:3eb::]
+[119ms] DHCP request completed
+2025/12/31 21:59:58 INFO dhcp-complete assignedIP=192.168.1.53 routerIP=192.168.1.1 DNS=[192.168.1.1] subnet=192.168.1.0/24
+OUT  42 [Ethernet len=14; destination=ff:ff:ff:ff:ff:ff; source=us | ARP len=28; op=1; (Sender hardware address)=us; (Sender protocol address)=us; (Target hardware address)=00:00:00:00:00:00; (Target protocol address)=192.168.1.1]
+IN   60 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | ARP len=28; op=2; (Sender hardware address)=e8:4d:74:9f:61:4a; (Sender protocol address)=192.168.1.1; (Target hardware address)=us; (Target protocol address)=us]
+[1.1s] Router ARP resolution
+IN   60 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | ARP len=28; op=1; (Sender hardware address)=e8:4d:74:9f:61:4a; (Sender protocol address)=192.168.1.1; (Target hardware address)=00:00:00:00:00:00; (Target protocol address)=us]
+OUT  42 [Ethernet len=14; destination=e8:4d:74:9f:61:4a; source=us | ARP len=28; op=2; (Sender hardware address)=us; (Sender protocol address)=us; (Target hardware address)=e8:4d:74:9f:61:4a; (Target protocol address)=192.168.1.1]
+OUT  83 [Ethernet len=14; destination=e8:4d:74:9f:61:4a; source=us | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=us; destination=192.168.1.1 | UDP [RFC768] len=8; (Source port)=57216; (Destination port)=53 | DNS len=41]
+IN  147 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=192.168.1.1; destination=us | UDP [RFC768] len=8; (Source port)=53; (Destination port)=57216 | DNS len=105]
+[3.5s] NTP IP lookup
+OUT  90 [Ethernet len=14; destination=e8:4d:74:9f:61:4a; source=us | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=us; destination=170.210.222.10 | UDP [RFC768] len=8; (Source port)=1023; (Destination port)=123 | NTP len=48; (Reference Time)=1900-01-01T00:00:00; (Origin Time)=1900-01-01T00:00:00; (Receive Time)=1900-01-01T00:00:00; (Transit Time)=1900-01-01T00:00:00]
+IN   90 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x0000; source=170.210.222.10; destination=us | UDP [RFC768] len=8; (Source port)=123; (Destination port)=1023 | NTP len=48; (Reference Time)=2026-01-01T00:43:04; (Origin Time)=1900-01-01T00:00:00; (Receive Time)=2026-01-01T01:00:03; (Transit Time)=2026-01-01T01:00:03]
+[786ms] NTP exchange
+NTP completed. You are 11.493283ms ahead of the NTP server
+OUT  81 [Ethernet len=14; destination=e8:4d:74:9f:61:4a; source=us | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=us; destination=192.168.1.1 | UDP [RFC768] len=8; (Source port)=56316; (Destination port)=53 | DNS len=39]
+IN   97 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=192.168.1.1; destination=us | UDP [RFC768] len=8; (Source port)=53; (Destination port)=56316 | DNS len=55]
+[1s] resolve google.com
+DNS resolution of "google.com" complete and resolved to [142.251.129.142]
+[10µs] create HTTP GET request
+IN   98 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=192.168.1.1; destination=us | ICMP [RFC792] len=64]
+OUT  58 [Ethernet len=14; destination=e8:4d:74:9f:61:4a; source=us | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=us; destination=142.251.129.142 | TCP [RFC9293] len=24; (Source port)=51982; (Destination port)=80; flags=SYN]
+IN   98 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=192.168.1.1; destination=us | ICMP [RFC792] len=64]
+IN   60 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=142.251.129.142; destination=us | TCP [RFC9293] len=24; (Source port)=80; (Destination port)=51982; flags=SYN,ACK | payload? len=2]
+OUT  54 [Ethernet len=14; destination=e8:4d:74:9f:61:4a; source=us | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=us; destination=142.251.129.142 | TCP [RFC9293] len=20; (Source port)=51982; (Destination port)=80; flags=ACK]
+[646ms] TCP dial (handshake)
+[5µs] send HTTP request
+OUT 161 [Ethernet len=14; destination=e8:4d:74:9f:61:4a; source=us | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=us; destination=142.251.129.142 | TCP [RFC9293] len=20; (Source port)=51982; (Destination port)=80; flags=PSH,ACK | HTTP len=107]
+IN   60 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x0000; source=142.251.129.142; destination=us | TCP [RFC9293] len=20; (Source port)=80; (Destination port)=51982; flags=ACK | payload? len=6]
+IN  846 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x0000; source=142.251.129.142; destination=us | TCP [RFC9293] len=20; (Source port)=80; (Destination port)=51982; flags=PSH,ACK | HTTP len=792]
+IN   60 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x0000; source=142.251.129.142; destination=us | TCP [RFC9293] len=20; (Source port)=80; (Destination port)=51982; flags=FIN,ACK | payload? len=6]
+IN  804 [Ethernet len=14; destination=us; source=e8:4d:74:9f:61:4a | IPv4 len=20; (Type of Service)=0x00; flags=0x0000; source=142.251.129.142; destination=us | TCP [RFC9293] len=20; (Source port)=80; (Destination port)=51982; flags=ACK | HTTP len=750]
+OUT  54 [Ethernet len=14; destination=e8:4d:74:9f:61:4a; source=us | IPv4 len=20; (Type of Service)=0x00; flags=0x4000; source=us; destination=142.251.129.142 | TCP [RFC9293] len=20; (Source port)=51982; (Destination port)=80; flags=ACK]
+[2.9s] recv http request
+HTTP/1.1 301 Moved Permanently
+Location: http://www.google.com/
+Content-Type: text/html; charset=UTF-8
+Content-Security-Policy-Report-Only: object-src 'none';base-uri 'self';script-src 'nonce-v-ysoE0WjLlAMlo2ek5UrA' 'strict-dynamic' 'report-sample' 'unsafe-eval' 'unsafe-inline' https: http:;report-uri https://csp.withgoogle.com/csp/gws/other-hp
+Date: Thu, 01 Jan 2026 01:00:08 GMT
+Expires: Sat, 31 Jan 2026 01:00:08 GMT
+Cache-Control: public, max-age=2592000
+Server: gws
+Content-Length: 219
+X-XSS-Protection: 0
+X-Frame-Options: SAMEORIGIN
+Connection: close
+
+<HTML><HEAD><meta http-equiv="content-type" content="text/html;charset=utf-8">
+<TITLE>301 Moved</TITLE></HEAD><BODY>
+<H1>301 Moved</H1>
+The document has moved
+<A HREF="http://www.google.com/">here</A>.
+</BODY></HTML>
+success
+```
