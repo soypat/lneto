@@ -284,6 +284,8 @@ func (e *Encoder) Bool(v bool) {
 // str writes s without a length prefix. copy to nil is a no-op on failure.
 func (e *Encoder) str(s string) { copy(e.Reserve(len(s)), s) }
 
+func (e *Encoder) byte(b byte) { e.Uint8(b) }
+
 // String writes v as a length prefixed string.
 func (e *Encoder) String(v []byte) {
 	e.Uint32(uint32(len(v)))
