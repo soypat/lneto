@@ -648,6 +648,66 @@ func TestHandler_ZeroWindowProbeACKed(t *testing.T) {
 	}
 }
 
+// TestHandler_ZeroWindowProbeGate verifies a sender stalled by a closed peer
+// window probes it only when a Policy is installed to resend the probe and is
+// not holding new data back.
+func TestHandler_ZeroWindowProbeGate(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	for _, tc := range []struct {
+		name      string
+		policy    *recordingPolicy
+		txLimit   Size
+		close     bool
+		wantProbe bool
+	}{
+		{name: "policy", policy: newRecordingPolicy(), txLimit: TransmitUnlimited, wantProbe: true},
+		{name: "write-then-close", policy: newRecordingPolicy(), txLimit: TransmitUnlimited, close: true, wantProbe: true},
+		{name: "no-policy"},
+		{name: "new-data-held", policy: newRecordingPolicy(), txLimit: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, server := newHandler(t, mtu, 4), newHandler(t, mtu, 4)
+			if err := server.SetBuffers(nil, make([]byte, 256), 0); err != nil {
+				t.Fatal(err)
+			}
+			if tc.policy != nil {
+				client.SetPolicy(tc.policy)
+			}
+			setupClientServer(t, rand.New(rand.NewSource(3)), client, server)
+			var buf [mtu]byte
+			establish(t, client, server, buf[:])
+			if _, err := client.Write(make([]byte, 512)); err != nil {
+				t.Fatal(err)
+			}
+			for _, h := range [][2]*Handler{{client, server}, {server, client}} { // Fill window, zero-window ACK.
+				n, err := h[0].Send(buf[:])
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := h[1].Recv(buf[:n]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.policy != nil {
+				tc.policy.txLimit = tc.txLimit
+			}
+			if tc.close {
+				if err := client.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			wantN := 0
+			if tc.wantProbe {
+				wantN = sizeHeaderTCP + 1
+			}
+			n, err := client.Send(buf[:])
+			if err != nil || n != wantN {
+				t.Fatalf("stalled Send = %d, %v; want %d", n, err, wantN)
+			}
+		})
+	}
+}
+
 // TestWindowUpdateAfterRead verifies that after the application reads data from
 // a full receive buffer (Window=0), the TCP stack queues a window update ACK
 // so the remote peer can resume sending. This is a regression test for a

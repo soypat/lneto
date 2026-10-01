@@ -480,6 +480,11 @@ func (h *Handler) Send(b []byte) (int, error) {
 			}
 			segment, ok = h.scb.PendingSegment(maxPayload)
 		}
+		if !ok && buffered > 0 && txLimit > 0 && h.policyEnabled() {
+			// Probe a closed peer window. The probe octet is resent only by the
+			// Policy's retransmission timer, so none is sent without a Policy.
+			segment, ok = h.scb.ZeroWindowProbe()
+		}
 		segment.WND = h.recvWindow()
 		if !ok {
 			// No pending control segment or data to send. Yield.
