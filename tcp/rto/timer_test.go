@@ -242,6 +242,43 @@ func TestRTO_TimerRestartsWhilePartiallyAcked(t *testing.T) {
 	}
 }
 
+// TestRTO_NonAdvancingAckKeepsDeadline verifies duplicate and old ACKs do not
+// restart the timer; only an ACK of new data does (RFC 6298 §5.3).
+func TestRTO_NonAdvancingAckKeepsDeadline(t *testing.T) {
+	const iss = uint32(1000)
+	for _, tc := range []struct {
+		name      string
+		ack       uint32
+		backedOff bool
+	}{
+		{name: "duplicate", ack: iss},
+		{name: "old-after-backoff", ack: iss - 1, backedOff: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRTO()
+			r.postTx(dataSeg(iss, 100), 0)
+			var now int64
+			if tc.backedOff {
+				now = r.NextDeadline()
+				if _, _, rtx := r.preTx(now, tcp.Value(iss)); !rtx {
+					t.Fatal("initial timeout did not fire")
+				}
+				r.postTx(dataSeg(iss, 100), now)
+			}
+			deadline := r.NextDeadline()
+			for _, at := range []int64{(now + deadline) / 2, deadline - 1} {
+				r.postRx(ackSeg(tc.ack), at)
+				if r.NextDeadline() != deadline {
+					t.Fatalf("ACK %d at %d moved deadline to %d, want %d", tc.ack, at, r.NextDeadline(), deadline)
+				}
+			}
+			if _, _, rtx := r.preTx(deadline, tcp.Value(iss)); !rtx {
+				t.Error("timeout did not fire at the original deadline")
+			}
+		})
+	}
+}
+
 // TestRTO_NoArmWithoutData verifies control-only segments neither arm the timer
 // nor start an RTT sample.
 func TestRTO_NoArmWithoutData(t *testing.T) {

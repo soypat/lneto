@@ -171,14 +171,15 @@ func (r *Timer) postRx(incoming tcp.Segment, now int64) {
 		r.timing = false
 		r.backoff = 0
 	}
-	if r.sndUNA.LessThan(ack) && !r.sndNXT.LessThan(ack) {
+	advancesUNA := r.sndUNA.LessThan(ack) && !r.sndNXT.LessThan(ack)
+	if advancesUNA {
 		// ACK advances snd.UNA and does not exceed what we have sent.
 		r.sndUNA = ack
 	}
 	if r.sndUNA == r.sndNXT {
 		r.running = false // §5.3: all outstanding data acknowledged.
 		r.rtxOwed = false
-	} else {
+	} else if advancesUNA {
 		// §5.3: new (but not all) data acknowledged — restart the timer.
 		r.running = true
 		r.deadline = now + int64(r.CurrentRTO())
