@@ -124,6 +124,72 @@ func TestRTO_HandlerRetransmitsAfterCloseWithUnackedData(t *testing.T) {
 	}
 }
 
+// TestRTO_ZeroWindowProbeRecoversLostWindowUpdate covers a peer that closes its
+// window and then loses the window update reopening it. The sender must probe
+// the closed window and resend the probe on timeout instead of waiting forever,
+// and the stream must arrive intact.
+func TestRTO_ZeroWindowProbeRecoversLostWindowUpdate(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	client, server := newHandler(t, mtu, 4), newHandler(t, mtu, 4)
+	if err := server.SetBuffers(nil, make([]byte, 256), 0); err != nil {
+		t.Fatal(err)
+	}
+	var now int64
+	client.SetPolicy(newTimer(t, func() int64 { return now }))
+	setupClientServer(t, rand.New(rand.NewSource(7)), client, server)
+	var buf [mtu]byte
+	establish(t, client, server, buf[:])
+	// relay sends one segment from src to dst. Segments refused at a closed
+	// window are expected, so receive errors are ignored; the final read checks
+	// the stream.
+	relay := func(src, dst *tcp.Handler) int {
+		t.Helper()
+		clear(buf[:])
+		n, err := src.Send(buf[:])
+		if err != nil {
+			t.Fatal("send:", err)
+		}
+		if n > 0 {
+			dst.Recv(buf[:n])
+		}
+		return n
+	}
+	data := make([]byte, 512)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	if _, err := client.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	relay(client, server) // Fills the server's window.
+	relay(server, client) // Zero-window ACK.
+	if n := relay(client, server); n != sizeHeaderTCP+1 {
+		t.Fatalf("stalled sender sent %d bytes, want a one-octet probe", n)
+	}
+	relay(server, client) // Reply to the refused probe, if any.
+	got := make([]byte, len(data))
+	nr, err := server.Read(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clear(buf[:])
+	if n, _ := server.Send(buf[:]); n == 0 { // Window update, lost in transit.
+		t.Fatal("read did not queue a window update")
+	}
+	if n := relay(client, server); n != 0 {
+		t.Fatalf("sender sent %d bytes before the retransmission timeout", n)
+	}
+	now += int64(3 * time.Second)
+	for range 4 { // Probe resend, then the rest of the stream.
+		relay(client, server)
+		relay(server, client)
+	}
+	m, err := server.Read(got[nr:])
+	if err != nil || nr+m != len(data) || string(got) != string(data) {
+		t.Fatalf("server read %d of %d octets intact=%v (err %v)", nr+m, len(data), string(got) == string(data), err)
+	}
+}
+
 // newTimer returns a Timer driven by nanotime, ready to install as a [tcp.Policy].
 func newTimer(t *testing.T, nanotime func() int64) *Timer {
 	t.Helper()

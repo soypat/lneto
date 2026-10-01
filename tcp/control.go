@@ -262,6 +262,20 @@ func (tcb *ControlBlock) HasPendingRetransmit() bool {
 	return tcb._state.txQueuedDataOpen() && tcb.dupack >= retransmitAfterDupacks && tcb.nRetransmit <= tcb.dupack-retransmitAfterDupacks
 }
 
+// ZeroWindowProbe returns a segment carrying the next octet of new data, to send
+// when the peer's window is zero and nothing is outstanding (RFC 9293 §3.8.6.1).
+// The peer must acknowledge the octet, reporting its current window, so a lost
+// window update can no longer stall the connection. Once sent the octet is
+// outstanding and further probes are its retransmissions, which the caller must
+// drive with a retransmission timer. It reports false when no probe is due and
+// does not modify the ControlBlock.
+func (tcb *ControlBlock) ZeroWindowProbe() (_ Segment, ok bool) {
+	if tcb.snd.WND != 0 || tcb.snd.UNA != tcb.snd.NXT || !tcb._state.TxDataOpen() {
+		return Segment{}, false
+	}
+	return Segment{SEQ: tcb.snd.NXT, DATALEN: 1, ACK: tcb.rcv.NXT, WND: tcb.rcv.WND, Flags: FlagACK}, true
+}
+
 // PendingRetransmit returns a segment resending already-sent data at seq, with
 // at most payloadLen octets bounded by snd.NXT and snd.MSS. Sending it through
 // [ControlBlock.Send] leaves snd.NXT unchanged. It reports false when seq is
@@ -529,8 +543,8 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	isFirst := tcb._state == StateClosed && seg.isFirstSYN()
 	checkSeq := !isFirst && !seg.Flags.HasAny(FlagRST)
 	seglast := seg.Last()
-	// Extra check for when send Window is zero and no data is being sent.
-	zeroWindowOK := tcb.snd.WND == 0 && seg.DATALEN == 0 && seg.SEQ == tcb.snd.NXT
+	// A zero send window still admits control segments and a one-octet probe.
+	zeroWindowOK := tcb.snd.WND == 0 && seg.DATALEN <= 1 && seg.SEQ == tcb.snd.NXT
 	outOfWindow := checkSeq && !seg.SEQ.InWindow(tcb.snd.NXT, tcb.snd.WND) &&
 		!zeroWindowOK
 	isRetransmit := checkSeq && seg.SEQ.InRange(tcb.snd.UNA, tcb.snd.NXT)
@@ -556,7 +570,7 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 		// for either side to make progress (RFC 9293 §3.10.8).
 		err = errConnectionClosing
 
-	case checkSeq && tcb.snd.WND == 0 && seg.DATALEN > 0 && seg.SEQ == tcb.snd.NXT:
+	case checkSeq && tcb.snd.WND == 0 && seg.DATALEN > 1 && seg.SEQ == tcb.snd.NXT:
 		err = errZeroWindow
 
 	case checkSeq && !seglast.InWindow(tcb.snd.NXT, tcb.snd.WND) && !zeroWindowOK && !isRetransmit:

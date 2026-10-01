@@ -820,6 +820,56 @@ func TestExchangeTest_ZeroWindowProbesDoNotAbort(t *testing.T) {
 	test.RunA(t)
 }
 
+// TestZeroWindowProbe verifies a one-octet probe is offered only when the peer's
+// window is zero, nothing is outstanding and new data may be sent, that Send
+// accepts it while rejecting more than one octet, and that it is offered once.
+func TestZeroWindowProbe(t *testing.T) {
+	const issA, issB, windowA = 100, 300, 1000
+	for _, tc := range []struct {
+		name      string
+		state     tcp.State
+		sndWND    tcp.Size
+		inFlight  tcp.Size
+		wantProbe bool
+	}{
+		{name: "closed-window", state: tcp.StateEstablished, wantProbe: true},
+		{name: "close-wait", state: tcp.StateCloseWait, wantProbe: true},
+		{name: "open-window", state: tcp.StateEstablished, sndWND: 10},
+		{name: "data-outstanding", state: tcp.StateEstablished, inFlight: 1},
+		{name: "fin-sent", state: tcp.StateFinWait1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var tcb tcp.ControlBlock
+			tcb.HelperInitState(tc.state, issA, issA+tcp.Value(tc.inFlight), windowA)
+			tcb.HelperInitRcv(issB, issB, tc.sndWND)
+			probe, ok := tcb.ZeroWindowProbe()
+			if ok != tc.wantProbe {
+				t.Fatalf("probe offered=%v, want %v", ok, tc.wantProbe)
+			} else if !ok {
+				return
+			}
+			want := tcp.Segment{SEQ: issA, ACK: issB, WND: windowA, Flags: tcp.FlagACK, DATALEN: 1}
+			if probe != want {
+				t.Fatalf("probe=%+v, want %+v", probe, want)
+			}
+			twoOctets := probe
+			twoOctets.DATALEN = 2
+			if err := tcb.Send(twoOctets); err == nil {
+				t.Fatal("zero window accepted two octets")
+			}
+			if err := tcb.Send(probe); err != nil {
+				t.Fatal("probe rejected:", err)
+			}
+			if tcb.SendNext() != issA+1 {
+				t.Fatalf("SND.NXT=%d, want %d", tcb.SendNext(), issA+1)
+			}
+			if _, ok := tcb.ZeroWindowProbe(); ok {
+				t.Fatal("second probe offered while the first is outstanding")
+			}
+		})
+	}
+}
+
 func TestRcvFinWait2(t *testing.T) {
 	const windowA, windowB = 1000, 1000
 	const issA, issB = 100, 300
