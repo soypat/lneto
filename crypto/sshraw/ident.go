@@ -44,11 +44,11 @@ func ParseIdent(line []byte, rejectNon2Version bool) (proto, software, comments 
 		return nil, nil, nil, lneto.ErrInvalidField // MUST NOT contain null, unlike preceding lines.
 	}
 	rest := line[len(IdentPrefix):]
-	dash := bytes.IndexByte(rest, '-')
-	if dash < 0 {
+	before, after, ok := bytes.Cut(rest, []byte{'-'})
+	if !ok {
 		return nil, nil, nil, lneto.ErrInvalidField
 	}
-	proto, software = rest[:dash], rest[dash+1:]
+	proto, software = before, after
 	if sp := bytes.IndexByte(software, ' '); sp >= 0 {
 		software, comments = software[:sp], software[sp+1:]
 	}
