@@ -109,6 +109,55 @@ func TestHalfConn(t *testing.T) {
 	}
 }
 
+// TestEncoderSealRecord checks SealRecord seals as HalfConn.Seal does and leaves
+// the Encoder after the sealed record, ready for the next one.
+func TestEncoderSealRecord(t *testing.T) {
+	key := bytes.Repeat([]byte{7}, 16)
+	var iv [12]byte
+	content := []byte("hello")
+	var direct, viaEnc HalfConn
+	if err := direct.SetAEAD(newGCM(t, key), &iv); err != nil {
+		t.Fatal(err)
+	} else if err = viaEnc.SetAEAD(newGCM(t, key), &iv); err != nil {
+		t.Fatal(err)
+	}
+	rec := make([]byte, SizeHeaderRecord, SizeHeaderRecord+len(content)+direct.Overhead())
+	rec[0] = byte(ContentTypeApplicationData)
+	binary.BigEndian.PutUint16(rec[1:3], VersionTLS12)
+	binary.BigEndian.PutUint16(rec[3:5], uint16(len(content)))
+	rec = append(rec, content...)
+	want, err := direct.Seal(rec, ContentTypeApplicationData)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const prefix = 3
+	buf := make([]byte, prefix+len(want)+1)
+	var e Encoder
+	e.Reset(buf, prefix)
+	start := e.StartRecord(ContentTypeApplicationData)
+	e.Bytes(content)
+	e.EndRecord(start)
+	e.SealRecord(&viaEnc, start, ContentTypeApplicationData)
+	e.Uint8(0xff) // Next write lands after the record.
+	if e.Err() != nil {
+		t.Fatal(e.Err())
+	} else if got := buf[prefix : len(buf)-1]; !bytes.Equal(got, want) {
+		t.Fatalf("record %x, want %x", got, want)
+	} else if e.Len() != len(buf) || buf[len(buf)-1] != 0xff {
+		t.Fatalf("Len=%d, want %d", e.Len(), len(buf))
+	}
+
+	e.Reset(make([]byte, len(want)-1), 0) // No room for the tag.
+	start = e.StartRecord(ContentTypeApplicationData)
+	e.Bytes(content)
+	e.EndRecord(start)
+	e.SealRecord(&viaEnc, start, ContentTypeApplicationData)
+	if !errors.Is(e.Err(), lneto.ErrShortBuffer) {
+		t.Fatalf("short buffer err=%v, want %v", e.Err(), lneto.ErrShortBuffer)
+	}
+}
+
 // stubAEAD is an insecure AEAD with configurable tag and nonce sizes, for suites
 // such as CCM_8 that the standard library does not implement. Like crypto/cipher
 // it reallocates dst when its capacity is short.

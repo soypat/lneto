@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/crypto/internal/wire"
 )
 
 type HelloClientMsg struct {
@@ -28,34 +29,36 @@ func (ch HelloClientMsg) Random() *[SizeHelloRandom]byte {
 // Decode fails if message is not complete.
 func (d *HelloClientMsg) Decode(body []byte, vld *lneto.Validator) (int, error) {
 	d.reset()
-	dec := decoder{buf: body, vld: vld, off: 2 + SizeHelloRandom}
+	var dec decoder
+	dec.Reset(body, vld)
+	dec.Advance(2 + SizeHelloRandom)
 	sidLen := int(dec.Uint8())
 	if sidLen > MaxSessionIDLen {
 		vld.AddError(lneto.ErrInvalidLengthField)
 	}
-	dec.Advance(sidLen)
+	dec.Advance(uint32(sidLen))
 	suitesLen := int(dec.Uint16())
 	if suitesLen < 2 || suitesLen%2 != 0 {
 		vld.AddError(lneto.ErrInvalidLengthField)
 	}
-	dec.Advance(suitesLen)
+	dec.Advance(uint32(suitesLen))
 	compLen := int(dec.Uint8())
 	if compLen == 0 {
 		vld.AddError(lneto.ErrInvalidLengthField)
 	}
-	dec.Advance(compLen)
+	dec.Advance(uint32(compLen))
 	extsLen := dec.Uint16()
-	dec.Advance(int(extsLen))
+	dec.Advance(uint32(extsLen))
 	if vld.HasError() {
-		return dec.off, vld.ErrPop()
+		return dec.Off(), vld.ErrPop()
 	}
 	d.buf = body
-	d._extOff = dec.off - int(extsLen)
+	d._extOff = dec.Off() - int(extsLen)
 	d.extLen = extsLen
 	d.suitesLen = uint16(suitesLen)
 	d.sidLen = uint8(sidLen)
 	d.complen = uint8(compLen)
-	return dec.off, nil
+	return dec.Off(), nil
 }
 
 // SessionID returns legacy_session_id, which the server echoes.
@@ -119,23 +122,25 @@ func (h *HelloServerMsg) Extensions() []byte {
 // Decode fails if message is not complete.
 func (d *HelloServerMsg) Decode(body []byte, vld *lneto.Validator) (int, error) {
 	d.reset()
-	dec := decoder{buf: body, vld: vld, off: 2 + SizeHelloRandom}
+	var dec decoder
+	dec.Reset(body, vld)
+	dec.Advance(2 + SizeHelloRandom)
 	sidLen := int(dec.Uint8())
 	if sidLen > MaxSessionIDLen {
 		vld.AddError(lneto.ErrInvalidLengthField)
 	}
-	dec.Advance(sidLen)
+	dec.Advance(uint32(sidLen))
 	dec.Advance(2 + 1) // cipher_suite and legacy_compression_method.
 	extsLen := dec.Uint16()
-	dec.Advance(int(extsLen))
+	dec.Advance(uint32(extsLen))
 	if vld.HasError() {
-		return dec.off, vld.ErrPop()
+		return dec.Off(), vld.ErrPop()
 	}
 	d.buf = body
-	d._extOff = dec.off - int(extsLen)
+	d._extOff = dec.Off() - int(extsLen)
 	d.extLen = extsLen
 	d.sidLen = uint8(sidLen)
-	return dec.off, nil
+	return dec.Off(), nil
 }
 
 // NextKeyShare returns the group and key of the KeyShareEntry at the start of body and its length n.
@@ -335,136 +340,19 @@ func checkVec8(data []byte) error {
 	return nil
 }
 
-// decoder provides a API to readably decode TLS packets.
-// It's decoding methods are meant to be used with no error checking between them
-// for maximum readability while not sacrificing panic risk; performance is secondary.
-type decoder struct {
-	buf []byte
-	off int
-	vld *lneto.Validator
-}
+// decoder provides a API to readably decode TLS packets, see [wire.Decoder].
+type decoder struct{ wire.Decoder }
 
-func (dec *decoder) Uint16() (v uint16) {
-	if dec.failLen(2) {
-		return
-	}
-	v = binary.BigEndian.Uint16(dec.buf[dec.off:])
-	dec.off += 2
-	return v
-}
-
-func (dec *decoder) Uint8() (v uint8) {
-	if dec.failLen(1) {
-		return
-	}
-	v = dec.buf[dec.off]
-	dec.off++
-	return v
-}
-
-func (dec *decoder) Advance(n int) {
-	if !dec.failLen(n) {
-		dec.off += n
-	}
-}
-
-func (dec *decoder) failLen(n int) (failed bool) {
-	if dec.vld.HasError() {
-		return true
-	} else if len(dec.buf)-dec.off < n {
-		dec.vld.AddError(lneto.ErrTruncatedFrame)
-		return true
-	}
-	return false
-}
+type encoder = wire.Encoder
 
 // Encoder writes TLS structures to a fixed buffer, the counterpart of [decoder].
 // A write past the end of buf sets err and all later writes are dropped, so
 // callers check err once after writing.
-type Encoder struct {
-	buf []byte
-	off int
-	err error
-}
-
-// Reset makes e write to buf starting at off, keeping buf[:off].
-func (e *Encoder) Reset(buf []byte, off int) { *e = Encoder{buf: buf, off: off} }
-
-// Len returns the number of bytes of buf written, including the ones kept by Reset.
-func (e *Encoder) Len() int { return e.off }
-
-// Err returns the first error, usually [lneto.ErrShortBuffer].
-func (e *Encoder) Err() error { return e.err }
-
-// next reserves n bytes. It returns nil if they do not fit.
-func (e *Encoder) next(n int) []byte {
-	if e.err == nil && len(e.buf)-e.off < n {
-		e.err = lneto.ErrShortBuffer
-	}
-	if e.err != nil {
-		return nil
-	}
-	e.off += n
-	return e.buf[e.off-n : e.off]
-}
-
-func (e *Encoder) Uint8(v uint8) {
-	if b := e.next(1); b != nil {
-		b[0] = v
-	}
-}
-
-func (e *Encoder) Uint16(v uint16) {
-	if b := e.next(2); b != nil {
-		binary.BigEndian.PutUint16(b, v)
-	}
-}
-
-func (e *Encoder) Bytes(v []byte) {
-	if b := e.next(len(v)); b != nil {
-		copy(b, v)
-	}
-}
-
-// Rest returns the unwritten part of buf for a callee to write into. Commit with Advance.
-func (e *Encoder) Rest() []byte {
-	if e.err != nil {
-		return nil
-	}
-	return e.buf[e.off:]
-}
-
-func (e *Encoder) Advance(n int) { e.next(n) }
-
-// Reserve commits n bytes and returns them to be written into.
-// Reserve returns nil if n bytes don't fit or if Encoder is in failed state.
-func (e *Encoder) Reserve(n int) []byte { return e.next(n) }
-
-// Open reserves a length prefix of width bytes and returns where its content starts.
-func (e *Encoder) Open(width int) (start int) {
-	e.next(width)
-	return e.off
-}
-
-// Close writes the length of the content written since Open returned start.
-func (e *Encoder) Close(start, width int) {
-	if e.err != nil {
-		return
-	}
-	n := e.off - start
-	if n>>(8*width) != 0 {
-		e.err = lneto.ErrInvalidLengthField
-		return
-	}
-	for i := start - 1; i >= start-width; i-- {
-		e.buf[i] = byte(n)
-		n >>= 8
-	}
-}
+type Encoder struct{ encoder }
 
 // StartMessage writes a handshake message header whose length is set by EndMessage.
 func (e *Encoder) StartMessage(typ HandshakeType) (start int) {
-	start = e.off
+	start = e.Len()
 	e.Uint8(uint8(typ))
 	e.Open(3)
 	return start
@@ -473,15 +361,12 @@ func (e *Encoder) StartMessage(typ HandshakeType) (start int) {
 // EndMessage sets the length of the message started at start and returns the message.
 func (e *Encoder) EndMessage(start int) []byte {
 	e.Close(start+SizeHeaderHandshake, 3)
-	if e.err != nil {
-		return nil
-	}
-	return e.buf[start:e.off]
+	return e.Since(start)
 }
 
 // StartRecord writes a TLSPlaintext header whose length is set by EndRecord.
 func (e *Encoder) StartRecord(ct ContentType) (start int) {
-	start = e.off
+	start = e.Len()
 	e.Uint8(uint8(ct))
 	e.Uint16(VersionTLS12)
 	e.Open(2)
@@ -492,13 +377,14 @@ func (e *Encoder) EndRecord(start int) { e.Close(start+SizeHeaderRecord, 2) }
 
 // SealRecord protects with hc the content written since StartRecord returned start.
 func (e *Encoder) SealRecord(hc *HalfConn, start int, ct ContentType) {
-	if e.err != nil {
+	plain := e.Since(start)
+	if e.Err() != nil {
 		return
 	}
-	rec, err := hc.Seal(e.buf[start:e.off:len(e.buf)], ct)
+	rec, err := hc.Seal(plain, ct)
 	if err != nil {
-		e.err = err
+		e.Fail(err)
 		return
 	}
-	e.off = start + len(rec)
+	e.Advance(len(rec) - len(plain)) // Commit the tag and content type Seal wrote into capacity.
 }
