@@ -7,6 +7,7 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/crypto/internal/lcrypto"
+	"github.com/soypat/lneto/crypto/internal/wire"
 )
 
 const (
@@ -264,48 +265,12 @@ func (ks *KeySchedule) Zeroize() {
 	ks.sidlen = 0
 }
 
+type encoder = wire.Encoder
+
 // Encoder writes SSH structures to a fixed buffer, the counterpart of [decoder].
 // A write past the end of buf sets err and all later writes are dropped, so
 // callers check err once after writing.
-type Encoder struct {
-	buf []byte
-	off int
-	err error
-}
-
-// Reset makes e write to buf starting at off, keeping buf[:off].
-func (e *Encoder) Reset(buf []byte, off int) { *e = Encoder{buf: buf, off: off} }
-
-// Len returns the number of bytes of buf written, including the ones kept by Reset.
-func (e *Encoder) Len() int { return e.off }
-
-// Err returns the first error, usually [lneto.ErrShortBuffer].
-func (e *Encoder) Err() error { return e.err }
-
-// fail sets err if no error is set yet.
-func (e *Encoder) fail(err error) {
-	if e.err == nil {
-		e.err = err
-	}
-}
-
-// next reserves n bytes. It returns nil if they do not fit.
-func (e *Encoder) next(n int) []byte {
-	if e.err == nil && len(e.buf)-e.off < n {
-		e.err = lneto.ErrShortBuffer
-	}
-	if e.err != nil {
-		return nil
-	}
-	e.off += n
-	return e.buf[e.off-n : e.off]
-}
-
-func (e *Encoder) Uint8(v uint8) {
-	if b := e.next(1); b != nil {
-		b[0] = v
-	}
-}
+type Encoder struct{ encoder }
 
 // Bool writes 1 for true and 0 for false, the only values RFC 4251 5 allows to be sent.
 func (e *Encoder) Bool(v bool) {
@@ -316,30 +281,8 @@ func (e *Encoder) Bool(v bool) {
 	e.Uint8(b)
 }
 
-func (e *Encoder) Uint32(v uint32) {
-	if b := e.next(4); b != nil {
-		binary.BigEndian.PutUint32(b, v)
-	}
-}
-
-func (e *Encoder) Uint64(v uint64) {
-	if b := e.next(8); b != nil {
-		binary.BigEndian.PutUint64(b, v)
-	}
-}
-
-// Bytes writes v as is, without a length prefix.
-func (e *Encoder) Bytes(v []byte) {
-	if b := e.next(len(v)); b != nil {
-		copy(b, v)
-	}
-}
-
-func (e *Encoder) str(v string) {
-	if b := e.next(len(v)); b != nil {
-		copy(b, v)
-	}
-}
+// str writes s without a length prefix. copy to nil is a no-op on failure.
+func (e *Encoder) str(s string) { copy(e.Reserve(len(s)), s) }
 
 // String writes v as a length prefixed string.
 func (e *Encoder) String(v []byte) {
@@ -359,7 +302,7 @@ func (e *Encoder) NameList(names ...string) {
 	start := e.Open(4)
 	for i, name := range names {
 		if err := validateName(name); err != nil {
-			e.fail(err)
+			e.Fail(err)
 			return
 		} else if i > 0 {
 			e.Uint8(',')
@@ -386,46 +329,10 @@ func (e *Encoder) MPInt(mag []byte) {
 	e.Bytes(mag)
 }
 
-// Rest returns the unwritten part of buf for a callee to write into. Commit with Advance.
-func (e *Encoder) Rest() []byte {
-	if e.err != nil {
-		return nil
-	}
-	return e.buf[e.off:]
-}
-
-func (e *Encoder) Advance(n int) { e.next(n) }
-
-// Reserve commits n bytes and returns them to be written into.
-// Reserve returns nil if n bytes don't fit or if Encoder is in failed state.
-func (e *Encoder) Reserve(n int) []byte { return e.next(n) }
-
-// Open reserves a length prefix of width bytes and returns where its content starts.
-func (e *Encoder) Open(width int) (start int) {
-	e.next(width)
-	return e.off
-}
-
-// Close writes the length of the content written since Open returned start.
-func (e *Encoder) Close(start, width int) {
-	if e.err != nil {
-		return
-	}
-	n := uint64(e.off - start)
-	if n>>(8*width) != 0 {
-		e.err = lneto.ErrInvalidLengthField
-		return
-	}
-	for i := start - 1; i >= start-width; i-- {
-		e.buf[i] = byte(n)
-		n >>= 8
-	}
-}
-
 // StartPacket writes a binary packet header and the message type. The lengths
 // and padding are written by EndPacket.
 func (e *Encoder) StartPacket(typ MsgType) (start int) {
-	start = e.off
+	start = e.Len()
 	e.Advance(SizeHeader)
 	e.Uint8(uint8(typ))
 	return start
@@ -440,12 +347,12 @@ func (e *Encoder) StartPacket(typ MsgType) (start int) {
 func (e *Encoder) EndPacket(start, blockSize int, aad bool, rand io.Reader) []byte {
 	bs := max(blockSize, minBlockSize)
 	if bs+minPadding-1 > 255 {
-		e.fail(lneto.ErrInvalidConfig)
+		e.Fail(lneto.ErrInvalidConfig)
 	}
-	if e.err != nil {
+	if e.Err() != nil {
 		return nil
 	}
-	covered := e.off - start
+	covered := e.Len() - start
 	if aad {
 		covered -= 4
 	}
@@ -453,16 +360,16 @@ func (e *Encoder) EndPacket(start, blockSize int, aad bool, rand io.Reader) []by
 	if padLen < minPadding {
 		padLen += bs
 	}
-	pad := e.next(padLen)
+	pad := e.Reserve(padLen)
 	if pad == nil {
 		return nil
 	} else if _, err := io.ReadFull(rand, pad); err != nil {
-		e.fail(err)
+		e.Fail(err)
 		return nil
 	}
-	pkt := e.buf[start:e.off]
+	pkt := e.Since(start)
 	if len(pkt) > maxPacket {
-		e.fail(lneto.ErrInvalidLengthField)
+		e.Fail(lneto.ErrInvalidLengthField)
 		return nil
 	}
 	binary.BigEndian.PutUint32(pkt, uint32(len(pkt)-4))
