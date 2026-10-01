@@ -1,4 +1,4 @@
-//go:build linux && !tinygo && amd64
+//go:build linux && !tinygo
 
 package internal
 
@@ -71,11 +71,8 @@ func (tap *Tap) Read(b []byte) (int, error) {
 // Returns true if data is available, false if timeout was reached.
 func (tap *Tap) Poll(timeout time.Duration) (bool, error) {
 	var readfds syscall.FdSet
-	readfds.Bits[tap.fd/64] |= 1 << (uint(tap.fd) % 64)
-	tv := syscall.Timeval{
-		Sec:  int64(timeout / time.Second),
-		Usec: int64((timeout % time.Second) / time.Microsecond),
-	}
+	fdsetSet(&readfds, tap.fd)
+	tv := syscall.NsecToTimeval(int64(timeout))
 	n, err := syscall.Select(tap.fd+1, &readfds, nil, nil, &tv)
 	if err != nil {
 		return false, err
@@ -268,10 +265,7 @@ func (br *Bridge) IPMask() (netip.Prefix, error) {
 // This prevents Read from blocking indefinitely, allowing the caller
 // to periodically call Encapsulate even when no packets arrive.
 func (br *Bridge) SetReadTimeout(timeout time.Duration) error {
-	tv := syscall.Timeval{
-		Sec:  int64(timeout / time.Second),
-		Usec: int64((timeout % time.Second) / time.Microsecond),
-	}
+	tv := syscall.NsecToTimeval(int64(timeout))
 	return syscall.SetsockoptTimeval(br.fd, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &tv)
 }
 
@@ -279,11 +273,8 @@ func (br *Bridge) SetReadTimeout(timeout time.Duration) error {
 // Returns true if data is available, false if timeout was reached.
 func (br *Bridge) Poll(timeout time.Duration) (bool, error) {
 	var readfds syscall.FdSet
-	readfds.Bits[br.fd/64] |= 1 << (uint(br.fd) % 64)
-	tv := syscall.Timeval{
-		Sec:  int64(timeout / time.Second),
-		Usec: int64((timeout % time.Second) / time.Microsecond),
-	}
+	fdsetSet(&readfds, br.fd)
+	tv := syscall.NsecToTimeval(int64(timeout))
 	retry := 0
 again:
 	n, err := syscall.Select(br.fd+1, &readfds, nil, nil, &tv)
@@ -308,6 +299,12 @@ func (br *Bridge) Addr() (netip.Addr, error) {
 
 func (br *Bridge) MTU() (int, error) {
 	return getSocketMTU(br.fd, br.name)
+}
+
+// fdsetSet adds fd to set. FdSet.Bits element width is architecture dependent.
+func fdsetSet(set *syscall.FdSet, fd int) {
+	const bitsPerWord = int(unsafe.Sizeof(set.Bits[0]) * 8)
+	set.Bits[fd/bitsPerWord] |= 1 << (uint(fd) % uint(bitsPerWord))
 }
 
 // htons converts a uint16 from host to network byte order.
