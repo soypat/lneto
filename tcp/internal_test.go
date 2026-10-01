@@ -8,6 +8,9 @@ import (
 
 const logExchange = false
 
+// ErrZeroWindow exposes the zero-window rejection to external tests.
+var ErrZeroWindow = errZeroWindow
+
 // Here we define internal testing helpers that may be used in any *_test.go file
 // but are not exported.
 

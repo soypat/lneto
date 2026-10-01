@@ -220,7 +220,8 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 	if h.reasm.enabled() && h.handleOutOfOrder(segIncoming, payload) {
 		return nil
 	}
-	if !h.shutdownRx && len(payload) > h.bufRx.Free() {
+	// After a zero window is advertised the ControlBlock refuses and ACKs data itself.
+	if !h.shutdownRx && len(payload) > h.bufRx.Free() && h.scb.RecvWindow() != 0 {
 		return lneto.ErrBufferFull
 	}
 

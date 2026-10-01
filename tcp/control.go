@@ -602,7 +602,11 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	if err != nil {
 		// RFC 9293 §3.4: If segment not acceptable, send ACK (unless RST).
 		switch err {
-		case errSeqNotInWindow, errLastNotInWindow, errRequireSequential, errZeroWindow:
+		case errZeroWindow:
+			if !flags.HasAny(FlagRST) {
+				tcb.pending[0] |= FlagACK
+			}
+		case errSeqNotInWindow, errLastNotInWindow, errRequireSequential:
 			if !flags.HasAny(FlagRST) {
 				if tcb.tooManyChallengeAcks() {
 					tcb.Abort()
