@@ -79,6 +79,26 @@ existing table.
 - Assert the behaviour the RFC or the API documentation prescribes, not
   incidental details of the current implementation.
 
+## Known bugs
+
+A bug found but not yet fixed is recorded as a failing test, so the list of
+known problems lives in the code next to the tests that will guard the fix.
+
+- Put the test in a file with the `//go:build knownbug` constraint, named
+  `knownbug_test.go` in the package it concerns.
+- Name it `TestKnownBug_Xxx` and say in its comment what is wrong, what the
+  RFC or documentation prescribes, and which existing tests assert the
+  current behaviour.
+- Assert the correct behaviour, so the test passes once the bug is fixed.
+
+`.github/scripts/knownbug.sh` runs each of these tests and fails if one passes.
+The pull request fixing a bug therefore moves its test out of the `knownbug`
+file, where it becomes the regression test. CI lists the known bugs in the
+summary of the `knownbug` job.
+
+Bugs that only show under TinyGo cannot fail under `go test`; they are listed
+as skips of the `tinygo` job instead (see [TinyGo](#tinygo)).
+
 ## Replacing or merging tests
 
 When rewriting existing tests, for example into a table, show that the new
