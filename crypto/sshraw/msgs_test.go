@@ -64,12 +64,16 @@ func TestParseUnimplemented(t *testing.T) {
 }
 
 func TestParseDebug(t *testing.T) {
-	payload := encode(t, func(e *Encoder) { e.Uint8(uint8(MsgDebug)); e.Bool(true); e.Str("hi"); e.Str("") })
+	payload := encode(t, func(e *Encoder) { e.Uint8(uint8(MsgDebug)); e.Bool(true); e.Str("hi"); e.Str("en") })
 	var vld lneto.Validator
-	if display, msg, err := ParseDebug(&vld, payload); err != nil || !display || string(msg) != "hi" {
+	display, msg, err := ParseDebug(&vld, payload)
+	if err != nil || !display || string(msg) != "hi" {
 		t.Fatalf("got %v %q err=%v", display, msg, err)
 	}
-	checkParseErrs(t, payload[:len(payload)-4], func(p []byte) error { _, _, err := ParseDebug(&vld, p); return err }, false)
+	if lang := payload[1+1+4+len(msg)+4:]; string(lang) != "en" {
+		t.Fatalf("lang=%q", lang)
+	}
+	checkParseErrs(t, payload, func(p []byte) error { _, _, err := ParseDebug(&vld, p); return err }, true)
 }
 
 func TestParseKexECDHInit(t *testing.T) {
