@@ -27,20 +27,15 @@ func TestParseDisconnect(t *testing.T) {
 		e.Str("en")
 	})
 	var vld lneto.Validator
-	reason, desc, err := ParseDisconnect(&vld, payload)
-	if err != nil || reason != DisconnectHostNotAllowedToConnect || string(desc) != "bye" {
-		t.Fatalf("got %v %q err=%v", reason, desc, err)
+	reason, desc, lang, err := ParseDisconnect(&vld, payload)
+	if err != nil || reason != DisconnectHostNotAllowedToConnect || string(desc) != "bye" || string(lang) != "en" {
+		t.Fatalf("got %v %q %q err=%v", reason, desc, lang, err)
 	}
-	var d decoder // Documented suffix offset lands on the language tag.
-	d.Reset(payload[1+4+4+len(desc):], &vld)
-	if tag := d.String(); string(tag) != "en" {
-		t.Fatalf("language tag %q", tag)
-	}
-	// Lenient: the connection ends, so a missing language tag is fine.
-	if _, _, err = ParseDisconnect(&vld, payload[:1+4+4+len(desc)]); err != nil {
+	// Lenient: the connection ends, so trailing bytes are fine.
+	if _, _, _, err = ParseDisconnect(&vld, append(payload, 0)); err != nil {
 		t.Fatal(err)
 	}
-	checkParseErrs(t, payload[:1+4+4+len(desc)], func(p []byte) error { _, _, err := ParseDisconnect(&vld, p); return err }, false)
+	checkParseErrs(t, payload, func(p []byte) error { _, _, _, err := ParseDisconnect(&vld, p); return err }, false)
 }
 
 func TestParseServiceName(t *testing.T) {
@@ -66,14 +61,10 @@ func TestParseUnimplemented(t *testing.T) {
 func TestParseDebug(t *testing.T) {
 	payload := encode(t, func(e *Encoder) { e.Uint8(uint8(MsgDebug)); e.Bool(true); e.Str("hi"); e.Str("en") })
 	var vld lneto.Validator
-	display, msg, err := ParseDebug(&vld, payload)
-	if err != nil || !display || string(msg) != "hi" {
-		t.Fatalf("got %v %q err=%v", display, msg, err)
+	if display, msg, lang, err := ParseDebug(&vld, payload); err != nil || !display || string(msg) != "hi" || string(lang) != "en" {
+		t.Fatalf("got %v %q %q err=%v", display, msg, lang, err)
 	}
-	if lang := payload[1+1+4+len(msg)+4:]; string(lang) != "en" {
-		t.Fatalf("lang=%q", lang)
-	}
-	checkParseErrs(t, payload, func(p []byte) error { _, _, err := ParseDebug(&vld, p); return err }, true)
+	checkParseErrs(t, payload, func(p []byte) error { _, _, _, err := ParseDebug(&vld, p); return err }, true)
 }
 
 func TestParseKexECDHInit(t *testing.T) {
