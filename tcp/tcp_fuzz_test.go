@@ -3,6 +3,7 @@ package tcp
 import (
 	"testing"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
 )
 
@@ -94,5 +95,26 @@ func FuzzTCPControlBlock(f *testing.F) {
 		if sent == 0 {
 			t.Fatal("no packets sent")
 		}
+	})
+}
+
+// FuzzFrame checks that the accessors of a frame passing ValidateSize stay
+// within its buffer.
+func FuzzFrame(f *testing.F) {
+	f.Add(append([]byte{0, 80, 0, 81, 0, 0, 0, 1, 0, 0, 0, 0, 0x60, 0x02, 0xff, 0xff, 0, 0, 0, 0}, 2, 4, 5, 0xb4))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		frm, err := NewFrame(b)
+		if err != nil {
+			return
+		}
+		var v lneto.Validator
+		frm.ValidateSize(&v)
+		if v.HasError() {
+			return
+		}
+		_ = frm.Payload()
+		_ = frm.String()
+		var codec OptionCodec
+		codec.ForEachOption(frm.Options(), func(OptionKind, []byte) error { return nil })
 	})
 }
