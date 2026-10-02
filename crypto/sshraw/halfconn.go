@@ -55,6 +55,7 @@ type HalfConn struct {
 // SetCipherAEAD installs aead, keyed with the derived key, and the matching IV. strict
 // restarts sequence numbers, see [HalfConn.Seq].
 func (hc *HalfConn) SetCipherAEAD(aead lcrypto.AEADCipher, iv *[12]byte, strict bool) error {
+	hc.zeroizeCipher() // early key zeroization.
 	overhead := aead.Overhead()
 	if aead.NonceSize() != len(iv) || overhead == 0 {
 		return lneto.ErrInvalidConfig
@@ -73,6 +74,7 @@ func (hc *HalfConn) SetCipherAEAD(aead lcrypto.AEADCipher, iv *[12]byte, strict 
 // Without strict key exchange a FrameCipher is open to the Terrapin attack
 // (CVE-2023-48795); callers may want to refuse it then.
 func (hc *HalfConn) SetCipherFrame(pc CipherFrame, strict bool) error {
+	hc.zeroizeCipher() // early key zeroization.
 	overhead := pc.Overhead()
 	if overhead <= 0 || pc.BlockSize() <= 0 {
 		return lneto.ErrInvalidConfig
@@ -103,14 +105,18 @@ func (hc *HalfConn) HasKeys() bool { return hc._useAEAD && hc.cipherA != nil || 
 func (hc *HalfConn) useAEAD() bool    { return hc._useAEAD }
 func (hc *HalfConn) useFCipher() bool { return hc.cipherF != nil }
 
-// Zeroize forgets the keys and the sequence number.
+// Zeroize forgets the keys and the sequence number. It drops references to the supplied Cipher.
 func (hc *HalfConn) Zeroize() {
+	hc.zeroizeCipher()
+	*hc = HalfConn{}
+}
+
+func (hc *HalfConn) zeroizeCipher() {
 	if hc.useAEAD() {
 		hc.cipherA.Zeroize()
 	} else if hc.useFCipher() {
 		hc.cipherF.Zeroize()
 	}
-	*hc = HalfConn{}
 }
 
 // Seal encrypts in-place a plaintext frame already checked with [Frame.ValidateSize] and returns its wire length.

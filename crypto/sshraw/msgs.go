@@ -57,13 +57,21 @@ func ParseUnimplemented(vld *lneto.Validator, payload []byte) (seq uint32, err e
 }
 
 // ParseDebug parses SSH_MSG_DEBUG. msg is peer controlled and may contain
-// anything; it must be sanitized before it is displayed. The language tag is ignored.
+// anything; it must be sanitized before it is displayed. The language tag must
+// be present and end the payload but is not returned. To access it:
+//
+//	_, msg, err := sshraw.ParseDebug(vld, payload)
+//	if err == nil {
+//	  lang := payload[1+1+4+len(msg)+4:]
+//	}
 func ParseDebug(vld *lneto.Validator, payload []byte) (display bool, msg []byte, err error) {
 	var dec decoder
 	dec.Reset(payload, vld)
 	dec.msgType(MsgDebug)
 	display = dec.Bool()
 	msg = dec.String()
+	dec.String() // language tag.
+	dec.end()
 	if vld.HasError() {
 		return false, nil, vld.ErrPop()
 	}
