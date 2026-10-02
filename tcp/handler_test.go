@@ -1766,6 +1766,55 @@ func emitClientData(t *testing.T, client *Handler, buf []byte, payload string) [
 	return append([]byte(nil), buf[:n]...)
 }
 
+type reassemblyViewPolicy struct {
+	*recordingPolicy
+	blocks [][2]Value
+}
+
+func (p *reassemblyViewPolicy) PreTx(h *Handler, outgoingOpts Frame) (Size, Value, bool) {
+	v := h.Reassembly()
+	p.blocks = p.blocks[:0]
+	for i := range v.Len() {
+		start, end := v.Block(i)
+		p.blocks = append(p.blocks, [2]Value{start, end})
+	}
+	return p.recordingPolicy.PreTx(h, outgoingOpts)
+}
+
+// TestHandler_ReassemblyViewInPreTx verifies a Policy sees the held
+// out-of-order range from PreTx while the duplicate ACK for the gap is built,
+// and that the live view empties once the gap is filled.
+func TestHandler_ReassemblyViewInPreTx(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	client, server := newHandler(t, mtu, 4), newHandler(t, mtu, 4)
+	policy := &reassemblyViewPolicy{recordingPolicy: newRecordingPolicy()}
+	server.SetPolicy(policy)
+	setupClientServer(t, rand.New(rand.NewSource(99)), client, server)
+	var buf [mtu]byte
+	establish(t, client, server, buf[:])
+	pkt1 := emitClientData(t, client, buf[:], "AAAA")
+	pkt2 := emitClientData(t, client, buf[:], "BBBB")
+	next := server.ControlBlock().RecvNext()
+
+	if err := server.Recv(pkt2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.Send(buf[:]); err != nil {
+		t.Fatal(err)
+	}
+	want := [2]Value{Add(next, 4), Add(next, 8)}
+	if len(policy.blocks) != 1 || policy.blocks[0] != want {
+		t.Fatalf("PreTx blocks=%v, want [%v]", policy.blocks, want)
+	}
+	view := server.Reassembly()
+	if err := server.Recv(pkt1); err != nil {
+		t.Fatal(err)
+	}
+	if view.Len() != 0 {
+		t.Fatalf("view Len=%d after gap fill, want 0", view.Len())
+	}
+}
+
 // TestHandler_OutOfOrderReassembly drives the full out-of-order path: a later
 // segment delivered before the gap-filling one is staged, then delivered
 // contiguously once the gap arrives, without go-back-N.
