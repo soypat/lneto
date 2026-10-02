@@ -6,8 +6,11 @@ import (
 	"time"
 )
 
+// testNow is a fixed clock, so results do not depend on when the tests run.
+func testNow() time.Time { return time.Date(2026, 10, 2, 13, 14, 15, 123456789, time.UTC) }
+
 func TestTimestamp(t *testing.T) {
-	now := time.Now()
+	now := testNow()
 	nowp1 := now.Add(time.Second)
 	t1, err := TimestampFromTime(now)
 	if err != nil {
@@ -39,7 +42,7 @@ func TestTimestamp(t *testing.T) {
 
 func TestTimestampOverflow(t *testing.T) {
 	const tol = time.Microsecond
-	var now = time.Now() // time.Date(2035, 2, 7, 6, 28, 16, 0, time.UTC)
+	var now = time.Date(2035, 2, 7, 6, 28, 16, 0, time.UTC)
 	told, err := TimestampFromTime(baseTime)
 	if err != nil {
 		t.Fatal(err)

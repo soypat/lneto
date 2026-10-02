@@ -71,7 +71,7 @@ func TestServer_RejectsNonClient(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var h Server
 			h.Reset(ServerConfig{
-				Now:     time.Now,
+				Now:     testNow,
 				Stratum: StratumPrimary,
 			})
 			reqBuf := make([]byte, SizeHeader)
@@ -87,7 +87,7 @@ func TestServer_RejectsNonClient(t *testing.T) {
 func TestServer_ExhaustedPending(t *testing.T) {
 	var h Server
 	h.Reset(ServerConfig{
-		Now:        time.Now,
+		Now:        testNow,
 		Stratum:    StratumPrimary,
 		MaxPending: 1,
 	})
@@ -107,7 +107,7 @@ func TestServer_ExhaustedPending(t *testing.T) {
 func TestServer_NoPendingReturnsZero(t *testing.T) {
 	var h Server
 	h.Reset(ServerConfig{
-		Now:     time.Now,
+		Now:     testNow,
 		Stratum: StratumPrimary,
 	})
 
@@ -183,7 +183,7 @@ func FuzzServerDemux(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		var h Server
 		h.Reset(ServerConfig{
-			Now:     time.Now,
+			Now:     testNow,
 			Stratum: StratumPrimary,
 		})
 		_ = h.Demux(data, 0)

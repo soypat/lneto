@@ -145,7 +145,7 @@ func TestClient_FullExchange(t *testing.T) {
 
 func TestClient_Reset(t *testing.T) {
 	var c Client
-	c.Reset(-18, time.Now)
+	c.Reset(-18, testNow)
 	if c.IsDone() {
 		t.Fatal("should not be done after Reset")
 	}
@@ -157,7 +157,7 @@ func TestClient_Reset(t *testing.T) {
 	}
 	id1 := *c.ConnectionID()
 
-	c.Reset(-18, time.Now)
+	c.Reset(-18, testNow)
 	id2 := *c.ConnectionID()
 	if id2 <= id1 {
 		t.Fatal("ConnectionID should increment on Reset")
@@ -188,7 +188,7 @@ func TestClient_Demux_WhenDone(t *testing.T) {
 
 func TestClient_Demux_ShortBuffer(t *testing.T) {
 	var c Client
-	c.Reset(-18, time.Now)
+	c.Reset(-18, testNow)
 	// Trigger encapsulate first to move to stateAwait1.
 	buf := make([]byte, SizeHeader)
 	c.Encapsulate(buf, 0, 0)
@@ -202,7 +202,7 @@ func TestClient_Demux_ShortBuffer(t *testing.T) {
 
 func TestClient_OffsetBeforeDone(t *testing.T) {
 	var c Client
-	c.Reset(-18, time.Now)
+	c.Reset(-18, testNow)
 	if c.Offset() != 0 {
 		t.Fatal("Offset should be 0 before exchange completes")
 	}
