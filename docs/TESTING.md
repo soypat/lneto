@@ -117,8 +117,12 @@ Tests do not sleep and do not read the wall clock.
 - Tests with goroutines hand control back and forth with `ltesto.Sched`
   (`internal/ltesto`) instead of waiting for time to pass. See its users in
   `x/xnet` for examples.
+- A `select` on `time.After` may guard against a hang, but must not decide
+  the result.
 - A test must give the same result under `-shuffle=on`, `-race` and any
-  `-count`.
+  `-count`, and when several test processes run at once: write files under
+  `t.TempDir()`, never into the source tree. The nightly workflow repeats the
+  suite to catch tests that pass only most of the time.
 
 ## TinyGo
 
