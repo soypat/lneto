@@ -1,20 +1,12 @@
 package tcp
 
-import "errors"
-
-// MaxComposedPolicies bounds how many policies a [Composite] drives. The storage
-// is a fixed array so composing allocates nothing.
-const MaxComposedPolicies = 4
-
-var (
-	errTooManyPolicies = errors.New("tcp: too many composed policies")
-	errNilPolicy       = errors.New("tcp: nil composed policy")
-)
-
-// Composite drives several [Policy] implementations as one, so independent
+// Policies drives several [Policy] implementations as one, so independent
 // concerns such as a retransmission timer and selective acknowledgement can be
-// combined without one embedding the other. Every hook is offered to every
-// member in the order they were added. Results are merged as follows:
+// combined without one embedding the other. Install it with
+// [Handler.SetPolicy], for example tcp.Policies{&timer, &sack}. Members must not
+// be nil.
+//
+// Every hook is offered to every member in order. Results are merged as follows:
 //
 //   - PreRx keeps the segment only if every member keeps it. Every member is
 //     still asked.
@@ -28,40 +20,21 @@ var (
 //
 // Members should own separate state: two members each running a retransmission
 // timer both drive retransmission, and no merge rule recovers one correct timer.
-//
-// The zero value is empty and does nothing. Add members before the connection
-// is opened.
-type Composite struct {
-	policies [MaxComposedPolicies]Policy
-	n        int
-}
+type Policies []Policy
 
-var _ Policy = (*Composite)(nil)
-
-// Add appends p to the policies c drives. It fails if p is nil or c already
-// holds [MaxComposedPolicies] policies.
-func (c *Composite) Add(p Policy) error {
-	if p == nil {
-		return errNilPolicy
-	} else if c.n == len(c.policies) {
-		return errTooManyPolicies
-	}
-	c.policies[c.n] = p
-	c.n++
-	return nil
-}
+var _ Policy = Policies(nil)
 
 // Reset resets every member. It implements [Policy].
-func (c *Composite) Reset() {
-	for _, p := range c.policies[:c.n] {
+func (ps Policies) Reset() {
+	for _, p := range ps {
 		p.Reset()
 	}
 }
 
 // PreTx merges the members' transmit requests. It implements [Policy].
-func (c *Composite) PreTx(h *Handler, outgoingOpts Frame) (newTransmitLimit Size, retransmitFrom Value, retransmit bool) {
+func (ps Policies) PreTx(h *Handler, outgoingOpts Frame) (newTransmitLimit Size, retransmitFrom Value, retransmit bool) {
 	newTransmitLimit = TransmitUnlimited
-	for _, p := range c.policies[:c.n] {
+	for _, p := range ps {
 		limit, from, rtx := p.PreTx(h, outgoingOpts)
 		newTransmitLimit = min(newTransmitLimit, limit)
 		if rtx && (!retransmit || from.LessThan(retransmitFrom)) {
@@ -72,32 +45,32 @@ func (c *Composite) PreTx(h *Handler, outgoingOpts Frame) (newTransmitLimit Size
 }
 
 // PostTx reports the emitted frame to every member. It implements [Policy].
-func (c *Composite) PostTx(h *Handler, outgoing Frame) {
-	for _, p := range c.policies[:c.n] {
+func (ps Policies) PostTx(h *Handler, outgoing Frame) {
+	for _, p := range ps {
 		p.PostTx(h, outgoing)
 	}
 }
 
 // PreRx keeps the segment only if every member keeps it. It implements [Policy].
-func (c *Composite) PreRx(h *Handler, incoming Frame) (keep bool) {
+func (ps Policies) PreRx(h *Handler, incoming Frame) (keep bool) {
 	keep = true
-	for _, p := range c.policies[:c.n] {
+	for _, p := range ps {
 		keep = p.PreRx(h, incoming) && keep
 	}
 	return keep
 }
 
 // PostRx reports the accepted frame to every member. It implements [Policy].
-func (c *Composite) PostRx(h *Handler, prevState State, accepted Frame) {
-	for _, p := range c.policies[:c.n] {
+func (ps Policies) PostRx(h *Handler, prevState State, accepted Frame) {
+	for _, p := range ps {
 		p.PostRx(h, prevState, accepted)
 	}
 }
 
 // NextDeadline returns the earliest non-zero deadline among members that have a
 // NextDeadline method, such as rto.Timer, or 0 if none has one.
-func (c *Composite) NextDeadline() (earliest int64) {
-	for _, p := range c.policies[:c.n] {
+func (ps Policies) NextDeadline() (earliest int64) {
+	for _, p := range ps {
 		dp, ok := p.(interface{ NextDeadline() int64 })
 		if !ok {
 			continue

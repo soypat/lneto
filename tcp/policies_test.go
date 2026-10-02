@@ -14,25 +14,10 @@ type deadlinePolicy struct {
 
 func (p deadlinePolicy) NextDeadline() int64 { return p.deadline }
 
-func TestComposite_Add(t *testing.T) {
-	var c Composite
-	if err := c.Add(nil); err == nil {
-		t.Error("nil policy added")
-	}
-	for range MaxComposedPolicies {
-		if err := c.Add(newRecordingPolicy()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := c.Add(newRecordingPolicy()); err == nil {
-		t.Error("added more than MaxComposedPolicies")
-	}
-}
-
-// TestComposite_Merge verifies the merge rules: the smallest new-data limit,
+// TestPolicies_Merge verifies the merge rules: the smallest new-data limit,
 // the lowest requested retransmission and a segment kept only if every member
 // keeps it, with every member asked regardless of the others' answers.
-func TestComposite_Merge(t *testing.T) {
+func TestPolicies_Merge(t *testing.T) {
 	const una = Value(1000)
 	type member struct {
 		limit Size
@@ -66,15 +51,13 @@ func TestComposite_Merge(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var c Composite
+			var c Policies
 			var recs []*recordingPolicy
 			for _, m := range tc.members {
 				p := newRecordingPolicy()
 				p.txLimit, p.retransmit, p.rtxFrom, p.keep = m.limit, m.rtx, m.from, m.keep
 				recs = append(recs, p)
-				if err := c.Add(p); err != nil {
-					t.Fatal(err)
-				}
+				c = append(c, p)
 			}
 			frm, _ := NewFrame(make([]byte, sizeHeaderTCP))
 			frm.SetOffsetAndFlags(5, FlagACK)
@@ -94,32 +77,20 @@ func TestComposite_Merge(t *testing.T) {
 	}
 }
 
-func TestComposite_NextDeadline(t *testing.T) {
-	var c Composite
-	for _, p := range []Policy{deadlinePolicy{newRecordingPolicy(), 0}, newRecordingPolicy(), deadlinePolicy{newRecordingPolicy(), 30}, deadlinePolicy{newRecordingPolicy(), 20}} {
-		if err := c.Add(p); err != nil {
-			t.Fatal(err)
-		}
-	}
+func TestPolicies_NextDeadline(t *testing.T) {
+	c := Policies{deadlinePolicy{newRecordingPolicy(), 0}, newRecordingPolicy(), deadlinePolicy{newRecordingPolicy(), 30}, deadlinePolicy{newRecordingPolicy(), 20}}
 	if got := c.NextDeadline(); got != 20 {
 		t.Errorf("NextDeadline = %d, want 20", got)
 	}
 }
 
-// TestComposite_Handler verifies a Composite installed on a Handler relays every
-// hook to each member through a handshake.
-func TestComposite_Handler(t *testing.T) {
+// TestPolicies_Handler verifies Policies installed on a Handler relay every hook
+// to each member through a handshake.
+func TestPolicies_Handler(t *testing.T) {
 	const mtu = ethernet.MaxMTU
 	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
 	a, b := newRecordingPolicy(), newRecordingPolicy()
-	var c Composite
-	if err := c.Add(a); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Add(b); err != nil {
-		t.Fatal(err)
-	}
-	client.SetPolicy(&c)
+	client.SetPolicy(Policies{a, b})
 	setupClientServer(t, rand.New(rand.NewSource(2)), client, server)
 	var buf [mtu]byte
 	establish(t, client, server, buf[:])
