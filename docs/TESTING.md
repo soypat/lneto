@@ -17,6 +17,18 @@ go test -shuffle=on -count=1 ./...
 go test -race -shuffle=on -count=1 ./...
 ```
 
+CI also tests the following environments. Reproduce a failure in one of them
+with the same variables, using qemu user emulation for foreign architectures:
+
+| Environment | How CI runs it |
+|---|---|
+| Go 1.24, the `go.mod` minimum | `go test ./...` |
+| `GOARCH=386` (32-bit) | `go test ./...` |
+| linux/arm64 | `go test ./...` on an arm64 runner |
+| Build tags `onlytcp`, `noslog`, `xnetdebug`, `debugheaplog` | `go vet -tags=…` and `go test -tags=…` |
+| darwin, windows, linux/arm, linux/riscv64, linux/mips, wasip1, js/wasm | `GOOS=… GOARCH=… go vet ./...` |
+| linux/mips (big-endian), nightly | `GOARCH=mips go test -exec qemu-mips-static ./...` |
+
 ## Where a test belongs
 
 Test a behaviour at the lowest layer that exhibits it. A bug in a state
