@@ -33,7 +33,8 @@ Examples, API reference, protocol support matrix, benchmarks can be found in [`d
 
 ## Users
 lneto is currently being used primarily by embedded developers and those who need a lighter alternative to gVisor in terms of memory usage and binary size.
-
+- [**Hewlett Packard Enterprise**](https://www.linkedin.com/posts/patriciowhittingslow_thousands-of-servers-will-boot-depending-activity-7508234992238387200-5UTI)([2](https://www.linkedin.com/posts/jean-marie-verdun-5669902_happy-to-be-in-amsterdam-osfc-2026-one-of-activity-7505529081736699905-MOA1)): TCP stack used to stream firmware to datacenter servers at boot time.
+- [**9elements**](https://lnkd.in/p/dh-aMbjE): Bootloader networking stack on AST 2700
 - [**soypat/cyw43439**](https://github.com/soypat/cyw43439): Enabling internet access on [Raspberry Pi Pico W](https://www.raspberrypi.com/products/raspberry-pi-pico/). See [`examples`](https://github.com/soypat/cyw43439/tree/main/examples).
 - [**tinygo-org/espradio**](https://github.com/tinygo-org/espradio): Enabling internet access on [Espressif's ESP32s](https://www.espressif.com/en/products/socs/esp32).
 - [**TamaGo**](https://github.com/usbarmory/tamago): Enabling networking on Go baremetal projects. See [go-net project](https://github.com/usbarmory/go-net).
