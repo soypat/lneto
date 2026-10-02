@@ -7,19 +7,19 @@ import (
 	"debug/elf"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestStackAsyncNoIPv6(t *testing.T) {
-	const name = "mwe.elf"
+	name := filepath.Join(t.TempDir(), "mwe.elf")
 	cmd := exec.Command("go", "build", "-o="+name, "../../examples/min-working-example")
 	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatal(err, "\n", string(out))
 	}
-	defer os.Remove(name)
 	f, err := os.Open(name)
 	if err != nil {
 		t.Fatal(err)
