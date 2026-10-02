@@ -1,7 +1,6 @@
 //go:build !tinygo
 
-// Exclude tinygo compiler from build since exec package and t.Skip() are unimplemented.
-// Also: wouldn't including tinygo cause a recursive call to tinygo test?
+// Exclude tinygo compiler from build since the exec package is unimplemented.
 package xnet
 
 import (
@@ -11,21 +10,6 @@ import (
 	"strings"
 	"testing"
 )
-
-func TestTinyGoTest(t *testing.T) {
-	if testing.Short() {
-		t.Skip("`tinygo test` skipped on short test")
-	}
-	if exec.Command("tinygo", "version").Run() != nil {
-		t.Skip("tinygo not installed")
-	}
-	// This takes a long time. Consider running only important
-	// tests with -run=TestXxx flag: `go test ./... -run=TestXxx`
-	out, err := exec.Command("tinygo", "test", ".").CombinedOutput()
-	if err != nil {
-		t.Fatal("tinygo failed to test:", err, "\n", string(out))
-	}
-}
 
 func TestStackAsyncNoIPv6(t *testing.T) {
 	const name = "mwe.elf"

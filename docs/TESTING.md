@@ -102,8 +102,11 @@ Tests do not sleep and do not read the wall clock.
 
 ## TinyGo
 
-lneto targets TinyGo. Avoid test code that TinyGo cannot compile, or exclude
-the file with `//go:build !tinygo` and say why in a comment.
+lneto targets TinyGo, and CI runs `tinygo test` on every package with tests.
+Avoid test code that TinyGo cannot compile, or exclude the file with
+`//go:build !tinygo` and say why in a comment. Packages and tests that do not
+yet pass under TinyGo are skipped by name in the `tinygo` job of
+`.github/workflows/ci.yaml`, each with the reason.
 
 ## Coverage
 
