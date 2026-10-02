@@ -42,7 +42,11 @@ machine is tested against the state machine, not through a full stack.
 | Stack | Several protocols exchanging packets in memory | `internet`, `x/xnet` |
 
 Fuzz targets (`func FuzzXxx`) cover parsers and state machines against
-arbitrary input. Their seed corpus runs as part of `go test`.
+arbitrary input. Their seed corpus runs as part of `go test`. The nightly
+workflow fuzzes every target for an hour; run one locally with
+`go test -run '^$' -fuzz '^FuzzXxx$' ./pkg`. When fuzzing finds a failing
+input, the job uploads it from `testdata/fuzz`. Commit that file with the fix,
+so it keeps running as a regression test.
 
 ## Shape of a test
 
