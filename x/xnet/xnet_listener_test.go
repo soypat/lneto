@@ -329,7 +329,14 @@ func TestTCPListener_CloseUnblocksAccept(t *testing.T) {
 		}
 		accepted <- err
 	}()
-	<-parked
+	select {
+	case <-parked:
+	case err := <-accepted:
+		t.Fatalf("Accept returned before polling: %v", err)
+	case <-time.After(5 * time.Second):
+		l.Close()
+		t.Fatal("Accept did not reach its poll loop")
+	}
 
 	if err := l.Close(); err != nil {
 		t.Fatal("Close while Accept is blocked:", err)
