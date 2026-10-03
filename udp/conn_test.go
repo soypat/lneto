@@ -243,6 +243,31 @@ func TestConn_FrameOffset(t *testing.T) {
 	}
 }
 
+// M27: a datagram larger than the carrier buffer must not block the tx queue.
+func TestConn_OversizedDatagramDoesNotStall(t *testing.T) {
+	conn := newTestConn(t)
+	big := make([]byte, 200)
+	small := []byte("ok")
+	if _, err := conn.Write(big); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write(small); err != nil {
+		t.Fatal(err)
+	}
+	var buf [64]byte // Fits small, not big.
+	var got []byte
+	for range 3 {
+		n, _ := conn.Encapsulate(buf[:], -1, 0)
+		if n > 0 {
+			got = buf[8:n]
+			break
+		}
+	}
+	if string(got) != string(small) {
+		t.Fatalf("small datagram stuck behind oversized head: got %q, want %q", got, small)
+	}
+}
+
 func backoffYield(backoffs uint) time.Duration {
 	return lneto.BackoffFlagGosched
 }
