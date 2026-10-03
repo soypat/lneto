@@ -23,11 +23,14 @@ with the same variables, using qemu user emulation for foreign architectures:
 | Environment | How CI runs it |
 |---|---|
 | Go 1.24, the `go.mod` minimum | `go test ./...` |
-| `GOARCH=386` (32-bit) | `go test ./...` |
+| `GOARCH=386` (32-bit) | `go test` excluding `x/rawsock`, which does not build on this target |
 | linux/arm64 | `go test ./...` on an arm64 runner |
 | Build tags `onlytcp`, `noslog`, `xnetdebug`, `debugheaplog` | `go vet -tags=…` and `go test -tags=…` |
 | darwin, windows, linux/arm, linux/riscv64, linux/mips, wasip1, js/wasm | `GOOS=… GOARCH=… go vet ./...` |
 | linux/mips (big-endian), nightly | `GOARCH=mips go test -exec qemu-mips-static ./...` |
+
+Cross-vet is a type-checking check, not a runtime test. These jobs sample
+platforms and build tags; they do not cover their full Cartesian product.
 
 ## Where a test belongs
 
@@ -95,7 +98,9 @@ known problems lives in the code next to the tests that will guard the fix.
   current behaviour.
 - Assert the correct behaviour, so the test passes once the bug is fixed.
 
-`.github/scripts/knownbug.sh` runs each of these tests and fails if one passes.
+`.github/scripts/knownbug.sh` (Bash and jq) runs each tagged-only test with a
+one-minute timeout and requires an ordinary named test failure. Passing or
+skipped tests, build failures, panics and timeouts are unexpected results.
 The pull request fixing a bug therefore moves its test out of the `knownbug`
 file, where it becomes the regression test. CI lists the known bugs in the
 summary of the `knownbug` job.
@@ -108,8 +113,9 @@ as skips of the `tinygo` job instead (see [TinyGo](#tinygo)).
 When rewriting existing tests, for example into a table, show that the new
 tests catch what the old ones caught before deleting the old ones: introduce
 the bug each old test guards against and confirm that a new test fails too.
-Keep the old tests until this is shown. A commit that breaks the code on
-purpose makes the failures visible in CI.
+Keep the old tests until this is shown. Record the mutation and both failures
+in the review evidence. If a separate proof branch is used to show failures in
+CI, do not merge its deliberately broken commits into the implementation.
 
 ## Time and concurrency
 
@@ -138,5 +144,35 @@ yet pass under TinyGo are skipped by name in the `tinygo` job of
 
 ## Coverage
 
-CI reports coverage. A pull request does not have to cover its patch, but the
-project coverage must not fall below 62%.
+CI reports coverage. Patch coverage is informational, while the project gate
+is 62%. Neither replaces the regression-test requirements above.
+
+## Optional property-testing experiment
+
+[Hegel](https://github.com/hegeldev/hegel-go) could complement the existing
+tests by generating and shrinking protocol action sequences. As reviewed at
+v0.9.13, it is beta, requires Go 1.26 and uses a native Rust library loaded
+through FFI. It is not a TinyGo or bare-metal test runner, and is not a
+dependency of this rework.
+
+If evaluated, keep it in a separate, pinned host-only module; build tags alone
+would not isolate its dependencies or toolchain requirements from `go.mod`.
+Start with sequential actions over a Handler pair and a small reference
+model: write, deliver/drop/duplicate a packet, read, close and advance an
+injected clock. Check safety invariants after every action using
+`WithAlwaysCheckInvariants`. Liveness requires a bounded loss period followed
+by eventual delivery, not an arbitrary lossy link.
+
+Keep fake clocks and `ltesto.Sched`; Hegel's concurrent mode is not a
+deterministic scheduler. Compare its counterexamples and reproducibility
+against an equivalent standard-library action-sequence fuzz target before
+adoption. Promote any discovered defect into a dependency-free regression
+test. Ordinary parser fuzzing, race checks and table tests remain necessary.
+
+## Remaining work
+
+This draft adds test infrastructure and selected test corrections, not a
+completed suite migration. Shared Handler/link fixtures, equivalent table
+conversions, remaining wall-clock synchronization and independent-peer
+integration tests still need separate work. Parser fuzzing checks buffer
+safety and selected representations, not complete protocol conformance.

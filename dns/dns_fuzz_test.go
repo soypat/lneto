@@ -4,8 +4,9 @@ import (
 	"testing"
 )
 
-// FuzzMessage checks that a message decoding completely encodes back into
-// one that decodes to the same message.
+// FuzzMessage checks round-trip preservation of the decoded representation.
+// Opaque resource data is compared as bytes, not interpreted as names; this
+// does not verify relocation of compression pointers within that data.
 func FuzzMessage(f *testing.F) {
 	var seed Message
 	seed.AddQuestions([]Question{{Name: MustNewName("example.com"), Type: TypeA, Class: ClassINET}})
