@@ -41,15 +41,20 @@ jobs:
       - name: List fuzz targets
         id: list
         run: |
-          targets=$(for dir in $(go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.Dir}}{{end}}' ./...); do
+          dirs=$(go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.Dir}}{{end}}' ./...)
+          targets=$(mktemp)
+          trap 'rm -f "$targets"' EXIT
+          for dir in $dirs; do
             rel=.${dir#"$PWD"}
-            { go test -list '^Fuzz' "$rel" || true; } | grep '^Fuzz' | jq -R --arg dir "$rel" '{dir: $dir, name: .}' || true
-          done | jq -sc .)
-          echo "$targets" | jq .
-          echo "targets=$targets" >>"$GITHUB_OUTPUT"
+            names=$(go test -list '^Fuzz' "$rel")
+            printf '%s\n' "$names" | jq -R --arg dir "$rel" 'select(test("^Fuzz[^[:space:]]+$")) | {dir: $dir, name: .}' >>"$targets"
+          done
+          jq -s -e 'length > 0' "$targets"
+          echo "targets=$(jq -sc . "$targets")" >>"$GITHUB_OUTPUT"
 
   fuzz:
     needs: [fuzz-targets]
+    timeout-minutes: 90
     name: fuzz (${{ matrix.target.dir }} ${{ matrix.target.name }})
     strategy:
       fail-fast: false
@@ -79,7 +84,7 @@ jobs:
           restore-keys: fuzz-${{ matrix.target.dir }}-${{ matrix.target.name }}-
 
       - name: Fuzz
-        run: go test -run '^$' -fuzz "^${NAME}\$" -fuzztime=1h "$DIR"
+        run: go test -run '^$' -fuzz "^${NAME}\$" -fuzztime=1h -timeout=75m "$DIR"
 
       # A failing input is written to testdata/fuzz. Commit it to the package
       # so it runs as a regression test with go test.
