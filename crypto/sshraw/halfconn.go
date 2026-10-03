@@ -48,8 +48,8 @@ type HalfConn struct {
 	seq      uint32
 	overhead uint32 // Auth tag bytes after the packet a.k.a Message Authentication Code (MAC).
 	// TODO: same as with tlsraw, benchmark if keeping a full byte-slice nonce state is better.
-	nonce    [12]byte // Nonce of the next packet.
-	_useAEAD bool     // cipherA is in use, else cipherF.
+	nonce [12]byte // Nonce of the next packet.
+	aead  bool     // cipherA is in use, else cipherF when cipherF!=nil.
 }
 
 // SetCipherAEAD installs aead, keyed with the derived key, and the matching IV. strict
@@ -57,11 +57,11 @@ type HalfConn struct {
 func (hc *HalfConn) SetCipherAEAD(aead lcrypto.AEADCipher, iv *[12]byte, strict bool) error {
 	hc.zeroize(hc.seq) // early key zeroization.
 	overhead := aead.Overhead()
-	if aead.NonceSize() != len(iv) || overhead == 0 {
+	if aead.NonceSize() != len(iv) || overhead != 16 { // All AEADs are 16.
 		return lneto.ErrInvalidConfig
 	}
 	hc.overhead = uint32(overhead)
-	hc.cipherA, hc.cipherF, hc._useAEAD = aead, nil, true
+	hc.cipherA, hc.cipherF, hc.aead = aead, nil, true
 	hc.nonce = *iv
 	hc.newKey(strict)
 	return nil
@@ -74,14 +74,14 @@ func (hc *HalfConn) SetCipherAEAD(aead lcrypto.AEADCipher, iv *[12]byte, strict 
 // Without strict key exchange a FrameCipher is open to the Terrapin attack
 // (CVE-2023-48795); callers may want to refuse it then.
 // HalfConn is zeroed excepting sequence number on failure.
-func (hc *HalfConn) SetCipherFrame(pc CipherFrame, strict bool) error {
+func (hc *HalfConn) SetCipherFrame(cf CipherFrame, strict bool) error {
 	hc.zeroize(hc.seq) // early key zeroization.
-	overhead := pc.Overhead()
-	if overhead <= 0 || pc.BlockSize() <= 0 {
+	overhead := cf.Overhead()
+	if cf.BlockSize() != minBlockSize || overhead != 16 { // 16: omit support for encrypt->MAC.
 		return lneto.ErrInvalidConfig
 	}
 	hc.overhead = uint32(overhead)
-	hc.cipherA, hc.cipherF, hc._useAEAD = nil, pc, false
+	hc.cipherA, hc.cipherF, hc.aead = nil, cf, false
 	hc.newKey(strict)
 	return nil
 }
@@ -100,10 +100,10 @@ func (hc *HalfConn) newKey(strict bool) {
 func (hc *HalfConn) Seq() uint32 { return hc.seq }
 
 // HasKeys reports whether SetAEAD or SetFrameCipher installed keys since the last Zeroize.
-func (hc *HalfConn) HasKeys() bool { return hc._useAEAD && hc.cipherA != nil || hc.cipherF != nil }
+func (hc *HalfConn) HasKeys() bool { return hc.aead && hc.cipherA != nil || hc.cipherF != nil }
 
 // useAEAD reports whether keys were installed by SetAEAD.
-func (hc *HalfConn) useAEAD() bool    { return hc._useAEAD }
+func (hc *HalfConn) useAEAD() bool    { return hc.aead }
 func (hc *HalfConn) useFCipher() bool { return hc.cipherF != nil }
 
 // Zeroize forgets the keys and the sequence number. It drops references to the supplied Cipher.
