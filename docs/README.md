@@ -124,6 +124,10 @@ type StackNode interface {
 ```
 
 
+## Testing
+
+See [TESTING.md](./TESTING.md) for how tests are written and run.
+
 ## Developing (linux)
 
 When testing lneto through a Linux network interface, disable receive offloading if packets are unexpectedly dropped with checksum errors. Generic receive offload (GRO) can merge TCP frames before delivery to raw sockets without recalculating the full checksum.
