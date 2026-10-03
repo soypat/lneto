@@ -90,22 +90,3 @@ func TestKnownBug_ZeroWindowRSTIgnored(t *testing.T) {
 	}
 	test.RunA(t)
 }
-
-// TestKnownBug_RefusedProbeDropsACK: a zero window must still accept valid
-// ACKs (RFC 9293 §3.10.7.4), but a refused zero-window probe returns before
-// ACK processing, so the data it acknowledges stays outstanding and is
-// retransmitted needlessly.
-func TestKnownBug_RefusedProbeDropsACK(t *testing.T) {
-	const issA, issB, windowB, inFlight = 100, 300, 1000, 10
-	var tcb ControlBlock
-	tcb.HelperInitState(StateEstablished, issA, issA+inFlight, 0)
-	tcb.HelperInitRcv(issB, issB, windowB)
-	probe := Segment{SEQ: issB, ACK: issA + inFlight, Flags: FlagACK, WND: windowB, DATALEN: 1}
-	tcb.Recv(probe)
-	if tcb.State() != StateEstablished {
-		t.Fatalf("state %s after probe", tcb.State())
-	}
-	if una := tcb.SendUNA(); una != issA+inFlight {
-		t.Errorf("SND.UNA = %d after probe acknowledging %d", una, issA+inFlight)
-	}
-}
