@@ -1847,3 +1847,64 @@ func TestHandler_OutOfOrderDiscardedAfterShutdownRead(t *testing.T) {
 		t.Fatalf("discard mode must hold no data, buffered=%d", server.BufferedInput())
 	}
 }
+
+// M4: in CLOSE-WAIT the local side must not send FIN until the application calls Close.
+func TestHandler_CloseWaitNoAutoFIN(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	rng := rand.New(rand.NewSource(1))
+	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
+	setupClientServer(t, rng, client, server)
+	var buf [mtu]byte
+	establish(t, client, server, buf[:])
+
+	// Client half-closes. Server gets FIN and enters CLOSE-WAIT.
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	n, err := client.Send(buf[:])
+	if err != nil || n == 0 {
+		t.Fatal("client FIN send:", n, err)
+	}
+	if err = server.Recv(buf[:n]); err != nil {
+		t.Fatal(err)
+	} else if server.State() != StateCloseWait {
+		t.Fatal("server not in CLOSE-WAIT:", server.State())
+	}
+
+	// Server application has not written nor closed: only an ACK may leave.
+	for range 3 {
+		n, err = server.Send(buf[:])
+		if err != nil {
+			t.Fatal(err)
+		} else if n == 0 {
+			continue
+		}
+		if flags := mustSegment(t, buf[:n], 0).Flags; flags.HasAny(FlagFIN) {
+			t.Fatalf("server sent FIN in CLOSE-WAIT without Close (flags %s)", flags)
+		}
+		if err = client.Recv(buf[:n]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if server.State() != StateCloseWait {
+		t.Fatal("server left CLOSE-WAIT without Close:", server.State())
+	}
+
+	// Late response must still reach the half-closed client.
+	resp := []byte("late response")
+	if _, err = server.Write(resp); err != nil {
+		t.Fatal("server write in CLOSE-WAIT:", err)
+	}
+	n, err = server.Send(buf[:])
+	if err != nil || n == 0 {
+		t.Fatal("server data send:", n, err)
+	}
+	if err = client.Recv(buf[:n]); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(resp))
+	n, _ = client.Read(got)
+	if string(got[:n]) != string(resp) {
+		t.Fatalf("client got %q, want %q", got[:n], resp)
+	}
+}
