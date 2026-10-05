@@ -55,7 +55,6 @@ type Handler struct {
 // reset clears all state except [ControlBlock] state. So [Handler.State] will remain unchanged. See [Handler.Abort] for full reset.
 func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 	atomic.AddUint64(&h.connid, 1) // ConnID accessed by external managers.
-	h.connid++
 	h.localPort = localPort
 	h.remotePort = remotePort
 	h.closing = false

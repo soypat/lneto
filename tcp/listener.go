@@ -107,11 +107,11 @@ func (listener *Listener) NumberOfReadyToAccept() (nready int) {
 }
 
 // TryAccept polls the list of ready connections that have been established
-func (listener *Listener) TryAccept() (*Conn, any, error) {
+func (listener *Listener) TryAccept() (ConnPinned, any, error) {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
 	if listener.isClosed() {
-		return nil, nil, net.ErrClosed
+		return ConnPinned{}, nil, net.ErrClosed
 	}
 	listener.debug("listener:tryaccept", slog.Uint64("port", uint64(listener.port)))
 	listener.maintainConns()
@@ -123,9 +123,9 @@ func (listener *Listener) TryAccept() (*Conn, any, error) {
 		userData := listener.incoming[i].userData
 		listener.accepted = append(listener.accepted, listener.incoming[i])
 		listener.incoming[i] = handler{} // discard from ready.
-		return conn, userData, nil
+		return conn.Pin(), userData, nil
 	}
-	return nil, nil, lneto.ErrExhausted
+	return ConnPinned{}, nil, lneto.ErrExhausted
 }
 
 // Encapsulate implements [StackNode].

@@ -213,12 +213,12 @@ func echoServer(ctx context.Context, listener *tcp.Listener) {
 		}
 
 		conn, _, err := listener.TryAccept()
-		if err != nil || conn == nil {
+		if err != nil {
 			continue
 		}
 
 		// Handle connection in separate goroutine (like real example).
-		go func(c *tcp.Conn) {
+		go func(c tcp.ConnPinned) {
 			var buf [512]byte
 			for {
 				select {

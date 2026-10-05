@@ -102,10 +102,11 @@ func TestStackAsyncListener_SingleConnection(t *testing.T) {
 	if listener.NumberOfReadyToAccept() != 1 {
 		t.Fatalf("after handshake: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
 	}
-	svConn, _, err := listener.TryAccept()
+	pinned, _, err := listener.TryAccept()
 	if err != nil {
 		t.Fatalf("TryAccept: %v", err)
 	}
+	svConn := pinned.Conn()
 	if listener.NumberOfReadyToAccept() != 0 {
 		t.Fatalf("after accept: expected 0 ready, got %d", listener.NumberOfReadyToAccept())
 	}
@@ -216,7 +217,8 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 		if listener.NumberOfReadyToAccept() != 1 {
 			t.Fatalf("after handshake: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
 		}
-		svconn, _, err := listener.TryAccept()
+		pinned, _, err := listener.TryAccept()
+		svconn := pinned.Conn()
 		if err != nil {
 			t.Fatal(err)
 		} else if svconn.RemotePort() != clConn.LocalPort() ||

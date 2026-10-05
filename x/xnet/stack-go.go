@@ -203,8 +203,8 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 				state := conn.State()
 				if state == tcp.StateEstablished {
 					tc := tcpconn{
-						Conn:      &conn,
-						localAddr: net.TCPAddrFromAddrPort(laddr),
+						ConnPinned: conn.Pin(),
+						localAddr:  net.TCPAddrFromAddrPort(laddr),
 					}
 					return tc, nil
 				} else if state == tcp.StateSynSent || state == tcp.StateSynRcvd || conn.AwaitingSynSend() {
@@ -321,8 +321,8 @@ func (l *tcplistener) Accept() (net.Conn, error) {
 		c, _, err := l.l.TryAccept()
 		if err == nil {
 			return tcpconn{
-				Conn:      c,
-				localAddr: l.localAddr,
+				ConnPinned: c,
+				localAddr:  l.localAddr,
 			}, nil
 		} else if err != lneto.ErrExhausted {
 			return nil, err // net.ErrClosed or failure.
@@ -334,28 +334,27 @@ func (l *tcplistener) Accept() (net.Conn, error) {
 
 func (l *tcplistener) Close() error { return l.l.Close() }
 
+// tcpconn adapts a [tcp.ConnPinned] to [net.Conn]. Pinned keeps a tcpconn from
+// operating on a pooled [tcp.Conn] after it is reused for another connection.
 type tcpconn struct {
-	*tcp.Conn
+	tcp.ConnPinned
 	localAddr net.Addr
 }
 
 var _ net.Conn = tcpconn{}
 
 func (c tcpconn) LnetoConn() *tcp.Conn {
-	return c.Conn
+	return c.ConnPinned.Conn()
 }
 
-func (c tcpconn) CloseWrite() error { return c.Conn.Close() }
+func (c tcpconn) CloseWrite() error { return c.ConnPinned.Close() }
 
 func (c tcpconn) LocalAddr() net.Addr {
 	return c.localAddr
 }
 
 func (c tcpconn) RemoteAddr() net.Addr {
-	return &net.TCPAddr{
-		IP:   c.Conn.RemoteAddr(),
-		Port: int(c.Conn.RemotePort()),
-	}
+	return net.TCPAddrFromAddrPort(c.ConnPinned.RemoteAddrPort())
 }
 
 type udpconn struct {

@@ -139,7 +139,7 @@ func TestListener_MultiConn(t *testing.T) {
 	// Create slices for clients.
 	clientStacks := make([]StackIPv4, numClients)
 	clientConns := make([]tcp.Conn, numClients)
-	acceptedConns := make([]*tcp.Conn, numClients)
+	acceptedConns := make([]tcp.ConnPinned, numClients)
 
 	// Setup server with listener using setupClientServer for first client to get server configured.
 	setupClientServer(t, rng, &clientStacks[0], &serverStack, &clientConns[0], &serverConn)
@@ -274,13 +274,13 @@ func TestListener_MultiConn(t *testing.T) {
 		if i%2 == 0 {
 			// Client initiates close.
 			closer, responder = &clientStacks[i], &serverStack
-			closerConn, responderConn = &clientConns[i], acceptedConns[i]
+			closerConn, responderConn = &clientConns[i], acceptedConns[i].Conn()
 		} else {
 			// Server initiates close.
 			serverClosed = true
 			whoCloses, whoResponds = whoResponds, whoCloses
 			closer, responder = &serverStack, &clientStacks[i]
-			closerConn, responderConn = acceptedConns[i], &clientConns[i]
+			closerConn, responderConn = acceptedConns[i].Conn(), &clientConns[i]
 		}
 		_ = serverClosed // Used for context in debugging.
 

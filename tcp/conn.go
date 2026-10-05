@@ -230,10 +230,12 @@ func (conn *Conn) OpenListen(localPort uint16, iss Value) error {
 // still ACKed normally but payload is dropped; future Read calls return io.EOF.
 // The write side is unaffected.
 // If [Conn.Close] is also called the connection is terminated.
-func (conn *Conn) CloseRead() error {
+func (conn *Conn) CloseRead() error { return conn.closeRead(conn.currentID()) }
+
+func (conn *Conn) closeRead(connID uint64) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	err := conn.checkPipeOpen()
+	err := conn.checkPipeOpen(connID)
 	if err != nil {
 		return err
 	}
@@ -242,8 +244,10 @@ func (conn *Conn) CloseRead() error {
 }
 
 // Close will initiate TCP close sequence. After Close is called future [Conn.Write] calls will fail with [net.ErrClosed].
-func (conn *Conn) Close() error {
-	connid, err := conn.acquireWriteLock(nil)
+func (conn *Conn) Close() error { return conn.close(conn.currentID()) }
+
+func (conn *Conn) close(connID uint64) error {
+	connid, err := conn.acquireWriteLock(connID, nil)
 	if err != nil {
 		return err
 	}
@@ -271,8 +275,10 @@ func (conn *Conn) InternalHandler() *Handler {
 }
 
 // Write writes argument data to the TCPConns's output buffer which is queued to be sent.
-func (conn *Conn) Write(b []byte) (int, error) {
-	connid, err := conn.acquireWriteLock(&conn.wdead)
+func (conn *Conn) Write(b []byte) (int, error) { return conn.write(conn.currentID(), b) }
+
+func (conn *Conn) write(connID uint64, b []byte) (int, error) {
+	connid, err := conn.acquireWriteLock(connID, &conn.wdead)
 	if err != nil {
 		return 0, err
 	}
@@ -321,8 +327,10 @@ func (conn *Conn) Write(b []byte) (int, error) {
 }
 
 // Flush blocks until all buffered TCP data has been sent.
-func (conn *Conn) Flush() error {
-	connid, err := conn.acquireWriteLock(&conn.wdead)
+func (conn *Conn) Flush() error { return conn.flush(conn.currentID()) }
+
+func (conn *Conn) flush(connID uint64) error {
+	connid, err := conn.acquireWriteLock(connID, &conn.wdead)
 	if err != nil {
 		return err
 	}
@@ -341,9 +349,10 @@ func (conn *Conn) Flush() error {
 // Read reads data from the socket's input buffer. If the buffer is empty,
 // Read will block until data is available or connection closes.
 // Returns io.EOF when the remote has closed the connection and all buffered data has been read.
-func (conn *Conn) Read(b []byte) (int, error) {
+func (conn *Conn) Read(b []byte) (int, error) { return conn.read(conn.currentID(), b) }
+
+func (conn *Conn) read(connID uint64, b []byte) (int, error) {
 	conn.mu.Lock()
-	connID := conn.h.connid
 	lport := conn.h.localPort
 	rport := conn.h.remotePort
 	conn.mu.Unlock()
@@ -387,15 +396,21 @@ func (conn *Conn) Read(b []byte) (int, error) {
 	return n, nil
 }
 
-// acquireWriteLock validates the connection is open and acquires the write lock
-// for the current connection, returning its connection ID. It serializes
+// currentID returns the connection ID of the current connection.
+// Methods taking a connID fail with [net.ErrClosed] once that connection ends.
+func (conn *Conn) currentID() uint64 {
+	conn.mu.Lock()
+	id := conn.h.connid
+	conn.mu.Unlock()
+	return id
+}
+
+// acquireWriteLock validates the connection connID is open and acquires the write lock
+// for it, returning connID. It serializes
 // concurrent writers: while another goroutine owns the write side it blocks with
 // backoff until that writer releases, the connection closes, or deadline elapses.
 // The returned connID must be released with [Conn.releaseWriteLock].
-func (conn *Conn) acquireWriteLock(deadline *time.Time) (connID uint64, err error) {
-	conn.mu.Lock()
-	connID = conn.h.connid
-	conn.mu.Unlock()
+func (conn *Conn) acquireWriteLock(connID uint64, deadline *time.Time) (uint64, error) {
 	var backoffs uint
 	for {
 		if err := conn.checkPipe(connID, deadline); err != nil {
@@ -427,12 +442,13 @@ func (conn *Conn) checkPipe(connID uint64, deadline *time.Time) (err error) {
 	return err
 }
 
-func (conn *Conn) checkPipeOpen() error {
+// checkPipeOpen must be called while holding [Conn.mu].
+func (conn *Conn) checkPipeOpen(connID uint64) error {
 	if conn.abortErr != nil {
 		return conn.abortErr
 	}
 	state := conn.h.State()
-	if state.IsClosed() {
+	if connID != conn.h.connid || state.IsClosed() {
 		return net.ErrClosed
 	}
 	return nil
@@ -511,11 +527,16 @@ func (conn *Conn) isRaddrSet() bool {
 func (conn *Conn) SetDeadline(t time.Time) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	err := conn.setReadDeadline(t)
+	return conn.setDeadline(conn.h.connid, t)
+}
+
+// setDeadline must be called while holding [Conn.mu].
+func (conn *Conn) setDeadline(connID uint64, t time.Time) error {
+	err := conn.setReadDeadline(connID, t)
 	if err != nil {
 		return err
 	}
-	return conn.setWriteDeadline(t)
+	return conn.setWriteDeadline(connID, t)
 }
 
 // SetReadDeadline sets the deadline for future Read calls
@@ -523,12 +544,13 @@ func (conn *Conn) SetDeadline(t time.Time) error {
 func (conn *Conn) SetReadDeadline(t time.Time) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	return conn.setReadDeadline(t)
+	return conn.setReadDeadline(conn.h.connid, t)
 }
 
-func (conn *Conn) setReadDeadline(t time.Time) error {
+// setReadDeadline must be called while holding [Conn.mu].
+func (conn *Conn) setReadDeadline(connID uint64, t time.Time) error {
 	conn.trace("TCPConn.setReadDeadline:start")
-	err := conn.checkPipeOpen()
+	err := conn.checkPipeOpen(connID)
 	if err == nil {
 		conn.rdead = t
 	}
@@ -543,12 +565,13 @@ func (conn *Conn) setReadDeadline(t time.Time) error {
 func (conn *Conn) SetWriteDeadline(t time.Time) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	return conn.setWriteDeadline(t)
+	return conn.setWriteDeadline(conn.h.connid, t)
 }
 
-func (conn *Conn) setWriteDeadline(t time.Time) error {
+// setWriteDeadline must be called while holding [Conn.mu].
+func (conn *Conn) setWriteDeadline(connID uint64, t time.Time) error {
 	conn.trace("TCPConn.SetWriteDeadline:start")
-	err := conn.checkPipeOpen()
+	err := conn.checkPipeOpen(connID)
 	if err == nil {
 		conn.wdead = t
 	}
@@ -568,4 +591,86 @@ func (conn *Conn) ConnectionID() *uint64 {
 
 func (conn *Conn) backoff(consecutiveBackoffs uint) {
 	conn._backoff.Do(consecutiveBackoffs)
+}
+
+// Pin returns a handle bound to [Conn]'s current connection. Once that connection ends all PinnedConn methods return [net.ErrClosed].
+func (conn *Conn) Pin() ConnPinned {
+	return ConnPinned{c: conn, id: conn.currentID()}
+}
+
+// ConnPinned is a [Conn] handle bound to a single connection. See [Conn.Pin].
+type ConnPinned struct {
+	c  *Conn
+	id uint64
+}
+
+// Conn returns the underlying [Conn], which may have been reopened for another connection.
+func (p ConnPinned) Conn() *Conn { return p.c }
+
+// Read is [Conn.Read] bound to the pinned connection.
+func (p ConnPinned) Read(b []byte) (int, error) { return p.c.read(p.id, b) }
+
+// Write is [Conn.Write] bound to the pinned connection.
+func (p ConnPinned) Write(b []byte) (int, error) { return p.c.write(p.id, b) }
+
+// Flush is [Conn.Flush] bound to the pinned connection.
+func (p ConnPinned) Flush() error { return p.c.flush(p.id) }
+
+// Close is [Conn.Close] bound to the pinned connection.
+func (p ConnPinned) Close() error { return p.c.close(p.id) }
+
+// CloseRead is [Conn.CloseRead] bound to the pinned connection.
+func (p ConnPinned) CloseRead() error { return p.c.closeRead(p.id) }
+
+// SetDeadline is [Conn.SetDeadline] bound to the pinned connection.
+func (p ConnPinned) SetDeadline(t time.Time) error {
+	p.c.mu.Lock()
+	defer p.c.mu.Unlock()
+	return p.c.setDeadline(p.id, t)
+}
+
+// SetReadDeadline is [Conn.SetReadDeadline] bound to the pinned connection.
+func (p ConnPinned) SetReadDeadline(t time.Time) error {
+	p.c.mu.Lock()
+	defer p.c.mu.Unlock()
+	return p.c.setReadDeadline(p.id, t)
+}
+
+// SetWriteDeadline is [Conn.SetWriteDeadline] bound to the pinned connection.
+func (p ConnPinned) SetWriteDeadline(t time.Time) error {
+	p.c.mu.Lock()
+	defer p.c.mu.Unlock()
+	return p.c.setWriteDeadline(p.id, t)
+}
+
+// State returns the TCP state of the pinned connection or [StateClosed] if it has ended.
+func (p ConnPinned) State() State {
+	p.c.mu.Lock()
+	defer p.c.mu.Unlock()
+	if p.id != p.c.h.connid {
+		return StateClosed
+	}
+	return p.c.h.State()
+}
+
+// LocalPort returns the local port of the pinned connection or zero if it has ended.
+func (p ConnPinned) LocalPort() uint16 {
+	p.c.mu.Lock()
+	defer p.c.mu.Unlock()
+	if p.id != p.c.h.connid {
+		return 0
+	}
+	return p.c.h.LocalPort()
+}
+
+// RemoteAddrPort returns the remote address and port of the pinned connection,
+// or the zero value if it has ended.
+func (p ConnPinned) RemoteAddrPort() netip.AddrPort {
+	p.c.mu.Lock()
+	defer p.c.mu.Unlock()
+	if p.id != p.c.h.connid {
+		return netip.AddrPort{}
+	}
+	addr, _ := netip.AddrFromSlice(p.c.remoteAddr)
+	return netip.AddrPortFrom(addr, p.c.h.RemotePort())
 }

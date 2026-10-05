@@ -165,6 +165,59 @@ func TestConn_ImplementsNetConn(t *testing.T) {
 	_ = net.ErrClosed
 }
 
+// A Pinned handle must not operate on the connection its Conn is reopened for.
+func TestConn_PinnedStaleAfterReopen(t *testing.T) {
+	conn := newConfiguredConn(t)
+	raddrOld := netip.MustParseAddrPort("10.0.0.1:80")
+	if err := conn.OpenActive(1234, raddrOld, 100); err != nil {
+		t.Fatal(err)
+	}
+	stale := conn.Pin()
+	if got := stale.RemoteAddrPort(); got != raddrOld {
+		t.Fatalf("pinned RemoteAddrPort=%v, want %v", got, raddrOld)
+	}
+	conn.Abort()
+	// Reopen in LISTEN, which is not a closed state: stale handle must fail on connection ID alone.
+	if err := conn.OpenListen(1235, 200); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf [8]byte
+	deadline := time.Now().Add(time.Hour)
+	for name, fn := range map[string]func() error{
+		"Write":            func() error { _, err := stale.Write([]byte("x")); return err },
+		"Read":             func() error { _, err := stale.Read(buf[:]); return err },
+		"Flush":            stale.Flush,
+		"CloseRead":        stale.CloseRead,
+		"Close":            stale.Close,
+		"SetDeadline":      func() error { return stale.SetDeadline(deadline) },
+		"SetReadDeadline":  func() error { return stale.SetReadDeadline(deadline) },
+		"SetWriteDeadline": func() error { return stale.SetWriteDeadline(deadline) },
+	} {
+		if err := fn(); err != net.ErrClosed {
+			t.Errorf("stale %s: got err %v, want net.ErrClosed", name, err)
+		}
+	}
+	if got := stale.LocalPort(); got != 0 {
+		t.Errorf("stale LocalPort=%d, want 0", got)
+	}
+	if got := stale.RemoteAddrPort(); got.IsValid() {
+		t.Errorf("stale RemoteAddrPort=%v, want zero value", got)
+	}
+
+	// New connection is untouched by the stale handle.
+	if st := conn.State(); st != StateListen {
+		t.Fatalf("new connection state %s, want %s", st, StateListen)
+	}
+	fresh := conn.Pin()
+	if err := fresh.SetDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := fresh.LocalPort(); got != 1235 {
+		t.Errorf("fresh LocalPort=%d, want 1235", got)
+	}
+}
+
 func backoffYield(consecutiveBackoffs uint) time.Duration {
 	return lneto.BackoffFlagGosched
 }
