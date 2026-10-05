@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -637,5 +638,69 @@ func TestStackGoAcceptedConnStaleAfterReuse(t *testing.T) {
 		t.Fatal(err)
 	} else if string(buf[:n]) != "fresh" {
 		t.Errorf("second client read %q, want %q", buf[:n], "fresh")
+	}
+}
+
+// M8: half-open connections that never complete the handshake must time out and
+// free their pool slot, else PoolSize unanswered SYNs disable the listener for good.
+func TestStackGoListenerHalfOpenTimeout(t *testing.T) {
+	const svPort = 80
+	const poolSize = 2
+	const mtu = ethernet.MaxMTU
+	const lim = 8
+	const estbTimeout = time.Second
+	tst := testerFrom(t, mtu)
+	var now atomic.Int64
+	now.Store(int64(time.Hour))
+	sv := newTestStack(t, "sv1", 1, mtu, 1, 0)
+	half := newTestStack(t, "half2", 2, mtu, poolSize, 0) // Sends SYNs, never sees SYN-ACKs.
+	cl := newTestStack(t, "cl3", 3, mtu, 1, 0)
+	half.SetGatewayHardwareAddr(sv.HardwareAddr())
+	cl.SetGatewayHardwareAddr(sv.HardwareAddr())
+	sv.SetGatewayHardwareAddr(cl.HardwareAddr())
+	sg := sv.StackBlocking(backoffYield).StackGo(StackGoConfig{
+		ListenerPoolConfig: TCPPoolConfig{
+			PoolSize:           poolSize,
+			QueueSize:          4,
+			TxBufSize:          mtu,
+			RxBufSize:          mtu,
+			EstablishedTimeout: estbTimeout,
+			ClosingTimeout:     estbTimeout,
+			NanoTime:           now.Load,
+			NewBackoff:         func() lneto.BackoffStrategy { return backoffYield },
+		},
+	})
+	svaddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort)
+	sock, err := sg.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockSTREAM, svaddr, netip.AddrPort{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := sock.(net.Listener)
+	defer l.Close()
+
+	drainServer := func() {
+		for range lim {
+			sv.EgressEthernet(tst.buf) // SYN-ACKs to half-open peers are lost.
+		}
+	}
+	for i := range poolSize {
+		if err := half.DialTCP(newTestTCPConn(t, mtu, 4), uint16(1000+i), svaddr); err != nil {
+			t.Fatal(err)
+		}
+		if exchangeEthernetOnce(t, half, sv, tst.buf) == 0 {
+			t.Fatal("no SYN from half-open peer")
+		}
+	}
+	drainServer()
+	now.Add(int64(2 * estbTimeout))
+	drainServer()
+
+	clconn := newTestTCPConn(t, mtu, 4)
+	if err := cl.DialTCP(clconn, 1337, svaddr); err != nil {
+		t.Fatal(err)
+	}
+	tst.ensureQuiesce(cl, sv, lim)
+	if readyToAccept(t, l) != 1 {
+		t.Fatalf("listener with %d timed-out half-open conns did not accept new client (client state %s)", poolSize, clconn.State())
 	}
 }

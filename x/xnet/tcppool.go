@@ -174,7 +174,7 @@ func (p *TCPPool) CheckTimeouts() {
 		} else if st.IsPreestablished() && p.since(acq) > p.estbTimeout {
 			// Was acquired and did not reach establishment state so we close.
 			// This is part of a syn-flood defense mechanism.
-			conn.Close()
+			conn.Abort()
 		} else if st.IsClosed() || st.IsClosing() {
 			// p.mu.Lock()
 			if p.closingAt[i] == 0 {
@@ -183,8 +183,7 @@ func (p *TCPPool) CheckTimeouts() {
 				p.abortedAt[i] = p.now()
 				conn.Abort()
 			} else if p.abortedAt[i] != 0 && p.since(p.abortedAt[i]) > 10*time.Second {
-				println("connection aborted and still not returned to TCPPool")
-				println("source", conn.LocalPort(), "remote", conn.RemotePort(), "state", conn.State().String())
+				p.debug("TCPPool:aborted-not-returned", slog.Uint64("lport", uint64(conn.LocalPort())), slog.Uint64("rport", uint64(conn.RemotePort())), slog.String("state", st.String()))
 			}
 		}
 	}

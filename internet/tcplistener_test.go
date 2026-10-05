@@ -683,6 +683,8 @@ func (p *mockTCPPool) PutTCP(conn *tcp.Conn) {
 	panic("conn does not belong to this pool")
 }
 
+func (p *mockTCPPool) CheckTimeouts() {}
+
 func (p *mockTCPPool) NumberOfAcquired() int {
 	return p.naqcuired
 }

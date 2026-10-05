@@ -13,6 +13,8 @@ import (
 type pool interface {
 	GetTCP(laddr, raddr []byte, lport, rport uint16) (*Conn, any, Value)
 	PutTCP(*Conn)
+	// CheckTimeouts aborts acquired connections past their deadline; called by the listener while idle.
+	CheckTimeouts()
 }
 
 type Listener struct {
@@ -25,6 +27,7 @@ type Listener struct {
 	port       uint16
 	poolGet    func(laddr, raddr []byte, lport, rport uint16) (*Conn, any, Value)
 	poolReturn func(*Conn)
+	poolCheck  func()
 	logger
 	// rstQueue stores pending RST responses for rejected segments.
 	// Per RFC 9293 §3.10.7.1 (CLOSED state processing).
@@ -44,6 +47,7 @@ func (listener *Listener) reset(port uint16, tcppool pool) {
 	listener.port = port
 	listener.poolGet = tcppool.GetTCP
 	listener.poolReturn = tcppool.PutTCP
+	listener.poolCheck = tcppool.CheckTimeouts
 }
 
 func (listener *Listener) SetLogger(logger *slog.Logger) {
@@ -267,6 +271,7 @@ func (listener *Listener) isClosed() bool {
 }
 
 func (listener *Listener) maintainConns() {
+	listener.poolCheck() // Timed out conns are aborted and returned below.
 	listener.accepted = internal.DeleteZeroed(listener.accepted)
 	for i := range listener.incoming {
 		conn := listener.incoming[i].conn
