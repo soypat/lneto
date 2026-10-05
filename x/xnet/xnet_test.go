@@ -1317,3 +1317,18 @@ func TestStackGoTCPDialSurvivesManyWaitIterations(t *testing.T) {
 	}
 	t.Fatal("dial did not establish within handshake rounds")
 }
+
+// regression test for a panic
+func TestEncapsIdxSurvivesReset(t *testing.T) {
+	s, _ := newICMPStacks(t, 42, 1500)
+	s.EnableICMP(true)
+	s.StartDHCPv4Request([4]byte{})
+	buf := make([]byte, 2048)
+	s.EgressEthernet(buf)
+	err := s.Reset(StackConfig{Hostname: "icmp-stack-1", RandSeed: 42, HardwareAddress: [6]byte{1}, MTU: 1500, ICMPQueueLimit: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.StartDHCPv4Request([4]byte{})
+	s.EgressEthernet(buf) // panic
+}
