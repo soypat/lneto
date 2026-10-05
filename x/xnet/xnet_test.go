@@ -274,18 +274,21 @@ func newTestStackGo(s *StackAsync, poolSize uint16, timeouts time.Duration, dial
 
 func newTestStack(t testing.TB, hostname string, randSeed int64, mtu, tcpPorts, udpPorts uint16) (s1 *StackAsync) {
 	t.Helper()
-	lowbyte := byte(randSeed) & 0xf
+	id := hostname[len(hostname)-1] - '0'
+	if id > 9 {
+		t.Fatal("test stack name must end with hex digit 0..9, got:", hostname)
+	}
 	var stack StackAsync
 	err := stack.Reset(StackConfig{
 		Hostname:          hostname,
 		RandSeed:          randSeed,
-		StaticAddress4:    [4]byte{10, 0, 0, lowbyte},
-		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, lowbyte},
+		StaticAddress4:    [4]byte{10, 0, 0, id},
+		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, id},
 		MTU:               uint16(mtu),
 		ICMPQueueLimit:    2,
 		MaxActiveTCPPorts: tcpPorts,
 		MaxActiveUDPPorts: udpPorts,
-		// PassivePeers:      1,
+		PassivePeers:      1, // put passive peers to test.
 	})
 	if err != nil {
 		t.Fatal(err)

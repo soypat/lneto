@@ -254,7 +254,6 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 type udppktconn struct {
 	c     udp.PacketConn
 	laddr net.UDPAddr
-	raddr net.UDPAddr
 }
 
 var _ net.PacketConn = (*udppktconn)(nil)
@@ -264,10 +263,8 @@ func (u *udppktconn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	if err != nil {
 		return n, nil, err
 	}
-	u.raddr.IP, _ = ap.Addr().AppendBinary(u.raddr.IP[:0])
-	u.raddr.Port = int(ap.Port())
-	u.raddr.Zone = ""
-	return n, &u.raddr, nil
+	// Fresh address per datagram: callers may keep it to reply after later reads.
+	return n, net.UDPAddrFromAddrPort(ap), nil
 }
 
 func (u *udppktconn) WriteTo(p []byte, addr net.Addr) (n int, err error) {

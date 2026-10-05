@@ -4,12 +4,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
 	"math/rand"
 	"net/netip"
-	"os"
 	"runtime"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -314,9 +313,6 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 		s1.EgressIP(buf)
 		s2.EgressIP(buf)
 	}()
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug - 99,
-	}))
 	// When the payload exceeds the Tx buffer, c1.Write must run in a background
 	// goroutine that blocks until the driver drains the buffer. The scheduler turns
 	// that blocking into a deterministic, sleep-free handoff: c1's backoff parks the
@@ -335,7 +331,6 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 		TxBuf:             make([]byte, tx1Buf),
 		TxPacketQueueSize: queueSize,
 		RWBackoff:         c1Backoff,
-		Logger:            logger,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -357,8 +352,6 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 	}
 	if async {
 		// Since data does not fit in TCP Tx buffer the test must be run asynchronously.
-		c1.InternalHandler().SetLoggers(logger, logger)
-		// c1.InternalHandler().SetLoggers(nil, nil)
 		go func() {
 			n, werr := c1.Write(data)
 			if werr == nil && n != len(data) {
@@ -449,7 +442,7 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 // race on the connection ID. Only detectable with -race.
 func TestStackAsyncAbortConcurrentWithEgress(t *testing.T) {
 	const randseed = 0x1337_c0de
-	cl := newTestStack(t, "s", randseed, ethernet.MaxMTU, 1, 0)
+	cl := newTestStack(t, "s1", randseed, ethernet.MaxMTU, 1, 0)
 	raddr := netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 0, 0, 2}), 80)
 	conn := newTestTCPConn(t, ethernet.MaxMTU, 4)
 	var wg sync.WaitGroup
@@ -476,4 +469,56 @@ func TestStackAsyncAbortConcurrentWithEgress(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
+}
+
+// M6: a failed dial must release its port-table entry. Otherwise MaxActiveTCPPorts
+// failed dials leave the stack unable to open any TCP connection.
+func TestStackGoFailedDialReleasesPort(t *testing.T) {
+	const maxPorts = 2
+	const randseed = 0x1337_c0de
+	tests := []struct {
+		name string
+		// drain consumes client egress while dialing, so the SYN leaves the stack
+		// and is lost on the wire. Otherwise the SYN never leaves the stack.
+		drain bool
+	}{
+		{name: "SYN not sent", drain: false},
+		{name: "SYN lost", drain: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cl := newTestStack(t, "s1", randseed, ethernet.MaxMTU, maxPorts, 0)
+			sg := newTestStackGo(cl, 1, 5*time.Millisecond, 1)
+			raddr := netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 0, 0, 2}), 80)
+			laddr := netip.AddrPortFrom(netip.AddrFrom4(cl.Addr4()), 0)
+			stop := make(chan struct{})
+			drained := make(chan struct{})
+			go func() {
+				defer close(drained)
+				var buf [ethernet.MaxMTU + ethernet.MaxOverheadSize]byte
+				for tt.drain {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					cl.EgressEthernet(buf[:])
+					time.Sleep(time.Millisecond)
+				}
+			}()
+			for i := range maxPorts + 1 {
+				c, err := sg.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockSTREAM, laddr, raddr)
+				if err == nil {
+					t.Fatalf("dial #%d to silent peer succeeded: %v", i, c)
+				}
+			}
+			close(stop)
+			<-drained
+
+			err := cl.DialTCP(newTestTCPConn(t, 256, 3), 1234, raddr)
+			if err != nil {
+				t.Fatalf("DialTCP after %d failed dials: %v", maxPorts+1, err)
+			}
+		})
+	}
 }
