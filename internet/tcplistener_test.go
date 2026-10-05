@@ -49,7 +49,7 @@ func TestListener_SingleConnection(t *testing.T) {
 	if listener.NumberOfReadyToAccept() != 1 {
 		t.Fatalf("after handshake: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
 	}
-	acceptedConn, _, err := listener.TryAccept()
+	acceptedConn, err := listener.TryAccept()
 	if err != nil {
 		t.Fatalf("TryAccept: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestListener_AcceptAfterEstablished(t *testing.T) {
 	if listener.NumberOfReadyToAccept() != 1 {
 		t.Fatalf("after client1 handshake: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
 	}
-	accepted1, _, err := listener.TryAccept()
+	accepted1, err := listener.TryAccept()
 	if err != nil {
 		t.Fatalf("TryAccept client1: %v", err)
 	} else if listener.NumberOfReadyToAccept() != 0 {
@@ -117,7 +117,7 @@ func TestListener_AcceptAfterEstablished(t *testing.T) {
 	if listener.NumberOfReadyToAccept() != 1 {
 		t.Fatalf("after client2 handshake: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
 	}
-	accepted2, _, err := listener.TryAccept()
+	accepted2, err := listener.TryAccept()
 	if err != nil {
 		t.Fatalf("TryAccept client2: %v", err)
 	} else if listener.NumberOfReadyToAccept() != 0 {
@@ -139,7 +139,7 @@ func TestListener_MultiConn(t *testing.T) {
 	// Create slices for clients.
 	clientStacks := make([]StackIPv4, numClients)
 	clientConns := make([]tcp.Conn, numClients)
-	acceptedConns := make([]tcp.ConnPinned, numClients)
+	acceptedConns := make([]tcp.ConnHandle, numClients)
 
 	// Setup server with listener using setupClientServer for first client to get server configured.
 	setupClientServer(t, rng, &clientStacks[0], &serverStack, &clientConns[0], &serverConn)
@@ -176,7 +176,7 @@ func TestListener_MultiConn(t *testing.T) {
 	// Accept all connections.
 	for i := range numClients {
 		var err error
-		acceptedConns[i], _, err = listener.TryAccept()
+		acceptedConns[i], err = listener.TryAccept()
 		if err != nil {
 			t.Fatalf("TryAccept client %d: %v", i, err)
 		}

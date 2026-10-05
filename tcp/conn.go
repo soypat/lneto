@@ -604,60 +604,66 @@ func (conn *Conn) backoff(consecutiveBackoffs uint) {
 	conn._backoff.Do(consecutiveBackoffs)
 }
 
-// Pin returns a handle bound to [Conn]'s current connection. Once that connection ends all PinnedConn methods return [net.ErrClosed].
-// Pin automates connection lifetime checks for cases like [tcp.Listener.TryAccept] where we'd otherwise require users to manage lifetime
+// HandleWith returns a handle bound to [Conn]'s current connection. Once that connection ends all [ConnHandle] methods return [net.ErrClosed].
+// HandleWith automates connection lifetime checks for cases like [tcp.Listener.TryAccept] where we'd otherwise require users to manage lifetime
 // through more limiting mechanisms like `defer` or pool management.
-func (conn *Conn) Pin() ConnPinned {
-	return ConnPinned{c: conn, id: conn.currentID()}
+//
+// The userData argument is attached to the [ConnHandle] for the duration of its life.
+func (conn *Conn) HandleWith(userData any) ConnHandle {
+	return ConnHandle{c: conn, id: conn.currentID(), userdata: userData}
 }
 
-// ConnPinned is a [Conn] handle bound to a single connection. See [Conn.Pin].
-type ConnPinned struct {
-	c  *Conn
-	id uint64
+// ConnHandle is a [Conn] handle bound to a single connection. See [Conn.HandleWith].
+type ConnHandle struct {
+	c        *Conn
+	id       uint64
+	userdata any
 }
+
+// UserData returns the empty interface that [ConnHandle] was created with at [Conn.HandleWith].
+func (p ConnHandle) UserData() any { return p.userdata }
 
 // Conn returns the underlying [Conn], which may have been reopened for another connection.
-func (p ConnPinned) Conn() *Conn { return p.c }
+func (p ConnHandle) Conn() *Conn { return p.c }
 
-// Read is [Conn.Read] bound to the pinned connection.
-func (p ConnPinned) Read(b []byte) (int, error) { return p.c.read(p.id, b) }
+// Read is [Conn.Read] bound to the connection handle.
+func (p ConnHandle) Read(b []byte) (int, error) { return p.c.read(p.id, b) }
 
-// Write is [Conn.Write] bound to the pinned connection.
-func (p ConnPinned) Write(b []byte) (int, error) { return p.c.write(p.id, b) }
+// Write is [Conn.Write] bound to the connection handle.
+func (p ConnHandle) Write(b []byte) (int, error) { return p.c.write(p.id, b) }
 
-// Flush is [Conn.Flush] bound to the pinned connection.
-func (p ConnPinned) Flush() error { return p.c.flush(p.id) }
+// Flush is [Conn.Flush] bound to the connection handle.
+func (p ConnHandle) Flush() error { return p.c.flush(p.id) }
 
-// Close is [Conn.Close] bound to the pinned connection.
-func (p ConnPinned) Close() error { return p.c.close(p.id) }
+// Close is [Conn.Close] bound to the connection handle.
+func (p ConnHandle) Close() error { return p.c.close(p.id) }
 
-// CloseRead is [Conn.CloseRead] bound to the pinned connection.
-func (p ConnPinned) CloseRead() error { return p.c.closeRead(p.id) }
+// CloseRead is [Conn.CloseRead] bound to the connection handle.
+func (p ConnHandle) CloseRead() error { return p.c.closeRead(p.id) }
 
-// SetDeadline is [Conn.SetDeadline] bound to the pinned connection.
-func (p ConnPinned) SetDeadline(t time.Time) error {
+// SetDeadline is [Conn.SetDeadline] bound to the connection handle.
+func (p ConnHandle) SetDeadline(t time.Time) error {
 	p.c.mu.Lock()
 	defer p.c.mu.Unlock()
 	return p.c.setDeadline(p.id, t)
 }
 
-// SetReadDeadline is [Conn.SetReadDeadline] bound to the pinned connection.
-func (p ConnPinned) SetReadDeadline(t time.Time) error {
+// SetReadDeadline is [Conn.SetReadDeadline] bound to the connection handle.
+func (p ConnHandle) SetReadDeadline(t time.Time) error {
 	p.c.mu.Lock()
 	defer p.c.mu.Unlock()
 	return p.c.setReadDeadline(p.id, t)
 }
 
-// SetWriteDeadline is [Conn.SetWriteDeadline] bound to the pinned connection.
-func (p ConnPinned) SetWriteDeadline(t time.Time) error {
+// SetWriteDeadline is [Conn.SetWriteDeadline] bound to the connection handle.
+func (p ConnHandle) SetWriteDeadline(t time.Time) error {
 	p.c.mu.Lock()
 	defer p.c.mu.Unlock()
 	return p.c.setWriteDeadline(p.id, t)
 }
 
-// State returns the TCP state of the pinned connection or [StateClosed] if it has ended.
-func (p ConnPinned) State() State {
+// State returns the TCP state of the connection handle or [StateClosed] if it has ended.
+func (p ConnHandle) State() State {
 	p.c.mu.Lock()
 	defer p.c.mu.Unlock()
 	if p.id != p.c.h.connid {
@@ -666,8 +672,8 @@ func (p ConnPinned) State() State {
 	return p.c.h.State()
 }
 
-// LocalPort returns the local port of the pinned connection or zero if it has ended.
-func (p ConnPinned) LocalPort() uint16 {
+// LocalPort returns the local port of the connection handle or zero if it has ended.
+func (p ConnHandle) LocalPort() uint16 {
 	p.c.mu.Lock()
 	defer p.c.mu.Unlock()
 	if p.id != p.c.h.connid {
@@ -676,9 +682,9 @@ func (p ConnPinned) LocalPort() uint16 {
 	return p.c.h.LocalPort()
 }
 
-// RemoteAddrPort returns the remote address and port of the pinned connection,
+// RemoteAddrPort returns the remote address and port of the connection handle,
 // or the zero value if it has ended.
-func (p ConnPinned) RemoteAddrPort() netip.AddrPort {
+func (p ConnHandle) RemoteAddrPort() netip.AddrPort {
 	p.c.mu.Lock()
 	defer p.c.mu.Unlock()
 	if p.id != p.c.h.connid {

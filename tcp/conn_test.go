@@ -172,7 +172,7 @@ func TestConn_PinnedStaleAfterReopen(t *testing.T) {
 	if err := conn.OpenActive(1234, raddrOld, 100); err != nil {
 		t.Fatal(err)
 	}
-	stale := conn.Pin()
+	stale := conn.HandleWith(nil)
 	if got := stale.RemoteAddrPort(); got != raddrOld {
 		t.Fatalf("pinned RemoteAddrPort=%v, want %v", got, raddrOld)
 	}
@@ -209,7 +209,7 @@ func TestConn_PinnedStaleAfterReopen(t *testing.T) {
 	if st := conn.State(); st != StateListen {
 		t.Fatalf("new connection state %s, want %s", st, StateListen)
 	}
-	fresh := conn.Pin()
+	fresh := conn.HandleWith(nil)
 	if err := fresh.SetDeadline(time.Time{}); err != nil {
 		t.Fatal(err)
 	}
