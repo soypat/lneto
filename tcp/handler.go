@@ -226,7 +226,8 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 	err = h.scb.Recv(segIncoming)
 	if err != nil {
 		if h.scb.State() == StateClosed {
-			err = net.ErrClosed // Connection closed by RST; signal caller to tear down.
+			h.Abort()           // Closed by RST: do not leave Handler armed to resend SYN.
+			err = net.ErrClosed // Signal caller to tear down.
 		}
 		return err
 	}

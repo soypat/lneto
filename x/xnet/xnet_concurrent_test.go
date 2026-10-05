@@ -3,6 +3,7 @@ package xnet
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/netip"
@@ -520,5 +521,103 @@ func TestStackGoFailedDialReleasesPort(t *testing.T) {
 				t.Fatalf("DialTCP after %d failed dials: %v", maxPorts+1, err)
 			}
 		})
+	}
+}
+
+// M18: SocketNetip must honor its context during the dial handshake.
+func TestStackGoDialHonorsContext(t *testing.T) {
+	const dialTimeout = 3 * time.Second
+	cl := newTestStack(t, "s1", 1, ethernet.MaxMTU, 1, 0)
+	sg := newTestStackGo(cl, 1, dialTimeout, 1)
+	raddr := netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 0, 0, 2}), 80)
+	laddr := netip.AddrPortFrom(netip.AddrFrom4(cl.Addr4()), 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := sg.SocketNetip(ctx, "tcp", syscall.AF_INET, sockSTREAM, laddr, raddr)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("dial with canceled context: got %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(dialTimeout / 3):
+		t.Fatal("dial with canceled context did not return")
+	}
+}
+
+// M18: a SYN answered with RST is a refused connection: the dial must fail
+// without sending further SYNs, regardless of the retry count.
+func TestStackGoDialRefusedNoRedial(t *testing.T) {
+	const svPort = 80
+	const randseed = 1334
+	const mtu = ethernet.MaxMTU
+	sv := newTestStack(t, "sv1", randseed, mtu, 1, 0)
+	cl := newTestStack(t, "cl2", randseed+1, mtu, 1, 0)
+	sv.SetGatewayHardwareAddr(cl.HardwareAddr())
+	cl.SetGatewayHardwareAddr(sv.HardwareAddr())
+	// Listener with no free connections answers every SYN with RST.
+	pool, err := NewTCPPool(TCPPoolConfig{
+		PoolSize:           0,
+		RandSeed:           randseed,
+		EstablishedTimeout: time.Second,
+		ClosingTimeout:     time.Second,
+		NewBackoff:         func() lneto.BackoffStrategy { return backoffYield },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var l tcp.Listener
+	if err := l.Reset(svPort, pool); err != nil {
+		t.Fatal(err)
+	}
+	if err := sv.RegisterListenerTCP(&l); err != nil {
+		t.Fatal(err)
+	}
+
+	sg := newTestStackGo(cl, 1, 200*time.Millisecond, 3)
+	raddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort)
+	laddr := netip.AddrPortFrom(netip.AddrFrom4(cl.Addr4()), 0)
+	done := make(chan error, 1)
+	go func() {
+		_, err := sg.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockSTREAM, laddr, raddr)
+		done <- err
+	}()
+	var buf [ethernet.MaxMTU + ethernet.MaxOverheadSize]byte
+	nsyn := 0
+	for {
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("dial to refusing peer succeeded")
+			}
+			if nsyn != 1 {
+				t.Errorf("sent %d SYNs to a peer that refused the first, want 1", nsyn)
+			}
+			return
+		case <-time.After(5 * time.Second):
+			t.Fatal("dial did not return")
+		default:
+		}
+		n, err := cl.EgressEthernet(buf[:])
+		if err != nil {
+			t.Fatal(err)
+		} else if n > 0 {
+			if frm, ok := getTCPFrame(buf[:n]); ok {
+				if _, flags := frm.OffsetAndFlags(); flags == tcp.FlagSYN {
+					nsyn++
+				}
+			}
+			sv.IngressEthernet(buf[:n])
+		}
+		n, err = sv.EgressEthernet(buf[:])
+		if err != nil {
+			t.Fatal(err)
+		} else if n > 0 {
+			cl.IngressEthernet(buf[:n])
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

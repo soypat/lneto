@@ -1,6 +1,7 @@
 package xnet
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/netip"
@@ -194,27 +195,33 @@ func (s StackBlocking) lookupIPType(host dns.Name, deadline int64, qtype dns.Typ
 
 var errTCPFailedToConnect = errors.New("tcp failed to connect")
 
-func (s StackBlocking) DoDialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrPort, timeout time.Duration) (err error) {
+func (s StackBlocking) DoDialTCP(ctx context.Context, conn *tcp.Conn, localPort uint16, addrp netip.AddrPort, timeout time.Duration) (err error) {
 	err = s.async.DialTCP(conn, localPort, addrp)
 	if err != nil {
 		return err
 	}
-	err = s.waitDialTCP(conn, timeout)
+	err = s.waitDialTCP(ctx, conn, timeout)
 	if err != nil {
 		conn.Abort()
 	}
 	return err
 }
 
-func (s StackBlocking) waitDialTCP(conn *tcp.Conn, timeout time.Duration) (err error) {
+func (s StackBlocking) waitDialTCP(ctx context.Context, conn *tcp.Conn, timeout time.Duration) (err error) {
 	deadline := s.deadlineTO(timeout)
 	var backoffs uint
 	for ok := true; ok; ok = s.checkDeadline(deadline) == nil {
+		if err = ctx.Err(); err != nil {
+			return err
+		}
 		state := conn.State()
 		if state == tcp.StateEstablished {
 			return nil
 		} else if state != tcp.StateSynSent && state != tcp.StateSynRcvd && !conn.AwaitingSynSend() {
 			// Unexpected state, abort and terminate connection.
+			if err = conn.Err(); err != nil {
+				return err
+			}
 			return errTCPFailedToConnect
 		}
 		s.backoff(backoffs)

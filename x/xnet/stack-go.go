@@ -192,7 +192,7 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			if err != nil {
 				return nil, err
 			}
-			err = s.blk.StackRetrying().DoDialTCP(&conn, laddr.Port(), raddr, s.tcpDialTimeout, s.tcpDialRetries)
+			err = s.blk.StackRetrying().DoDialTCP(ctx, &conn, laddr.Port(), raddr, s.tcpDialTimeout, s.tcpDialRetries)
 			if err != nil {
 				return nil, err
 			}
@@ -215,7 +215,7 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 				} else {
 					// Unexpected state, abort and terminate connection.
 					conn.Abort()
-					return errTCPFailedToConnect, nil
+					return nil, errTCPFailedToConnect
 				}
 			}
 		} else {

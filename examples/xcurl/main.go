@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -328,7 +329,7 @@ func run() (err error) {
 		localPort = uint16(softRand&0xefff) + 1024
 	}
 	fmt.Printf("TCP target %s local-port=%d\n", target, localPort)
-	err = rstack.DoDialTCP(&conn, localPort, target, tcpDialTimeout, internetRetries)
+	err = rstack.DoDialTCP(context.Background(), &conn, localPort, target, tcpDialTimeout, internetRetries)
 	if err != nil {
 		return fmt.Errorf("TCP failed: %w", err)
 	}

@@ -1,6 +1,7 @@
 package xnet
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"time"
@@ -93,10 +94,21 @@ func (s StackRetrying) DoResolveHardwareAddress6(addr netip.Addr, timeout time.D
 	return hw, errRetriesExceeded
 }
 
-func (s StackRetrying) DoDialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrPort, timeout time.Duration, retries int) (err error) {
+func (s StackRetrying) DoDialTCP(ctx context.Context, conn *tcp.Conn, localPort uint16, addrp netip.AddrPort, timeout time.Duration, retries int) (err error) {
+	err = s.doDialTCP(ctx, conn, localPort, addrp, timeout, retries)
+	if err != nil {
+		conn.Abort()
+	}
+	return err
+}
+
+func (s StackRetrying) doDialTCP(ctx context.Context, conn *tcp.Conn, localPort uint16, addrp netip.AddrPort, timeout time.Duration, retries int) (err error) {
 	expectEnd := time.Now().Add(timeout * time.Duration(retries))
 	var firstErr error
 	for i := range retries {
+		if err = ctx.Err(); err != nil {
+			return err
+		}
 		if i == 0 || conn.State().IsClosed() {
 			err = s.block.async.DialTCP(conn, localPort, addrp)
 			if err != nil {
@@ -109,9 +121,9 @@ func (s StackRetrying) DoDialTCP(conn *tcp.Conn, localPort uint16, addrp netip.A
 			conn.RequeueControl()
 		}
 
-		err = s.block.waitDialTCP(conn, timeout)
-		if err == nil {
-			return nil
+		err = s.block.waitDialTCP(ctx, conn, timeout)
+		if err == nil || err == lneto.ErrConnRefused || ctx.Err() != nil {
+			return err // Success or final failure: retrying cannot help.
 		} else if firstErr == nil {
 			firstErr = err
 		}

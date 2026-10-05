@@ -136,6 +136,13 @@ func (conn *Conn) RemoteAddr() []byte {
 	return conn.remoteAddr
 }
 
+// Err returns why the connection was aborted by the peer, i.e. [lneto.ErrConnRefused], or nil.
+func (conn *Conn) Err() error {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.abortErr
+}
+
 // State returns the TCP state of the socket.
 func (conn *Conn) State() State {
 	conn.mu.Lock()
@@ -471,8 +478,12 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 		return lneto.ErrMismatch
 	}
 	conn.trace("tcpconn.Recv", slog.Uint64("lport", uint64(conn.h.LocalPort())), slog.Uint64("rport", uint64(conn.h.remotePort)))
+	prevState := conn.h.State()
 	err = conn.h.Recv(buf[off:])
 	if err != nil {
+		if err == net.ErrClosed && prevState == StateSynSent {
+			conn.abortErr = lneto.ErrConnRefused
+		}
 		return err
 	}
 	if !conn.isRaddrSet() && conn.h.RemotePort() != 0 {
