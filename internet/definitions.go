@@ -5,6 +5,7 @@ import (
 	"math"
 	"net"
 	"slices"
+	"sync/atomic"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -195,7 +196,7 @@ var (
 )
 
 func (node *node) IsInvalid() bool {
-	return node.callbacks.IsZeroed() || (node.connID != nil && node.currConnID != *node.connID)
+	return node.callbacks.IsZeroed() || (node.connID != nil && node.currConnID != atomic.LoadUint64(node.connID))
 }
 
 func checkNodeErr(node *node, err error) (discard bool) {
@@ -209,7 +210,7 @@ func nodeFromStackNode(s lneto.StackNode, port uint16, protocol uint64, remoteAd
 	var currConnID uint64
 	connIDPtr := s.ConnectionID()
 	if connIDPtr != nil {
-		currConnID = *connIDPtr
+		currConnID = atomic.LoadUint64(connIDPtr)
 	}
 	return node{
 		currConnID: currConnID,

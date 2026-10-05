@@ -46,12 +46,12 @@ type Conn struct {
 	ipID uint16
 }
 
-// reset must be called while holding [Conn.mu].
-func (conn *Conn) reset(h Handler) {
+// reset clears Conn state outside of [Handler]. Must be called while holding [Conn.mu].
+func (conn *Conn) reset() {
 	// Reset fields individually - DO NOT copy the mutex (undefined behavior in Go).
 	// "A Mutex must not be copied after first use." - sync package docs.
 	// Copying a locked mutex causes corruption on multi-core systems.
-	conn.h = h
+	// Do not copy Handler either: its connid is read concurrently by stacks, see [Handler.ConnectionID].
 	conn.remoteAddr = conn.remoteAddr[:0]
 	conn.rdead = time.Time{}
 	conn.wdead = time.Time{}
@@ -199,7 +199,7 @@ func (conn *Conn) OpenActive(localPort uint16, remote netip.AddrPort, iss Value)
 	if err != nil {
 		return err
 	}
-	conn.reset(conn.h)
+	conn.reset()
 	raddr := remote.Addr()
 	if raddr.Is4() {
 		addr4 := raddr.As4()
@@ -221,7 +221,7 @@ func (conn *Conn) OpenListen(localPort uint16, iss Value) error {
 	if err != nil {
 		return err
 	}
-	conn.reset(conn.h)
+	conn.reset()
 	conn.debug("conn:listen", slog.Uint64("lport", uint64(localPort)))
 	return nil
 }
@@ -264,7 +264,7 @@ func (conn *Conn) Abort() {
 	defer conn.mu.Unlock()
 	conn.trace("TCPConn.Abort", slog.Uint64("lport", uint64(conn.h.localPort)), slog.Uint64("rport", uint64(conn.h.remotePort)))
 	conn.h.Abort()
-	conn.reset(conn.h)
+	conn.reset()
 }
 
 // InternalHandler returns the internal [Handler] instance. The Handler contains lower level implementation logic for a TCP connection.
@@ -594,6 +594,8 @@ func (conn *Conn) backoff(consecutiveBackoffs uint) {
 }
 
 // Pin returns a handle bound to [Conn]'s current connection. Once that connection ends all PinnedConn methods return [net.ErrClosed].
+// Pin automates connection lifetime checks for cases like [tcp.Listener.TryAccept] where we'd otherwise require users to manage lifetime
+// through more limiting mechanisms like `defer` or pool management.
 func (conn *Conn) Pin() ConnPinned {
 	return ConnPinned{c: conn, id: conn.currentID()}
 }
