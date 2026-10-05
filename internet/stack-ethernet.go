@@ -85,7 +85,7 @@ func (ls *StackEthernet) Reset6(mac, gateway [6]byte, mtu, maxNodes int) error {
 // It validates the configuration parameters and resets internal state.
 // The connection ID is incremented on each call to invalidate existing connections.
 func (ls *StackEthernet) Configure(cfg StackEthernetConfig) error {
-	if cfg.MTU > ethernet.MaxMTU || cfg.MTU < ethernet.MinimumMTU {
+	if cfg.MTU > math.MaxUint16 || cfg.MTU < ethernet.MinimumMTU {
 		return lneto.ErrInvalidConfig
 	} else if cfg.MaxNodes <= 0 {
 		return lneto.ErrInvalidConfig

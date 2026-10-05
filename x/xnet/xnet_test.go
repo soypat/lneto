@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net"
 	"net/netip"
+	"strconv"
 	"sync"
 	"syscall"
 	"testing"
@@ -1187,8 +1188,15 @@ func backoffYield(consecutiveBackoffs uint) time.Duration {
 // EgressIP clip in StackAsync: without it the SYN advertises ~65479 rather than
 // MTU-ipHdr-20.
 func TestEgressIP_TCPMSSAdvertisesMTU(t *testing.T) {
-	const mtu = 1280
-	const wantMSS = uint16(mtu - 20 - 20) // -IPv4 header -TCP header = 1240.
+	for _, mtu := range []int{1280, 9000} { // M29: IP-only (TUN) use is not bound by the 1500 byte Ethernet MTU.
+		t.Run(strconv.Itoa(mtu), func(t *testing.T) {
+			testEgressIPTCPMSS(t, mtu)
+		})
+	}
+}
+
+func testEgressIPTCPMSS(t *testing.T, mtu int) {
+	wantMSS := uint16(mtu - 20 - 20) // -IPv4 header -TCP header.
 	s1, s2, c1, _ := newTCPStacks(t, 4, mtu)
 
 	raddr := s2.Addr4()

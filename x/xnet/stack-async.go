@@ -107,7 +107,7 @@ type StackConfig struct {
 	MaxActiveTCPPorts, MaxActiveUDPPorts uint16
 	// MTU sets the maximum transmission unit, which is the maximum size of the Ethernet payload
 	// not including ethernet header, ethernet CRC. It is determined by the NIC hardware and the route the packets take over the network.
-	// By far the most common value for MTU is 1500 as specified by IEEE 802.3.
+	// By far the most common value for MTU is 1500 as specified by IEEE 802.3. Jumbo/TUN MTUs up to 65535 allowed.
 	MTU uint16
 	// Accept multicast ethernet and IP packets. Needed for MDNS.
 	AcceptMulticast bool
