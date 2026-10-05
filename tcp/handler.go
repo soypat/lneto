@@ -3,6 +3,7 @@ package tcp
 import (
 	"io"
 	"net"
+	"sync/atomic"
 
 	"log/slog"
 
@@ -47,6 +48,29 @@ type Handler struct {
 	// nRetransmit stores the number of times the oldest packet was retransmit.
 	nRetransmit    uint8
 	requeueControl bool
+
+	// RESETTABLE STATE MUST BE ZEROED IN [Handler.reset]
+}
+
+// reset clears all state except [ControlBlock] state. So [Handler.State] will remain unchanged. See [Handler.Abort] for full reset.
+func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
+	atomic.AddUint64(&h.connid, 1) // ConnID accessed by external managers.
+	h.connid++
+	h.localPort = localPort
+	h.remotePort = remotePort
+	h.closing = false
+	h.shutdownRx = false
+	h.requeueControl = false
+	h.peerOfferedWS = false
+	// h.wndShiftLocal derived from local buffers which stay, so not reset.
+	h.wndShiftPeer = 0
+	h.nRetransmit = 0
+	if h.policyEnabled() {
+		h.policy.Reset()
+	}
+	h.reasm.clear() // preserve metadata capacity across reopen, drop held segments.
+	h.bufTx.ResetOrReuse(nil, 0, iss)
+	h.bufRx.Reset()
 }
 
 // SetLoggers sets the [slog.Logger] for the Handler and internal [ControlBlock].
@@ -144,33 +168,6 @@ func (h *Handler) Abort() {
 	h.info("tcp.Handler.Abort")
 	h.scb.Abort()
 	h.reset(0, 0, 0)
-}
-
-// reset clears all state except [ControlBlock] state. So [Handler.State] will remain unchanged.
-func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
-	*h = Handler{
-		connid:     h.connid + 1,
-		scb:        h.scb,
-		localPort:  localPort,
-		remotePort: remotePort,
-		closing:    false,
-		shutdownRx: false,
-		// Persist configuration across reopen:
-		validator:     h.validator,
-		policy:        h.policy,
-		logger:        h.logger,
-		wndShiftLocal: h.wndShiftLocal, // derived from buffers, which persist too
-		// persist memory across repoen:
-		bufTx: h.bufTx,
-		bufRx: h.bufRx,
-		reasm: h.reasm,
-	}
-	if h.policyEnabled() {
-		h.policy.Reset()
-	}
-	h.reasm.clear() // preserve metadata capacity across reopen, drop held segments.
-	h.bufTx.ResetOrReuse(nil, 0, iss)
-	h.bufRx.Reset()
 }
 
 // Recv receives an incoming TCP packet frame with the first byte being the first octet of the TCP frame.

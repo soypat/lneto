@@ -64,6 +64,7 @@ func TestStackAsyncListener_SingleConnection(t *testing.T) {
 
 	// Create pool and listener for server.
 	pool, err := NewTCPPool(TCPPoolConfig{
+		RandSeed:           1,
 		PoolSize:           1,
 		QueueSize:          4,
 		TxBufSize:          MTU,
@@ -153,6 +154,7 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 
 	// Create pool and listener for server.
 	pool, err := NewTCPPool(TCPPoolConfig{
+		RandSeed:           1,
 		PoolSize:           poolsize,
 		QueueSize:          4,
 		TxBufSize:          bufsize,
@@ -241,6 +243,7 @@ func TestListener_Close(t *testing.T) {
 	const svPort uint16 = 80
 
 	pool, err := NewTCPPool(TCPPoolConfig{
+		RandSeed:           1,
 		PoolSize:           1,
 		QueueSize:          4,
 		TxBufSize:          512,
@@ -283,6 +286,7 @@ func TestTCPListener_CloseUnblocksAccept(t *testing.T) {
 	const svPort uint16 = 80
 
 	pool, err := NewTCPPool(TCPPoolConfig{
+		RandSeed:           1,
 		PoolSize:           1,
 		QueueSize:          4,
 		TxBufSize:          512,
@@ -342,6 +346,7 @@ func TestListener_ResetAfterClose(t *testing.T) {
 	const svPort uint16 = 80
 
 	pool, err := NewTCPPool(TCPPoolConfig{
+		RandSeed:           1,
 		PoolSize:           1,
 		QueueSize:          4,
 		TxBufSize:          512,
@@ -431,6 +436,7 @@ func TestTCPRetransmitsLostSegment(t *testing.T) {
 	// and resume the two independently.
 	newPool := func(yield lneto.BackoffStrategy) TCPPoolConfig {
 		return TCPPoolConfig{
+			RandSeed: 1,
 			PoolSize: 2, QueueSize: 4,
 			TxBufSize: bufSize, RxBufSize: bufSize,
 			// Well past the simulated time this test spends, so the pool never
@@ -560,5 +566,74 @@ func TestTCPRetransmitsLostSegment(t *testing.T) {
 	}
 	if !dropped {
 		t.Fatal("no frame was dropped, so the test did not exercise retransmission")
+	}
+}
+
+// M2: a net.Conn returned by Accept must stop working once its connection ends,
+// even after the listener pool hands the same slot to the next client.
+func TestStackGoAcceptedConnStaleAfterReuse(t *testing.T) {
+	const svPort = 80
+	const seedRng = 0x1337_c0de
+	const mtu = ethernet.MaxMTU
+	const tcpPorts = 1
+	sv := newTestStack(t, "s1", seedRng, mtu, tcpPorts, 0)
+	cl1 := newTestStack(t, "s2", ^seedRng, mtu, tcpPorts, 0)
+	cl2 := newTestStack(t, "s3", seedRng>>7, mtu, tcpPorts, 0)
+	cl1.SetGatewayHardwareAddr(sv.HardwareAddr())
+	cl2.SetGatewayHardwareAddr(sv.HardwareAddr())
+	sg := newTestStackGo(sv, 1, time.Second, 1)
+	svaddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort)
+	sock, err := sg.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockSTREAM, svaddr, netip.AddrPort{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := sock.(net.Listener)
+	defer l.Close()
+	tst := testerFrom(t, mtu)
+	const lim = 8
+
+	accept := func(cl *StackAsync, clconn *tcp.Conn) net.Conn {
+		t.Helper()
+		sv.SetGatewayHardwareAddr(cl.HardwareAddr())
+		if err := cl.DialTCP(clconn, 1337, svaddr); err != nil {
+			t.Fatal(err)
+		}
+		tst.ensureQuiesce(cl, sv, lim)
+		if n := readyToAccept(t, l); n != 1 {
+			t.Fatalf("client %v: %d ready to accept, want 1 (client state %s)", cl.Addr4(), n, clconn.State())
+		}
+		c, err := l.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+
+	c1 := newTestTCPConn(t, mtu, 4)
+	stale := accept(cl1, c1)
+	// First connection ends normally: client closes, then server closes.
+	c1.Close()
+	tst.ensureQuiesce(cl1, sv, lim)
+	stale.Close()
+	tst.ensureQuiesce(cl1, sv, lim)
+
+	// Pool of 1: the second client is served by the slot the first one used.
+	c2 := newTestTCPConn(t, mtu, 4)
+	fresh := accept(cl2, c2)
+
+	if n, err := stale.Write([]byte("stale")); err == nil {
+		t.Errorf("Write on ended conn succeeded writing %d bytes into the next client's connection", n)
+	}
+	stale.Close()
+	if _, err := fresh.Write([]byte("fresh")); err != nil {
+		t.Fatalf("Close on ended conn closed the next client's connection: Write: %v", err)
+	}
+	tst.ensureQuiesce(cl2, sv, lim)
+	var buf [32]byte
+	n, err := c2.Read(buf[:])
+	if err != nil {
+		t.Fatal(err)
+	} else if string(buf[:n]) != "fresh" {
+		t.Errorf("second client read %q, want %q", buf[:n], "fresh")
 	}
 }

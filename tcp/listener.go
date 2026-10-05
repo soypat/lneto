@@ -11,7 +11,7 @@ import (
 
 // pool is a [sync.Pool] like
 type pool interface {
-	GetTCP() (*Conn, any, Value)
+	GetTCP(laddr, raddr []byte, lport, rport uint16) (*Conn, any, Value)
 	PutTCP(*Conn)
 }
 
@@ -23,7 +23,7 @@ type Listener struct {
 	// accepted stores all connections that have been accepted and are open.
 	accepted   []handler
 	port       uint16
-	poolGet    func() (*Conn, any, Value)
+	poolGet    func(laddr, raddr []byte, lport, rport uint16) (*Conn, any, Value)
 	poolReturn func(*Conn)
 	logger
 	// rstQueue stores pending RST responses for rejected segments.
@@ -191,7 +191,7 @@ func (listener *Listener) Demux(carrierData []byte, tcpFrameOffset int) error {
 	if err != nil {
 		return err
 	}
-	srcaddr, _, _, _, err := internal.GetIPAddr(carrierData)
+	srcaddr, dstaddr, _, _, err := internal.GetIPAddr(carrierData)
 	if err != nil {
 		return err
 	}
@@ -222,7 +222,7 @@ func (listener *Listener) Demux(carrierData []byte, tcpFrameOffset int) error {
 		}
 		return lneto.ErrPacketDrop
 	}
-	conn, userData, iss := listener.poolGet()
+	conn, userData, iss := listener.poolGet(dstaddr, srcaddr, dst, src)
 	if conn == nil {
 		listener.logerr("tcpListener:no-free-conn")
 		listener.rstQueue.Queue(srcaddr, src, listener.port, 0, tfrm.Seq()+1, FlagRST|FlagACK)

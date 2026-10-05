@@ -2,6 +2,7 @@ package xnet
 
 import (
 	"context"
+	"encoding/binary"
 	"log/slog"
 	"sync"
 	"time"
@@ -19,7 +20,7 @@ type TCPPool struct {
 	acquiredAt     []int64
 	closingAt      []int64
 	abortedAt      []int64
-	nextISS        tcp.Value
+	key            [16]byte // See [tcp.ISN].
 	_now           func() int64
 	estbTimeout    time.Duration
 	closingTimeout time.Duration
@@ -37,6 +38,9 @@ type TCPPoolConfig struct {
 	QueueSize int
 	TxBufSize int
 	RxBufSize int
+
+	// RandSeed seeds the secret key for Initial Sequence Number generation. See [tcp.ISN]. Must be non-zero.
+	RandSeed int64
 
 	Logger     *slog.Logger
 	ConnLogger *slog.Logger
@@ -63,7 +67,7 @@ type TCPPoolConfig struct {
 }
 
 func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
-	if cfg.EstablishedTimeout <= 0 || cfg.ClosingTimeout <= 0 {
+	if cfg.EstablishedTimeout <= 0 || cfg.ClosingTimeout <= 0 || cfg.RandSeed == 0 {
 		return nil, lneto.ErrInvalidConfig
 	} else if cfg.NewBackoff == nil {
 		return nil, lneto.ErrMissingHALConfig
@@ -80,6 +84,8 @@ func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
 		closingTimeout: cfg.ClosingTimeout,
 		logger:         cfg.Logger,
 	}
+	binary.LittleEndian.PutUint64(pool.key[:], uint64(cfg.RandSeed))
+	binary.LittleEndian.PutUint64(pool.key[8:], uint64(pool.now()))
 	allocPerConn := cfg.TxBufSize + cfg.RxBufSize
 	bufSpace := make([]byte, n*allocPerConn)
 	for i := range pool.conns {
@@ -114,16 +120,18 @@ func (p *TCPPool) NumberOfAcquired() int {
 	return p.naqcuired
 }
 
-func (p *TCPPool) GetTCP() (conn *tcp.Conn, userData any, SuggestedISS tcp.Value) {
+// GetTCP acquires a free connection from the pool and returns its user data and an
+// Initial Sequence Number for the connection identified by laddr, raddr, lport and rport.
+func (p *TCPPool) GetTCP(laddr, raddr []byte, lport, rport uint16) (conn *tcp.Conn, userData any, iss tcp.Value) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.debug("TCPPool:get")
 	for i := range p.conns {
 		if p.acquiredAt[i] == 0 {
-			p.acquiredAt[i] = p.now()
-			p.nextISS += 1000
+			now := p.now()
+			p.acquiredAt[i] = now
 			p.naqcuired++
-			return &p.conns[i], p.userData[i], p.nextISS
+			return &p.conns[i], p.userData[i], tcp.ISN(&p.key, now, laddr, raddr, lport, rport)
 		}
 	}
 	return nil, nil, 0

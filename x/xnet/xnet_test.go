@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"math/rand"
+	"net"
 	"net/netip"
 	"sync"
 	"syscall"
@@ -255,57 +256,68 @@ func TestStackAsyncTCP_singlepacket(t *testing.T) {
 	tst.TestTCPClose(client, sv, clconn, svconn)
 }
 
-func newTCPStacks(t testing.TB, randSeed int64, mtu int) (s1, s2 *StackAsync, c1, c2 *tcp.Conn) {
-	s1, s2 = new(StackAsync), new(StackAsync)
-	c1, c2 = new(tcp.Conn), new(tcp.Conn)
-	byte1 := byte(randSeed)/4 - 1
-	err := s1.Reset(StackConfig{
-		Hostname:          "Stack1",
-		RandSeed:          randSeed,
-		StaticAddress4:    [4]byte{10, 0, 0, byte1},
-		MaxActiveTCPPorts: 1,
-		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, byte1},
-		MTU:               uint16(mtu),
-		ICMPQueueLimit:    2,
+func newTestStackGo(s *StackAsync, poolSize uint16, timeouts time.Duration, dialRetries int) StackGo {
+	return s.StackBlocking(backoffYield).StackGo(StackGoConfig{
+		ListenerPoolConfig: TCPPoolConfig{
+			PoolSize:           poolSize,
+			QueueSize:          4,
+			TxBufSize:          ethernet.MaxMTU,
+			RxBufSize:          ethernet.MaxMTU,
+			EstablishedTimeout: timeouts,
+			ClosingTimeout:     timeouts,
+			NewBackoff:         newBackoffYield,
+		},
+		TCPDialTimeout: timeouts,
+		TCPDialRetries: dialRetries,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+}
 
-	byte2 := byte1 + 1
-	err = s2.Reset(StackConfig{
-		Hostname:          "Stack2",
-		RandSeed:          ^randSeed,
-		StaticAddress4:    [4]byte{10, 0, 0, byte2},
-		MaxActiveTCPPorts: 1,
-		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, byte2},
+func newTestStack(t testing.TB, hostname string, randSeed int64, mtu, tcpPorts, udpPorts uint16) (s1 *StackAsync) {
+	t.Helper()
+	lowbyte := byte(randSeed) & 0xf
+	var stack StackAsync
+	err := stack.Reset(StackConfig{
+		Hostname:          hostname,
+		RandSeed:          randSeed,
+		StaticAddress4:    [4]byte{10, 0, 0, lowbyte},
+		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, lowbyte},
 		MTU:               uint16(mtu),
 		ICMPQueueLimit:    2,
+		MaxActiveTCPPorts: tcpPorts,
+		MaxActiveUDPPorts: udpPorts,
+		// PassivePeers:      1,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	return &stack
+}
+
+func newTestTCPConn(t testing.TB, bufsize, txpack int) *tcp.Conn {
+	t.Helper()
+	conn := new(tcp.Conn)
+	buf := make([]byte, bufsize*2)
+	err := conn.Configure(tcp.ConnConfig{
+		RxBuf:             buf[0:bufsize],
+		TxBuf:             buf[bufsize : 2*bufsize],
+		TxPacketQueueSize: txpack,
+		RWBackoff:         backoffYield,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return conn
+}
+
+func newTCPStacks(t testing.TB, randSeed int64, mtu int) (s1, s2 *StackAsync, c1, c2 *tcp.Conn) {
+	t.Helper()
+	c1, c2 = new(tcp.Conn), new(tcp.Conn)
+	s1 = newTestStack(t, "Stack1", randSeed, uint16(mtu), 1, 0)
+	s2 = newTestStack(t, "Stack2", ^randSeed, uint16(mtu), 1, 0)
 	s1.SetGatewayHardwareAddr(s2.HardwareAddr())
 	s2.SetGatewayHardwareAddr(s1.HardwareAddr())
-	buf := make([]byte, mtu*4)
-	err = c1.Configure(tcp.ConnConfig{
-		RxBuf:             buf[:mtu],
-		TxBuf:             buf[mtu : mtu*2],
-		TxPacketQueueSize: 4,
-		RWBackoff:         backoffYield,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = c2.Configure(tcp.ConnConfig{
-		RxBuf:             buf[2*mtu : 3*mtu],
-		TxBuf:             buf[3*mtu : 4*mtu],
-		TxPacketQueueSize: 4,
-		RWBackoff:         backoffYield,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	c1 = newTestTCPConn(t, mtu, 4)
+	c2 = newTestTCPConn(t, mtu, 4)
 	return s1, s2, c1, c2
 }
 
@@ -330,6 +342,37 @@ type tcpExpectExchange struct {
 	SourceIdx int
 	WantFlags tcp.Flags
 	WantData  []byte
+}
+
+func (tst *tester) ensureQuiesce(s1, s2 *StackAsync, lim int) {
+	tst.t.Helper()
+	buf := tst.buf
+	for range lim {
+		sent := false
+		for _, p := range [2][2]*StackAsync{{s1, s2}, {s2, s1}} {
+			n, err := p[0].EgressEthernet(buf[:])
+			if err != nil {
+				tst.t.Fatal(err)
+			} else if n > 0 {
+				sent = true
+				p[1].IngressEthernet(buf[:n])
+			}
+		}
+		if !sent {
+			return
+		}
+	}
+	tst.t.Fatal("stacks did not quiesce after", lim)
+}
+
+// readyToAccept reports the connections ready on a listener returned by [StackGo.SocketNetip].
+func readyToAccept(t *testing.T, l net.Listener) int {
+	t.Helper()
+	ll, ok := l.(interface{ LnetoListener() *tcp.Listener })
+	if !ok {
+		t.Fatalf("listener %T does not expose LnetoListener", l)
+	}
+	return ll.LnetoListener().NumberOfReadyToAccept()
 }
 
 func noExchange(source int) tcpExpectExchange {
@@ -1131,7 +1174,7 @@ func getTCPFrame(etherFrame []byte) (tcp.Frame, bool) {
 	}
 	return tfrm, true
 }
-
+func newBackoffYield() lneto.BackoffStrategy { return backoffYield }
 func backoffYield(consecutiveBackoffs uint) time.Duration {
 	return lneto.BackoffFlagGosched
 }

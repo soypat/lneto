@@ -1,6 +1,7 @@
 package tcp
 
 import (
+	"encoding/binary"
 	"io"
 	"log/slog"
 	"net"
@@ -790,4 +791,22 @@ func (tcb *ControlBlock) tooManyChallengeAcks() bool {
 	} else {
 		return tcb.challengeAcks < -maxChallengeRejects
 	}
+}
+
+// ISN generates an Initial Sequence Number(ISN) per RFC 6528:
+//
+//	ISN = M + F(localip, localport, remoteip, remoteport, secretkey)
+//
+// where M is nanotime, F is SipHash-2-4 keyed with generator's secret so the ISN
+// of one connection does not predict the ISN of another. addr buffers to ISN are only required to be of less than length 16.
+func ISN(key *[16]byte, nanotime int64, localAddr, remoteAddr []byte, localPort, remotePort uint16) Value {
+	// | localPort16 | remotePort16 | localAddr... | remoteAddr... |
+	var buf [4 + 16 + 16]byte
+	binary.BigEndian.PutUint16(buf[0:], localPort)
+	binary.BigEndian.PutUint16(buf[2:], remotePort)
+	n := 4 + copy(buf[4:20], localAddr)
+	n += copy(buf[n:], remoteAddr)
+	f := internal.SipHash24(key, buf[:n])
+	m := uint64(nanotime) >> 12 // 4.096µs ticks.
+	return Value(uint32(m) + uint32(f))
 }

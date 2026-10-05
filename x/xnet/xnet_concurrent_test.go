@@ -48,6 +48,7 @@ func TestTCPListener_ConcurrentEcho(t *testing.T) {
 	}
 
 	tcpPool, err := NewTCPPool(TCPPoolConfig{
+		RandSeed:           1,
 		PoolSize:           numClients,
 		QueueSize:          4,
 		TxBufSize:          512,
@@ -442,4 +443,37 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 		}
 	}
 
+}
+
+// M21: aborting a connection while another goroutine drives the stack must not
+// race on the connection ID. Only detectable with -race.
+func TestStackAsyncAbortConcurrentWithEgress(t *testing.T) {
+	const randseed = 0x1337_c0de
+	cl := newTestStack(t, "s", randseed, ethernet.MaxMTU, 1, 0)
+	raddr := netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 0, 0, 2}), 80)
+	conn := newTestTCPConn(t, ethernet.MaxMTU, 4)
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var buf [ethernet.MaxMTU + ethernet.MaxOverheadSize]byte
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				cl.EgressEthernet(buf[:])
+			}
+		}
+	}()
+	for i := range 100 {
+		if err := cl.DialTCP(conn, uint16(1000+i), raddr); err != nil {
+			t.Error(err)
+			break
+		}
+		conn.Abort()
+	}
+	close(stop)
+	wg.Wait()
 }

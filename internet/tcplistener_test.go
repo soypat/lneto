@@ -659,7 +659,7 @@ func newMockTCPPool(n, queuesize, bufsize int) *mockTCPPool {
 	return pool
 }
 
-func (p *mockTCPPool) GetTCP() (*tcp.Conn, any, tcp.Value) {
+func (p *mockTCPPool) GetTCP(laddr, raddr []byte, lport, rport uint16) (*tcp.Conn, any, tcp.Value) {
 	for i := range p.conns {
 		if !p.acquired[i] {
 			p.acquired[i] = true
