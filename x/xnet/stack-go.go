@@ -196,28 +196,12 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			if err != nil {
 				return nil, err
 			}
-			var backoffs uint
-			for {
-				s.blk.backoff(backoffs)
-				backoffs++
-				state := conn.State()
-				if state == tcp.StateEstablished {
-					tc := tcpconn{
-						ConnPinned: conn.Pin(),
-						localAddr:  net.TCPAddrFromAddrPort(laddr),
-					}
-					return tc, nil
-				} else if state == tcp.StateSynSent || state == tcp.StateSynRcvd || conn.AwaitingSynSend() {
-					if err = ctx.Err(); err != nil {
-						conn.Abort()
-						return nil, err
-					}
-				} else {
-					// Unexpected state, abort and terminate connection.
-					conn.Abort()
-					return nil, errTCPFailedToConnect
-				}
+			// Handshake done; peer may already have closed, leaving data to read.
+			tc := tcpconn{
+				ConnPinned: conn.Pin(),
+				localAddr:  net.TCPAddrFromAddrPort(laddr),
 			}
+			return tc, nil
 		} else {
 			// LISTEN TCP: passive connection. fulfills net.Listener interface.
 			plcfg := s.plcfg

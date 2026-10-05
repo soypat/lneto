@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"net"
 	"net/netip"
 	"runtime"
 	"sync"
@@ -620,4 +621,80 @@ func TestStackGoDialRefusedNoRedial(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
+}
+
+// M19: a dial without a deadline must return once the handshake completes, even
+// if the peer closes the connection right after accepting it.
+func TestStackGoDialPeerClosesAfterAccept(t *testing.T) {
+	const seed = 4321
+	const svPort = 22
+	const mtu = ethernet.MaxMTU
+	const lim = 8
+	tst := testerFrom(t, mtu)
+	client, sv, _, svconn := newTCPStacks(t, seed, mtu)
+	if err := sv.ListenTCP4(svconn, svPort); err != nil {
+		t.Fatal(err)
+	}
+	tsched := ltesto.NewSched(t)
+	tgoro := tsched.Goro()
+	sg := client.StackBlocking(tgoro.Yield).StackGo(StackGoConfig{
+		ListenerPoolConfig: TCPPoolConfig{
+			QueueSize:  4,
+			TxBufSize:  mtu,
+			RxBufSize:  mtu,
+			NewBackoff: func() lneto.BackoffStrategy { return backoffYield },
+		},
+		TCPDialTimeout: time.Minute,
+		TCPDialRetries: 1,
+	})
+	laddr := netip.AddrPortFrom(netip.AddrFrom4(client.Addr4()), 1234)
+	raddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort)
+	var dialed any
+	go func() {
+		c, err := sg.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockSTREAM, laddr, raddr)
+		dialed = c
+		tgoro.FinishWithErr(err)
+	}()
+	checkDialed := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("dial failed after handshake completed: %v", err)
+		} else if _, ok := dialed.(net.Conn); !ok {
+			t.Fatalf("dial returned %T (%v), want net.Conn", dialed, dialed)
+		}
+	}
+
+	// Handshake: run until the server is established, leaving the dialer parked.
+	for i := 0; ; i++ {
+		done, err := tsched.AwaitGoroYieldOrDone()
+		if done {
+			t.Fatalf("dial ended during handshake: %v", err)
+		}
+		tst.ensureQuiesce(client, sv, lim)
+		if svconn.State() == tcp.StateEstablished {
+			break
+		} else if i > 64 {
+			t.Fatal("handshake did not complete")
+		}
+		tsched.YieldToGoro()
+	}
+	// Dialer observes ESTABLISHED.
+	tsched.YieldToGoro()
+	done, err := tsched.AwaitGoroYieldOrDone()
+	if done {
+		checkDialed(err)
+		return
+	}
+	// Peer closes before the dialer runs again.
+	svconn.Close()
+	tst.ensureQuiesce(client, sv, lim)
+	for range 100 {
+		tsched.YieldToGoro()
+		done, err := tsched.AwaitGoroYieldOrDone()
+		if done {
+			checkDialed(err)
+			return
+		}
+	}
+	t.Fatal("dial hangs after peer closed the established connection")
 }
