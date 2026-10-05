@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"testing"
 
 	"github.com/soypat/lneto/ethernet"
@@ -1955,5 +1956,66 @@ func TestHandler_CloseWaitNoAutoFIN(t *testing.T) {
 	n, _ = client.Read(got)
 	if string(got[:n]) != string(resp) {
 		t.Fatalf("client got %q, want %q", got[:n], resp)
+	}
+}
+
+// pumpHandlers exchanges segments between a and b until both have nothing to send.
+func pumpHandlers(t *testing.T, a, b *Handler, buf []byte) {
+	t.Helper()
+	for range 16 {
+		quiet := true
+		for _, pair := range [2][2]*Handler{{a, b}, {b, a}} {
+			n, err := pair[0].Send(buf)
+			if err != nil && err != net.ErrClosed {
+				t.Fatal("pump send:", err)
+			} else if n == 0 {
+				continue
+			}
+			quiet = false
+			if err = pair[1].Recv(buf[:n]); err != nil && err != net.ErrClosed {
+				t.Fatal("pump recv:", err)
+			}
+		}
+		if quiet {
+			return
+		}
+	}
+	t.Fatal("pump did not quiesce")
+}
+
+// M25: after a clean close Read drains buffered data then returns io.EOF.
+func TestConn_ReadEOFAfterCleanClose(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	rng := rand.New(rand.NewSource(2))
+	conn := newConfiguredConn(t)
+	server := conn.InternalHandler()
+	client := newHandler(t, mtu, 3)
+	setupClientServer(t, rng, client, server)
+	var buf [mtu]byte
+	establish(t, client, server, buf[:])
+
+	data := []byte("bye")
+	if _, err := client.Write(data); err != nil {
+		t.Fatal(err)
+	} else if err = client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	pumpHandlers(t, client, server, buf[:])
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+	pumpHandlers(t, client, server, buf[:])
+	if server.State() != StateClosed {
+		t.Fatal("server did not reach CLOSED:", server.State())
+	}
+
+	got := make([]byte, 16)
+	n, err := conn.Read(got)
+	if err != nil || string(got[:n]) != string(data) {
+		t.Fatalf("first read: got %q, %v; want %q, nil", got[:n], err, data)
+	}
+	n, err = conn.Read(got)
+	if n != 0 || err != io.EOF {
+		t.Fatalf("read after clean close: got n=%d err=%v, want 0, io.EOF", n, err)
 	}
 }

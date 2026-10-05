@@ -176,6 +176,8 @@ func (h *Handler) Abort() {
 	h.reset(0, 0, 0)
 }
 
+func (h *Handler) isAborted() bool { return h.remotePort == 0 }
+
 // Recv receives an incoming TCP packet frame with the first byte being the first octet of the TCP frame.
 // The [Handler]'s internal state is updated if the packet is admitted successfully.
 func (h *Handler) Recv(incomingPacket []byte) error {
@@ -574,7 +576,7 @@ func (h *Handler) Read(b []byte) (n int, err error) {
 	}
 	if n == 0 && err == nil {
 		state := h.State()
-		if state.IsClosed() {
+		if state.IsClosed() && h.isAborted() {
 			err = net.ErrClosed
 		} else if !state.RxDataOpen() {
 			err = io.EOF

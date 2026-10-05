@@ -388,8 +388,9 @@ func (conn *Conn) read(connID uint64, b []byte) (int, error) {
 		} else {
 			state := conn.h.State()
 			rxRefuse := conn.h.shutdownRx
+			aborted := conn.h.isAborted()
 			conn.mu.Unlock()
-			if state.IsClosed() {
+			if state.IsClosed() && aborted {
 				return n, net.ErrClosed
 			} else if !state.RxDataOpen() || rxRefuse {
 				return n, io.EOF
