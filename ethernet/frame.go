@@ -118,7 +118,7 @@ func (frm Frame) ClearHeader() {
 // the frame. It returns a non-nil error on finding an inconsistency.
 func (efrm Frame) ValidateSize(v *lneto.Validator) {
 	sz := efrm.EtherTypeOrSize()
-	if sz.IsSize() && len(efrm.buf) < int(sz) {
+	if sz.IsSize() && len(efrm.buf) < sizeHeaderNoVLAN+int(sz) {
 		v.AddError(lneto.ErrInvalidLengthField)
 	}
 	if sz == TypeVLAN && len(efrm.buf) < 18 {

@@ -1317,3 +1317,24 @@ func TestStackGoTCPDialSurvivesManyWaitIterations(t *testing.T) {
 	}
 	t.Fatal("dial did not establish within handshake rounds")
 }
+
+// regression test for panic in subnetTable.reset.
+func TestPassivePeersGrowOnReset(t *testing.T) {
+	s, peer := newICMPStacks(t, 42, 1500) // PassivePeers=0 -> len(resolves4)=10
+	s.Reset(StackConfig{Hostname: "icmp-stack-1", RandSeed: 42, StaticAddress4: [4]byte{10, 0, 0, 42},
+		HardwareAddress: [6]byte{0xbe, 0xef, 0, 0, 0, 42}, MTU: 1500, ICMPQueueLimit: 4, PassivePeers: 16})
+	s.EnableICMP(true)
+	s.SetGatewayHardwareAddr(peer.HardwareAddr())
+	s.icmp.PingStart(peer.Addr4(), []byte("x"), 32)
+	s.EgressEthernet(make([]byte, 2048)) // index out of range [10] with length 10
+}
+
+// regression test for panic. [ethernet.Frame.ValidateSize] was not correctly
+// taking 14 byte header size into account for size validation.
+func TestEthernetLengthFieldPanic(t *testing.T) {
+	s, _ := newICMPStacks(t, 42, 1500)
+	efrm, _ := ethernet.NewFrame(make([]byte, 60))
+	*efrm.DestinationHardwareAddr() = [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+	efrm.SetEtherType(60)
+	s.IngressEthernet(efrm.RawData()) // slices frame[14:74]
+}
