@@ -30,12 +30,12 @@ type Conn struct {
 	h          Handler
 	remoteAddr []byte
 
-	// writeLock holds the connection ID ([Handler.connid]) of the goroutine
+	// writeLock holds the connection handle ([Handler.handle]) of the goroutine
 	// that currently owns the write side via [Conn.Write] or [Conn.Flush].
 	// A zero value means no write is in progress. It serializes concurrent
 	// writers and lets [Conn.Close] acquire the write side before closing so it
 	// does not drop in-flight data (see issue #82).
-	writeLock atomic.Uint64
+	writeLock atomic.Uint32
 
 	_backoff lneto.BackoffStrategy
 	rdead    time.Time
@@ -51,7 +51,7 @@ func (conn *Conn) reset() {
 	// Reset fields individually - DO NOT copy the mutex (undefined behavior in Go).
 	// "A Mutex must not be copied after first use." - sync package docs.
 	// Copying a locked mutex causes corruption on multi-core systems.
-	// Do not copy Handler either: its connid is read concurrently by stacks, see [Handler.ConnectionID].
+	// Do not copy Handler either: its stackid is read concurrently by stacks, see [Handler.ConnectionID].
 	conn.remoteAddr = conn.remoteAddr[:0]
 	conn.rdead = time.Time{}
 	conn.wdead = time.Time{}
@@ -237,12 +237,12 @@ func (conn *Conn) OpenListen(localPort uint16, iss Value) error {
 // still ACKed normally but payload is dropped; future Read calls return io.EOF.
 // The write side is unaffected.
 // If [Conn.Close] is also called the connection is terminated.
-func (conn *Conn) CloseRead() error { return conn.closeRead(conn.currentID()) }
+func (conn *Conn) CloseRead() error { return conn.closeRead(conn.currentHandle()) }
 
-func (conn *Conn) closeRead(connID uint64) error {
+func (conn *Conn) closeRead(handle uint32) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	err := conn.checkPipeOpen(connID)
+	err := conn.checkPipeOpen(handle)
 	if err != nil {
 		return err
 	}
@@ -251,10 +251,10 @@ func (conn *Conn) closeRead(connID uint64) error {
 }
 
 // Close will initiate TCP close sequence. After Close is called future [Conn.Write] calls will fail with [net.ErrClosed].
-func (conn *Conn) Close() error { return conn.close(conn.currentID()) }
+func (conn *Conn) Close() error { return conn.close(conn.currentHandle()) }
 
-func (conn *Conn) close(connID uint64) error {
-	connid, err := conn.acquireWriteLock(connID, nil)
+func (conn *Conn) close(handle uint32) error {
+	connid, err := conn.acquireWriteLock(handle, nil)
 	if err != nil {
 		return err
 	}
@@ -282,9 +282,9 @@ func (conn *Conn) InternalHandler() *Handler {
 }
 
 // Write writes argument data to the TCPConns's output buffer which is queued to be sent.
-func (conn *Conn) Write(b []byte) (int, error) { return conn.write(conn.currentID(), b) }
+func (conn *Conn) Write(b []byte) (int, error) { return conn.write(conn.currentHandle(), b) }
 
-func (conn *Conn) write(connID uint64, b []byte) (int, error) {
+func (conn *Conn) write(connID uint32, b []byte) (int, error) {
 	connid, err := conn.acquireWriteLock(connID, &conn.wdead)
 	if err != nil {
 		return 0, err
@@ -334,10 +334,10 @@ func (conn *Conn) write(connID uint64, b []byte) (int, error) {
 }
 
 // Flush blocks until all buffered TCP data has been sent.
-func (conn *Conn) Flush() error { return conn.flush(conn.currentID()) }
+func (conn *Conn) Flush() error { return conn.flush(conn.currentHandle()) }
 
-func (conn *Conn) flush(connID uint64) error {
-	connid, err := conn.acquireWriteLock(connID, &conn.wdead)
+func (conn *Conn) flush(handle uint32) error {
+	connid, err := conn.acquireWriteLock(handle, &conn.wdead)
 	if err != nil {
 		return err
 	}
@@ -356,9 +356,9 @@ func (conn *Conn) flush(connID uint64) error {
 // Read reads data from the socket's input buffer. If the buffer is empty,
 // Read will block until data is available or connection closes.
 // Returns io.EOF when the remote has closed the connection and all buffered data has been read.
-func (conn *Conn) Read(b []byte) (int, error) { return conn.read(conn.currentID(), b) }
+func (conn *Conn) Read(b []byte) (int, error) { return conn.read(conn.currentHandle(), b) }
 
-func (conn *Conn) read(connID uint64, b []byte) (int, error) {
+func (conn *Conn) read(connID uint32, b []byte) (int, error) {
 	conn.mu.Lock()
 	lport := conn.h.localPort
 	rport := conn.h.remotePort
@@ -368,7 +368,7 @@ func (conn *Conn) read(connID uint64, b []byte) (int, error) {
 	n := 0
 	for len(b) > 0 {
 		conn.mu.Lock()
-		if connID != conn.h.connid {
+		if connID != conn.h.handle {
 			conn.mu.Unlock()
 			return n, net.ErrClosed
 		}
@@ -404,11 +404,11 @@ func (conn *Conn) read(connID uint64, b []byte) (int, error) {
 	return n, nil
 }
 
-// currentID returns the connection ID of the current connection.
+// currentHandle returns the connection handle of the current connection.
 // Methods taking a connID fail with [net.ErrClosed] once that connection ends.
-func (conn *Conn) currentID() uint64 {
+func (conn *Conn) currentHandle() uint32 {
 	conn.mu.Lock()
-	id := conn.h.connid
+	id := conn.h.handle
 	conn.mu.Unlock()
 	return id
 }
@@ -418,14 +418,14 @@ func (conn *Conn) currentID() uint64 {
 // concurrent writers: while another goroutine owns the write side it blocks with
 // backoff until that writer releases, the connection closes, or deadline elapses.
 // The returned connID must be released with [Conn.releaseWriteLock].
-func (conn *Conn) acquireWriteLock(connID uint64, deadline *time.Time) (uint64, error) {
+func (conn *Conn) acquireWriteLock(handle uint32, deadline *time.Time) (uint32, error) {
 	var backoffs uint
 	for {
-		if err := conn.checkPipe(connID, deadline); err != nil {
+		if err := conn.checkPipe(handle, deadline); err != nil {
 			return 0, err
 		}
-		if conn.writeLock.CompareAndSwap(0, connID) {
-			return connID, nil
+		if conn.writeLock.CompareAndSwap(0, handle) {
+			return handle, nil
 		}
 		conn.backoff(backoffs)
 		backoffs++
@@ -433,16 +433,16 @@ func (conn *Conn) acquireWriteLock(connID uint64, deadline *time.Time) (uint64, 
 }
 
 // releaseWriteLock releases a write lock previously acquired by [Conn.acquireWriteLock].
-func (conn *Conn) releaseWriteLock(connID uint64) {
-	conn.writeLock.CompareAndSwap(connID, 0)
+func (conn *Conn) releaseWriteLock(handle uint32) {
+	conn.writeLock.CompareAndSwap(handle, 0)
 }
 
-func (conn *Conn) checkPipe(connID uint64, deadline *time.Time) (err error) {
+func (conn *Conn) checkPipe(handle uint32, deadline *time.Time) (err error) {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	if conn.abortErr != nil {
 		err = conn.abortErr
-	} else if connID != conn.h.connid || conn.h.State().IsClosed() {
+	} else if handle != conn.h.handle || conn.h.State().IsClosed() {
 		err = net.ErrClosed
 	} else if deadline != nil && !deadline.IsZero() && time.Since(*deadline) > 0 {
 		err = errDeadlineExceeded
@@ -451,12 +451,12 @@ func (conn *Conn) checkPipe(connID uint64, deadline *time.Time) (err error) {
 }
 
 // checkPipeOpen must be called while holding [Conn.mu].
-func (conn *Conn) checkPipeOpen(connID uint64) error {
+func (conn *Conn) checkPipeOpen(handle uint32) error {
 	if conn.abortErr != nil {
 		return conn.abortErr
 	}
 	state := conn.h.State()
-	if connID != conn.h.connid || state.IsClosed() {
+	if handle != conn.h.handle || state.IsClosed() {
 		return net.ErrClosed
 	}
 	return nil
@@ -539,16 +539,16 @@ func (conn *Conn) isRaddrSet() bool {
 func (conn *Conn) SetDeadline(t time.Time) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	return conn.setDeadline(conn.h.connid, t)
+	return conn.setDeadline(conn.h.handle, t)
 }
 
 // setDeadline must be called while holding [Conn.mu].
-func (conn *Conn) setDeadline(connID uint64, t time.Time) error {
-	err := conn.setReadDeadline(connID, t)
+func (conn *Conn) setDeadline(handle uint32, t time.Time) error {
+	err := conn.setReadDeadline(handle, t)
 	if err != nil {
 		return err
 	}
-	return conn.setWriteDeadline(connID, t)
+	return conn.setWriteDeadline(handle, t)
 }
 
 // SetReadDeadline sets the deadline for future Read calls
@@ -556,13 +556,13 @@ func (conn *Conn) setDeadline(connID uint64, t time.Time) error {
 func (conn *Conn) SetReadDeadline(t time.Time) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	return conn.setReadDeadline(conn.h.connid, t)
+	return conn.setReadDeadline(conn.h.handle, t)
 }
 
 // setReadDeadline must be called while holding [Conn.mu].
-func (conn *Conn) setReadDeadline(connID uint64, t time.Time) error {
+func (conn *Conn) setReadDeadline(handle uint32, t time.Time) error {
 	conn.trace("TCPConn.setReadDeadline:start")
-	err := conn.checkPipeOpen(connID)
+	err := conn.checkPipeOpen(handle)
 	if err == nil {
 		conn.rdead = t
 	}
@@ -577,13 +577,13 @@ func (conn *Conn) setReadDeadline(connID uint64, t time.Time) error {
 func (conn *Conn) SetWriteDeadline(t time.Time) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	return conn.setWriteDeadline(conn.h.connid, t)
+	return conn.setWriteDeadline(conn.h.handle, t)
 }
 
 // setWriteDeadline must be called while holding [Conn.mu].
-func (conn *Conn) setWriteDeadline(connID uint64, t time.Time) error {
+func (conn *Conn) setWriteDeadline(handle uint32, t time.Time) error {
 	conn.trace("TCPConn.SetWriteDeadline:start")
-	err := conn.checkPipeOpen(connID)
+	err := conn.checkPipeOpen(handle)
 	if err == nil {
 		conn.wdead = t
 	}
@@ -611,13 +611,13 @@ func (conn *Conn) backoff(consecutiveBackoffs uint) {
 //
 // The userData argument is attached to the [ConnHandle] for the duration of its life.
 func (conn *Conn) HandleWith(userData any) ConnHandle {
-	return ConnHandle{c: conn, id: conn.currentID(), userdata: userData}
+	return ConnHandle{c: conn, handle: conn.currentHandle(), userdata: userData}
 }
 
 // ConnHandle is a [Conn] handle bound to a single connection. See [Conn.HandleWith].
 type ConnHandle struct {
 	c        *Conn
-	id       uint64
+	handle   uint32
 	userdata any
 }
 
@@ -628,46 +628,46 @@ func (p ConnHandle) UserData() any { return p.userdata }
 func (p ConnHandle) Conn() *Conn { return p.c }
 
 // Read is [Conn.Read] bound to the connection handle.
-func (p ConnHandle) Read(b []byte) (int, error) { return p.c.read(p.id, b) }
+func (p ConnHandle) Read(b []byte) (int, error) { return p.c.read(p.handle, b) }
 
 // Write is [Conn.Write] bound to the connection handle.
-func (p ConnHandle) Write(b []byte) (int, error) { return p.c.write(p.id, b) }
+func (p ConnHandle) Write(b []byte) (int, error) { return p.c.write(p.handle, b) }
 
 // Flush is [Conn.Flush] bound to the connection handle.
-func (p ConnHandle) Flush() error { return p.c.flush(p.id) }
+func (p ConnHandle) Flush() error { return p.c.flush(p.handle) }
 
 // Close is [Conn.Close] bound to the connection handle.
-func (p ConnHandle) Close() error { return p.c.close(p.id) }
+func (p ConnHandle) Close() error { return p.c.close(p.handle) }
 
 // CloseRead is [Conn.CloseRead] bound to the connection handle.
-func (p ConnHandle) CloseRead() error { return p.c.closeRead(p.id) }
+func (p ConnHandle) CloseRead() error { return p.c.closeRead(p.handle) }
 
 // SetDeadline is [Conn.SetDeadline] bound to the connection handle.
 func (p ConnHandle) SetDeadline(t time.Time) error {
 	p.c.mu.Lock()
 	defer p.c.mu.Unlock()
-	return p.c.setDeadline(p.id, t)
+	return p.c.setDeadline(p.handle, t)
 }
 
 // SetReadDeadline is [Conn.SetReadDeadline] bound to the connection handle.
 func (p ConnHandle) SetReadDeadline(t time.Time) error {
 	p.c.mu.Lock()
 	defer p.c.mu.Unlock()
-	return p.c.setReadDeadline(p.id, t)
+	return p.c.setReadDeadline(p.handle, t)
 }
 
 // SetWriteDeadline is [Conn.SetWriteDeadline] bound to the connection handle.
 func (p ConnHandle) SetWriteDeadline(t time.Time) error {
 	p.c.mu.Lock()
 	defer p.c.mu.Unlock()
-	return p.c.setWriteDeadline(p.id, t)
+	return p.c.setWriteDeadline(p.handle, t)
 }
 
 // State returns the TCP state of the connection handle or [StateClosed] if it has ended.
 func (p ConnHandle) State() State {
 	p.c.mu.Lock()
 	defer p.c.mu.Unlock()
-	if p.id != p.c.h.connid {
+	if p.handle != p.c.h.handle {
 		return StateClosed
 	}
 	return p.c.h.State()
@@ -677,7 +677,7 @@ func (p ConnHandle) State() State {
 func (p ConnHandle) LocalPort() uint16 {
 	p.c.mu.Lock()
 	defer p.c.mu.Unlock()
-	if p.id != p.c.h.connid {
+	if p.handle != p.c.h.handle {
 		return 0
 	}
 	return p.c.h.LocalPort()
@@ -688,7 +688,7 @@ func (p ConnHandle) LocalPort() uint16 {
 func (p ConnHandle) RemoteAddrPort() netip.AddrPort {
 	p.c.mu.Lock()
 	defer p.c.mu.Unlock()
-	if p.id != p.c.h.connid {
+	if p.handle != p.c.h.handle {
 		return netip.AddrPort{}
 	}
 	addr, _ := netip.AddrFromSlice(p.c.remoteAddr)

@@ -17,7 +17,12 @@ import (
 //
 // See [Conn] for a higher level abstraction of a TCP connection, and see [ControlBlock] for the low level state machine of a TCP connection.
 type Handler struct {
+	// connid is [lneto.StackNode.ConnectionID] value. Changes on clean close tx finish
+	// while handle stays unchanged so users holding a [ConnHandle] can keep reading until [io.EOF].
 	connid uint64
+	// handle is used primarily by [ConnHandle] to keep track of
+	// instance validity throughout asynchronous user interaction similar to a generational handle.
+	handle uint32
 	scb    ControlBlock
 	bufTx  ringTx
 	bufRx  internal.Ring
@@ -55,7 +60,8 @@ type Handler struct {
 
 // reset clears all state except [ControlBlock] state. So [Handler.State] will remain unchanged. See [Handler.Abort] for full reset.
 func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
-	atomic.AddUint64(&h.connid, 1) // ConnID accessed by external managers.
+	atomic.AddUint32(&h.handle, 1)
+	atomic.AddUint64(&h.connid, 1) // Accessed concurrently by stacks.
 	h.localPort = localPort
 	h.remotePort = remotePort
 	h.closing = false
@@ -80,7 +86,8 @@ func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
 	h.scb.logger.log = scb
 }
 
-// ConnectionID returns the connection identifier which is incremented every time the connection is closed or open.
+// ConnectionID returns the stack registration identifier. It changes every time the connection
+// is opened, aborted or done transmitting after a clean close; stacks discard the registration then.
 func (h *Handler) ConnectionID() *uint64 {
 	return &h.connid
 }
@@ -241,6 +248,10 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 			err = net.ErrClosed // Signal caller to tear down.
 		}
 		return err
+	}
+	if h.IsTxOver() {
+		// Clean close completed (CLOSED or TIME-WAIT with nothing left to send).
+		atomic.AddUint64(&h.connid, 1)
 	}
 	if h.scb.State() == StateClosed {
 		// TCB aborted, likely because it received an ACK in LastAck state.
@@ -530,6 +541,10 @@ func (h *Handler) Send(b []byte) (int, error) {
 		// A sent RST aborts the connection: tear down local state now that the
 		// reset has been written to the wire (frame already in b).
 		h.Abort()
+	} else if h.IsTxOver() {
+		// Final ACK of clean close sent. Release stack registration but keep
+		// connid so Read can still drain buffered data and report io.EOF.
+		atomic.AddUint64(&h.connid, 1)
 	}
 	return datalen, nil
 }

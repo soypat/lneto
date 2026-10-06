@@ -112,7 +112,7 @@ func (listener *Listener) NumberOfActiveAccepted() (nActive int) {
 	defer listener.mu.Unlock()
 	for i := range listener.accepted {
 		h := &listener.accepted[i]
-		if h.c != nil && h.c.h.connid == h.id {
+		if h.c != nil && h.c.h.handle == h.handle {
 			nActive++
 		}
 	}
@@ -184,7 +184,7 @@ func (listener *Listener) Encapsulate(carrierData []byte, offsetToIP, offsetToFr
 		conn := listener.accepted[i].c
 		if conn == nil {
 			continue
-		} else if conn.h.connid != listener.accepted[i].id {
+		} else if conn.h.handle != listener.accepted[i].handle {
 			listener.returnAccepted(i)
 			continue
 		}
