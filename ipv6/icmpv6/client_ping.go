@@ -177,14 +177,19 @@ func (client *Client) encapsEcho(carrierData []byte, frameOffset int) (n int, ds
 		}
 		out := &client.outgoingEcho[idx]
 		efrm := FrameEcho{Frame: ifrm}
+		data := efrm.Data()
+		size := int(out.size)
+		if size > len(data) {
+			// Echo request larger than egress buffer (MTU): cannot be sent, drop it.
+			client.outgoingEcho = slices.Delete(client.outgoingEcho, idx, idx+1)
+			return 0, [16]byte{}, lneto.ErrShortBuffer
+		}
 		efrm.SetType(TypeEchoRequest)
 		efrm.SetIdentifier(client.id)
 		efrm.SetSequenceNumber(client.seq())
 		pattern := out.pattern
-		data := efrm.Data()
-		size := int(out.size)
 		written := 0
-		for written+len(pattern) <= size && written+len(pattern) <= len(data) {
+		for written+len(pattern) <= size {
 			copy(data[written:], pattern)
 			written += len(pattern)
 		}

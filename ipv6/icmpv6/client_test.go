@@ -3,6 +3,8 @@ package icmpv6
 import (
 	"testing"
 
+	"github.com/soypat/lneto"
+
 	"github.com/soypat/lneto/internal"
 )
 
@@ -168,5 +170,48 @@ func testPatternMatch(t *testing.T, data []byte, pattern []byte, size int) {
 		if !internal.BytesEqual(got, want) {
 			t.Errorf("pattern data mismatch at %d, got %s, want %s", i, got, want)
 		}
+	}
+}
+
+// PingStart accepts sizes regardless of MTU; Encapsulate must not overrun a smaller egress buffer.
+func TestPingLargerThanBuffer(t *testing.T) {
+	const bufsize = 64 // Echo data space is bufsize-sizeHeader.
+	tests := []struct {
+		name    string
+		pattern []byte
+		size    uint16
+	}{
+		{name: "size much larger", pattern: []byte("ab12"), size: 1000},
+		// Full patterns fit, remainder copy runs past data end.
+		{name: "pattern remainder overrun", pattern: []byte("abcde"), size: bufsize - sizeHeader + 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var client Client
+			err := client.Configure(ClientConfig{
+				ResponseQueueBuffer: make([]byte, bufsize),
+				ResponseQueueLimit:  2,
+				HashSeed:            testHashSeed,
+				ID:                  1,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			key, err := client.PingStart([16]byte{1}, tt.pattern, tt.size)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var buf [bufsize]byte
+			n, err := client.Encapsulate(buf[:], -1, 0) // Must not panic.
+			if n != 0 || err != lneto.ErrShortBuffer {
+				t.Fatalf("want (0, ErrShortBuffer) for oversized ping, got (%d, %v)", n, err)
+			}
+			if _, ok := client.PingPeek(key); ok {
+				t.Error("oversized ping should be dropped")
+			}
+			if n, err = client.Encapsulate(buf[:], -1, 0); n != 0 || err != nil {
+				t.Errorf("want nothing pending after drop, got (%d, %v)", n, err)
+			}
+		})
 	}
 }
