@@ -64,8 +64,8 @@ func TestStackAsyncListener_SingleConnection(t *testing.T) {
 	}
 
 	// Create pool and listener for server.
-	pool, err := NewTCPPool(TCPPoolConfig{
-		RandSeed:           1,
+	pool, err := newTCPPool(&TCPPoolConfig{
+		key:                [16]byte{1},
 		PoolSize:           1,
 		QueueSize:          4,
 		TxBufSize:          MTU,
@@ -155,8 +155,7 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 	}
 
 	// Create pool and listener for server.
-	pool, err := NewTCPPool(TCPPoolConfig{
-		RandSeed:           1,
+	pool, err := sv.NewTCPPool(TCPPoolConfig{
 		PoolSize:           poolsize,
 		QueueSize:          4,
 		TxBufSize:          bufsize,
@@ -245,8 +244,8 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 func TestListener_Close(t *testing.T) {
 	const svPort uint16 = 80
 
-	pool, err := NewTCPPool(TCPPoolConfig{
-		RandSeed:           1,
+	pool, err := newTCPPool(&TCPPoolConfig{
+		key:                [16]byte{1},
 		PoolSize:           1,
 		QueueSize:          4,
 		TxBufSize:          512,
@@ -288,8 +287,8 @@ func TestListener_Close(t *testing.T) {
 func TestTCPListener_CloseUnblocksAccept(t *testing.T) {
 	const svPort uint16 = 80
 
-	pool, err := NewTCPPool(TCPPoolConfig{
-		RandSeed:           1,
+	pool, err := newTCPPool(&TCPPoolConfig{
+		key:                [16]byte{1},
 		PoolSize:           1,
 		QueueSize:          4,
 		TxBufSize:          512,
@@ -348,8 +347,8 @@ func TestTCPListener_CloseUnblocksAccept(t *testing.T) {
 func TestListener_ResetAfterClose(t *testing.T) {
 	const svPort uint16 = 80
 
-	pool, err := NewTCPPool(TCPPoolConfig{
-		RandSeed:           1,
+	pool, err := newTCPPool(&TCPPoolConfig{
+		key:                [16]byte{1},
 		PoolSize:           1,
 		QueueSize:          4,
 		TxBufSize:          512,
@@ -440,7 +439,6 @@ func TestTCPRetransmitsLostSegment(t *testing.T) {
 	// and resume the two independently.
 	newPool := func(yield lneto.BackoffStrategy) TCPPoolConfig {
 		return TCPPoolConfig{
-			RandSeed: 1,
 			PoolSize: 2, QueueSize: 4,
 			TxBufSize: bufSize, RxBufSize: bufSize,
 			// Well past the simulated time this test spends, so the pool never

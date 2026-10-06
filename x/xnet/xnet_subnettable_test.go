@@ -67,8 +67,7 @@ func TestStackAsync_ListenerSynAckAddressedToClient(t *testing.T) {
 	sv.SetGatewayHardwareAddr(routerMAC)
 	sv.SetSubnet4(sv.Addr4(), 24)
 
-	pool, err := NewTCPPool(TCPPoolConfig{
-		RandSeed:           1,
+	pool, err := sv.NewTCPPool(TCPPoolConfig{
 		PoolSize:           1,
 		QueueSize:          4,
 		TxBufSize:          mtu,

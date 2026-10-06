@@ -91,9 +91,9 @@ type StackConfig struct {
 	NTPServer netip.Addr
 	// RandSeed used to generate pseudo-random numbers for protocol functioning. See [StackConfig.Entropy].
 	RandSeed int64
-	// Entropy is a [io.Reader]-like signature callback to read from a source of true randomness.
+	// Entropy reads from a source of true randomness to dst. Must return data read n=len(dst) or an error indicating why buffer was not filled.
 	// "Good" entropy is required for compliance with RFC 6528 ISN generation.
-	Entropy func([]byte) (int, error)
+	Entropy func(dst []byte) (n int, _ error)
 	// Hostname is used for DHCP hostname and ICMP ID.
 	Hostname string
 

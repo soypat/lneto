@@ -205,11 +205,7 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 		} else {
 			// LISTEN TCP: passive connection. fulfills net.Listener interface.
 			plcfg := s.plcfg
-			if plcfg.RandSeed == 0 {
-				// Distinct ISN key per listener.
-				plcfg.RandSeed = int64(s.blk.async.Prand32())<<32 | int64(s.blk.async.Prand32())
-			}
-			pool, err := NewTCPPool(plcfg)
+			pool, err := s.blk.async.NewTCPPool(plcfg)
 			if err != nil {
 				return nil, err
 			}

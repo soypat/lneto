@@ -2,7 +2,6 @@ package xnet
 
 import (
 	"context"
-	"encoding/binary"
 	"log/slog"
 	"sync"
 	"time"
@@ -40,16 +39,16 @@ type TCPPoolConfig struct {
 	TxBufSize int
 	RxBufSize int
 
-	// RandSeed seeds the secret key for Initial Sequence Number generation. See [tcp.ISN]. Must be non-zero.
-	RandSeed int64
+	// key used for Initial Sequence Number generation. Should be from a high-entropy source. Cannot be zero.
+	key [16]byte
 
 	Logger     *slog.Logger
 	ConnLogger *slog.Logger
 
 	// NanoTime returns the current monotonic time in nanoseconds.
-	// Used for pool timeout tracking. If nil, defaults to time.Now().UnixNano().
+	// Nanotime is monotonic clock used for pool timeout tracking.
 	// Retransmission timing is not driven by this clock: a [tcp.Policy] carries
-	// its own. See NewPolicy.
+	// its own. See [TCPPoolConfig.NewPolicy].
 	NanoTime func() int64
 	// EstablishedTimeout sets the timeout for a TCP connection since it is acquired until it is established.
 	// If the connection does not establish in this time it will be closed by the pool.
@@ -67,8 +66,17 @@ type TCPPoolConfig struct {
 	NewPolicy func() tcp.Policy
 }
 
-func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
-	if cfg.EstablishedTimeout <= 0 || cfg.ClosingTimeout <= 0 || cfg.RandSeed == 0 {
+// NewTCPPool using StackAsync's internal ISN key.
+func (s *StackAsync) NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
+	if !internal.IsZeroed(cfg.key) {
+		return nil, lneto.ErrInvalidConfig
+	}
+	cfg.key = s.key
+	return newTCPPool(&cfg)
+}
+
+func newTCPPool(cfg *TCPPoolConfig) (*TCPPool, error) {
+	if cfg.EstablishedTimeout <= 0 || cfg.ClosingTimeout <= 0 || internal.IsZeroed(cfg.key) {
 		return nil, lneto.ErrInvalidConfig
 	} else if cfg.NewBackoff == nil {
 		return nil, lneto.ErrMissingHALConfig
@@ -83,10 +91,9 @@ func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
 		estbTimeout:    cfg.EstablishedTimeout,
 		closingTimeout: cfg.ClosingTimeout,
 		logger:         cfg.Logger,
+		key:            cfg.key,
 	}
 	pool.mono.Config(cfg.NanoTime)
-	binary.LittleEndian.PutUint64(pool.key[:], uint64(cfg.RandSeed))
-	binary.LittleEndian.PutUint64(pool.key[8:], uint64(pool.now()))
 	allocPerConn := cfg.TxBufSize + cfg.RxBufSize
 	bufSpace := make([]byte, n*allocPerConn)
 	for i := range pool.conns {

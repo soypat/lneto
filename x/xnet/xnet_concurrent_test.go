@@ -48,8 +48,7 @@ func TestTCPListener_ConcurrentEcho(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tcpPool, err := NewTCPPool(TCPPoolConfig{
-		RandSeed:           1,
+	tcpPool, err := serverStack.NewTCPPool(TCPPoolConfig{
 		PoolSize:           numClients,
 		QueueSize:          4,
 		TxBufSize:          512,
@@ -560,9 +559,8 @@ func TestStackGoDialRefusedNoRedial(t *testing.T) {
 	sv.SetGatewayHardwareAddr(cl.HardwareAddr())
 	cl.SetGatewayHardwareAddr(sv.HardwareAddr())
 	// Listener with no free connections answers every SYN with RST.
-	pool, err := NewTCPPool(TCPPoolConfig{
+	pool, err := sv.NewTCPPool(TCPPoolConfig{
 		PoolSize:           0,
-		RandSeed:           randseed,
 		EstablishedTimeout: time.Second,
 		ClosingTimeout:     time.Second,
 		NewBackoff:         func() lneto.BackoffStrategy { return backoffYield },
