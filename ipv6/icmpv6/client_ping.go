@@ -150,10 +150,16 @@ func (client *Client) encapsEcho(carrierData []byte, frameOffset int) (n int, ds
 		// Priority: send echo reply.
 		inc := client.incomingEcho[0]
 		efrm := FrameEcho{Frame: ifrm}
+		dataLen := int(inc.length)
+		if dataLen > len(efrm.Data()) {
+			// Echo request larger than egress buffer (MTU): reply cannot be sent, drop it.
+			client.responseRing.ReadDiscard(dataLen)
+			client.incomingEcho = slices.Delete(client.incomingEcho, 0, 1)
+			return 0, [16]byte{}, lneto.ErrShortBuffer
+		}
 		efrm.SetType(TypeEchoReply)
 		efrm.SetIdentifier(inc.id)
 		efrm.SetSequenceNumber(inc.seq)
-		dataLen := int(inc.length)
 		_, rerr := client.responseRing.Read(efrm.Data()[:dataLen])
 		if rerr != nil {
 			return 0, [16]byte{}, rerr
@@ -171,14 +177,19 @@ func (client *Client) encapsEcho(carrierData []byte, frameOffset int) (n int, ds
 		}
 		out := &client.outgoingEcho[idx]
 		efrm := FrameEcho{Frame: ifrm}
+		data := efrm.Data()
+		size := int(out.size)
+		if size > len(data) {
+			// Echo request larger than egress buffer (MTU): cannot be sent, drop it.
+			client.outgoingEcho = slices.Delete(client.outgoingEcho, idx, idx+1)
+			return 0, [16]byte{}, lneto.ErrShortBuffer
+		}
 		efrm.SetType(TypeEchoRequest)
 		efrm.SetIdentifier(client.id)
 		efrm.SetSequenceNumber(client.seq())
 		pattern := out.pattern
-		data := efrm.Data()
-		size := int(out.size)
 		written := 0
-		for written+len(pattern) <= size && written+len(pattern) <= len(data) {
+		for written+len(pattern) <= size {
 			copy(data[written:], pattern)
 			written += len(pattern)
 		}
