@@ -122,7 +122,12 @@ func TestStackGoTCPDialRetriesPendingControl(t *testing.T) {
 	const MTU = ethernet.MaxMTU
 	const tcptimeout = time.Second
 	const yield = 1 * time.Millisecond
+	// closure to simulate time.
+	var now time.Duration
+	nanotime := func() int64 { return int64(now) }
 	client, sv, _, _ := newTCPStacks(t, seed, MTU)
+	client.mono.Config(nanotime)
+
 	tsched := ltesto.NewSched(t)
 	tgoro := tsched.Goro()
 	sg := client.StackBlocking(tgoro.Yield).StackGo(StackGoConfig{
@@ -137,10 +142,8 @@ func TestStackGoTCPDialRetriesPendingControl(t *testing.T) {
 		TCPDialTimeout: tcptimeout,
 		TCPDialRetries: 2,
 	})
+
 	t.Log("start")
-	// closure to simulate time.
-	var now time.Duration
-	sg.blk._nanotime = func() int64 { return int64(now) }
 
 	laddr := netip.AddrPortFrom(netip.AddrFrom4(client.Addr4()), 1234)
 	raddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), 22)
@@ -1296,7 +1299,13 @@ func TestStackGoTCPDialSurvivesManyWaitIterations(t *testing.T) {
 	const MTU = ethernet.MaxMTU
 	const tcptimeout = time.Second
 	const quietIters = 4000 // well past the former iteration cap
+	// Simulated clock: the quiet phase below advances less than 5% of the dial
+	// timeout, so a timeout error there can only come from iteration counting.
+	var now time.Duration
+	nanotime := func() int64 { return int64(now) }
 	client, sv, _, svconn := newTCPStacks(t, seed, MTU)
+	client.mono.Config(nanotime)
+
 	err := sv.ListenTCP4(svconn, 22)
 	if err != nil {
 		t.Fatal(err)
@@ -1315,10 +1324,6 @@ func TestStackGoTCPDialSurvivesManyWaitIterations(t *testing.T) {
 		TCPDialTimeout: tcptimeout,
 		TCPDialRetries: 1,
 	})
-	// Simulated clock: the quiet phase below advances less than 5% of the dial
-	// timeout, so a timeout error there can only come from iteration counting.
-	var now time.Duration
-	sg.blk._nanotime = func() int64 { return int64(now) }
 
 	laddr := netip.AddrPortFrom(netip.AddrFrom4(client.Addr4()), 1234)
 	raddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), 22)

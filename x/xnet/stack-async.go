@@ -65,10 +65,9 @@ type StackAsync struct {
 
 	sysprec int8 // NTP system precision.
 
-	_nanotime func() int64
-	monostart time.Time
-	prng      uint32
-	key       [16]byte // See [tcp.ISN].
+	mono internal.Monotonic
+	prng uint32
+	key  [16]byte // See [tcp.ISN].
 
 	addrBuf    [6]byte // Temporary buffer for As4()/HardwareAddr6() results to avoid heap escapes.
 	addrbufnip [4]netip.Addr
@@ -228,10 +227,7 @@ func (s *StackAsync) Reset(cfg StackConfig) (err error) {
 	linkNodes := 2 // ARP and IPv4 nodes
 	s.ipv6enabled = ipv6Enabled
 	s.stack6 = nil
-	s._nanotime = cfg.Nanotime
-	if cfg.Nanotime == nil {
-		s.monostart = time.Now()
-	}
+	s.mono.Config(cfg.Nanotime)
 	if cfg.Entropy != nil {
 		n, err := cfg.Entropy(s.key[:])
 		if err == nil && n != len(s.key) {
@@ -243,7 +239,7 @@ func (s *StackAsync) Reset(cfg StackConfig) (err error) {
 	} else {
 		// Best attempt at randomness.
 		binary.LittleEndian.PutUint64(s.key[:], uint64(cfg.RandSeed))
-		binary.LittleEndian.PutUint64(s.key[8:], uint64(s.mustNanotime()))
+		binary.LittleEndian.PutUint64(s.key[8:], uint64(s.mono.Nanotime()))
 	}
 
 	if s.ipv6enabled {
@@ -407,14 +403,6 @@ func (s *StackAsync) prand32() uint32 {
 	return seed
 }
 
-// mustNanotime is monotonic time is needed for critical/secure functionality.
-func (s *StackAsync) mustNanotime() int64 {
-	if s._nanotime != nil {
-		return s._nanotime()
-	}
-	return time.Since(s.monostart).Nanoseconds()
-}
-
 func (s *StackAsync) SetAddr4(addr [4]byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -538,7 +526,7 @@ func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, raddrp netip.Addr
 		defer s.mu.Unlock()
 		raddr := addr.As16()
 		laddr := s.stack6.Addr6()
-		return s.stack6.DialTCP6(conn, localPort, raddr, raddrp.Port(), tcp.ISN(&s.key, s.mustNanotime(), laddr[:], raddr[:], localPort, raddrp.Port()))
+		return s.stack6.DialTCP6(conn, localPort, raddr, raddrp.Port(), tcp.ISN(&s.key, s.mono.Nanotime(), laddr[:], raddr[:], localPort, raddrp.Port()))
 	}
 	return lneto.ErrInvalidAddr
 }
@@ -605,7 +593,7 @@ func (s *StackAsync) isn4(raddr []byte, rport, lport uint16) tcp.Value {
 	if len(raddr) == 0 {
 		raddr = s.addrBuf[:] // use garbage in addrBuf.
 	}
-	return tcp.ISN(&s.key, s.mustNanotime(), localaddr[:], raddr, lport, rport)
+	return tcp.ISN(&s.key, s.mono.Nanotime(), localaddr[:], raddr, lport, rport)
 }
 
 func (s *StackAsync) RegisterListenerTCP(listener *tcp.Listener) (err error) {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -21,7 +22,7 @@ type TCPPool struct {
 	closingAt      []int64
 	abortedAt      []int64
 	key            [16]byte // See [tcp.ISN].
-	_now           func() int64
+	mono           internal.Monotonic
 	estbTimeout    time.Duration
 	closingTimeout time.Duration
 	logger         *slog.Logger
@@ -79,11 +80,11 @@ func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
 		abortedAt:      make([]int64, n),
 		conns:          make([]tcp.Conn, n),
 		userData:       make([]any, n),
-		_now:           cfg.NanoTime,
 		estbTimeout:    cfg.EstablishedTimeout,
 		closingTimeout: cfg.ClosingTimeout,
 		logger:         cfg.Logger,
 	}
+	pool.mono.Config(cfg.NanoTime)
 	binary.LittleEndian.PutUint64(pool.key[:], uint64(cfg.RandSeed))
 	binary.LittleEndian.PutUint64(pool.key[8:], uint64(pool.now()))
 	allocPerConn := cfg.TxBufSize + cfg.RxBufSize
@@ -194,10 +195,7 @@ func (p *TCPPool) since(t int64) time.Duration {
 }
 
 func (p *TCPPool) now() int64 {
-	if p._now == nil {
-		return time.Now().UnixNano()
-	}
-	return p._now()
+	return p.mono.Nanotime()
 }
 
 func (p *TCPPool) trace(msg string, attrs ...slog.Attr) {

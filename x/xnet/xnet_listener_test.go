@@ -401,6 +401,11 @@ func TestTCPRetransmitsLostSegment(t *testing.T) {
 		// bare ACK would exercise the other direction's recovery instead.
 		minDataFrame = 14 + 20 + 20 + 8
 	)
+	// Simulated monotonic clock. Only the driver writes it, and only while every
+	// scheduled goroutine is parked, so it needs no synchronization of its own.
+	var now int64
+	nanotime := func() int64 { return now }
+
 	client, sv := new(StackAsync), new(StackAsync)
 	if err := client.Reset(StackConfig{
 		Hostname:          "rtx-client",
@@ -410,6 +415,7 @@ func TestTCPRetransmitsLostSegment(t *testing.T) {
 		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 90},
 		MTU:               MTU,
 		ICMPQueueLimit:    2,
+		Nanotime:          nanotime,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -429,11 +435,6 @@ func TestTCPRetransmitsLostSegment(t *testing.T) {
 
 	tsched := ltesto.NewSched(t)
 	svGoro, clGoro := tsched.Goro(), tsched.Goro()
-
-	// Simulated monotonic clock. Only the driver writes it, and only while every
-	// scheduled goroutine is parked, so it needs no synchronization of its own.
-	var now int64
-	nanotime := func() int64 { return now }
 
 	// Each side backs off into its own scheduler handle, so the driver can park
 	// and resume the two independently.
@@ -465,8 +466,6 @@ func TestTCPRetransmitsLostSegment(t *testing.T) {
 		TCPDialTimeout:     60 * time.Second,
 		TCPDialRetries:     1,
 	})
-	svGo.blk._nanotime = nanotime
-	clGo.blk._nanotime = nanotime
 
 	lsAny, err := svGo.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockSTREAM,
 		netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort), netip.AddrPort{})
