@@ -446,3 +446,59 @@ func withQU(unicast bool) dns.Class {
 	}
 	return dns.ClassINET | (1 << 15) // QU bit
 }
+
+// TestMDNS_QDCountAlloc checks an incoming mDNS query with an attacker controlled
+// QDCOUNT does not cause a heap allocation sized by QDCOUNT.
+func TestMDNS_QDCountAlloc(t *testing.T) {
+	const MTU = ethernet.MaxMTU
+	svcName := dns.MustNewName("My Web._http._tcp.local")
+	svc := mdns.Service{
+		Name: svcName,
+		Host: dns.MustNewName("mydevice.local"),
+		Addr: []byte{192, 168, 1, 50},
+		Port: 80,
+	}
+	mcastAddr := []byte{224, 0, 0, 251}
+	responderMAC := [6]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x01}
+	querierMAC := [6]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x02}
+	responderStack, _ := newMDNSStack(t, "responder", 1111,
+		netip.AddrFrom4([4]byte{192, 168, 1, 50}), responderMAC, querierMAC,
+		mdns.ClientConfig{LocalPort: mdns.Port, Services: []mdns.Service{svc}, MulticastAddr: mcastAddr},
+	)
+	querierStack, querierClient := newMDNSStack(t, "querier", 2222,
+		netip.AddrFrom4([4]byte{192, 168, 1, 66}), querierMAC, responderMAC,
+		mdns.ClientConfig{LocalPort: mdns.Port, MulticastAddr: mcastAddr},
+	)
+	err := querierClient.StartResolve(mdns.ResolveConfig{
+		Questions:          []dns.Question{{Name: svcName, Type: dns.TypeSRV, Class: dns.ClassINET}},
+		MaxResponseAnswers: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf [MTU + ethernet.MaxOverheadSize]byte
+	n, err := querierStack.EgressEthernet(buf[:])
+	if err != nil || n == 0 {
+		t.Fatal("querier encapsulate:", err, n)
+	}
+	pkt := buf[:n]
+	ifrm, err := ipv4.NewFrame(pkt[14:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	ufrm, err := udp.NewFrame(ifrm.Payload())
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary.BigEndian.PutUint16(ufrm.Payload()[4:], 0xffff) // QDCOUNT, only 1 question present.
+	var crc lneto.CRC791
+	ifrm.CRCWriteUDPPseudo(&crc, ufrm.Length())
+	ufrm.SetCRC(0)
+	ufrm.SetCRC(lneto.NeverZeroSum(crc.PayloadSum16(ifrm.Payload())))
+	allocs := testing.AllocsPerRun(10, func() {
+		responderStack.IngressEthernet(pkt) // Error irrelevant, must not allocate.
+	})
+	if allocs > 0 {
+		t.Errorf("mDNS query with QDCOUNT=0xffff allocated %v times per packet", allocs)
+	}
+}

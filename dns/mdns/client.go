@@ -53,7 +53,7 @@ type Client struct {
 	// Response state:
 	services []Service // Stores services we'd broadcast.
 	rans     []dns.Resource
-	rqst     []dns.Question
+	rqst     dns.Question // Scratch for streaming incoming query questions.
 }
 
 type ClientConfig struct {
@@ -69,7 +69,6 @@ func (c *Client) Configure(cfg ClientConfig) error {
 	c.reset(cfg.LocalPort)
 	c.services = append(c.services[:0], cfg.Services...)
 	c.ip = append(c.ip[:0], cfg.MulticastAddr...)
-	internal.SliceReuse(&c.rqst, len(cfg.Services))
 	// Each service can produce up to 4 answer records (PTR+SRV+TXT+A).
 	nrans := 2 * len(cfg.Services)
 	if nrans > 0 {
@@ -114,6 +113,7 @@ func (c *Client) reset(localport uint16) {
 		qans:     c.qans[:0],
 		services: c.services[:0],
 		rans:     c.rans[:0],
+		rqst:     dns.Question{Name: c.rqst.Name},
 		ip:       c.ip[:0],
 	}
 }
@@ -172,14 +172,22 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 	freeAns := cap(c.rans) - len(c.rans)
 	if !isresponse && len(c.services) > 0 && freeAns > 0 {
 		// Incoming query — match against our services.
-		var query dns.Message
-		query.LimitResourceDecoding(f.QDCount(), 0, 0, 0)
-		_, incomplete, err := query.Decode(frame)
+		// Validate whole message without decoding into memory.
+		_, incomplete, err := dns.DecodeMessage(nil, nil, nil, nil, frame)
 		if err != nil && !incomplete {
 			return err
 		}
-		for i := range query.Questions {
-			q := &query.Questions[i]
+		// Stream questions through a single scratch question so every question is matched
+		// without sizing allocation by attacker controlled QDCOUNT. Loop is bounded by frame length.
+		nans := len(c.rans)
+		q := &c.rqst
+		off := uint16(dns.SizeHeader)
+		for range f.QDCount() {
+			off, err = q.Decode(frame, off)
+			if err != nil {
+				c.rans = c.rans[:nans] // Malformed query: discard answers it produced.
+				return err
+			}
 			for j := range c.services {
 				if matchQuestion(q, &c.services[j]) {
 					addServiceAnswers(&c.rans, q, &c.services[j])

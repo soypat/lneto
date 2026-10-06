@@ -589,3 +589,57 @@ func buildMDNSQuery(t *testing.T, buf []byte, name string, qtype dns.Type, unica
 	}
 	return len(buf)
 }
+
+// A matching question past the first few must still be answered.
+func TestClientMatchesQuestionPastFirstFew(t *testing.T) {
+	svc := testService()
+	responder := newResponder(t, []Service{svc})
+	questions := []dns.Question{
+		{Name: mustNewName("_ftp._tcp.local"), Type: dns.TypePTR, Class: dns.ClassINET},
+		{Name: mustNewName("_ssh._tcp.local"), Type: dns.TypePTR, Class: dns.ClassINET},
+		{Name: mustNewName("_smb._tcp.local"), Type: dns.TypePTR, Class: dns.ClassINET},
+		{Name: mustNewName("_ipp._tcp.local"), Type: dns.TypePTR, Class: dns.ClassINET},
+		{Name: mustNewName("_http._tcp.local"), Type: dns.TypePTR, Class: dns.ClassINET},
+	}
+	querier := newQuerier(t, questions, 4)
+	var buf [1024]byte
+	if n := queryRespond(t, querier, responder, buf[:]); n == 0 {
+		t.Fatal("responder did not answer matching 5th question")
+	}
+}
+
+// A forged QDCOUNT larger than the frame holds must be rejected without answering.
+func TestClientForgedQDCount(t *testing.T) {
+	svc := testService()
+	responder := newResponder(t, []Service{svc})
+	querier := newQuerier(t, []dns.Question{{
+		Name: mustNewName("_http._tcp.local"), Type: dns.TypePTR, Class: dns.ClassINET,
+	}}, 4)
+	var buf [1024]byte
+	n, _ := querier.Encapsulate(buf[:], -1, 0)
+	binary.BigEndian.PutUint16(buf[4:], 0xffff) // QDCOUNT.
+	if err := responder.Demux(buf[:n], 0); err == nil {
+		t.Error("expected error for forged QDCOUNT")
+	}
+	if n, _ = responder.Encapsulate(buf[:], -1, 0); n != 0 {
+		t.Error("responder should not answer malformed query")
+	}
+}
+
+// A malformed question after a matching one must not produce answers.
+func TestClientMalformedTrailingQuestion(t *testing.T) {
+	svc := testService()
+	responder := newResponder(t, []Service{svc})
+	querier := newQuerier(t, []dns.Question{
+		{Name: mustNewName("_http._tcp.local"), Type: dns.TypePTR, Class: dns.ClassINET},
+		{Name: mustNewName("_ftp._tcp.local"), Type: dns.TypePTR, Class: dns.ClassINET},
+	}, 4)
+	var buf [1024]byte
+	n, _ := querier.Encapsulate(buf[:], -1, 0)
+	if err := responder.Demux(buf[:n-3], 0); err == nil { // Cut 2nd question's type/class.
+		t.Error("expected error for truncated question")
+	}
+	if n, _ = responder.Encapsulate(buf[:], -1, 0); n != 0 {
+		t.Error("responder should not answer malformed query")
+	}
+}
