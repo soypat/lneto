@@ -38,6 +38,7 @@ type handlers struct {
 func (h *handlers) reset(context string, maxNodes int) {
 	h.nodes = slices.Grow(h.nodes[:0], maxNodes)
 	h.context = context
+	h.encapsIdx = 0
 }
 
 func (h *handlers) registerByProto(n node) error {
