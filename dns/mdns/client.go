@@ -69,13 +69,13 @@ func (c *Client) Configure(cfg ClientConfig) error {
 	c.reset(cfg.LocalPort)
 	c.services = append(c.services[:0], cfg.Services...)
 	c.ip = append(c.ip[:0], cfg.MulticastAddr...)
-	internal.SliceReuse(&c.rqst, len(cfg.Services))
 	// Each service can produce up to 4 answer records (PTR+SRV+TXT+A).
 	nrans := 2 * len(cfg.Services)
 	if nrans > 0 {
 		nrans = max(4, nrans)
 	}
 	internal.SliceReuse(&c.rans, nrans)
+	internal.SliceReuse(&c.rqst, nrans)
 	return nil
 }
 
@@ -114,6 +114,7 @@ func (c *Client) reset(localport uint16) {
 		qans:     c.qans[:0],
 		services: c.services[:0],
 		rans:     c.rans[:0],
+		rqst:     c.rqst[:0],
 		ip:       c.ip[:0],
 	}
 }
@@ -172,9 +173,10 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 	freeAns := cap(c.rans) - len(c.rans)
 	if !isresponse && len(c.services) > 0 && freeAns > 0 {
 		// Incoming query — match against our services.
-		var query dns.Message
-		query.LimitResourceDecoding(f.QDCount(), 0, 0, 0)
+		// Decode into preallocated questions, never size allocation by attacker controlled QDCOUNT.
+		query := dns.Message{Questions: c.rqst[:0]}
 		_, incomplete, err := query.Decode(frame)
+		c.rqst = query.Questions[:0] // Keep name buffers grown during decode.
 		if err != nil && !incomplete {
 			return err
 		}
