@@ -713,7 +713,6 @@ func setIfZero[T comparable](a *T, v T) {
 // The listener is registered on stack when stack is non-nil.
 func newTestListener(t testing.TB, stack *StackAsync, port uint16, cfg TCPPoolConfig) *tcp.Listener {
 	t.Helper()
-	setIfZero(&cfg.RandSeed, 1)
 	setIfZero(&cfg.QueueSize, 4)
 	setIfZero(&cfg.TxBufSize, ethernet.MaxMTU)
 	setIfZero(&cfg.RxBufSize, ethernet.MaxMTU)
@@ -722,7 +721,7 @@ func newTestListener(t testing.TB, stack *StackAsync, port uint16, cfg TCPPoolCo
 	if cfg.NewBackoff == nil {
 		cfg.NewBackoff = newBackoffYield
 	}
-	pool, err := NewTCPPool(cfg)
+	pool, err := stack.NewTCPPool(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -812,9 +811,8 @@ func TestListener_ResetReleasesPoolConns(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tst := testerFrom(t, mtu)
 			sv := newTestStack(t, "sv1", 1, mtu, 1, 0)
-			pool, err := NewTCPPool(TCPPoolConfig{
+			pool, err := sv.NewTCPPool(TCPPoolConfig{
 				PoolSize:           1,
-				RandSeed:           1,
 				QueueSize:          4,
 				TxBufSize:          mtu,
 				RxBufSize:          mtu,
