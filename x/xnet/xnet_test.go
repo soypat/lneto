@@ -536,6 +536,12 @@ func (tst *tester) TestTCPClose(stack1, stack2 *StackAsync, conn1, conn2 *tcp.Co
 		if !failed && t.Failed() {
 			t.Error(i, exch.SourceIdx, "close failure")
 		}
+		if i == 2 {
+			// Passive side in CLOSE-WAIT: FIN only leaves after its application closes.
+			if err := conn2.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
 		if exch.WantFlags == 0 {
 			continue
 		}

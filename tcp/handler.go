@@ -419,12 +419,6 @@ func (h *Handler) Send(b []byte) (int, error) {
 	requeueControl := h.requeueControl
 	buffered := h.bufTx.BufferedUnsent()
 	hasPending := rtx || h.scb.HasPending() // A directed resend is pending work even with nothing queued.
-	if h.scb.State() == StateCloseWait && !h.closing && buffered == 0 && !hasPending {
-		// Remote closed with no application data left to send: initiate our own close.
-		// Checked here (not in Recv) so the application can still write in CLOSE-WAIT
-		// before Send is called, implementing the half-close per RFC 9293 §3.5.
-		h.closing = true
-	}
 	if !awaitingSyn && !requeueControl && buffered == 0 && !h.closing && !hasPending {
 		// Early nop short circuit.
 		return 0, nil
