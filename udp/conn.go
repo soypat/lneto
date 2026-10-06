@@ -148,8 +148,8 @@ func (conn *Conn) Write(b []byte) (int, error) {
 		}
 		n, err := conn.h.Write(b)
 		conn.mu.Unlock()
-		if n > 0 || err != nil {
-			return n, err
+		if n > 0 || (err != nil && err != lneto.ErrExhausted) {
+			return n, err // Success or permanent failure such as ErrShortBuffer.
 		}
 		if conn.deadlineExceeded(&conn.wdead) {
 			return 0, os.ErrDeadlineExceeded

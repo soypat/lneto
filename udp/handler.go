@@ -133,14 +133,14 @@ func (h *Handler) Send(buf []byte) (int, error) {
 }
 
 // Write enqueues a datagram payload for later transmission via [Handler.Send].
-// Returns [lneto.ErrExhausted] if the tx datagram queue is full and
-// [lneto.ErrShortBuffer] if the datagram would exceed the configured MTU.
+// Returns [lneto.ErrExhausted] if the tx datagram queue or buffer is full, retrying later may succeed.
+// Returns [lneto.ErrShortBuffer] if the datagram would exceed the configured MTU or the tx buffer size, which is permanent.
 func (h *Handler) Write(b []byte) (int, error) {
-	if h.exceedsMTU(len(b)) {
+	if h.exceedsMTU(len(b)) || len(b) > h.txRing.Size() {
 		return 0, lneto.ErrShortBuffer
 	}
 	free := cap(h.txDgrams) - len(h.txDgrams)
-	if free == 0 {
+	if free == 0 || h.txRing.Free() < len(b) {
 		return 0, lneto.ErrExhausted
 	}
 	_, err := h.txRing.Write(b)
