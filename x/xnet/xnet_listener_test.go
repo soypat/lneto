@@ -103,7 +103,7 @@ func TestStackAsyncListener_SingleConnection(t *testing.T) {
 	if listener.NumberOfReadyToAccept() != 1 {
 		t.Fatalf("after handshake: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
 	}
-	pinned, _, err := listener.TryAccept()
+	pinned, err := listener.TryAccept()
 	if err != nil {
 		t.Fatalf("TryAccept: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 		if listener.NumberOfReadyToAccept() != 1 {
 			t.Fatalf("after handshake: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
 		}
-		pinned, _, err := listener.TryAccept()
+		pinned, err := listener.TryAccept()
 		svconn := pinned.Conn()
 		if err != nil {
 			t.Fatal(err)
@@ -698,5 +698,171 @@ func TestStackGoListenerHalfOpenTimeout(t *testing.T) {
 	tst.ensureQuiesce(cl, sv, lim)
 	if readyToAccept(t, l) != 1 {
 		t.Fatalf("listener with %d timed-out half-open conns did not accept new client (client state %s)", poolSize, clconn.State())
+	}
+}
+
+func setIfZero[T comparable](a *T, v T) {
+	var z T
+	if *a == z {
+		*a = v
+	}
+}
+
+// newTestListener returns a listener on port backed by a pool built from cfg.
+// Zero RandSeed, QueueSize, buffer sizes, timeouts and NewBackoff take test defaults.
+// The listener is registered on stack when stack is non-nil.
+func newTestListener(t testing.TB, stack *StackAsync, port uint16, cfg TCPPoolConfig) *tcp.Listener {
+	t.Helper()
+	setIfZero(&cfg.QueueSize, 4)
+	setIfZero(&cfg.TxBufSize, ethernet.MaxMTU)
+	setIfZero(&cfg.RxBufSize, ethernet.MaxMTU)
+	setIfZero(&cfg.EstablishedTimeout, 10*time.Second)
+	setIfZero(&cfg.ClosingTimeout, 10*time.Second)
+	if cfg.NewBackoff == nil {
+		cfg.NewBackoff = newBackoffYield
+	}
+	pool, err := stack.NewTCPPool(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener := new(tcp.Listener)
+	if err = listener.Reset(port, pool); err != nil {
+		t.Fatal(err)
+	}
+	if stack != nil {
+		if err = stack.RegisterListenerTCP(listener); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return listener
+}
+
+// M20: closing a listener must not kill connections it already accepted.
+func TestListener_CloseKeepsAcceptedConns(t *testing.T) {
+	const svPort = 80
+	const mtu = ethernet.MaxMTU
+	const lim = 8
+	tst := testerFrom(t, mtu)
+	sv := newTestStack(t, "sv1", 1, mtu, 1, 0)
+	cl := newTestStack(t, "cl2", 2, mtu, 1, 0)
+	sv.SetGatewayHardwareAddr(cl.HardwareAddr())
+	cl.SetGatewayHardwareAddr(sv.HardwareAddr())
+	listener := newTestListener(t, sv, svPort, TCPPoolConfig{PoolSize: 1})
+
+	clconn := newTestTCPConn(t, mtu, 4)
+	if err := cl.DialTCP(clconn, 1337, netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort)); err != nil {
+		t.Fatal(err)
+	}
+	tst.ensureQuiesce(cl, sv, lim)
+	accepted, err := listener.TryAccept()
+	if err != nil {
+		t.Fatal("TryAccept:", err)
+	}
+
+	if err = listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Inbound: client data reaches accepted conn.
+	if _, err = clconn.Write([]byte("in")); err != nil {
+		t.Fatal(err)
+	}
+	tst.ensureQuiesce(cl, sv, lim)
+	if got := accepted.Conn().BufferedInput(); got != 2 {
+		t.Errorf("accepted conn got %d inbound bytes after listener Close, want 2", got)
+	}
+	// Outbound: accepted conn data reaches client.
+	if _, err = accepted.Write([]byte("out")); err != nil {
+		t.Fatal("accepted write after listener Close:", err)
+	}
+	tst.ensureQuiesce(cl, sv, lim)
+	if got := clconn.BufferedInput(); got != 3 {
+		t.Errorf("client got %d bytes from accepted conn after listener Close, want 3", got)
+	}
+	if n := listener.NumberOfActiveAccepted(); n != 1 {
+		t.Errorf("closed listener reports %d active accepted, want 1", n)
+	}
+	// Abort forcibly ends accepted conns.
+	listener.Abort()
+	if n := listener.NumberOfActiveAccepted(); n != 0 {
+		t.Errorf("aborted listener reports %d active accepted, want 0", n)
+	}
+	if _, err = accepted.Write([]byte("x")); err == nil {
+		t.Error("accepted write succeeded after listener Abort")
+	}
+}
+
+// Resetting a listener must hand the conns it still holds back to their pool,
+// else each Reset leaks pool slots until the listener refuses every client.
+func TestListener_ResetReleasesPoolConns(t *testing.T) {
+	const svPort = 80
+	const mtu = ethernet.MaxMTU
+	const lim = 8
+	tests := []struct {
+		name     string
+		accept   bool // conn was accepted before Reset, else still pending acceptance.
+		closeFst bool // listener closed before Reset.
+	}{
+		{name: "accepted, closed", accept: true, closeFst: true},
+		{name: "accepted, open", accept: true},
+		{name: "pending, open"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tst := testerFrom(t, mtu)
+			sv := newTestStack(t, "sv1", 1, mtu, 1, 0)
+			pool, err := sv.NewTCPPool(TCPPoolConfig{
+				PoolSize:           1,
+				QueueSize:          4,
+				TxBufSize:          mtu,
+				RxBufSize:          mtu,
+				EstablishedTimeout: 10 * time.Second,
+				ClosingTimeout:     10 * time.Second,
+				NewBackoff:         newBackoffYield,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var listener tcp.Listener
+			if err = listener.Reset(svPort, pool); err != nil {
+				t.Fatal(err)
+			} else if err = sv.RegisterListenerTCP(&listener); err != nil {
+				t.Fatal(err)
+			}
+			connect := func(cl *StackAsync) {
+				t.Helper()
+				sv.SetGatewayHardwareAddr(cl.HardwareAddr())
+				cl.SetGatewayHardwareAddr(sv.HardwareAddr())
+				clconn := newTestTCPConn(t, mtu, 4)
+				err := cl.DialTCP(clconn, 1337, netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort))
+				if err != nil {
+					t.Fatal(err)
+				}
+				tst.ensureQuiesce(cl, sv, lim)
+			}
+
+			connect(newTestStack(t, "cl2", 2, mtu, 1, 0))
+			if tt.accept {
+				if _, err = listener.TryAccept(); err != nil {
+					t.Fatal("TryAccept:", err)
+				}
+			}
+			if tt.closeFst {
+				if err = listener.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err = listener.Reset(svPort, pool); err != nil {
+				t.Fatal("Reset:", err)
+			} else if err = sv.RegisterListenerTCP(&listener); err != nil {
+				t.Fatal("RegisterListenerTCP after Reset:", err)
+			}
+
+			// Pool holds a single conn: a new client is only served if Reset released it.
+			connect(newTestStack(t, "cl3", 3, mtu, 1, 0))
+			if _, err = listener.TryAccept(); err != nil {
+				t.Errorf("TryAccept of new client after Reset: %v (pool slot leaked)", err)
+			}
+		})
 	}
 }
