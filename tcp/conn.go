@@ -51,7 +51,7 @@ func (conn *Conn) reset() {
 	// Reset fields individually - DO NOT copy the mutex (undefined behavior in Go).
 	// "A Mutex must not be copied after first use." - sync package docs.
 	// Copying a locked mutex causes corruption on multi-core systems.
-	// Do not copy Handler either: its stackid is read concurrently by stacks, see [Handler.ConnectionID].
+	// Do not copy Handler either: its connid is read concurrently by stacks, see [Handler.ConnectionID].
 	conn.remoteAddr = conn.remoteAddr[:0]
 	conn.rdead = time.Time{}
 	conn.wdead = time.Time{}
@@ -254,11 +254,11 @@ func (conn *Conn) closeRead(handle uint32) error {
 func (conn *Conn) Close() error { return conn.close(conn.currentHandle()) }
 
 func (conn *Conn) close(handle uint32) error {
-	connid, err := conn.acquireWriteLock(handle, nil)
+	handle, err := conn.acquireWriteLock(handle, nil)
 	if err != nil {
 		return err
 	}
-	defer conn.releaseWriteLock(connid)
+	defer conn.releaseWriteLock(handle)
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	conn.trace("TCPConn.Close", slog.Uint64("lport", uint64(conn.h.localPort)), slog.Uint64("rport", uint64(conn.h.remotePort)))
@@ -284,12 +284,12 @@ func (conn *Conn) InternalHandler() *Handler {
 // Write writes argument data to the TCPConns's output buffer which is queued to be sent.
 func (conn *Conn) Write(b []byte) (int, error) { return conn.write(conn.currentHandle(), b) }
 
-func (conn *Conn) write(connID uint32, b []byte) (int, error) {
-	connid, err := conn.acquireWriteLock(connID, &conn.wdead)
+func (conn *Conn) write(handle uint32, b []byte) (int, error) {
+	handle, err := conn.acquireWriteLock(handle, &conn.wdead)
 	if err != nil {
 		return 0, err
 	}
-	defer conn.releaseWriteLock(connid)
+	defer conn.releaseWriteLock(handle)
 	rport := conn.RemotePort()
 	plen := len(b)
 	lport := conn.LocalPort()
@@ -302,7 +302,7 @@ func (conn *Conn) write(connID uint32, b []byte) (int, error) {
 	n := 0
 	var backoffs uint
 	for len(b) > 0 {
-		if err := conn.checkPipe(connid, &conn.wdead); err != nil {
+		if err := conn.checkPipe(handle, &conn.wdead); err != nil {
 			return n, err
 		}
 		conn.mu.Lock()
@@ -337,14 +337,14 @@ func (conn *Conn) write(connID uint32, b []byte) (int, error) {
 func (conn *Conn) Flush() error { return conn.flush(conn.currentHandle()) }
 
 func (conn *Conn) flush(handle uint32) error {
-	connid, err := conn.acquireWriteLock(handle, &conn.wdead)
+	handle, err := conn.acquireWriteLock(handle, &conn.wdead)
 	if err != nil {
 		return err
 	}
-	defer conn.releaseWriteLock(connid)
+	defer conn.releaseWriteLock(handle)
 	var backoffs uint
 	for conn.BufferedUnsent() != 0 {
-		if err := conn.checkPipe(connid, &conn.wdead); err != nil {
+		if err := conn.checkPipe(handle, &conn.wdead); err != nil {
 			return err
 		}
 		conn.backoff(backoffs)
@@ -358,7 +358,7 @@ func (conn *Conn) flush(handle uint32) error {
 // Returns io.EOF when the remote has closed the connection and all buffered data has been read.
 func (conn *Conn) Read(b []byte) (int, error) { return conn.read(conn.currentHandle(), b) }
 
-func (conn *Conn) read(connID uint32, b []byte) (int, error) {
+func (conn *Conn) read(handle uint32, b []byte) (int, error) {
 	conn.mu.Lock()
 	lport := conn.h.localPort
 	rport := conn.h.remotePort
@@ -368,7 +368,7 @@ func (conn *Conn) read(connID uint32, b []byte) (int, error) {
 	n := 0
 	for len(b) > 0 {
 		conn.mu.Lock()
-		if connID != conn.h.handle {
+		if handle != conn.h.handle {
 			conn.mu.Unlock()
 			return n, net.ErrClosed
 		}
@@ -405,19 +405,19 @@ func (conn *Conn) read(connID uint32, b []byte) (int, error) {
 }
 
 // currentHandle returns the connection handle of the current connection.
-// Methods taking a connID fail with [net.ErrClosed] once that connection ends.
+// Methods taking a handle fail with [net.ErrClosed] once that connection ends.
 func (conn *Conn) currentHandle() uint32 {
 	conn.mu.Lock()
-	id := conn.h.handle
+	handle := conn.h.handle
 	conn.mu.Unlock()
-	return id
+	return handle
 }
 
-// acquireWriteLock validates the connection connID is open and acquires the write lock
-// for it, returning connID. It serializes
+// acquireWriteLock validates the connection handle is open and acquires the write lock
+// for it, returning handle. It serializes
 // concurrent writers: while another goroutine owns the write side it blocks with
 // backoff until that writer releases, the connection closes, or deadline elapses.
-// The returned connID must be released with [Conn.releaseWriteLock].
+// The returned handle must be released with [Conn.releaseWriteLock].
 func (conn *Conn) acquireWriteLock(handle uint32, deadline *time.Time) (uint32, error) {
 	var backoffs uint
 	for {

@@ -30,9 +30,6 @@ type Handler struct {
 	validator  lneto.Validator
 	localPort  uint16
 	remotePort uint16
-	// connid is a connection counter that is incremented each time a new
-	// connection is established via Open calls. This disambiguates whether
-	// Read and Write calls belong to the current connection.
 
 	optcodec OptionCodec
 	// Window scaling (RFC 7323 §2). wndShiftLocal is derived from the receive
@@ -543,7 +540,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 		h.Abort()
 	} else if h.IsTxOver() {
 		// Final ACK of clean close sent. Release stack registration but keep
-		// connid so Read can still drain buffered data and report io.EOF.
+		// handle so Read can still drain buffered data and report io.EOF.
 		atomic.AddUint64(&h.connid, 1)
 	}
 	return datalen, nil

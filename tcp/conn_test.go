@@ -177,7 +177,7 @@ func TestConn_PinnedStaleAfterReopen(t *testing.T) {
 		t.Fatalf("pinned RemoteAddrPort=%v, want %v", got, raddrOld)
 	}
 	conn.Abort()
-	// Reopen in LISTEN, which is not a closed state: stale handle must fail on connection ID alone.
+	// Reopen in LISTEN, which is not a closed state: stale handle must fail on handle mismatch alone.
 	if err := conn.OpenListen(1235, 200); err != nil {
 		t.Fatal(err)
 	}
