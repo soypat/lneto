@@ -3,6 +3,7 @@ package xnet
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"sync/atomic"
@@ -789,6 +790,64 @@ func TestListener_CloseKeepsAcceptedConns(t *testing.T) {
 	}
 	if _, err = accepted.Write([]byte("x")); err == nil {
 		t.Error("accepted write succeeded after listener Abort")
+	}
+}
+
+// M4: a client that sends data and half-closes before the server calls Accept
+// must still be accepted, and its data must be readable before EOF.
+func TestListener_AcceptHalfClosedBeforeAccept(t *testing.T) {
+	const svPort = 80
+	const mtu = ethernet.MaxMTU
+	const lim = 8
+	const msg = "upload"
+	tst := testerFrom(t, mtu)
+	sv := newTestStack(t, "sv1", 1, mtu, 1, 0)
+	cl := newTestStack(t, "cl2", 2, mtu, 1, 0)
+	sv.SetGatewayHardwareAddr(cl.HardwareAddr())
+	cl.SetGatewayHardwareAddr(sv.HardwareAddr())
+	listener := newTestListener(t, sv, svPort, TCPPoolConfig{PoolSize: 1})
+
+	clconn := newTestTCPConn(t, mtu, 4)
+	if err := cl.DialTCP(clconn, 1337, netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort)); err != nil {
+		t.Fatal(err)
+	}
+	tst.ensureQuiesce(cl, sv, lim)
+	// Client uploads and half-closes before server accepts.
+	if _, err := clconn.Write([]byte(msg)); err != nil {
+		t.Fatal(err)
+	}
+	if err := clconn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	tst.ensureQuiesce(cl, sv, lim)
+	if clconn.State() != tcp.StateFinWait2 {
+		t.Fatalf("client state %s, want %s", clconn.State(), tcp.StateFinWait2)
+	}
+
+	accepted, err := listener.TryAccept()
+	if err != nil {
+		t.Fatal("TryAccept of conn half-closed before Accept:", err)
+	}
+	if accepted.State() != tcp.StateCloseWait {
+		t.Errorf("accepted state %s, want %s", accepted.State(), tcp.StateCloseWait)
+	}
+	var buf [32]byte
+	n, err := accepted.Read(buf[:])
+	if err != nil {
+		t.Fatal("read accepted:", err)
+	} else if string(buf[:n]) != msg {
+		t.Errorf("accepted read %q, want %q", buf[:n], msg)
+	}
+	if _, err = accepted.Read(buf[:]); err != io.EOF {
+		t.Errorf("read after drained half-closed conn: got %v, want io.EOF", err)
+	}
+	// Server can still reply over the half-closed connection.
+	if _, err = accepted.Write([]byte("ok")); err != nil {
+		t.Fatal("write to half-closed conn:", err)
+	}
+	tst.ensureQuiesce(cl, sv, lim)
+	if got := clconn.BufferedInput(); got != 2 {
+		t.Errorf("client got %d bytes after half-close, want 2", got)
 	}
 }
 
