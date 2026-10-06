@@ -176,6 +176,8 @@ func (h *Handler) Abort() {
 	h.reset(0, 0, 0)
 }
 
+// isAborted reports whether connection state was discarded. Only [Handler.reset] clears
+// remotePort, and clean closes never reset: zero remotePort means aborted or never connected.
 func (h *Handler) isAborted() bool { return h.remotePort == 0 }
 
 // Recv receives an incoming TCP packet frame with the first byte being the first octet of the TCP frame.
@@ -524,10 +526,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 			h.policy.PostTx(h, sent)
 		}
 	}
-	closedSuccess := prevState == StateTimeWait && segment.Flags.HasAny(FlagACK)
-	if closedSuccess {
-		h.reset(0, 0, 0)
-	} else if segment.Flags.HasAny(FlagRST) {
+	if segment.Flags.HasAny(FlagRST) {
 		// A sent RST aborts the connection: tear down local state now that the
 		// reset has been written to the wire (frame already in b).
 		h.Abort()

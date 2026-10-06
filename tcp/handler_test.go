@@ -1983,39 +1983,75 @@ func pumpHandlers(t *testing.T, a, b *Handler, buf []byte) {
 	t.Fatal("pump did not quiesce")
 }
 
-// M25: after a clean close Read drains buffered data then returns io.EOF.
+// M25: after a clean close Read drains buffered data then returns io.EOF,
+// whichever side closed first. Only an abort reports net.ErrClosed.
 func TestConn_ReadEOFAfterCleanClose(t *testing.T) {
 	const mtu = ethernet.MaxMTU
-	rng := rand.New(rand.NewSource(2))
-	conn := newConfiguredConn(t)
-	server := conn.InternalHandler()
-	client := newHandler(t, mtu, 3)
-	setupClientServer(t, rng, client, server)
-	var buf [mtu]byte
-	establish(t, client, server, buf[:])
+	tests := []struct {
+		name        string
+		serverFirst bool   // server (read side) closes first: active close via TIME-WAIT.
+		abort       bool   // server aborts instead of closing.
+		data        string // client data sent before its FIN.
+		wantState   State  // server state before reading.
+		wantErr     error  // read error once data is drained.
+	}{
+		{name: "passive close, data", data: "bye", wantState: StateClosed, wantErr: io.EOF},
+		{name: "passive close, no data", wantState: StateClosed, wantErr: io.EOF},
+		{name: "active close, data", serverFirst: true, data: "bye", wantState: StateTimeWait, wantErr: io.EOF},
+		{name: "active close, no data", serverFirst: true, wantState: StateTimeWait, wantErr: io.EOF},
+		{name: "abort", abort: true, wantState: StateClosed, wantErr: net.ErrClosed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rng := rand.New(rand.NewSource(2))
+			conn := newConfiguredConn(t)
+			server := conn.InternalHandler()
+			client := newHandler(t, mtu, 3)
+			setupClientServer(t, rng, client, server)
+			var buf [mtu]byte
+			establish(t, client, server, buf[:])
 
-	data := []byte("bye")
-	if _, err := client.Write(data); err != nil {
-		t.Fatal(err)
-	} else if err = client.Close(); err != nil {
-		t.Fatal(err)
-	}
-	pumpHandlers(t, client, server, buf[:])
-	if err := server.Close(); err != nil {
-		t.Fatal(err)
-	}
-	pumpHandlers(t, client, server, buf[:])
-	if server.State() != StateClosed {
-		t.Fatal("server did not reach CLOSED:", server.State())
-	}
+			closeServer := func() {
+				t.Helper()
+				if err := server.Close(); err != nil {
+					t.Fatal(err)
+				}
+				pumpHandlers(t, client, server, buf[:])
+			}
+			if tt.abort {
+				conn.Abort()
+			} else {
+				if tt.serverFirst {
+					closeServer()
+				}
+				if tt.data != "" {
+					if _, err := client.Write([]byte(tt.data)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := client.Close(); err != nil {
+					t.Fatal(err)
+				}
+				pumpHandlers(t, client, server, buf[:])
+				if !tt.serverFirst {
+					closeServer()
+				}
+			}
+			if server.State() != tt.wantState {
+				t.Fatalf("server state %s, want %s", server.State(), tt.wantState)
+			}
 
-	got := make([]byte, 16)
-	n, err := conn.Read(got)
-	if err != nil || string(got[:n]) != string(data) {
-		t.Fatalf("first read: got %q, %v; want %q, nil", got[:n], err, data)
-	}
-	n, err = conn.Read(got)
-	if n != 0 || err != io.EOF {
-		t.Fatalf("read after clean close: got n=%d err=%v, want 0, io.EOF", n, err)
+			got := make([]byte, 16)
+			if tt.data != "" {
+				n, err := conn.Read(got)
+				if err != nil || string(got[:n]) != tt.data {
+					t.Fatalf("first read: got %q, %v; want %q, nil", got[:n], err, tt.data)
+				}
+			}
+			n, err := conn.Read(got)
+			if n != 0 || err != tt.wantErr {
+				t.Fatalf("read after close: got n=%d err=%v, want 0, %v", n, err, tt.wantErr)
+			}
+		})
 	}
 }
