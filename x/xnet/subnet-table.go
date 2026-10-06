@@ -26,12 +26,12 @@ type subnetTable struct {
 	passivePeers uint8
 }
 
-func (a *subnetTable) reset(arpentries int, passivePeers uint8) {
+func (a *subnetTable) reset(arpEntries int, passivePeers uint8) {
 	a.passivePeers = passivePeers
-	if a.resolves4 == nil {
-		internal.SliceReuse(&a.resolves4, arpentries+int(passivePeers))
-		a.resolves4 = a.resolves4[:cap(a.resolves4)]
-	}
+	n := arpEntries + int(passivePeers)
+	internal.SliceReuse(&a.resolves4, n)
+	a.resolves4 = a.resolves4[:n]
+	clear(a.resolves4)
 }
 
 func (a *subnetTable) hwDynamicResolve(addr [4]byte, arph *arp.Handler) (mac []byte, err error) {
