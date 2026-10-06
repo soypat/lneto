@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"testing"
 
 	"github.com/soypat/lneto/ethernet"
@@ -1955,5 +1956,130 @@ func TestHandler_CloseWaitNoAutoFIN(t *testing.T) {
 	n, _ = client.Read(got)
 	if string(got[:n]) != string(resp) {
 		t.Fatalf("client got %q, want %q", got[:n], resp)
+	}
+}
+
+// pumpHandlers exchanges segments between a and b until both have nothing to send.
+func pumpHandlers(t *testing.T, a, b *Handler, buf []byte) {
+	t.Helper()
+	for range 16 {
+		quiet := true
+		for _, pair := range [2][2]*Handler{{a, b}, {b, a}} {
+			n, err := pair[0].Send(buf)
+			if err != nil && err != net.ErrClosed {
+				t.Fatal("pump send:", err)
+			} else if n == 0 {
+				continue
+			}
+			quiet = false
+			if err = pair[1].Recv(buf[:n]); err != nil && err != net.ErrClosed {
+				t.Fatal("pump recv:", err)
+			}
+		}
+		if quiet {
+			return
+		}
+	}
+	t.Fatal("pump did not quiesce")
+}
+
+// M25: after a clean close Read drains buffered data then returns io.EOF,
+// whichever side closed first. Only an abort reports net.ErrClosed.
+// Once the close completes [Handler.ConnectionID] must change so stacks release
+// the port registration even though the Conn stays readable.
+func TestConn_ReadEOFAfterCleanClose(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	tests := []struct {
+		name         string
+		serverFirst  bool   // server (read side) closes first: active close via TIME-WAIT.
+		simultaneous bool   // both sides close before exchanging FINs.
+		abort        bool   // server aborts instead of closing.
+		data         string // client data sent before its FIN.
+		wantState    State  // server state before reading.
+		wantErr      error  // read error once data is drained.
+	}{
+		{name: "passive close, data", data: "bye", wantState: StateClosed, wantErr: io.EOF},
+		{name: "passive close, no data", wantState: StateClosed, wantErr: io.EOF},
+		{name: "active close, data", serverFirst: true, data: "bye", wantState: StateTimeWait, wantErr: io.EOF},
+		{name: "active close, no data", serverFirst: true, wantState: StateTimeWait, wantErr: io.EOF},
+		{name: "simultaneous close", simultaneous: true, wantState: StateTimeWait, wantErr: io.EOF},
+		{name: "abort", abort: true, wantState: StateClosed, wantErr: net.ErrClosed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rng := rand.New(rand.NewSource(2))
+			conn := newConfiguredConn(t)
+			server := conn.InternalHandler()
+			client := newHandler(t, mtu, 3)
+			setupClientServer(t, rng, client, server)
+			var buf [mtu]byte
+			establish(t, client, server, buf[:])
+			stackID := *server.ConnectionID()
+
+			closeServer := func() {
+				t.Helper()
+				if err := server.Close(); err != nil {
+					t.Fatal(err)
+				}
+				pumpHandlers(t, client, server, buf[:])
+			}
+			if tt.abort {
+				conn.Abort()
+			} else if tt.simultaneous {
+				// FINs cross on the wire: both sides go FIN-WAIT-1 -> CLOSING -> TIME-WAIT.
+				if err := server.Close(); err != nil {
+					t.Fatal(err)
+				} else if err = client.Close(); err != nil {
+					t.Fatal(err)
+				}
+				var cbuf [mtu]byte
+				ns, err := server.Send(buf[:])
+				if err != nil {
+					t.Fatal(err)
+				}
+				nc, err := client.Send(cbuf[:])
+				if err != nil {
+					t.Fatal(err)
+				} else if err = server.Recv(cbuf[:nc]); err != nil {
+					t.Fatal(err)
+				} else if err = client.Recv(buf[:ns]); err != nil {
+					t.Fatal(err)
+				}
+				pumpHandlers(t, client, server, buf[:])
+			} else {
+				if tt.serverFirst {
+					closeServer()
+				}
+				if tt.data != "" {
+					if _, err := client.Write([]byte(tt.data)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := client.Close(); err != nil {
+					t.Fatal(err)
+				}
+				pumpHandlers(t, client, server, buf[:])
+				if !tt.serverFirst {
+					closeServer()
+				}
+			}
+			if server.State() != tt.wantState {
+				t.Fatalf("server state %s, want %s", server.State(), tt.wantState)
+			} else if *server.ConnectionID() == stackID {
+				t.Fatal("ConnectionID unchanged after close: stack keeps port registered")
+			}
+
+			got := make([]byte, 16)
+			if tt.data != "" {
+				n, err := conn.Read(got)
+				if err != nil || string(got[:n]) != tt.data {
+					t.Fatalf("first read: got %q, %v; want %q, nil", got[:n], err, tt.data)
+				}
+			}
+			n, err := conn.Read(got)
+			if n != 0 || err != tt.wantErr {
+				t.Fatalf("read after close: got n=%d err=%v, want 0, %v", n, err, tt.wantErr)
+			}
+		})
 	}
 }

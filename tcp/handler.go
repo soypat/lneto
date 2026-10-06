@@ -17,7 +17,12 @@ import (
 //
 // See [Conn] for a higher level abstraction of a TCP connection, and see [ControlBlock] for the low level state machine of a TCP connection.
 type Handler struct {
+	// connid is [lneto.StackNode.ConnectionID] value. Changes on clean close tx finish
+	// while handle stays unchanged so users holding a [ConnHandle] can keep reading until [io.EOF].
 	connid uint64
+	// handle is used primarily by [ConnHandle] to keep track of
+	// instance validity throughout asynchronous user interaction similar to a generational handle.
+	handle uint32
 	scb    ControlBlock
 	bufTx  ringTx
 	bufRx  internal.Ring
@@ -25,9 +30,6 @@ type Handler struct {
 	validator  lneto.Validator
 	localPort  uint16
 	remotePort uint16
-	// connid is a connection counter that is incremented each time a new
-	// connection is established via Open calls. This disambiguates whether
-	// Read and Write calls belong to the current connection.
 
 	optcodec OptionCodec
 	// Window scaling (RFC 7323 §2). wndShiftLocal is derived from the receive
@@ -55,7 +57,8 @@ type Handler struct {
 
 // reset clears all state except [ControlBlock] state. So [Handler.State] will remain unchanged. See [Handler.Abort] for full reset.
 func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
-	atomic.AddUint64(&h.connid, 1) // ConnID accessed by external managers.
+	atomic.AddUint32(&h.handle, 1)
+	atomic.AddUint64(&h.connid, 1) // Accessed concurrently by stacks.
 	h.localPort = localPort
 	h.remotePort = remotePort
 	h.closing = false
@@ -80,7 +83,8 @@ func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
 	h.scb.logger.log = scb
 }
 
-// ConnectionID returns the connection identifier which is incremented every time the connection is closed or open.
+// ConnectionID returns the stack registration identifier. It changes every time the connection
+// is opened, aborted or done transmitting after a clean close; stacks discard the registration then.
 func (h *Handler) ConnectionID() *uint64 {
 	return &h.connid
 }
@@ -176,6 +180,10 @@ func (h *Handler) Abort() {
 	h.reset(0, 0, 0)
 }
 
+// isAborted reports whether connection state was discarded. Only [Handler.reset] clears
+// remotePort, and clean closes never reset: zero remotePort means aborted or never connected.
+func (h *Handler) isAborted() bool { return h.remotePort == 0 }
+
 // Recv receives an incoming TCP packet frame with the first byte being the first octet of the TCP frame.
 // The [Handler]'s internal state is updated if the packet is admitted successfully.
 func (h *Handler) Recv(incomingPacket []byte) error {
@@ -237,6 +245,10 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 			err = net.ErrClosed // Signal caller to tear down.
 		}
 		return err
+	}
+	if h.IsTxOver() {
+		// Clean close completed (CLOSED or TIME-WAIT with nothing left to send).
+		atomic.AddUint64(&h.connid, 1)
 	}
 	if h.scb.State() == StateClosed {
 		// TCB aborted, likely because it received an ACK in LastAck state.
@@ -522,13 +534,14 @@ func (h *Handler) Send(b []byte) (int, error) {
 			h.policy.PostTx(h, sent)
 		}
 	}
-	closedSuccess := prevState == StateTimeWait && segment.Flags.HasAny(FlagACK)
-	if closedSuccess {
-		h.reset(0, 0, 0)
-	} else if segment.Flags.HasAny(FlagRST) {
+	if segment.Flags.HasAny(FlagRST) {
 		// A sent RST aborts the connection: tear down local state now that the
 		// reset has been written to the wire (frame already in b).
 		h.Abort()
+	} else if h.IsTxOver() {
+		// Final ACK of clean close sent. Release stack registration but keep
+		// handle so Read can still drain buffered data and report io.EOF.
+		atomic.AddUint64(&h.connid, 1)
 	}
 	return datalen, nil
 }
@@ -574,7 +587,7 @@ func (h *Handler) Read(b []byte) (n int, err error) {
 	}
 	if n == 0 && err == nil {
 		state := h.State()
-		if state.IsClosed() {
+		if state.IsClosed() && h.isAborted() {
 			err = net.ErrClosed
 		} else if !state.RxDataOpen() {
 			err = io.EOF
