@@ -39,17 +39,9 @@ type TCPPoolConfig struct {
 	TxBufSize int
 	RxBufSize int
 
-	// key used for Initial Sequence Number generation. Should be from a high-entropy source. Cannot be zero.
-	key [16]byte
-
 	Logger     *slog.Logger
 	ConnLogger *slog.Logger
 
-	// NanoTime returns the current monotonic time in nanoseconds.
-	// Nanotime is monotonic clock used for pool timeout tracking.
-	// Retransmission timing is not driven by this clock: a [tcp.Policy] carries
-	// its own. See [TCPPoolConfig.NewPolicy].
-	NanoTime func() int64
 	// EstablishedTimeout sets the timeout for a TCP connection since it is acquired until it is established.
 	// If the connection does not establish in this time it will be closed by the pool.
 	EstablishedTimeout time.Duration
@@ -64,14 +56,22 @@ type TCPPoolConfig struct {
 	// NewPolicy if non-nil creates a [tcp.Policy] for each [tcp.Conn] used by the configured Listener.
 	// NewPolicy should not return reused policies unless the algorithm is stateless. See [tcp.Policy] for more information.
 	NewPolicy func() tcp.Policy
+
+	// NanoTime returns the current monotonic time in nanoseconds.
+	// Nanotime is monotonic clock used for pool timeout tracking.
+	// Retransmission timing is not driven by this clock: a [tcp.Policy] carries
+	// its own. See [TCPPoolConfig.NewPolicy].
+	nanotime func() int64
+	// key used for Initial Sequence Number generation. Should be from a high-entropy source. Cannot be zero.
+	key [16]byte
 }
 
 // NewTCPPool using StackAsync's internal ISN key.
 func (s *StackAsync) NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
-	if !internal.IsZeroed(cfg.key) {
-		return nil, lneto.ErrInvalidConfig
-	}
+	s.mu.Lock()
 	cfg.key = s.key
+	cfg.nanotime = s.mono.HAL()
+	s.mu.Unlock()
 	return newTCPPool(&cfg)
 }
 
@@ -93,7 +93,7 @@ func newTCPPool(cfg *TCPPoolConfig) (*TCPPool, error) {
 		logger:         cfg.Logger,
 		key:            cfg.key,
 	}
-	pool.mono.Config(cfg.NanoTime)
+	pool.mono.Config(cfg.nanotime)
 	allocPerConn := cfg.TxBufSize + cfg.RxBufSize
 	bufSpace := make([]byte, n*allocPerConn)
 	for i := range pool.conns {

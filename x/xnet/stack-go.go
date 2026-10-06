@@ -204,8 +204,7 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			return tc, nil
 		} else {
 			// LISTEN TCP: passive connection. fulfills net.Listener interface.
-			plcfg := s.plcfg
-			pool, err := s.blk.async.NewTCPPool(plcfg)
+			pool, err := s.blk.async.NewTCPPool(s.plcfg)
 			if err != nil {
 				return nil, err
 			}

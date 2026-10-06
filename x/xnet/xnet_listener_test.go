@@ -426,6 +426,7 @@ func TestTCPRetransmitsLostSegment(t *testing.T) {
 		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 91},
 		MTU:               MTU,
 		ICMPQueueLimit:    2,
+		Nanotime:          nanotime,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +446,6 @@ func TestTCPRetransmitsLostSegment(t *testing.T) {
 			// reaps a connection out from under the retransmission.
 			EstablishedTimeout: 120 * time.Second,
 			ClosingTimeout:     120 * time.Second,
-			NanoTime:           nanotime,
 			NewBackoff:         func() lneto.BackoffStrategy { return yield },
 			NewPolicy: func() tcp.Policy {
 				timer := new(rto.Timer)
@@ -649,8 +649,8 @@ func TestStackGoListenerHalfOpenTimeout(t *testing.T) {
 	tst := testerFrom(t, mtu)
 	var now atomic.Int64
 	now.Store(int64(time.Hour))
-	sv := newTestStack(t, "sv1", 1, mtu, 1, 0)
-	half := newTestStack(t, "half2", 2, mtu, poolSize, 0) // Sends SYNs, never sees SYN-ACKs.
+	sv := newTestStackClock(t, "sv1", 1, mtu, 1, 0, now.Load) // Listener pool times out on stack clock.
+	half := newTestStack(t, "half2", 2, mtu, poolSize, 0)     // Sends SYNs, never sees SYN-ACKs.
 	cl := newTestStack(t, "cl3", 3, mtu, 1, 0)
 	half.SetGatewayHardwareAddr(sv.HardwareAddr())
 	cl.SetGatewayHardwareAddr(sv.HardwareAddr())
@@ -663,7 +663,6 @@ func TestStackGoListenerHalfOpenTimeout(t *testing.T) {
 			RxBufSize:          mtu,
 			EstablishedTimeout: estbTimeout,
 			ClosingTimeout:     estbTimeout,
-			NanoTime:           now.Load,
 			NewBackoff:         func() lneto.BackoffStrategy { return backoffYield },
 		},
 	})

@@ -8,15 +8,15 @@ type Monotonic struct {
 	alt time.Time
 }
 
-// Config configures the clock with src. If src is nil will use [time.Since] in its stead.
-func (m *Monotonic) Config(src func() int64) {
-	m.src = src
-	if src == nil {
+// Config configures the clock with hal. If hal is nil will use [time.Since] in its stead.
+func (m *Monotonic) Config(hal func() int64) {
+	m.src = hal
+	if hal == nil {
 		m.alt = time.Now()
 	}
 }
 
-// Nanotime returns the monotonic nanoseconds of configured src. If src=nil will return time since configuration with [time.Since].
+// Nanotime returns the monotonic nanoseconds of configured hal. If hal=nil will return time since configuration with [time.Since].
 func (m *Monotonic) Nanotime() (nanos int64) {
 	if m.src != nil {
 		nanos = m.src()
@@ -24,4 +24,9 @@ func (m *Monotonic) Nanotime() (nanos int64) {
 		nanos = time.Since(m.alt).Nanoseconds()
 	}
 	return nanos
+}
+
+// HAL returns the hal Monotonic was configured with.
+func (m *Monotonic) HAL() func() int64 {
+	return m.src
 }

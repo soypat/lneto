@@ -278,6 +278,12 @@ func newTestStackGo(s *StackAsync, poolSize uint16, timeouts time.Duration, dial
 
 func newTestStack(t testing.TB, hostname string, randSeed int64, mtu, tcpPorts, udpPorts uint16) (s1 *StackAsync) {
 	t.Helper()
+	return newTestStackClock(t, hostname, randSeed, mtu, tcpPorts, udpPorts, nil)
+}
+
+// newTestStackClock is [newTestStack] with nanotime as the stack's monotonic clock.
+func newTestStackClock(t testing.TB, hostname string, randSeed int64, mtu, tcpPorts, udpPorts uint16, nanotime func() int64) (s1 *StackAsync) {
+	t.Helper()
 	id := hostname[len(hostname)-1] - '0'
 	if id > 9 {
 		t.Fatal("test stack name must end with hex digit 0..9, got:", hostname)
@@ -293,6 +299,7 @@ func newTestStack(t testing.TB, hostname string, randSeed int64, mtu, tcpPorts, 
 		MaxActiveTCPPorts: tcpPorts,
 		MaxActiveUDPPorts: udpPorts,
 		PassivePeers:      1, // put passive peers to test.
+		Nanotime:          nanotime,
 	})
 	if err != nil {
 		t.Fatal(err)
