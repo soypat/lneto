@@ -1318,7 +1318,6 @@ func TestStackGoTCPDialSurvivesManyWaitIterations(t *testing.T) {
 	t.Fatal("dial did not establish within handshake rounds")
 }
 
-
 // regression test for a panic
 func TestEncapsIdxSurvivesReset(t *testing.T) {
 	s, _ := newICMPStacks(t, 42, 1500)
