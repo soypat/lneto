@@ -154,6 +154,7 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			TxQueueSize: s.plcfg.QueueSize,
 			RxQueueSize: s.plcfg.QueueSize,
 			RWBackoff:   s.plcfg.NewBackoff(),
+			MTU:         uint16(s.blk.async.MTU()),
 		})
 		if err != nil {
 			return nil, err

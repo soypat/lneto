@@ -43,6 +43,8 @@ type ConnConfig struct {
 	// This field is ineffective on configuring a [Handler].
 	// If not set a default backoff strategy will be used. See [internal.BackoffConnRW].
 	RWBackoff lneto.BackoffStrategy
+	// MTU is mechanism to reject Write payloads that would not fit in an IP frame.
+	MTU uint16
 }
 
 // Configure initializes the connection with the given buffer and queue configuration.
@@ -90,6 +92,10 @@ func (conn *Conn) Open(localPort uint16, remoteAddr netip.AddrPort) error {
 		return err
 	}
 	conn.remoteAddr = append(conn.remoteAddr[:0], remoteAddr.Addr().AsSlice()...)
+	conn.h.ipHdrLen = 40
+	if remoteAddr.Addr().Is4() {
+		conn.h.ipHdrLen = 20
+	}
 	return nil
 }
 
@@ -142,7 +148,7 @@ func (conn *Conn) Write(b []byte) (int, error) {
 		}
 		n, err := conn.h.Write(b)
 		conn.mu.Unlock()
-		if n > 0 {
+		if n > 0 || err != nil {
 			return n, err
 		}
 		if conn.deadlineExceeded(&conn.wdead) {

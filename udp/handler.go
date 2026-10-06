@@ -1,6 +1,7 @@
 package udp
 
 import (
+	"math"
 	"net"
 
 	"github.com/soypat/lneto"
@@ -24,14 +25,21 @@ type Handler struct {
 	closeCalled bool
 	lport       uint16
 	rport       uint16
+	mtu         uint16
+	// ipHdrLen is the IP header length used to check datagrams against mtu.
+	// Zero assumes the larger IPv6 header. Set by [Conn.Open].
+	ipHdrLen uint16
 }
 
 // Configure initializes the handler with the given buffer and queue configuration.
 // Increments the connection ID, invalidating any prior stack registration.
 func (h *Handler) Configure(cfg ConnConfig) error {
-	if len(cfg.RxBuf) < sizeHeader || len(cfg.TxBuf) < sizeHeader || cfg.RxQueueSize <= 0 || cfg.TxQueueSize <= 0 {
+	if len(cfg.RxBuf) < sizeHeader || len(cfg.TxBuf) < sizeHeader ||
+		cfg.RxQueueSize <= 0 || cfg.TxQueueSize <= 0 || cfg.MTU < 64 || cfg.MTU > math.MaxUint16-64 {
 		return lneto.ErrInvalidConfig
 	}
+	h.mtu = cfg.MTU
+	h.ipHdrLen = 0
 	h.connid++
 	h.rxRing = internal.Ring{Buf: cfg.RxBuf}
 	h.txRing = internal.Ring{Buf: cfg.TxBuf}
@@ -125,8 +133,12 @@ func (h *Handler) Send(buf []byte) (int, error) {
 }
 
 // Write enqueues a datagram payload for later transmission via [Handler.Send].
-// Returns [lneto.ErrExhausted] if the tx datagram queue is full.
+// Returns [lneto.ErrExhausted] if the tx datagram queue is full and
+// [lneto.ErrShortBuffer] if the datagram would exceed the configured MTU.
 func (h *Handler) Write(b []byte) (int, error) {
+	if h.exceedsMTU(len(b)) {
+		return 0, lneto.ErrShortBuffer
+	}
 	free := cap(h.txDgrams) - len(h.txDgrams)
 	if free == 0 {
 		return 0, lneto.ErrExhausted
@@ -138,6 +150,16 @@ func (h *Handler) Write(b []byte) (int, error) {
 	dgram := internal.SliceReclaim(&h.txDgrams)
 	dgram.length = uint16(len(b))
 	return len(b), nil
+}
+
+// exceedsMTU reports whether a datagram with payloadLen bytes plus UDP and IP
+// headers would be larger than the configured MTU. Always false if MTU unset.
+func (h *Handler) exceedsMTU(payloadLen int) bool {
+	ipHdr := int(h.ipHdrLen)
+	if ipHdr == 0 {
+		ipHdr = 40
+	}
+	return ipHdr+sizeHeader+payloadLen > int(h.mtu)
 }
 
 // ReadNext dequeues the next received datagram into b. If b is smaller than the
@@ -183,6 +205,7 @@ func (h *Handler) Abort() {
 		rxDgrams: h.rxDgrams[:0],
 		txRing:   h.txRing,
 		txDgrams: h.txDgrams[:0],
+		mtu:      h.mtu,
 	}
 	h.txRing.Reset()
 	h.rxRing.Reset()

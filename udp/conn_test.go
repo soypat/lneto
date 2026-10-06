@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
 )
 
@@ -29,6 +30,7 @@ func newTestConn(t *testing.T) *Conn {
 		RxQueueSize: 4,
 		TxQueueSize: 4,
 		RWBackoff:   backoffYield,
+		MTU:         ethernet.MaxMTU,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -219,6 +221,63 @@ func TestConn_EncapsulateMultiple(t *testing.T) {
 		got := string(ufrm.Payload())
 		if got != want {
 			t.Fatalf("got %q, want %q", got, want)
+		}
+	}
+}
+
+// TestConn_OversizedDatagramStallsQueue checks that Write rejects a datagram
+// that would exceed the MTU, so it never reaches the tx queue where it would
+// wedge the datagrams queued behind it (Encapsulate is passed an MTU-bound buffer).
+func TestConn_OversizedDatagramStallsQueue(t *testing.T) {
+	const (
+		mtu         = 92
+		carrierSize = mtu - 20 // UDP frame budget after IPv4 header.
+	)
+	var conn Conn
+	err := conn.Configure(ConnConfig{
+		RxBuf:       make([]byte, 256),
+		TxBuf:       make([]byte, 256),
+		RxQueueSize: 4,
+		TxQueueSize: 4,
+		RWBackoff:   backoffYield,
+		MTU:         mtu,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = conn.Open(1234, netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 0, 0, 1}), 8080))
+	if err != nil {
+		t.Fatal(err)
+	}
+	maxPayload := make([]byte, carrierSize-sizeHeader)
+	oversized := make([]byte, len(maxPayload)+1)
+	_, err = conn.Write(oversized)
+	if err == nil {
+		t.Fatal("expected error writing datagram exceeding MTU")
+	}
+	small := []byte("small")
+	for _, payload := range [][]byte{maxPayload, small} {
+		_, err = conn.Write(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var buf [carrierSize]byte
+	for _, want := range [][]byte{maxPayload, small} {
+		n, err := conn.Encapsulate(buf[:], -1, 0)
+		if err != nil {
+			t.Fatal(err)
+		} else if n == 0 {
+			t.Fatal("datagram never sent: tx queue stalled")
+		}
+		ufrm, err := NewFrame(buf[:n])
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := ufrm.Payload()
+		if !internal.BytesEqual(got, want) {
+			t.Fatalf("got payload of length %d, want length %d", len(got), len(want))
 		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/tcp"
 	"github.com/soypat/lneto/udp"
 )
@@ -71,6 +72,7 @@ func newUDPConn6(t testing.TB) *udp.Conn {
 		RxQueueSize: 4,
 		TxQueueSize: 4,
 		RWBackoff:   backoffYield,
+		MTU:         ethernet.MaxMTU,
 	}); err != nil {
 		t.Fatal("UDP Configure:", err)
 	}

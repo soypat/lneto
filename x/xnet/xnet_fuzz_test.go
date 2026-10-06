@@ -338,6 +338,7 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 		RxQueueSize: int(1 + uint16(seed1>>32)%10),
 		TxQueueSize: int(1 + uint16(seed1>>32)%10),
 		RWBackoff:   backoffYield,
+		MTU:         mtu,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -348,6 +349,7 @@ func testStackSeeded(t *testing.T, seed1, seed2 int64) {
 		RxQueueSize: int(1 + uint16(seed2>>32)%10),
 		TxQueueSize: int(1 + uint16(seed2>>32)%10),
 		RWBackoff:   backoffYield,
+		MTU:         mtu,
 	})
 	if err != nil {
 		t.Fatal(err)
