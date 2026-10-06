@@ -1775,8 +1775,8 @@ func (p *reassemblyViewPolicy) PreTx(h *Handler, outgoingOpts Frame) (Size, Valu
 	v := h.Reassembly()
 	p.blocks = p.blocks[:0]
 	for i := range v.Len() {
-		start, end := v.Block(i)
-		p.blocks = append(p.blocks, [2]Value{start, end})
+		start, size := v.Block(i)
+		p.blocks = append(p.blocks, [2]Value{start, Add(start, size)})
 	}
 	return p.recordingPolicy.PreTx(h, outgoingOpts)
 }

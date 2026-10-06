@@ -292,7 +292,8 @@ func (p *Policy) writeBlocks(held tcp.ReassemblyView, frm tcp.Frame) {
 	var blocks [maxScoreboard]Block
 	n := 0
 	for i := held.Len() - 1; i >= 0; i-- {
-		left, right := held.Block(i)
+		left, size := held.Block(i)
+		right := tcp.Add(left, size)
 		if n > 0 && blocks[n-1].Left == right {
 			blocks[n-1].Left = left
 			continue

@@ -37,9 +37,9 @@ func TestReassemblyView(t *testing.T) {
 			t.Fatalf("next=%d: Len=%d, want 2", next, view.Len())
 		}
 		for i := range view.Len() {
-			start, end := view.Block(i)
-			if want := Add(next, Size(4+4*i)); start != want || end != Add(want, 4) {
-				t.Errorf("next=%d: Block(%d)=[%d,%d), want [%d,%d)", next, i, start, end, want, Add(want, 4))
+			start, size := view.Block(i)
+			if want := Add(next, Size(4+4*i)); start != want || size != 4 {
+				t.Errorf("next=%d: Block(%d)=(%d,%d), want (%d,4)", next, i, start, size, want)
 			}
 		}
 		h.Abort()

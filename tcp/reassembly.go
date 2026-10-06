@@ -149,9 +149,9 @@ func (v ReassemblyView) Len() int {
 	return len(v.r.held)
 }
 
-// Block returns the i'th block as the half-open sequence range [start, end).
-// It panics if i is outside [0, Len()). Adjacent blocks remain separate.
-func (v ReassemblyView) Block(i int) (start, end Value) {
+// Block returns the start and size of the i'th block. It panics if i is outside
+// [0, Len()). Adjacent blocks remain separate.
+func (v ReassemblyView) Block(i int) (start Value, size Size) {
 	seg := v.r.held[i]
-	return seg.seq, Add(seg.seq, Size(seg.n))
+	return seg.seq, Size(seg.n)
 }
