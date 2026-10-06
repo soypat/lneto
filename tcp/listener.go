@@ -128,7 +128,7 @@ func (listener *Listener) NumberOfReadyToAccept() (nready int) {
 	}
 	for i := range listener.incoming {
 		conn := listener.incoming[i].c
-		if conn == nil || conn.State() != StateEstablished {
+		if conn == nil || !conn.State().TxDataOpen() { // Established or CloseWait: handshake done, awaiting Accept.
 			continue
 		}
 		nready++
@@ -148,7 +148,7 @@ func (listener *Listener) TryAccept() (ConnHandle, error) {
 	listener.maintainConns()
 	for i := range listener.incoming {
 		pinned := listener.incoming[i]
-		if pinned.c == nil || pinned.c.State() != StateEstablished {
+		if pinned.c == nil || !pinned.c.State().TxDataOpen() { // Established or CloseWait: handshake done, awaiting Accept.
 			continue
 		}
 		listener.accepted = append(listener.accepted, pinned)
@@ -304,8 +304,9 @@ func (listener *Listener) maintainConns() {
 			continue
 		}
 		state := conn.State()
-		if state > StateEstablished || state.IsClosed() || state == StateListen {
-			// Something went wrong in handshake, pool aborted/closed the connection,
+		if state != StateSynRcvd && !state.TxDataOpen() {
+			// Keep conns mid-handshake or awaiting Accept (Established, or CloseWait if peer half-closed).
+			// Otherwise something went wrong in handshake, pool aborted/closed the connection,
 			// or RST reverted the connection to LISTEN (RFC 9293 §3.5.3).
 			listener.returnIncoming(i)
 		}
