@@ -1353,3 +1353,42 @@ func TestEthernetLengthFieldPanic(t *testing.T) {
 	efrm.SetEtherType(60)
 	s.IngressEthernet(efrm.RawData()) // slices frame[14:74]
 }
+
+func TestICMPMismatchedMTUPanic(t *testing.T) {
+	const mtu = 576
+	s := new(StackAsync)
+	err := s.Reset(StackConfig{
+		Hostname:        "icmp-oversized",
+		RandSeed:        16,
+		StaticAddress4:  [4]byte{10, 0, 0, 1},
+		HardwareAddress: [6]byte{0xbe, 0xef, 0, 0, 0, 1},
+		MTU:             mtu,
+		ICMPQueueLimit:  16, // Response ring 16*64=1024 bytes > MTU.
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnableICMP(true); err != nil {
+		t.Fatal(err)
+	}
+	gen := ltesto.PacketGen{
+		SrcMAC:  [6]byte{0xbe, 0xef, 0, 0, 0, 2},
+		DstMAC:  s.HardwareAddr(),
+		SrcIPv4: [4]byte{10, 0, 0, 2},
+		DstIPv4: s.Addr4(),
+	}
+	// Valid IPv4+ICMP echo request with 1000 data bytes, larger than MTU.
+	pkt := gen.AppendIPv4ICMPEcho(nil, ltesto.ICMPEchoConfig{
+		Identifier:     0x1234,
+		SequenceNumber: 1,
+		Payload:        make([]byte, 1000),
+	})
+	if err := s.IngressEthernet(pkt); err != nil {
+		t.Fatal("echo request rejected, test does not exercise oversized reply:", err)
+	}
+	var buf [mtu + 14]byte
+	n, _ := s.EgressEthernet(buf[:]) // Reply does not fit in MTU, must not panic.
+	if n > len(buf) {
+		t.Fatalf("egress wrote %d bytes, exceeding buffer of %d", n, len(buf))
+	}
+}

@@ -150,10 +150,16 @@ func (client *Client) encapsEcho(carrierData []byte, frameOffset int) (n int, ds
 		// Priority: send echo reply.
 		inc := client.incomingEcho[0]
 		efrm := FrameEcho{Frame: ifrm}
+		dataLen := int(inc.length)
+		if dataLen > len(efrm.Data()) {
+			// Echo request larger than egress buffer (MTU): reply cannot be sent, drop it.
+			client.responseRing.ReadDiscard(dataLen)
+			client.incomingEcho = slices.Delete(client.incomingEcho, 0, 1)
+			return 0, [16]byte{}, lneto.ErrShortBuffer
+		}
 		efrm.SetType(TypeEchoReply)
 		efrm.SetIdentifier(inc.id)
 		efrm.SetSequenceNumber(inc.seq)
-		dataLen := int(inc.length)
 		_, rerr := client.responseRing.Read(efrm.Data()[:dataLen])
 		if rerr != nil {
 			return 0, [16]byte{}, rerr

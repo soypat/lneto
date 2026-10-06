@@ -45,7 +45,7 @@ func (ifrm Frame) VersionAndIHL() (version, IHL uint8) {
 	return v >> 4, v & 0xf
 }
 
-// SetVersionAndIHL sets the version and IHL fields in the IPv4 header. Version should always be 4.
+// SetVersionAndIHL sets the version and IHL fields in the IPv4 header. Version should always be 4. IHL minimum is 5 for no IP options.
 func (ifrm Frame) SetVersionAndIHL(version, IHL uint8) { ifrm.buf[0] = version<<4 | IHL&0xf }
 
 // ToS (Type of Service) contains Differential Services Code Point (DSCP) and
