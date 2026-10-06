@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -63,7 +64,8 @@ func TestStackAsyncListener_SingleConnection(t *testing.T) {
 	}
 
 	// Create pool and listener for server.
-	pool, err := NewTCPPool(TCPPoolConfig{
+	pool, err := newTCPPool(&TCPPoolConfig{
+		key:                [16]byte{1},
 		PoolSize:           1,
 		QueueSize:          4,
 		TxBufSize:          MTU,
@@ -101,10 +103,11 @@ func TestStackAsyncListener_SingleConnection(t *testing.T) {
 	if listener.NumberOfReadyToAccept() != 1 {
 		t.Fatalf("after handshake: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
 	}
-	svConn, _, err := listener.TryAccept()
+	pinned, _, err := listener.TryAccept()
 	if err != nil {
 		t.Fatalf("TryAccept: %v", err)
 	}
+	svConn := pinned.Conn()
 	if listener.NumberOfReadyToAccept() != 0 {
 		t.Fatalf("after accept: expected 0 ready, got %d", listener.NumberOfReadyToAccept())
 	}
@@ -152,7 +155,7 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 	}
 
 	// Create pool and listener for server.
-	pool, err := NewTCPPool(TCPPoolConfig{
+	pool, err := sv.NewTCPPool(TCPPoolConfig{
 		PoolSize:           poolsize,
 		QueueSize:          4,
 		TxBufSize:          bufsize,
@@ -214,7 +217,8 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 		if listener.NumberOfReadyToAccept() != 1 {
 			t.Fatalf("after handshake: expected 1 ready, got %d", listener.NumberOfReadyToAccept())
 		}
-		svconn, _, err := listener.TryAccept()
+		pinned, _, err := listener.TryAccept()
+		svconn := pinned.Conn()
 		if err != nil {
 			t.Fatal(err)
 		} else if svconn.RemotePort() != clConn.LocalPort() ||
@@ -240,7 +244,8 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 func TestListener_Close(t *testing.T) {
 	const svPort uint16 = 80
 
-	pool, err := NewTCPPool(TCPPoolConfig{
+	pool, err := newTCPPool(&TCPPoolConfig{
+		key:                [16]byte{1},
 		PoolSize:           1,
 		QueueSize:          4,
 		TxBufSize:          512,
@@ -282,7 +287,8 @@ func TestListener_Close(t *testing.T) {
 func TestTCPListener_CloseUnblocksAccept(t *testing.T) {
 	const svPort uint16 = 80
 
-	pool, err := NewTCPPool(TCPPoolConfig{
+	pool, err := newTCPPool(&TCPPoolConfig{
+		key:                [16]byte{1},
 		PoolSize:           1,
 		QueueSize:          4,
 		TxBufSize:          512,
@@ -341,7 +347,8 @@ func TestTCPListener_CloseUnblocksAccept(t *testing.T) {
 func TestListener_ResetAfterClose(t *testing.T) {
 	const svPort uint16 = 80
 
-	pool, err := NewTCPPool(TCPPoolConfig{
+	pool, err := newTCPPool(&TCPPoolConfig{
+		key:                [16]byte{1},
 		PoolSize:           1,
 		QueueSize:          4,
 		TxBufSize:          512,
@@ -393,6 +400,11 @@ func TestTCPRetransmitsLostSegment(t *testing.T) {
 		// bare ACK would exercise the other direction's recovery instead.
 		minDataFrame = 14 + 20 + 20 + 8
 	)
+	// Simulated monotonic clock. Only the driver writes it, and only while every
+	// scheduled goroutine is parked, so it needs no synchronization of its own.
+	var now int64
+	nanotime := func() int64 { return now }
+
 	client, sv := new(StackAsync), new(StackAsync)
 	if err := client.Reset(StackConfig{
 		Hostname:          "rtx-client",
@@ -402,6 +414,7 @@ func TestTCPRetransmitsLostSegment(t *testing.T) {
 		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 90},
 		MTU:               MTU,
 		ICMPQueueLimit:    2,
+		Nanotime:          nanotime,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -413,6 +426,7 @@ func TestTCPRetransmitsLostSegment(t *testing.T) {
 		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 91},
 		MTU:               MTU,
 		ICMPQueueLimit:    2,
+		Nanotime:          nanotime,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -421,11 +435,6 @@ func TestTCPRetransmitsLostSegment(t *testing.T) {
 
 	tsched := ltesto.NewSched(t)
 	svGoro, clGoro := tsched.Goro(), tsched.Goro()
-
-	// Simulated monotonic clock. Only the driver writes it, and only while every
-	// scheduled goroutine is parked, so it needs no synchronization of its own.
-	var now int64
-	nanotime := func() int64 { return now }
 
 	// Each side backs off into its own scheduler handle, so the driver can park
 	// and resume the two independently.
@@ -437,7 +446,6 @@ func TestTCPRetransmitsLostSegment(t *testing.T) {
 			// reaps a connection out from under the retransmission.
 			EstablishedTimeout: 120 * time.Second,
 			ClosingTimeout:     120 * time.Second,
-			NanoTime:           nanotime,
 			NewBackoff:         func() lneto.BackoffStrategy { return yield },
 			NewPolicy: func() tcp.Policy {
 				timer := new(rto.Timer)
@@ -456,8 +464,6 @@ func TestTCPRetransmitsLostSegment(t *testing.T) {
 		TCPDialTimeout:     60 * time.Second,
 		TCPDialRetries:     1,
 	})
-	svGo.blk._nanotime = nanotime
-	clGo.blk._nanotime = nanotime
 
 	lsAny, err := svGo.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockSTREAM,
 		netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort), netip.AddrPort{})
@@ -560,5 +566,137 @@ func TestTCPRetransmitsLostSegment(t *testing.T) {
 	}
 	if !dropped {
 		t.Fatal("no frame was dropped, so the test did not exercise retransmission")
+	}
+}
+
+// M2: a net.Conn returned by Accept must stop working once its connection ends,
+// even after the listener pool hands the same slot to the next client.
+func TestStackGoAcceptedConnStaleAfterReuse(t *testing.T) {
+	const svPort = 80
+	const seedRng = 0x1337_c0de
+	const mtu = ethernet.MaxMTU
+	const tcpPorts = 1
+	sv := newTestStack(t, "s1", seedRng, mtu, tcpPorts, 0)
+	cl1 := newTestStack(t, "s2", ^seedRng, mtu, tcpPorts, 0)
+	cl2 := newTestStack(t, "s3", seedRng>>7, mtu, tcpPorts, 0)
+	cl1.SetGatewayHardwareAddr(sv.HardwareAddr())
+	cl2.SetGatewayHardwareAddr(sv.HardwareAddr())
+	sg := newTestStackGo(sv, 1, time.Second, 1)
+	svaddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort)
+	sock, err := sg.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockSTREAM, svaddr, netip.AddrPort{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := sock.(net.Listener)
+	defer l.Close()
+	tst := testerFrom(t, mtu)
+	const lim = 8
+
+	accept := func(cl *StackAsync, clconn *tcp.Conn) net.Conn {
+		t.Helper()
+		sv.SetGatewayHardwareAddr(cl.HardwareAddr())
+		if err := cl.DialTCP(clconn, 1337, svaddr); err != nil {
+			t.Fatal(err)
+		}
+		tst.ensureQuiesce(cl, sv, lim)
+		if n := readyToAccept(t, l); n != 1 {
+			t.Fatalf("client %v: %d ready to accept, want 1 (client state %s)", cl.Addr4(), n, clconn.State())
+		}
+		c, err := l.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+
+	c1 := newTestTCPConn(t, mtu, 4)
+	stale := accept(cl1, c1)
+	// First connection ends normally: client closes, then server closes.
+	c1.Close()
+	tst.ensureQuiesce(cl1, sv, lim)
+	stale.Close()
+	tst.ensureQuiesce(cl1, sv, lim)
+
+	// Pool of 1: the second client is served by the slot the first one used.
+	c2 := newTestTCPConn(t, mtu, 4)
+	fresh := accept(cl2, c2)
+
+	if n, err := stale.Write([]byte("stale")); err == nil {
+		t.Errorf("Write on ended conn succeeded writing %d bytes into the next client's connection", n)
+	}
+	stale.Close()
+	if _, err := fresh.Write([]byte("fresh")); err != nil {
+		t.Fatalf("Close on ended conn closed the next client's connection: Write: %v", err)
+	}
+	tst.ensureQuiesce(cl2, sv, lim)
+	var buf [32]byte
+	n, err := c2.Read(buf[:])
+	if err != nil {
+		t.Fatal(err)
+	} else if string(buf[:n]) != "fresh" {
+		t.Errorf("second client read %q, want %q", buf[:n], "fresh")
+	}
+}
+
+// M8: half-open connections that never complete the handshake must time out and
+// free their pool slot, else PoolSize unanswered SYNs disable the listener for good.
+func TestStackGoListenerHalfOpenTimeout(t *testing.T) {
+	const svPort = 80
+	const poolSize = 2
+	const mtu = ethernet.MaxMTU
+	const lim = 8
+	const estbTimeout = time.Second
+	tst := testerFrom(t, mtu)
+	var now atomic.Int64
+	now.Store(int64(time.Hour))
+	sv := newTestStackClock(t, "sv1", 1, mtu, 1, 0, now.Load) // Listener pool times out on stack clock.
+	half := newTestStack(t, "half2", 2, mtu, poolSize, 0)     // Sends SYNs, never sees SYN-ACKs.
+	cl := newTestStack(t, "cl3", 3, mtu, 1, 0)
+	half.SetGatewayHardwareAddr(sv.HardwareAddr())
+	cl.SetGatewayHardwareAddr(sv.HardwareAddr())
+	sv.SetGatewayHardwareAddr(cl.HardwareAddr())
+	sg := sv.StackBlocking(backoffYield).StackGo(StackGoConfig{
+		ListenerPoolConfig: TCPPoolConfig{
+			PoolSize:           poolSize,
+			QueueSize:          4,
+			TxBufSize:          mtu,
+			RxBufSize:          mtu,
+			EstablishedTimeout: estbTimeout,
+			ClosingTimeout:     estbTimeout,
+			NewBackoff:         func() lneto.BackoffStrategy { return backoffYield },
+		},
+	})
+	svaddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort)
+	sock, err := sg.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockSTREAM, svaddr, netip.AddrPort{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := sock.(net.Listener)
+	defer l.Close()
+
+	drainServer := func() {
+		for range lim {
+			sv.EgressEthernet(tst.buf) // SYN-ACKs to half-open peers are lost.
+		}
+	}
+	for i := range poolSize {
+		if err := half.DialTCP(newTestTCPConn(t, mtu, 4), uint16(1000+i), svaddr); err != nil {
+			t.Fatal(err)
+		}
+		if exchangeEthernetOnce(t, half, sv, tst.buf) == 0 {
+			t.Fatal("no SYN from half-open peer")
+		}
+	}
+	drainServer()
+	now.Add(int64(2 * estbTimeout))
+	drainServer()
+
+	clconn := newTestTCPConn(t, mtu, 4)
+	if err := cl.DialTCP(clconn, 1337, svaddr); err != nil {
+		t.Fatal(err)
+	}
+	tst.ensureQuiesce(cl, sv, lim)
+	if readyToAccept(t, l) != 1 {
+		t.Fatalf("listener with %d timed-out half-open conns did not accept new client (client state %s)", poolSize, clconn.State())
 	}
 }

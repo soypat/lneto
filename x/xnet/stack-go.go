@@ -192,35 +192,19 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			if err != nil {
 				return nil, err
 			}
-			err = s.blk.StackRetrying().DoDialTCP(&conn, laddr.Port(), raddr, s.tcpDialTimeout, s.tcpDialRetries)
+			err = s.blk.StackRetrying().DoDialTCP(ctx, &conn, laddr.Port(), raddr, s.tcpDialTimeout, s.tcpDialRetries)
 			if err != nil {
 				return nil, err
 			}
-			var backoffs uint
-			for {
-				s.blk.backoff(backoffs)
-				backoffs++
-				state := conn.State()
-				if state == tcp.StateEstablished {
-					tc := tcpconn{
-						Conn:      &conn,
-						localAddr: net.TCPAddrFromAddrPort(laddr),
-					}
-					return tc, nil
-				} else if state == tcp.StateSynSent || state == tcp.StateSynRcvd || conn.AwaitingSynSend() {
-					if err = ctx.Err(); err != nil {
-						conn.Abort()
-						return nil, err
-					}
-				} else {
-					// Unexpected state, abort and terminate connection.
-					conn.Abort()
-					return errTCPFailedToConnect, nil
-				}
+			// Handshake done; peer may already have closed, leaving data to read.
+			tc := tcpconn{
+				ConnPinned: conn.Pin(),
+				localAddr:  net.TCPAddrFromAddrPort(laddr),
 			}
+			return tc, nil
 		} else {
 			// LISTEN TCP: passive connection. fulfills net.Listener interface.
-			pool, err := NewTCPPool(s.plcfg)
+			pool, err := s.blk.async.NewTCPPool(s.plcfg)
 			if err != nil {
 				return nil, err
 			}
@@ -249,7 +233,6 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 type udppktconn struct {
 	c     udp.PacketConn
 	laddr net.UDPAddr
-	raddr net.UDPAddr
 }
 
 var _ net.PacketConn = (*udppktconn)(nil)
@@ -259,10 +242,8 @@ func (u *udppktconn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	if err != nil {
 		return n, nil, err
 	}
-	u.raddr.IP, _ = ap.Addr().AppendBinary(u.raddr.IP[:0])
-	u.raddr.Port = int(ap.Port())
-	u.raddr.Zone = ""
-	return n, &u.raddr, nil
+	// Fresh address per datagram: callers may keep it to reply after later reads.
+	return n, net.UDPAddrFromAddrPort(ap), nil
 }
 
 func (u *udppktconn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
@@ -316,8 +297,8 @@ func (l *tcplistener) Accept() (net.Conn, error) {
 		c, _, err := l.l.TryAccept()
 		if err == nil {
 			return tcpconn{
-				Conn:      c,
-				localAddr: l.localAddr,
+				ConnPinned: c,
+				localAddr:  l.localAddr,
 			}, nil
 		} else if err != lneto.ErrExhausted {
 			return nil, err // net.ErrClosed or failure.
@@ -329,28 +310,27 @@ func (l *tcplistener) Accept() (net.Conn, error) {
 
 func (l *tcplistener) Close() error { return l.l.Close() }
 
+// tcpconn adapts a [tcp.ConnPinned] to [net.Conn]. Pinned keeps a tcpconn from
+// operating on a pooled [tcp.Conn] after it is reused for another connection.
 type tcpconn struct {
-	*tcp.Conn
+	tcp.ConnPinned
 	localAddr net.Addr
 }
 
 var _ net.Conn = tcpconn{}
 
 func (c tcpconn) LnetoConn() *tcp.Conn {
-	return c.Conn
+	return c.ConnPinned.Conn()
 }
 
-func (c tcpconn) CloseWrite() error { return c.Conn.Close() }
+func (c tcpconn) CloseWrite() error { return c.ConnPinned.Close() }
 
 func (c tcpconn) LocalAddr() net.Addr {
 	return c.localAddr
 }
 
 func (c tcpconn) RemoteAddr() net.Addr {
-	return &net.TCPAddr{
-		IP:   c.Conn.RemoteAddr(),
-		Port: int(c.Conn.RemotePort()),
-	}
+	return net.TCPAddrFromAddrPort(c.ConnPinned.RemoteAddrPort())
 }
 
 type udpconn struct {

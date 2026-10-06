@@ -3,13 +3,14 @@ package xnet
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
-	"log/slog"
 	"math/rand"
+	"net"
 	"net/netip"
-	"os"
 	"runtime"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -47,7 +48,7 @@ func TestTCPListener_ConcurrentEcho(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tcpPool, err := NewTCPPool(TCPPoolConfig{
+	tcpPool, err := serverStack.NewTCPPool(TCPPoolConfig{
 		PoolSize:           numClients,
 		QueueSize:          4,
 		TxBufSize:          512,
@@ -212,12 +213,12 @@ func echoServer(ctx context.Context, listener *tcp.Listener) {
 		}
 
 		conn, _, err := listener.TryAccept()
-		if err != nil || conn == nil {
+		if err != nil {
 			continue
 		}
 
 		// Handle connection in separate goroutine (like real example).
-		go func(c *tcp.Conn) {
+		go func(c tcp.ConnPinned) {
 			var buf [512]byte
 			for {
 				select {
@@ -313,9 +314,6 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 		s1.EgressIP(buf)
 		s2.EgressIP(buf)
 	}()
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug - 99,
-	}))
 	// When the payload exceeds the Tx buffer, c1.Write must run in a background
 	// goroutine that blocks until the driver drains the buffer. The scheduler turns
 	// that blocking into a deterministic, sleep-free handoff: c1's backoff parks the
@@ -334,7 +332,6 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 		TxBuf:             make([]byte, tx1Buf),
 		TxPacketQueueSize: queueSize,
 		RWBackoff:         c1Backoff,
-		Logger:            logger,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -356,8 +353,6 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 	}
 	if async {
 		// Since data does not fit in TCP Tx buffer the test must be run asynchronously.
-		c1.InternalHandler().SetLoggers(logger, logger)
-		// c1.InternalHandler().SetLoggers(nil, nil)
 		go func() {
 			n, werr := c1.Write(data)
 			if werr == nil && n != len(data) {
@@ -442,4 +437,262 @@ func testCloseTransmitsPending(tst *tester, s1, s2 *StackAsync, c1, c2 *tcp.Conn
 		}
 	}
 
+}
+
+// M21: aborting a connection while another goroutine drives the stack must not
+// race on the connection ID. Only detectable with -race.
+func TestStackAsyncAbortConcurrentWithEgress(t *testing.T) {
+	const randseed = 0x1337_c0de
+	cl := newTestStack(t, "s1", randseed, ethernet.MaxMTU, 1, 0)
+	raddr := netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 0, 0, 2}), 80)
+	conn := newTestTCPConn(t, ethernet.MaxMTU, 4)
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var buf [ethernet.MaxMTU + ethernet.MaxOverheadSize]byte
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				cl.EgressEthernet(buf[:])
+			}
+		}
+	}()
+	for i := range 100 {
+		if err := cl.DialTCP(conn, uint16(1000+i), raddr); err != nil {
+			t.Error(err)
+			break
+		}
+		conn.Abort()
+	}
+	close(stop)
+	wg.Wait()
+}
+
+// M6: a failed dial must release its port-table entry. Otherwise MaxActiveTCPPorts
+// failed dials leave the stack unable to open any TCP connection.
+func TestStackGoFailedDialReleasesPort(t *testing.T) {
+	const maxPorts = 2
+	const randseed = 0x1337_c0de
+	tests := []struct {
+		name string
+		// drain consumes client egress while dialing, so the SYN leaves the stack
+		// and is lost on the wire. Otherwise the SYN never leaves the stack.
+		drain bool
+	}{
+		{name: "SYN not sent", drain: false},
+		{name: "SYN lost", drain: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cl := newTestStack(t, "s1", randseed, ethernet.MaxMTU, maxPorts, 0)
+			sg := newTestStackGo(cl, 1, 5*time.Millisecond, 1)
+			raddr := netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 0, 0, 2}), 80)
+			laddr := netip.AddrPortFrom(netip.AddrFrom4(cl.Addr4()), 0)
+			stop := make(chan struct{})
+			drained := make(chan struct{})
+			go func() {
+				defer close(drained)
+				var buf [ethernet.MaxMTU + ethernet.MaxOverheadSize]byte
+				for tt.drain {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					cl.EgressEthernet(buf[:])
+					time.Sleep(time.Millisecond)
+				}
+			}()
+			for i := range maxPorts + 1 {
+				c, err := sg.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockSTREAM, laddr, raddr)
+				if err == nil {
+					t.Fatalf("dial #%d to silent peer succeeded: %v", i, c)
+				}
+			}
+			close(stop)
+			<-drained
+
+			err := cl.DialTCP(newTestTCPConn(t, 256, 3), 1234, raddr)
+			if err != nil {
+				t.Fatalf("DialTCP after %d failed dials: %v", maxPorts+1, err)
+			}
+		})
+	}
+}
+
+// M18: SocketNetip must honor its context during the dial handshake.
+func TestStackGoDialHonorsContext(t *testing.T) {
+	const dialTimeout = 3 * time.Second
+	cl := newTestStack(t, "s1", 1, ethernet.MaxMTU, 1, 0)
+	sg := newTestStackGo(cl, 1, dialTimeout, 1)
+	raddr := netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 0, 0, 2}), 80)
+	laddr := netip.AddrPortFrom(netip.AddrFrom4(cl.Addr4()), 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := sg.SocketNetip(ctx, "tcp", syscall.AF_INET, sockSTREAM, laddr, raddr)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("dial with canceled context: got %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(dialTimeout / 3):
+		t.Fatal("dial with canceled context did not return")
+	}
+}
+
+// M18: a SYN answered with RST is a refused connection: the dial must fail
+// without sending further SYNs, regardless of the retry count.
+func TestStackGoDialRefusedNoRedial(t *testing.T) {
+	const svPort = 80
+	const randseed = 1334
+	const mtu = ethernet.MaxMTU
+	sv := newTestStack(t, "sv1", randseed, mtu, 1, 0)
+	cl := newTestStack(t, "cl2", randseed+1, mtu, 1, 0)
+	sv.SetGatewayHardwareAddr(cl.HardwareAddr())
+	cl.SetGatewayHardwareAddr(sv.HardwareAddr())
+	// Listener with no free connections answers every SYN with RST.
+	pool, err := sv.NewTCPPool(TCPPoolConfig{
+		PoolSize:           0,
+		EstablishedTimeout: time.Second,
+		ClosingTimeout:     time.Second,
+		NewBackoff:         func() lneto.BackoffStrategy { return backoffYield },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var l tcp.Listener
+	if err := l.Reset(svPort, pool); err != nil {
+		t.Fatal(err)
+	}
+	if err := sv.RegisterListenerTCP(&l); err != nil {
+		t.Fatal(err)
+	}
+
+	sg := newTestStackGo(cl, 1, 200*time.Millisecond, 3)
+	raddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort)
+	laddr := netip.AddrPortFrom(netip.AddrFrom4(cl.Addr4()), 0)
+	done := make(chan error, 1)
+	go func() {
+		_, err := sg.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockSTREAM, laddr, raddr)
+		done <- err
+	}()
+	var buf [ethernet.MaxMTU + ethernet.MaxOverheadSize]byte
+	nsyn := 0
+	for {
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("dial to refusing peer succeeded")
+			}
+			if nsyn != 1 {
+				t.Errorf("sent %d SYNs to a peer that refused the first, want 1", nsyn)
+			}
+			return
+		case <-time.After(5 * time.Second):
+			t.Fatal("dial did not return")
+		default:
+		}
+		n, err := cl.EgressEthernet(buf[:])
+		if err != nil {
+			t.Fatal(err)
+		} else if n > 0 {
+			if frm, ok := getTCPFrame(buf[:n]); ok {
+				if _, flags := frm.OffsetAndFlags(); flags == tcp.FlagSYN {
+					nsyn++
+				}
+			}
+			sv.IngressEthernet(buf[:n])
+		}
+		n, err = sv.EgressEthernet(buf[:])
+		if err != nil {
+			t.Fatal(err)
+		} else if n > 0 {
+			cl.IngressEthernet(buf[:n])
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// M19: a dial without a deadline must return once the handshake completes, even
+// if the peer closes the connection right after accepting it.
+func TestStackGoDialPeerClosesAfterAccept(t *testing.T) {
+	const seed = 4321
+	const svPort = 22
+	const mtu = ethernet.MaxMTU
+	const lim = 8
+	tst := testerFrom(t, mtu)
+	client, sv, _, svconn := newTCPStacks(t, seed, mtu)
+	if err := sv.ListenTCP4(svconn, svPort); err != nil {
+		t.Fatal(err)
+	}
+	tsched := ltesto.NewSched(t)
+	tgoro := tsched.Goro()
+	sg := client.StackBlocking(tgoro.Yield).StackGo(StackGoConfig{
+		ListenerPoolConfig: TCPPoolConfig{
+			QueueSize:  4,
+			TxBufSize:  mtu,
+			RxBufSize:  mtu,
+			NewBackoff: func() lneto.BackoffStrategy { return backoffYield },
+		},
+		TCPDialTimeout: time.Minute,
+		TCPDialRetries: 1,
+	})
+	laddr := netip.AddrPortFrom(netip.AddrFrom4(client.Addr4()), 1234)
+	raddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort)
+	var dialed any
+	go func() {
+		c, err := sg.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockSTREAM, laddr, raddr)
+		dialed = c
+		tgoro.FinishWithErr(err)
+	}()
+	checkDialed := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("dial failed after handshake completed: %v", err)
+		} else if _, ok := dialed.(net.Conn); !ok {
+			t.Fatalf("dial returned %T (%v), want net.Conn", dialed, dialed)
+		}
+	}
+
+	// Handshake: run until the server is established, leaving the dialer parked.
+	for i := 0; ; i++ {
+		done, err := tsched.AwaitGoroYieldOrDone()
+		if done {
+			t.Fatalf("dial ended during handshake: %v", err)
+		}
+		tst.ensureQuiesce(client, sv, lim)
+		if svconn.State() == tcp.StateEstablished {
+			break
+		} else if i > 64 {
+			t.Fatal("handshake did not complete")
+		}
+		tsched.YieldToGoro()
+	}
+	// Dialer observes ESTABLISHED.
+	tsched.YieldToGoro()
+	done, err := tsched.AwaitGoroYieldOrDone()
+	if done {
+		checkDialed(err)
+		return
+	}
+	// Peer closes before the dialer runs again.
+	svconn.Close()
+	tst.ensureQuiesce(client, sv, lim)
+	for range 100 {
+		tsched.YieldToGoro()
+		done, err := tsched.AwaitGoroYieldOrDone()
+		if done {
+			checkDialed(err)
+			return
+		}
+	}
+	t.Fatal("dial hangs after peer closed the established connection")
 }

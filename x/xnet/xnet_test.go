@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"math/rand"
+	"net"
 	"net/netip"
+	"strconv"
 	"sync"
 	"syscall"
 	"testing"
@@ -120,7 +122,12 @@ func TestStackGoTCPDialRetriesPendingControl(t *testing.T) {
 	const MTU = ethernet.MaxMTU
 	const tcptimeout = time.Second
 	const yield = 1 * time.Millisecond
+	// closure to simulate time.
+	var now time.Duration
+	nanotime := func() int64 { return int64(now) }
 	client, sv, _, _ := newTCPStacks(t, seed, MTU)
+	client.mono.Config(nanotime)
+
 	tsched := ltesto.NewSched(t)
 	tgoro := tsched.Goro()
 	sg := client.StackBlocking(tgoro.Yield).StackGo(StackGoConfig{
@@ -135,10 +142,8 @@ func TestStackGoTCPDialRetriesPendingControl(t *testing.T) {
 		TCPDialTimeout: tcptimeout,
 		TCPDialRetries: 2,
 	})
+
 	t.Log("start")
-	// closure to simulate time.
-	var now time.Duration
-	sg.blk._nanotime = func() int64 { return int64(now) }
 
 	laddr := netip.AddrPortFrom(netip.AddrFrom4(client.Addr4()), 1234)
 	raddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), 22)
@@ -255,57 +260,78 @@ func TestStackAsyncTCP_singlepacket(t *testing.T) {
 	tst.TestTCPClose(client, sv, clconn, svconn)
 }
 
-func newTCPStacks(t testing.TB, randSeed int64, mtu int) (s1, s2 *StackAsync, c1, c2 *tcp.Conn) {
-	s1, s2 = new(StackAsync), new(StackAsync)
-	c1, c2 = new(tcp.Conn), new(tcp.Conn)
-	byte1 := byte(randSeed)/4 - 1
-	err := s1.Reset(StackConfig{
-		Hostname:          "Stack1",
-		RandSeed:          randSeed,
-		StaticAddress4:    [4]byte{10, 0, 0, byte1},
-		MaxActiveTCPPorts: 1,
-		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, byte1},
-		MTU:               uint16(mtu),
-		ICMPQueueLimit:    2,
+func newTestStackGo(s *StackAsync, poolSize uint16, timeouts time.Duration, dialRetries int) StackGo {
+	return s.StackBlocking(backoffYield).StackGo(StackGoConfig{
+		ListenerPoolConfig: TCPPoolConfig{
+			PoolSize:           poolSize,
+			QueueSize:          4,
+			TxBufSize:          ethernet.MaxMTU,
+			RxBufSize:          ethernet.MaxMTU,
+			EstablishedTimeout: timeouts,
+			ClosingTimeout:     timeouts,
+			NewBackoff:         newBackoffYield,
+		},
+		TCPDialTimeout: timeouts,
+		TCPDialRetries: dialRetries,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+}
 
-	byte2 := byte1 + 1
-	err = s2.Reset(StackConfig{
-		Hostname:          "Stack2",
-		RandSeed:          ^randSeed,
-		StaticAddress4:    [4]byte{10, 0, 0, byte2},
-		MaxActiveTCPPorts: 1,
-		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, byte2},
+func newTestStack(t testing.TB, hostname string, randSeed int64, mtu, tcpPorts, udpPorts uint16) (s1 *StackAsync) {
+	t.Helper()
+	return newTestStackClock(t, hostname, randSeed, mtu, tcpPorts, udpPorts, nil)
+}
+
+// newTestStackClock is [newTestStack] with nanotime as the stack's monotonic clock.
+func newTestStackClock(t testing.TB, hostname string, randSeed int64, mtu, tcpPorts, udpPorts uint16, nanotime func() int64) (s1 *StackAsync) {
+	t.Helper()
+	id := hostname[len(hostname)-1] - '0'
+	if id > 9 {
+		t.Fatal("test stack name must end with hex digit 0..9, got:", hostname)
+	}
+	var stack StackAsync
+	err := stack.Reset(StackConfig{
+		Hostname:          hostname,
+		RandSeed:          randSeed,
+		StaticAddress4:    [4]byte{10, 0, 0, id},
+		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, id},
 		MTU:               uint16(mtu),
 		ICMPQueueLimit:    2,
+		MaxActiveTCPPorts: tcpPorts,
+		MaxActiveUDPPorts: udpPorts,
+		PassivePeers:      1, // put passive peers to test.
+		Nanotime:          nanotime,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	return &stack
+}
+
+func newTestTCPConn(t testing.TB, bufsize, txpack int) *tcp.Conn {
+	t.Helper()
+	conn := new(tcp.Conn)
+	buf := make([]byte, bufsize*2)
+	err := conn.Configure(tcp.ConnConfig{
+		RxBuf:             buf[0:bufsize],
+		TxBuf:             buf[bufsize : 2*bufsize],
+		TxPacketQueueSize: txpack,
+		RWBackoff:         backoffYield,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return conn
+}
+
+func newTCPStacks(t testing.TB, randSeed int64, mtu int) (s1, s2 *StackAsync, c1, c2 *tcp.Conn) {
+	t.Helper()
+	c1, c2 = new(tcp.Conn), new(tcp.Conn)
+	s1 = newTestStack(t, "Stack1", randSeed, uint16(mtu), 1, 0)
+	s2 = newTestStack(t, "Stack2", ^randSeed, uint16(mtu), 1, 0)
 	s1.SetGatewayHardwareAddr(s2.HardwareAddr())
 	s2.SetGatewayHardwareAddr(s1.HardwareAddr())
-	buf := make([]byte, mtu*4)
-	err = c1.Configure(tcp.ConnConfig{
-		RxBuf:             buf[:mtu],
-		TxBuf:             buf[mtu : mtu*2],
-		TxPacketQueueSize: 4,
-		RWBackoff:         backoffYield,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = c2.Configure(tcp.ConnConfig{
-		RxBuf:             buf[2*mtu : 3*mtu],
-		TxBuf:             buf[3*mtu : 4*mtu],
-		TxPacketQueueSize: 4,
-		RWBackoff:         backoffYield,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	c1 = newTestTCPConn(t, mtu, 4)
+	c2 = newTestTCPConn(t, mtu, 4)
 	return s1, s2, c1, c2
 }
 
@@ -330,6 +356,37 @@ type tcpExpectExchange struct {
 	SourceIdx int
 	WantFlags tcp.Flags
 	WantData  []byte
+}
+
+func (tst *tester) ensureQuiesce(s1, s2 *StackAsync, lim int) {
+	tst.t.Helper()
+	buf := tst.buf
+	for range lim {
+		sent := false
+		for _, p := range [2][2]*StackAsync{{s1, s2}, {s2, s1}} {
+			n, err := p[0].EgressEthernet(buf[:])
+			if err != nil {
+				tst.t.Fatal(err)
+			} else if n > 0 {
+				sent = true
+				p[1].IngressEthernet(buf[:n])
+			}
+		}
+		if !sent {
+			return
+		}
+	}
+	tst.t.Fatal("stacks did not quiesce after", lim)
+}
+
+// readyToAccept reports the connections ready on a listener returned by [StackGo.SocketNetip].
+func readyToAccept(t *testing.T, l net.Listener) int {
+	t.Helper()
+	ll, ok := l.(interface{ LnetoListener() *tcp.Listener })
+	if !ok {
+		t.Fatalf("listener %T does not expose LnetoListener", l)
+	}
+	return ll.LnetoListener().NumberOfReadyToAccept()
 }
 
 func noExchange(source int) tcpExpectExchange {
@@ -1131,7 +1188,7 @@ func getTCPFrame(etherFrame []byte) (tcp.Frame, bool) {
 	}
 	return tfrm, true
 }
-
+func newBackoffYield() lneto.BackoffStrategy { return backoffYield }
 func backoffYield(consecutiveBackoffs uint) time.Duration {
 	return lneto.BackoffFlagGosched
 }
@@ -1141,8 +1198,15 @@ func backoffYield(consecutiveBackoffs uint) time.Duration {
 // EgressIP clip in StackAsync: without it the SYN advertises ~65479 rather than
 // MTU-ipHdr-20.
 func TestEgressIP_TCPMSSAdvertisesMTU(t *testing.T) {
-	const mtu = 1280
-	const wantMSS = uint16(mtu - 20 - 20) // -IPv4 header -TCP header = 1240.
+	for _, mtu := range []int{1280, 9000} { // M29: IP-only (TUN) use is not bound by the 1500 byte Ethernet MTU.
+		t.Run(strconv.Itoa(mtu), func(t *testing.T) {
+			testEgressIPTCPMSS(t, mtu)
+		})
+	}
+}
+
+func testEgressIPTCPMSS(t *testing.T, mtu int) {
+	wantMSS := uint16(mtu - 20 - 20) // -IPv4 header -TCP header.
 	s1, s2, c1, _ := newTCPStacks(t, 4, mtu)
 
 	raddr := s2.Addr4()
@@ -1242,7 +1306,13 @@ func TestStackGoTCPDialSurvivesManyWaitIterations(t *testing.T) {
 	const MTU = ethernet.MaxMTU
 	const tcptimeout = time.Second
 	const quietIters = 4000 // well past the former iteration cap
+	// Simulated clock: the quiet phase below advances less than 5% of the dial
+	// timeout, so a timeout error there can only come from iteration counting.
+	var now time.Duration
+	nanotime := func() int64 { return int64(now) }
 	client, sv, _, svconn := newTCPStacks(t, seed, MTU)
+	client.mono.Config(nanotime)
+
 	err := sv.ListenTCP4(svconn, 22)
 	if err != nil {
 		t.Fatal(err)
@@ -1261,10 +1331,6 @@ func TestStackGoTCPDialSurvivesManyWaitIterations(t *testing.T) {
 		TCPDialTimeout: tcptimeout,
 		TCPDialRetries: 1,
 	})
-	// Simulated clock: the quiet phase below advances less than 5% of the dial
-	// timeout, so a timeout error there can only come from iteration counting.
-	var now time.Duration
-	sg.blk._nanotime = func() int64 { return int64(now) }
 
 	laddr := netip.AddrPortFrom(netip.AddrFrom4(client.Addr4()), 1234)
 	raddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), 22)

@@ -11,8 +11,10 @@ import (
 
 // pool is a [sync.Pool] like
 type pool interface {
-	GetTCP() (*Conn, any, Value)
+	GetTCP(laddr, raddr []byte, lport, rport uint16) (*Conn, any, Value)
 	PutTCP(*Conn)
+	// CheckTimeouts aborts acquired connections past their deadline; called by the listener while idle.
+	CheckTimeouts()
 }
 
 type Listener struct {
@@ -23,8 +25,9 @@ type Listener struct {
 	// accepted stores all connections that have been accepted and are open.
 	accepted   []handler
 	port       uint16
-	poolGet    func() (*Conn, any, Value)
+	poolGet    func(laddr, raddr []byte, lport, rport uint16) (*Conn, any, Value)
 	poolReturn func(*Conn)
+	poolCheck  func()
 	logger
 	// rstQueue stores pending RST responses for rejected segments.
 	// Per RFC 9293 §3.10.7.1 (CLOSED state processing).
@@ -44,6 +47,7 @@ func (listener *Listener) reset(port uint16, tcppool pool) {
 	listener.port = port
 	listener.poolGet = tcppool.GetTCP
 	listener.poolReturn = tcppool.PutTCP
+	listener.poolCheck = tcppool.CheckTimeouts
 }
 
 func (listener *Listener) SetLogger(logger *slog.Logger) {
@@ -107,11 +111,11 @@ func (listener *Listener) NumberOfReadyToAccept() (nready int) {
 }
 
 // TryAccept polls the list of ready connections that have been established
-func (listener *Listener) TryAccept() (*Conn, any, error) {
+func (listener *Listener) TryAccept() (ConnPinned, any, error) {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
 	if listener.isClosed() {
-		return nil, nil, net.ErrClosed
+		return ConnPinned{}, nil, net.ErrClosed
 	}
 	listener.debug("listener:tryaccept", slog.Uint64("port", uint64(listener.port)))
 	listener.maintainConns()
@@ -123,9 +127,9 @@ func (listener *Listener) TryAccept() (*Conn, any, error) {
 		userData := listener.incoming[i].userData
 		listener.accepted = append(listener.accepted, listener.incoming[i])
 		listener.incoming[i] = handler{} // discard from ready.
-		return conn, userData, nil
+		return conn.Pin(), userData, nil
 	}
-	return nil, nil, lneto.ErrExhausted
+	return ConnPinned{}, nil, lneto.ErrExhausted
 }
 
 // Encapsulate implements [StackNode].
@@ -191,7 +195,7 @@ func (listener *Listener) Demux(carrierData []byte, tcpFrameOffset int) error {
 	if err != nil {
 		return err
 	}
-	srcaddr, _, _, _, err := internal.GetIPAddr(carrierData)
+	srcaddr, dstaddr, _, _, err := internal.GetIPAddr(carrierData)
 	if err != nil {
 		return err
 	}
@@ -222,7 +226,7 @@ func (listener *Listener) Demux(carrierData []byte, tcpFrameOffset int) error {
 		}
 		return lneto.ErrPacketDrop
 	}
-	conn, userData, iss := listener.poolGet()
+	conn, userData, iss := listener.poolGet(dstaddr, srcaddr, dst, src)
 	if conn == nil {
 		listener.logerr("tcpListener:no-free-conn")
 		listener.rstQueue.Queue(srcaddr, src, listener.port, 0, tfrm.Seq()+1, FlagRST|FlagACK)
@@ -267,6 +271,7 @@ func (listener *Listener) isClosed() bool {
 }
 
 func (listener *Listener) maintainConns() {
+	listener.poolCheck() // Timed out conns are aborted and returned below.
 	listener.accepted = internal.DeleteZeroed(listener.accepted)
 	for i := range listener.incoming {
 		conn := listener.incoming[i].conn

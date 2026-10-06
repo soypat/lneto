@@ -3,6 +3,7 @@ package tcp
 import (
 	"io"
 	"net"
+	"sync/atomic"
 
 	"log/slog"
 
@@ -47,6 +48,30 @@ type Handler struct {
 	// nRetransmit stores the number of times the oldest packet was retransmit.
 	nRetransmit    uint8
 	requeueControl bool
+	synUnsent      bool // Can't be derived from ControlBlock :(
+
+	// RESETTABLE STATE MUST BE ZEROED IN [Handler.reset]
+}
+
+// reset clears all state except [ControlBlock] state. So [Handler.State] will remain unchanged. See [Handler.Abort] for full reset.
+func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
+	atomic.AddUint64(&h.connid, 1) // ConnID accessed by external managers.
+	h.localPort = localPort
+	h.remotePort = remotePort
+	h.closing = false
+	h.shutdownRx = false
+	h.requeueControl = false
+	h.synUnsent = false
+	h.peerOfferedWS = false
+	// h.wndShiftLocal derived from local buffers which stay, so not reset.
+	h.wndShiftPeer = 0
+	h.nRetransmit = 0
+	if h.policyEnabled() {
+		h.policy.Reset()
+	}
+	h.reasm.clear() // preserve metadata capacity across reopen, drop held segments.
+	h.bufTx.ResetOrReuse(nil, 0, iss)
+	h.bufRx.Reset()
 }
 
 // SetLoggers sets the [slog.Logger] for the Handler and internal [ControlBlock].
@@ -117,6 +142,7 @@ func (h *Handler) OpenActive(localPort, remotePort uint16, iss Value) error {
 	// reset/Abort prepares a SCB for active connection by resetting state to closed.
 	h.scb.reset()
 	h.reset(localPort, remotePort, iss)
+	h.synUnsent = true
 	h.scb.SetRecvWindow(Size(h.bufRx.Size()))
 	return nil
 }
@@ -144,33 +170,6 @@ func (h *Handler) Abort() {
 	h.info("tcp.Handler.Abort")
 	h.scb.Abort()
 	h.reset(0, 0, 0)
-}
-
-// reset clears all state except [ControlBlock] state. So [Handler.State] will remain unchanged.
-func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
-	*h = Handler{
-		connid:     h.connid + 1,
-		scb:        h.scb,
-		localPort:  localPort,
-		remotePort: remotePort,
-		closing:    false,
-		shutdownRx: false,
-		// Persist configuration across reopen:
-		validator:     h.validator,
-		policy:        h.policy,
-		logger:        h.logger,
-		wndShiftLocal: h.wndShiftLocal, // derived from buffers, which persist too
-		// persist memory across repoen:
-		bufTx: h.bufTx,
-		bufRx: h.bufRx,
-		reasm: h.reasm,
-	}
-	if h.policyEnabled() {
-		h.policy.Reset()
-	}
-	h.reasm.clear() // preserve metadata capacity across reopen, drop held segments.
-	h.bufTx.ResetOrReuse(nil, 0, iss)
-	h.bufRx.Reset()
 }
 
 // Recv receives an incoming TCP packet frame with the first byte being the first octet of the TCP frame.
@@ -230,7 +229,8 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 	err = h.scb.Recv(segIncoming)
 	if err != nil {
 		if h.scb.State() == StateClosed {
-			err = net.ErrClosed // Connection closed by RST; signal caller to tear down.
+			h.Abort()           // Closed by RST: do not leave Handler armed to resend SYN.
+			err = net.ErrClosed // Signal caller to tear down.
 		}
 		return err
 	}
@@ -510,6 +510,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 		h.info("tcp.Handler:tx-statechange", slog.Uint64("port", uint64(h.localPort)), slog.String("oldState", prevState.String()), slog.String("newState", h.scb.State().String()), slog.String("txflags", segment.Flags.String()))
 	}
 	h.requeueControl = false
+	h.synUnsent = false
 	tfrm.SetSourcePort(h.localPort)
 	tfrm.SetDestinationPort(h.remotePort)
 	segment.WND = h.wireWnd(segment) // wire representation only; scb keeps real octets
@@ -722,7 +723,7 @@ func (h *Handler) AwaitingSynAck() bool {
 
 // AwaitingSynSend returns true if the Handler is an active client opened with [Handler.OpenActive] and not yet sent out the first SYN packet to the remote client.
 func (h *Handler) AwaitingSynSend() bool {
-	return h.remotePort != 0 && h.scb.State() == StateClosed
+	return h.synUnsent && h.scb.State() == StateClosed
 }
 
 // IsTxOver returns true if there is no more frames to encapsulate over the network.

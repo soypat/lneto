@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/tcp"
 )
 
@@ -19,8 +20,8 @@ type TCPPool struct {
 	acquiredAt     []int64
 	closingAt      []int64
 	abortedAt      []int64
-	nextISS        tcp.Value
-	_now           func() int64
+	key            [16]byte // See [tcp.ISN].
+	mono           internal.Monotonic
 	estbTimeout    time.Duration
 	closingTimeout time.Duration
 	logger         *slog.Logger
@@ -41,11 +42,6 @@ type TCPPoolConfig struct {
 	Logger     *slog.Logger
 	ConnLogger *slog.Logger
 
-	// NanoTime returns the current monotonic time in nanoseconds.
-	// Used for pool timeout tracking. If nil, defaults to time.Now().UnixNano().
-	// Retransmission timing is not driven by this clock: a [tcp.Policy] carries
-	// its own. See NewPolicy.
-	NanoTime func() int64
 	// EstablishedTimeout sets the timeout for a TCP connection since it is acquired until it is established.
 	// If the connection does not establish in this time it will be closed by the pool.
 	EstablishedTimeout time.Duration
@@ -60,10 +56,27 @@ type TCPPoolConfig struct {
 	// NewPolicy if non-nil creates a [tcp.Policy] for each [tcp.Conn] used by the configured Listener.
 	// NewPolicy should not return reused policies unless the algorithm is stateless. See [tcp.Policy] for more information.
 	NewPolicy func() tcp.Policy
+
+	// NanoTime returns the current monotonic time in nanoseconds.
+	// Nanotime is monotonic clock used for pool timeout tracking.
+	// Retransmission timing is not driven by this clock: a [tcp.Policy] carries
+	// its own. See [TCPPoolConfig.NewPolicy].
+	nanotime func() int64
+	// key used for Initial Sequence Number generation. Should be from a high-entropy source. Cannot be zero.
+	key [16]byte
 }
 
-func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
-	if cfg.EstablishedTimeout <= 0 || cfg.ClosingTimeout <= 0 {
+// NewTCPPool using StackAsync's internal ISN key.
+func (s *StackAsync) NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
+	s.mu.Lock()
+	cfg.key = s.key
+	cfg.nanotime = s.mono.HAL()
+	s.mu.Unlock()
+	return newTCPPool(&cfg)
+}
+
+func newTCPPool(cfg *TCPPoolConfig) (*TCPPool, error) {
+	if cfg.EstablishedTimeout <= 0 || cfg.ClosingTimeout <= 0 || internal.IsZeroed(cfg.key) {
 		return nil, lneto.ErrInvalidConfig
 	} else if cfg.NewBackoff == nil {
 		return nil, lneto.ErrMissingHALConfig
@@ -75,11 +88,12 @@ func NewTCPPool(cfg TCPPoolConfig) (*TCPPool, error) {
 		abortedAt:      make([]int64, n),
 		conns:          make([]tcp.Conn, n),
 		userData:       make([]any, n),
-		_now:           cfg.NanoTime,
 		estbTimeout:    cfg.EstablishedTimeout,
 		closingTimeout: cfg.ClosingTimeout,
 		logger:         cfg.Logger,
+		key:            cfg.key,
 	}
+	pool.mono.Config(cfg.nanotime)
 	allocPerConn := cfg.TxBufSize + cfg.RxBufSize
 	bufSpace := make([]byte, n*allocPerConn)
 	for i := range pool.conns {
@@ -114,16 +128,18 @@ func (p *TCPPool) NumberOfAcquired() int {
 	return p.naqcuired
 }
 
-func (p *TCPPool) GetTCP() (conn *tcp.Conn, userData any, SuggestedISS tcp.Value) {
+// GetTCP acquires a free connection from the pool and returns its user data and an
+// Initial Sequence Number for the connection identified by laddr, raddr, lport and rport.
+func (p *TCPPool) GetTCP(laddr, raddr []byte, lport, rport uint16) (conn *tcp.Conn, userData any, iss tcp.Value) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.debug("TCPPool:get")
 	for i := range p.conns {
 		if p.acquiredAt[i] == 0 {
-			p.acquiredAt[i] = p.now()
-			p.nextISS += 1000
+			now := p.now()
+			p.acquiredAt[i] = now
 			p.naqcuired++
-			return &p.conns[i], p.userData[i], p.nextISS
+			return &p.conns[i], p.userData[i], tcp.ISN(&p.key, now, laddr, raddr, lport, rport)
 		}
 	}
 	return nil, nil, 0
@@ -166,7 +182,7 @@ func (p *TCPPool) CheckTimeouts() {
 		} else if st.IsPreestablished() && p.since(acq) > p.estbTimeout {
 			// Was acquired and did not reach establishment state so we close.
 			// This is part of a syn-flood defense mechanism.
-			conn.Close()
+			conn.Abort()
 		} else if st.IsClosed() || st.IsClosing() {
 			// p.mu.Lock()
 			if p.closingAt[i] == 0 {
@@ -175,8 +191,7 @@ func (p *TCPPool) CheckTimeouts() {
 				p.abortedAt[i] = p.now()
 				conn.Abort()
 			} else if p.abortedAt[i] != 0 && p.since(p.abortedAt[i]) > 10*time.Second {
-				println("connection aborted and still not returned to TCPPool")
-				println("source", conn.LocalPort(), "remote", conn.RemotePort(), "state", conn.State().String())
+				p.debug("TCPPool:aborted-not-returned", slog.Uint64("lport", uint64(conn.LocalPort())), slog.Uint64("rport", uint64(conn.RemotePort())), slog.String("state", st.String()))
 			}
 		}
 	}
@@ -187,10 +202,7 @@ func (p *TCPPool) since(t int64) time.Duration {
 }
 
 func (p *TCPPool) now() int64 {
-	if p._now == nil {
-		return time.Now().UnixNano()
-	}
-	return p._now()
+	return p.mono.Nanotime()
 }
 
 func (p *TCPPool) trace(msg string, attrs ...slog.Attr) {

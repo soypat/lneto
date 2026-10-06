@@ -3,6 +3,7 @@ package xnet
 import (
 	"encoding/binary"
 	"errors"
+	"io"
 	"log/slog"
 	"net/netip"
 	"sync"
@@ -64,7 +65,9 @@ type StackAsync struct {
 
 	sysprec int8 // NTP system precision.
 
+	mono internal.Monotonic
 	prng uint32
+	key  [16]byte // See [tcp.ISN].
 
 	addrBuf    [6]byte // Temporary buffer for As4()/HardwareAddr6() results to avoid heap escapes.
 	addrbufnip [4]netip.Addr
@@ -86,7 +89,11 @@ type StackConfig struct {
 
 	DNSServer netip.Addr
 	NTPServer netip.Addr
-	RandSeed  int64
+	// RandSeed used to generate pseudo-random numbers for protocol functioning. See [StackConfig.Entropy].
+	RandSeed int64
+	// Entropy reads from a source of true randomness to dst. Must return data read n=len(dst) or an error indicating why buffer was not filled.
+	// "Good" entropy is required for compliance with RFC 6528 ISN generation.
+	Entropy func(dst []byte) (n int, _ error)
 	// Hostname is used for DHCP hostname and ICMP ID.
 	Hostname string
 
@@ -105,12 +112,15 @@ type StackConfig struct {
 	MaxActiveTCPPorts, MaxActiveUDPPorts uint16
 	// MTU sets the maximum transmission unit, which is the maximum size of the Ethernet payload
 	// not including ethernet header, ethernet CRC. It is determined by the NIC hardware and the route the packets take over the network.
-	// By far the most common value for MTU is 1500 as specified by IEEE 802.3.
+	// By far the most common value for MTU is 1500 as specified by IEEE 802.3. Jumbo/TUN MTUs up to 65535 allowed.
 	MTU uint16
 	// Accept multicast ethernet and IP packets. Needed for MDNS.
 	AcceptMulticast bool
 	// Accept broadcast IPv4 packets. Needed for managing access points and DHCPv4 servers.
 	AcceptIPv4Broadcast bool
+	// Nanotime provides a monotonic time source to StackAsync. Since Nanotime is required for secure TCP operation
+	// if not provided will use [time.Since] in its stead.
+	Nanotime func() int64
 	// Logger receives the stack's Debug and DebugErr output. A nil Logger silences
 	// them; the heap allocation probe still runs so allocation bisection keeps working.
 	Logger *slog.Logger
@@ -217,9 +227,23 @@ func (s *StackAsync) Reset(cfg StackConfig) (err error) {
 	linkNodes := 2 // ARP and IPv4 nodes
 	s.ipv6enabled = ipv6Enabled
 	s.stack6 = nil
+	s.mono.Config(cfg.Nanotime)
+	if cfg.Entropy != nil {
+		n, err := cfg.Entropy(s.key[:])
+		if err == nil && n != len(s.key) {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
+			return err
+		}
+	} else {
+		// Best attempt at randomness.
+		binary.LittleEndian.PutUint64(s.key[:], uint64(cfg.RandSeed))
+		binary.LittleEndian.PutUint64(s.key[8:], uint64(s.mono.Nanotime()))
+	}
+
 	if s.ipv6enabled {
 		linkNodes = 3 // IPv6
-		s.Debug("ipv6 enabled")
 		err = cfg.IPv6Stack.Reset6(&cfg)
 		if err != nil {
 			s.ipv6enabled = false
@@ -303,7 +327,6 @@ func (s *StackAsync) Reset(cfg StackConfig) (err error) {
 		s.dnssv = cfg.DNSServer
 	}
 	if s.ipv6enabled {
-		s.Debug("registering IPv6 to ethernet")
 		err = s.link.RegisterEthernet(s.stack6.IPv6Stack())
 		if err != nil {
 			return err
@@ -490,10 +513,10 @@ func (s *StackAsync) DialUDP(conn *udp.Conn, localPort uint16, addrp netip.AddrP
 	return lneto.ErrInvalidAddr
 }
 
-func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrPort) (err error) {
-	addr := addrp.Addr()
+func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, raddrp netip.AddrPort) (err error) {
+	addr := raddrp.Addr()
 	if addr.Is4() {
-		return s.DialTCP4(conn, localPort, addrp.Addr().As4(), addrp.Port())
+		return s.DialTCP4(conn, localPort, raddrp.Addr().As4(), raddrp.Port())
 	} else if s.ipv6enabled && addr.Is6() {
 		// stack6 is guarded by s.mu (the single stack lock), just like the IPv4
 		// path locks inside DialTCP4. Hold it here so the port-handler mutation is
@@ -501,7 +524,9 @@ func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, addrp netip.AddrP
 		// since we already hold s.mu (Prand32 would deadlock).
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		return s.stack6.DialTCP6(conn, localPort, addr.As16(), addrp.Port(), tcp.Value(s.prand32()))
+		raddr := addr.As16()
+		laddr := s.stack6.Addr6()
+		return s.stack6.DialTCP6(conn, localPort, raddr, raddrp.Port(), tcp.ISN(&s.key, s.mono.Nanotime(), laddr[:], raddr[:], localPort, raddrp.Port()))
 	}
 	return lneto.ErrInvalidAddr
 }
@@ -532,7 +557,7 @@ func (s *StackAsync) DialTCP4(conn *tcp.Conn, localPort uint16, raddr [4]byte, r
 	if err != nil {
 		return err
 	}
-	err = conn.OpenActive(localPort, netip.AddrPortFrom(netip.AddrFrom4(raddr), rport), tcp.Value(s.prand32()))
+	err = conn.OpenActive(localPort, netip.AddrPortFrom(netip.AddrFrom4(raddr), rport), s.isn4(raddr[:], rport, localPort))
 	if err != nil {
 		return err
 	}
@@ -547,7 +572,7 @@ func (s *StackAsync) DialTCP4(conn *tcp.Conn, localPort uint16, raddr [4]byte, r
 func (s *StackAsync) ListenTCP4(conn *tcp.Conn, localPort uint16) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	err = conn.OpenListen(localPort, tcp.Value(s.prand32()))
+	err = conn.OpenListen(localPort, s.isn4(conn.RemoteAddr(), uint16(s.prand32()), localPort))
 	if err != nil {
 		return err
 	}
@@ -557,6 +582,18 @@ func (s *StackAsync) ListenTCP4(conn *tcp.Conn, localPort uint16) (err error) {
 		return err
 	}
 	return nil
+}
+
+func (s *StackAsync) isn4(raddr []byte, rport, lport uint16) tcp.Value {
+	var localaddr [10]byte
+	ip4 := s.ip4.Addr4()
+	localmac := s.link.HardwareAddr6()
+	copy(localaddr[:], ip4[:])
+	copy(localaddr[4:], localmac[:]) // MAC is added safety against spoofers.
+	if len(raddr) == 0 {
+		raddr = s.addrBuf[:] // use garbage in addrBuf.
+	}
+	return tcp.ISN(&s.key, s.mono.Nanotime(), localaddr[:], raddr, lport, rport)
 }
 
 func (s *StackAsync) RegisterListenerTCP(listener *tcp.Listener) (err error) {

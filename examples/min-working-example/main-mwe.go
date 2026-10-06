@@ -70,6 +70,7 @@ func run(ctx context.Context, stack *xnet.StackAsync) error {
 		// AcceptMulticast: true, // For MDNS.
 		MTU:             uint16(framelen - ethernet.MaxOverheadSize),
 		HardwareAddress: hwaddr,
+		Nanotime:        nanotime,
 	})
 	if err != nil {
 		return makeMsgErr("configuring stack", err)
@@ -110,7 +111,6 @@ func run(ctx context.Context, stack *xnet.StackAsync) error {
 			QueueSize:          tcpPacketQueueSize,
 			TxBufSize:          tcpBufsize,
 			RxBufSize:          tcpBufsize,
-			NanoTime:           nanotime,
 			EstablishedTimeout: tcpEstablishedTimeout,
 			ClosingTimeout:     tcpCloseTimeout,
 			NewBackoff:         func() lneto.BackoffStrategy { return tcpBackoff },

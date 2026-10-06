@@ -2,7 +2,10 @@ package xnet
 
 import (
 	"bytes"
+	"context"
+	"net"
 	"net/netip"
+	"syscall"
 	"testing"
 	"time"
 
@@ -312,6 +315,70 @@ func TestStackAsyncRegisterListenerUDP_MultiSource(t *testing.T) {
 		}
 		if got[1].from != wantFrom1 || !bytes.Equal(got[1].data, msg1) {
 			t.Errorf("[1]: got addr=%v data=%q, want addr=%v data=%q", got[1].from, got[1].data, wantFrom1, msg1)
+		}
+	}
+}
+
+// M3: the address returned by ReadFrom must not change when a later datagram arrives
+// from another sender, else replies to the first sender go to the second.
+func TestStackGoUDPReadFromAddrNotAliased(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	const udpPorts = 1
+	const seedRng = 0x1337_c0de
+	const svPort, clPort = 9000, 9001
+	sv := newTestStack(t, "s1", seedRng, mtu, 0, udpPorts)
+	cl1 := newTestStack(t, "s2", ^seedRng, mtu, 0, udpPorts)
+	cl2 := newTestStack(t, "s3", seedRng+1, mtu, 0, udpPorts)
+	if cl1.Addr4() == cl2.Addr4() || cl1.Addr4() == sv.Addr4() || cl2.Addr4() == sv.Addr4() {
+		t.Fatal("test stacks must have distinct addresses")
+	}
+
+	sg := newTestStackGo(sv, 1, time.Second, 1)
+	svaddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort)
+	sock, err := sg.SocketNetip(context.Background(), "udp", syscall.AF_INET, sockDGRAM, svaddr, netip.AddrPort{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc := sock.(net.PacketConn)
+	defer pc.Close()
+
+	var buf [ethernet.MaxMTU + ethernet.MaxOverheadSize]byte
+	var rbuf [64]byte
+	var froms []net.Addr
+	for _, cl := range []*StackAsync{cl1, cl2} {
+		cl.SetGatewayHardwareAddr(sv.HardwareAddr())
+		var conn udp.Conn
+		err := conn.Configure(udp.ConnConfig{
+			RxBuf: make([]byte, testUDPBufSize), TxBuf: make([]byte, testUDPBufSize),
+			RxQueueSize: testUDPQueueSize, TxQueueSize: testUDPQueueSize,
+			RWBackoff: backoffYield,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cl.DialUDP(&conn, clPort, svaddr); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Write([]byte("ping")); err != nil {
+			t.Fatal(err)
+		}
+		if exchangeEthernetOnce(t, cl, sv, buf[:]) == 0 {
+			t.Fatal("no datagram from client")
+		}
+		pc.SetReadDeadline(time.Now().Add(time.Second))
+		_, from, err := pc.ReadFrom(rbuf[:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		froms = append(froms, from)
+	}
+	want := []string{
+		netip.AddrPortFrom(netip.AddrFrom4(cl1.Addr4()), clPort).String(),
+		netip.AddrPortFrom(netip.AddrFrom4(cl2.Addr4()), clPort).String(),
+	}
+	for i, from := range froms {
+		if from.String() != want[i] {
+			t.Errorf("ReadFrom #%d address is now %s, want %s", i, from, want[i])
 		}
 	}
 }

@@ -426,3 +426,90 @@ func TestACKLoop_MutualOutOfWindow(t *testing.T) {
 	}
 	t.Fatal("ACK ping-pong did not converge after", maxRounds, "rounds — infinite loop bug")
 }
+
+const isnTick = 4096 // ns per ISN clock tick.
+
+func isnByteKey(b byte) (sameByteKey [16]byte) {
+	for i := range sameByteKey {
+		sameByteKey[i] = b
+	}
+	return sameByteKey
+}
+
+// ISNs of a tuple advance with the clock: one per ~4µs tick, wrapping mod 2**32.
+func TestISN_Clock(t *testing.T) {
+	key := isnByteKey(1)
+	laddr, raddr := []byte{10, 0, 0, 1}, []byte{10, 0, 0, 2}
+	const t0 = 1e9
+	isn0 := ISN(&key, t0, laddr, raddr, 1234, 80)
+	for _, ticks := range []int64{0, 1, 1000, 250_000, 1 << 32, 1<<32 + 7} {
+		got := ISN(&key, t0+ticks*isnTick, laddr, raddr, 1234, 80) - isn0
+		if want := Value(ticks); got != want {
+			t.Errorf("after %d ticks ISN advanced by %d, want %d", ticks, got, want)
+		}
+	}
+}
+
+// Every element of the tuple and the key select an unrelated ISN.
+func TestISN_TupleAndKey(t *testing.T) {
+	const now = 1e9
+	key1 := isnByteKey(1)
+	base := ISN(&key1, now, []byte{10, 0, 0, 1}, []byte{10, 0, 0, 2}, 1234, 80)
+	tests := []struct {
+		name         string
+		key          [16]byte
+		laddr, raddr []byte
+		lport, rport uint16
+	}{
+		{name: "key", key: isnByteKey(2), laddr: []byte{10, 0, 0, 1}, raddr: []byte{10, 0, 0, 2}, lport: 1234, rport: 80},
+		{name: "laddr", key: key1, laddr: []byte{10, 0, 0, 3}, raddr: []byte{10, 0, 0, 2}, lport: 1234, rport: 80},
+		{name: "raddr", key: key1, laddr: []byte{10, 0, 0, 1}, raddr: []byte{10, 0, 0, 3}, lport: 1234, rport: 80},
+		{name: "lport", key: key1, laddr: []byte{10, 0, 0, 1}, raddr: []byte{10, 0, 0, 2}, lport: 1235, rport: 80},
+		{name: "rport", key: key1, laddr: []byte{10, 0, 0, 1}, raddr: []byte{10, 0, 0, 2}, lport: 1234, rport: 81},
+		{name: "swapped", key: key1, laddr: []byte{10, 0, 0, 2}, raddr: []byte{10, 0, 0, 1}, lport: 80, rport: 1234},
+		{name: "ipv6", key: key1, laddr: append(make([]byte, 12), 10, 0, 0, 1), raddr: append(make([]byte, 12), 10, 0, 0, 2), lport: 1234, rport: 80},
+	}
+	for _, tt := range tests {
+		got := ISN(&tt.key, now, tt.laddr, tt.raddr, tt.lport, tt.rport)
+		if got == base {
+			t.Errorf("%s: changing it did not change ISN %d", tt.name, got)
+		}
+		v := ISN(&tt.key, now, tt.laddr, tt.raddr, tt.lport, tt.rport)
+		if v != ISN(&tt.key, now, tt.laddr, tt.raddr, tt.lport, tt.rport) {
+			t.Errorf("%s: ISN not deterministic", tt.name)
+		}
+	}
+}
+
+func TestISNGenerator_NoAlloc(t *testing.T) {
+	key := isnByteKey(1)
+	laddr, raddr := make([]byte, 16), make([]byte, 16)
+	allocs := testing.AllocsPerRun(100, func() {
+		ISN(&key, 1e9, laddr, raddr, 1234, 80)
+	})
+	if allocs != 0 {
+		t.Errorf("ISN allocates %v times per call", allocs)
+	}
+}
+
+// Consecutive local ports, as a dialer allocates them, must not yield ISNs a
+// constant distance apart, which would let one connection predict the next.
+func TestISNGenerator_SequentialPortsUnpredictable(t *testing.T) {
+	const now = 1e9
+	key1 := isnByteKey(1)
+	laddr, raddr := []byte{10, 0, 0, 1}, []byte{10, 0, 0, 2}
+	prev := ISN(&key1, now, laddr, raddr, 49152, 80)
+	var prevDelta Value
+	distinct := 0
+	for port := uint16(49153); port < 49152+64; port++ {
+		isn := ISN(&key1, now, laddr, raddr, port, 80)
+		delta := isn - prev
+		if delta != prevDelta {
+			distinct++
+		}
+		prev, prevDelta = isn, delta
+	}
+	if distinct < 60 {
+		t.Errorf("only %d of 63 ISN deltas between sequential ports differ", distinct)
+	}
+}
