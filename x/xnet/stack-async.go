@@ -3,6 +3,7 @@ package xnet
 import (
 	"encoding/binary"
 	"errors"
+	"io"
 	"log/slog"
 	"net/netip"
 	"sync"
@@ -65,6 +66,7 @@ type StackAsync struct {
 	sysprec int8 // NTP system precision.
 
 	_nanotime func() int64
+	monostart time.Time
 	prng      uint32
 	key       [16]byte // See [tcp.ISN].
 
@@ -88,7 +90,11 @@ type StackConfig struct {
 
 	DNSServer netip.Addr
 	NTPServer netip.Addr
-	RandSeed  int64
+	// RandSeed used to generate pseudo-random numbers for protocol functioning. See [StackConfig.Entropy].
+	RandSeed int64
+	// Entropy is a [io.Reader]-like signature callback to read from a source of true randomness.
+	// "Good" entropy is required for compliance with RFC 6528 ISN generation.
+	Entropy func([]byte) (int, error)
 	// Hostname is used for DHCP hostname and ICMP ID.
 	Hostname string
 
@@ -114,7 +120,7 @@ type StackConfig struct {
 	// Accept broadcast IPv4 packets. Needed for managing access points and DHCPv4 servers.
 	AcceptIPv4Broadcast bool
 	// Nanotime provides a monotonic time source to StackAsync. Since Nanotime is required for secure TCP operation
-	// if not provided will use [time.Now]()->[time.Time.UnixNano] in its stead.
+	// if not provided will use [time.Since] in its stead.
 	Nanotime func() int64
 	// Logger receives the stack's Debug and DebugErr output. A nil Logger silences
 	// them; the heap allocation probe still runs so allocation bisection keeps working.
@@ -223,8 +229,23 @@ func (s *StackAsync) Reset(cfg StackConfig) (err error) {
 	s.ipv6enabled = ipv6Enabled
 	s.stack6 = nil
 	s._nanotime = cfg.Nanotime
-	binary.LittleEndian.PutUint64(s.key[:], uint64(cfg.RandSeed))
-	binary.LittleEndian.PutUint64(s.key[8:], uint64(s.mustNanotime()))
+	if cfg.Nanotime == nil {
+		s.monostart = time.Now()
+	}
+	if cfg.Entropy != nil {
+		n, err := cfg.Entropy(s.key[:])
+		if err == nil && n != len(s.key) {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
+			return err
+		}
+	} else {
+		// Best attempt at randomness.
+		binary.LittleEndian.PutUint64(s.key[:], uint64(cfg.RandSeed))
+		binary.LittleEndian.PutUint64(s.key[8:], uint64(s.mustNanotime()))
+	}
+
 	if s.ipv6enabled {
 		linkNodes = 3 // IPv6
 		err = cfg.IPv6Stack.Reset6(&cfg)
@@ -386,12 +407,12 @@ func (s *StackAsync) prand32() uint32 {
 	return seed
 }
 
-// mustNanotime is used when time is needed for critical/secure functionality.
+// mustNanotime is monotonic time is needed for critical/secure functionality.
 func (s *StackAsync) mustNanotime() int64 {
 	if s._nanotime != nil {
 		return s._nanotime()
 	}
-	return time.Now().UnixNano()
+	return time.Since(s.monostart).Nanoseconds()
 }
 
 func (s *StackAsync) SetAddr4(addr [4]byte) error {
@@ -516,7 +537,8 @@ func (s *StackAsync) DialTCP(conn *tcp.Conn, localPort uint16, raddrp netip.Addr
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		raddr := addr.As16()
-		return s.stack6.DialTCP6(conn, localPort, raddr, raddrp.Port(), s.isn(raddr[:], raddrp.Port(), localPort))
+		laddr := s.stack6.Addr6()
+		return s.stack6.DialTCP6(conn, localPort, raddr, raddrp.Port(), tcp.ISN(&s.key, s.mustNanotime(), laddr[:], raddr[:], localPort, raddrp.Port()))
 	}
 	return lneto.ErrInvalidAddr
 }
@@ -547,7 +569,7 @@ func (s *StackAsync) DialTCP4(conn *tcp.Conn, localPort uint16, raddr [4]byte, r
 	if err != nil {
 		return err
 	}
-	err = conn.OpenActive(localPort, netip.AddrPortFrom(netip.AddrFrom4(raddr), rport), s.isn(raddr[:], rport, localPort))
+	err = conn.OpenActive(localPort, netip.AddrPortFrom(netip.AddrFrom4(raddr), rport), s.isn4(raddr[:], rport, localPort))
 	if err != nil {
 		return err
 	}
@@ -562,7 +584,7 @@ func (s *StackAsync) DialTCP4(conn *tcp.Conn, localPort uint16, raddr [4]byte, r
 func (s *StackAsync) ListenTCP4(conn *tcp.Conn, localPort uint16) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	err = conn.OpenListen(localPort, s.isn(conn.RemoteAddr(), uint16(s.prand32()), localPort))
+	err = conn.OpenListen(localPort, s.isn4(conn.RemoteAddr(), uint16(s.prand32()), localPort))
 	if err != nil {
 		return err
 	}
@@ -574,7 +596,7 @@ func (s *StackAsync) ListenTCP4(conn *tcp.Conn, localPort uint16) (err error) {
 	return nil
 }
 
-func (s *StackAsync) isn(raddr []byte, rport, lport uint16) tcp.Value {
+func (s *StackAsync) isn4(raddr []byte, rport, lport uint16) tcp.Value {
 	var localaddr [10]byte
 	ip4 := s.ip4.Addr4()
 	localmac := s.link.HardwareAddr6()
