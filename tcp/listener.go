@@ -35,8 +35,11 @@ type Listener struct {
 }
 
 func (listener *Listener) reset(port uint16, tcppool pool) {
-	listener.accepted = listener.accepted[:0]
-	listener.incoming = listener.incoming[:0]
+	if listener.poolReturn != nil {
+		// Conns still held belong to the previous pool: return them before replacing its callbacks.
+		listener.incoming = listener.returnAll(listener.incoming)
+		listener.accepted = listener.returnAll(listener.accepted)
+	}
 	listener.connID++
 	listener.port = port
 	listener.poolGet = tcppool.GetTCP
