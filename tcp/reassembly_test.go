@@ -18,6 +18,37 @@ func TestReassemblyDisabledByDefault(t *testing.T) {
 	}
 }
 
+// TestReassemblyView verifies held ranges are reported in sequence order across
+// wraparound, duplicates add no range, adjacent segments stay separate and
+// Abort empties the live view.
+func TestReassemblyView(t *testing.T) {
+	if (ReassemblyView{}).Len() != 0 {
+		t.Fatal("zero view must be empty")
+	}
+	for _, next := range []Value{100, ^Value(0) - 5} {
+		h := newHandler(t, 128, 4)
+		view := h.Reassembly()
+		for _, offset := range []Size{8, 4, 4} {
+			if !h.reasm.store(&h.bufRx, next, Add(next, offset), []byte("DATA")) {
+				t.Fatalf("store at offset %d failed", offset)
+			}
+		}
+		if view.Len() != 2 {
+			t.Fatalf("next=%d: Len=%d, want 2", next, view.Len())
+		}
+		for i := range view.Len() {
+			start, size := view.Block(i)
+			if want := Add(next, Size(4+4*i)); start != want || size != 4 {
+				t.Errorf("next=%d: Block(%d)=(%d,%d), want (%d,4)", next, i, start, size, want)
+			}
+		}
+		h.Abort()
+		if view.Len() != 0 {
+			t.Fatalf("next=%d: Len=%d after Abort, want 0", next, view.Len())
+		}
+	}
+}
+
 func TestReassemblyStoreAndReassemble(t *testing.T) {
 	var r reassembly
 	r.reset(4)
