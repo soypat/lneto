@@ -277,6 +277,7 @@ func (s *StackAsync) Reset(cfg StackConfig) (err error) {
 	s.setAcceptMulticast4(cfg.AcceptMulticast)
 	s.ip4.SetAcceptBroadcast4(cfg.AcceptIPv4Broadcast)
 	s.arpt.passivePeers = uint8(cfg.PassivePeers)
+	s.arpt.subnet4 = ipv4.Prefix{} // Not in resetARP: SetHardwareAddr keeps the subnet.
 	err = s.resetARP()
 	if err != nil {
 		return err
