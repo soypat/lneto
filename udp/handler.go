@@ -1,7 +1,6 @@
 package udp
 
 import (
-	"math"
 	"net"
 
 	"github.com/soypat/lneto"
@@ -26,20 +25,25 @@ type Handler struct {
 	lport       uint16
 	rport       uint16
 	mtu         uint16
-	// ipHdrLen is the IP header length used to check datagrams against mtu.
-	// Zero assumes the larger IPv6 header. Set by [Conn.Open].
-	ipHdrLen uint16
+	// maxPayload is the largest datagram payload that fits in mtu after IP and UDP headers.
+	// Conservatively assumes IPv6 until [Conn.Open] sets the IP family.
+	maxPayload uint16
 }
+
+const (
+	sizeIPv4Header = 20
+	sizeIPv6Header = 40
+)
 
 // Configure initializes the handler with the given buffer and queue configuration.
 // Increments the connection ID, invalidating any prior stack registration.
 func (h *Handler) Configure(cfg ConnConfig) error {
 	if len(cfg.RxBuf) < sizeHeader || len(cfg.TxBuf) < sizeHeader ||
-		cfg.RxQueueSize <= 0 || cfg.TxQueueSize <= 0 || cfg.MTU < 64 || cfg.MTU > math.MaxUint16-64 {
+		cfg.RxQueueSize <= 0 || cfg.TxQueueSize <= 0 || int(cfg.MTU) <= sizeIPv6Header+sizeHeader {
 		return lneto.ErrInvalidConfig
 	}
 	h.mtu = cfg.MTU
-	h.ipHdrLen = 0
+	h.setMaxPayload(sizeIPv6Header)
 	h.connid++
 	h.rxRing = internal.Ring{Buf: cfg.RxBuf}
 	h.txRing = internal.Ring{Buf: cfg.TxBuf}
@@ -136,7 +140,7 @@ func (h *Handler) Send(buf []byte) (int, error) {
 // Returns [lneto.ErrExhausted] if the tx datagram queue or buffer is full, retrying later may succeed.
 // Returns [lneto.ErrShortBuffer] if the datagram would exceed the configured MTU or the tx buffer size, which is permanent.
 func (h *Handler) Write(b []byte) (int, error) {
-	if h.exceedsMTU(len(b)) || len(b) > h.txRing.Size() {
+	if len(b) > int(h.maxPayload) || len(b) > h.txRing.Size() {
 		return 0, lneto.ErrShortBuffer
 	}
 	free := cap(h.txDgrams) - len(h.txDgrams)
@@ -152,14 +156,10 @@ func (h *Handler) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-// exceedsMTU reports whether a datagram with payloadLen bytes plus UDP and IP
-// headers would be larger than the configured MTU. Always false if MTU unset.
-func (h *Handler) exceedsMTU(payloadLen int) bool {
-	ipHdr := int(h.ipHdrLen)
-	if ipHdr == 0 {
-		ipHdr = 40
-	}
-	return ipHdr+sizeHeader+payloadLen > int(h.mtu)
+// setMaxPayload sets the payload limit for datagrams carried by an IP header of ipHdrLen bytes.
+// Configure guarantees mtu fits an IPv6 and UDP header so the subtraction does not underflow.
+func (h *Handler) setMaxPayload(ipHdrLen int) {
+	h.maxPayload = uint16(int(h.mtu) - ipHdrLen - sizeHeader)
 }
 
 // ReadNext dequeues the next received datagram into b. If b is smaller than the
@@ -207,6 +207,7 @@ func (h *Handler) Abort() {
 		txDgrams: h.txDgrams[:0],
 		mtu:      h.mtu,
 	}
+	h.setMaxPayload(sizeIPv6Header)
 	h.txRing.Reset()
 	h.rxRing.Reset()
 }

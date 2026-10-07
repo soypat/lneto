@@ -44,6 +44,8 @@ type ConnConfig struct {
 	// If not set a default backoff strategy will be used. See [internal.BackoffConnRW].
 	RWBackoff lneto.BackoffStrategy
 	// MTU is mechanism to reject Write payloads that would not fit in an IP frame.
+	// Must be at least 48 to fit IPv6 and UDP headers. Write rejects payloads larger
+	// than MTU-28 for IPv4 remotes and MTU-48 for IPv6 remotes.
 	MTU uint16
 }
 
@@ -92,10 +94,11 @@ func (conn *Conn) Open(localPort uint16, remoteAddr netip.AddrPort) error {
 		return err
 	}
 	conn.remoteAddr = append(conn.remoteAddr[:0], remoteAddr.Addr().AsSlice()...)
-	conn.h.ipHdrLen = 40
+	ipHdr := sizeIPv6Header
 	if remoteAddr.Addr().Is4() {
-		conn.h.ipHdrLen = 20
+		ipHdr = sizeIPv4Header
 	}
+	conn.h.setMaxPayload(ipHdr)
 	return nil
 }
 

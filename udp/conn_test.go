@@ -305,3 +305,107 @@ func TestConn_FrameOffset(t *testing.T) {
 func backoffYield(backoffs uint) time.Duration {
 	return lneto.BackoffFlagGosched
 }
+
+// TestConn_MTUBounds checks Configure accepts every MTU that fits an IPv6 and UDP
+// header, and that Write limits payloads by the IP family of the remote address.
+func TestConn_MTUBounds(t *testing.T) {
+	var (
+		addr4 = netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 0, 0, 1}), 8080)
+		addr6 = netip.AddrPortFrom(netip.MustParseAddr("2001:db8::1"), 8080)
+	)
+	tests := []struct {
+		name          string
+		mtu           uint16
+		raddr         netip.AddrPort
+		maxPayload    int
+		wantConfigErr bool
+	}{
+		{name: "zero", mtu: 0, wantConfigErr: true},
+		{name: "below-ipv6-udp-headers", mtu: 47, wantConfigErr: true},
+		{name: "ipv6-udp-headers-only", mtu: 48, raddr: addr6, maxPayload: 0},
+		{name: "ethernet-min-ipv4", mtu: ethernet.MinimumMTU, raddr: addr4, maxPayload: ethernet.MinimumMTU - 28},
+		{name: "ethernet-min-ipv6", mtu: ethernet.MinimumMTU, raddr: addr6, maxPayload: ethernet.MinimumMTU - 48},
+		{name: "max-ipv4", mtu: 65535, raddr: addr4, maxPayload: 65535 - 28},
+		{name: "max-ipv6", mtu: 65535, raddr: addr6, maxPayload: 65535 - 48},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var conn Conn
+			err := conn.Configure(ConnConfig{
+				RxBuf:       make([]byte, 256),
+				TxBuf:       make([]byte, 1<<16), // Larger than any payload so only the MTU limits Write.
+				RxQueueSize: 4,
+				TxQueueSize: 4,
+				RWBackoff:   backoffYield,
+				MTU:         tc.mtu,
+			})
+			if tc.wantConfigErr {
+				if err == nil {
+					t.Fatalf("Configure(MTU=%d) succeeded, want error", tc.mtu)
+				}
+				return
+			} else if err != nil {
+				t.Fatalf("Configure(MTU=%d): %v", tc.mtu, err)
+			}
+			err = conn.Open(1234, tc.raddr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = conn.Write(make([]byte, tc.maxPayload+1))
+			if err != lneto.ErrShortBuffer {
+				t.Fatalf("Write(%d) got err=%v, want %v", tc.maxPayload+1, err, lneto.ErrShortBuffer)
+			}
+			n, err := conn.Write(make([]byte, tc.maxPayload))
+			if err != nil || n != tc.maxPayload {
+				t.Fatalf("Write(%d) got n=%d err=%v", tc.maxPayload, n, err)
+			}
+		})
+	}
+}
+
+// TestConn_MTUReopenFamily checks the payload limit is recomputed from the MTU
+// when a conn is reopened to a remote of a different IP family.
+func TestConn_MTUReopenFamily(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	conn := newTestConnBuf(t, mtu, 2048)
+	payload := make([]byte, mtu-28) // Fits IPv4, exceeds IPv6 by 20 bytes.
+	err := conn.Open(1234, netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 0, 0, 1}), 8080))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = conn.Write(payload)
+	if err != nil {
+		t.Fatal("IPv4 write:", err)
+	}
+	conn.Close()
+	conn.Abort()
+	err = conn.Open(1234, netip.AddrPortFrom(netip.MustParseAddr("2001:db8::1"), 8080))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = conn.Write(payload)
+	if err != lneto.ErrShortBuffer {
+		t.Fatalf("IPv6 write got err=%v, want %v", err, lneto.ErrShortBuffer)
+	}
+	_, err = conn.Write(payload[:mtu-48])
+	if err != nil {
+		t.Fatal("IPv6 write:", err)
+	}
+}
+
+func newTestConnBuf(t *testing.T, mtu uint16, bufSize int) *Conn {
+	t.Helper()
+	var conn Conn
+	err := conn.Configure(ConnConfig{
+		RxBuf:       make([]byte, bufSize),
+		TxBuf:       make([]byte, bufSize),
+		RxQueueSize: 4,
+		TxQueueSize: 4,
+		RWBackoff:   backoffYield,
+		MTU:         mtu,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &conn
+}
