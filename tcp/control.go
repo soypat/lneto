@@ -453,8 +453,9 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	if seg.Flags.HasAny(FlagACK) && seg.ACK.LessThanEq(tcb.snd.NXT) {
 		// RFC 5681 §2: a duplicate ACK carries no data and leaves the window unchanged.
 		isDupACK := tcb.IncomingIsDupACK(seg.ACK) && seg.DATALEN == 0 && seg.WND == prevWND
-		if isDupACK && tcb.State().txQueuedDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < tcb.nRetransmit+retransmitMaxQueued+retransmitMaxQueued {
-			// Duplicate ack. Don't advance dupack counter past scb.nRetransmit+retransmitAfterDupacks
+		if isDupACK && tcb.State().txQueuedDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < tcb.nRetransmit+retransmitAfterDupacks+retransmitMaxQueued-1 {
+			// Duplicate ack. Stop counting once retransmitMaxQueued retransmissions
+			// are queued (see HasPendingRetransmit).
 			tcb.dupack++
 		} else if tcb.snd.UNA.LessThan(seg.ACK) {
 			// Only update ACK if it advances UNA and is not in the future.
