@@ -224,15 +224,15 @@ func (r *Timer) preTx(now int64, una tcp.Value) (newTransmitLimit tcp.Size, rtxF
 // PostTx records an emitted segment: it advances the shadow send sequence,
 // begins timing newly transmitted data (RFC 6298 §3) and arms the timer (§5.1).
 // Segments that do not extend the send sequence are retransmissions and are
-// never RTT-sampled (Karn's algorithm). Control-only segments (no data) are
-// ignored. It implements [tcp.Policy].
+// never RTT-sampled (Karn's algorithm). Segments occupying no sequence space,
+// such as ACK-only segments, are ignored. It implements [tcp.Policy].
 func (r *Timer) PostTx(h *tcp.Handler, outgoing tcp.Frame) {
 	r.postTx(outgoing.Segment(len(outgoing.Payload())), r.nanotime())
 }
 
 func (r *Timer) postTx(outgoing tcp.Segment, now int64) {
-	if outgoing.DATALEN == 0 {
-		return // only data segments are timed / arm the RTO.
+	if outgoing.DATALEN == 0 && !outgoing.Flags.HasAny(tcp.FlagFIN) {
+		return // Only data and FIN segments occupy sequence space to time and resend.
 	}
 	segStart := outgoing.SEQ
 	segEnd := segStart + tcp.Value(outgoing.LEN())

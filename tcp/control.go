@@ -278,7 +278,8 @@ func (tcb *ControlBlock) ZeroWindowProbe() (_ Segment, ok bool) {
 }
 
 // PendingRetransmit returns a segment resending already-sent data at seq, with
-// at most payloadLen octets bounded by snd.NXT and snd.MSS. Sending it through
+// at most payloadLen octets bounded by snd.NXT and snd.MSS, and the FIN when it
+// was sent and the resend reaches it. Sending it through
 // [ControlBlock.Send] leaves snd.NXT unchanged. It reports false when seq is
 // outside [snd.UNA, snd.NXT), the state cannot send data, or a control segment
 // or challenge ACK is due, which keeps priority. It does not modify the
@@ -289,14 +290,26 @@ func (tcb *ControlBlock) PendingRetransmit(seq Value, payloadLen int) (_ Segment
 	} else if seq.LessThan(tcb.snd.UNA) || !seq.LessThan(tcb.snd.NXT) {
 		return Segment{}, false
 	}
-	payloadLen = min(payloadLen, int(Sizeof(seq, tcb.snd.NXT)))
+	// In these states our FIN was sent (it is not pending, checked above) and
+	// is unacknowledged. It occupies the last sequence number and is resent like
+	// data (RFC 9293 §3.8.1).
+	finSent := tcb._state == StateFinWait1 || tcb._state == StateClosing || tcb._state == StateLastAck
+	end := tcb.snd.NXT
+	if finSent {
+		end--
+	}
+	payloadLen = min(payloadLen, int(Sizeof(seq, end)))
 	if tcb.snd.MSS > 0 {
 		payloadLen = min(payloadLen, int(tcb.snd.MSS))
 	}
-	if payloadLen <= 0 {
+	flags := FlagACK
+	if finSent && Add(seq, Size(payloadLen)) == end {
+		flags |= FlagFIN
+	}
+	if payloadLen <= 0 && flags == FlagACK {
 		return Segment{}, false
 	}
-	return Segment{SEQ: seq, DATALEN: Size(payloadLen), ACK: tcb.rcv.NXT, WND: tcb.rcv.WND, Flags: FlagACK}, true
+	return Segment{SEQ: seq, DATALEN: Size(payloadLen), ACK: tcb.rcv.NXT, WND: tcb.rcv.WND, Flags: flags}, true
 }
 
 // PendingSegment calculates a suitable next segment to send from a payload length.
