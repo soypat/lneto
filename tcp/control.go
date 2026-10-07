@@ -551,7 +551,10 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	zeroWindowOK := tcb.snd.WND == 0 && seg.DATALEN <= 1 && seg.SEQ == tcb.snd.NXT
 	outOfWindow := checkSeq && !seg.SEQ.InWindow(tcb.snd.NXT, tcb.snd.WND) &&
 		!zeroWindowOK
-	isRetransmit := checkSeq && seg.SEQ.InRange(tcb.snd.UNA, tcb.snd.NXT)
+	// A retransmission resends only sent data: one reaching past snd.NXT would
+	// send new data without advancing snd.NXT.
+	isRetransmit := checkSeq && seg.SEQ.InRange(tcb.snd.UNA, tcb.snd.NXT) &&
+		Add(seg.SEQ, seg.LEN()).LessThanEq(tcb.snd.NXT)
 	switch {
 	case tcb._state == StateClosed && !isFirst:
 		err = io.ErrClosedPipe
