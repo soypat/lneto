@@ -7,7 +7,6 @@ import (
 	"net/netip"
 	"syscall"
 	"time"
-	"unsafe"
 )
 
 // The interfaces this package exists to satisfy: an http.Server and a heapless
@@ -209,27 +208,14 @@ func (l *Listener) Accept() (net.Conn, error) {
 }
 
 // AcceptConn blocks until an incoming connection arrives and stores it in conn,
-// reusing whatever conn already held. Nothing is allocated.
-//
-// The syscall is made by hand because [syscall.Accept] allocates the
-// [syscall.Sockaddr] it returns, one per accepted connection: the kernel is
-// given address storage this call owns instead, and the address is read out of
-// it into conn.
+// reusing whatever conn already held. Nothing is allocated, except on
+// linux/386.
 func (l *Listener) AcceptConn(conn *Conn) error {
-	var rsa syscall.RawSockaddrAny
-	salen := uint32(unsafe.Sizeof(rsa))
-	nfd, _, errno := syscall.Syscall6(sysaccept, uintptr(l.fd),
-		uintptr(unsafe.Pointer(&rsa)), uintptr(unsafe.Pointer(&salen)), 0, 0, 0)
-	if errno != 0 {
-		return errno
+	nfd, remote, err := accept(l.fd)
+	if err != nil {
+		return err
 	}
-	*conn = Conn{fd: int(nfd), local: l.local}
-	if rsa.Addr.Family == syscall.AF_INET {
-		sa4 := (*syscall.RawSockaddrInet4)(unsafe.Pointer(&rsa))
-		// Port is in network byte order in the sockaddr the kernel filled.
-		port := uint16(sa4.Port<<8) | uint16(sa4.Port>>8)
-		conn.remote = Addr(netip.AddrPortFrom(netip.AddrFrom4(sa4.Addr), port))
-	}
+	*conn = Conn{fd: nfd, local: l.local, remote: remote}
 	return nil
 }
 
