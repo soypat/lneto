@@ -76,7 +76,7 @@ func shuttle(t *testing.T, a, b *StackAsync, rounds int, done func() bool) {
 		}
 		return n
 	}
-	for i := 0; i < rounds; i++ {
+	for range rounds {
 		if done != nil && done() {
 			return
 		}
@@ -329,7 +329,7 @@ func TestStackAsyncAddrSetters(t *testing.T) {
 			}
 
 			// New MAC must be answered over ARP for the same IPv4 address.
-			for i := 0; i < 2; i++ {
+			for i := range 2 {
 				err = s.SetHardwareAddr(newMAC) // Repeat exercises ARP node re-registration.
 				if err != nil {
 					t.Fatalf("SetHardwareAddr call %d: %v", i, err)
