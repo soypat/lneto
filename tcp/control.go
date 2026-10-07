@@ -468,8 +468,9 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	}
 
 	if seg.Flags.HasAny(FlagACK) && seg.ACK.LessThanEq(tcb.snd.NXT) {
-		if tcb.IncomingIsDupACK(seg) && tcb.State().txQueuedDataOpen() && tcb.dupack < tcb.nRetransmit+retransmitMaxQueued+retransmitMaxQueued {
-			// Duplicate ack. Don't advance dupack counter past scb.nRetransmit+retransmitAfterDupacks
+		if tcb.IncomingIsDupACK(seg) && tcb.State().txQueuedDataOpen() && tcb.dupack < tcb.nRetransmit+retransmitAfterDupacks+retransmitMaxQueued-1 {
+			// Duplicate ack. Stop counting once retransmitMaxQueued retransmissions
+			// are queued (see HasPendingRetransmit).
 			tcb.dupack++
 		} else if tcb.snd.UNA.LessThan(seg.ACK) {
 			// Only update ACK if it advances UNA and is not in the future.
