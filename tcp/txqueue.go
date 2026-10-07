@@ -131,13 +131,13 @@ func (rtx *ringTx) MakePacket(b []byte, currentSeq Value) (int, error) {
 		internal.LogAttrs(nil, slog.LevelError, "txqueue:seq<endseq", slog.Uint64("seq", uint64(currentSeq)), slog.Uint64("endseq", uint64(endSeq)))
 		return 0, lneto.ErrBug
 	}
-	if rtx.slist.Free() == 0 {
-		return 0, lneto.ErrBufferFull
-	}
 	// Reading unsent ring consumes unsent and converts it to "sent".
 	unsent, _ := rtx.unsentRing()
 	if unsent.IsEmpty() {
-		return 0, nil // No data to send.
+		return 0, nil // No data to send, so no packet slot is needed.
+	}
+	if rtx.slist.Free() == 0 {
+		return 0, lneto.ErrBufferFull
 	}
 	oldUnsentOff := unsent.Off
 	n, err := unsent.Read(b)
