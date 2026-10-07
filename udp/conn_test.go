@@ -322,7 +322,8 @@ func TestConn_MTUBounds(t *testing.T) {
 	}{
 		{name: "zero", mtu: 0, wantConfigErr: true},
 		{name: "below-ipv6-udp-headers", mtu: 47, wantConfigErr: true},
-		{name: "ipv6-udp-headers-only", mtu: 48, raddr: addr6, maxPayload: 0},
+		{name: "ipv6-udp-headers-only", mtu: 48, wantConfigErr: true},
+		{name: "ipv6-min-payload", mtu: 49, raddr: addr6, maxPayload: 1},
 		{name: "ethernet-min-ipv4", mtu: ethernet.MinimumMTU, raddr: addr4, maxPayload: ethernet.MinimumMTU - 28},
 		{name: "ethernet-min-ipv6", mtu: ethernet.MinimumMTU, raddr: addr6, maxPayload: ethernet.MinimumMTU - 48},
 		{name: "max-ipv4", mtu: 65535, raddr: addr4, maxPayload: 65535 - 28},
