@@ -2,6 +2,7 @@ package tcp_test
 
 import (
 	"math/rand"
+	"net"
 	"testing"
 
 	"github.com/soypat/lneto"
@@ -793,8 +794,9 @@ func TestClose_PartialACKDoesNotAdvance(t *testing.T) {
 
 // TestExchangeTest_ZeroWindowProbesDoNotAbort verifies that data at RCV.NXT
 // against a zero receive window, and the empty probe Linux sends at RCV.NXT-1,
-// are refused and acknowledged without counting toward the challenge-ACK abort
-// (RFC 9293 §3.10.7.4, RFC 1122 §4.2.2.17).
+// are refused and acknowledged without counting toward the challenge-ACK abort,
+// and that an RST at RCV.NXT still resets the connection (RFC 9293 §3.10.7.4,
+// MUST-66, RFC 1122 §4.2.2.17).
 func TestExchangeTest_ZeroWindowProbesDoNotAbort(t *testing.T) {
 	const issA, issB, windowB = 100, 300, 1000
 	probe := tcp.Segment{SEQ: issB, ACK: issA, Flags: tcp.FlagACK, WND: windowB, DATALEN: 1}
@@ -811,7 +813,7 @@ func TestExchangeTest_ZeroWindowProbesDoNotAbort(t *testing.T) {
 			tcp.SegmentStep{Seg: ack, Action: tcp.StepASends, AState: tcp.StateEstablished},
 		)
 	}
-	steps = append(steps, tcp.SegmentStep{Seg: probeRST, Action: tcp.StepBSends, AState: tcp.StateEstablished, WantErr: tcp.ErrZeroWindow})
+	steps = append(steps, tcp.SegmentStep{Seg: probeRST, Action: tcp.StepBSends, AState: tcp.StateClosed, WantErr: net.ErrClosed})
 	test := tcp.ExchangeTest{
 		ISSA:       issA,
 		ISSB:       issB,
