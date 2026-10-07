@@ -26,7 +26,7 @@ type ClientConfig struct {
 }
 
 type Client struct {
-	connid uint64
+	connid lneto.ConnID
 	magic  uint32
 	_seq   uint16
 	id     uint16
@@ -81,9 +81,9 @@ func (client *Client) SetAddr6(addr [16]byte) {
 	client.Reset()
 }
 
-func (client *Client) Protocol() uint64      { return uint64(lneto.IPProtoIPv6ICMP) }
-func (client *Client) LocalPort() uint16     { return 0 }
-func (client *Client) ConnectionID() *uint64 { return &client.connid }
+func (client *Client) Protocol() uint64            { return uint64(lneto.IPProtoIPv6ICMP) }
+func (client *Client) LocalPort() uint16           { return 0 }
+func (client *Client) ConnectionID() *lneto.ConnID { return &client.connid }
 
 func (client *Client) Abort() {
 	client.Reset()

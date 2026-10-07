@@ -32,7 +32,7 @@ type StackNode interface {
 	// Stacks should store the original value of ConnectionID (dereference the pointer) on
 	// registering a [StackNode]. When the value changes this means the registered [StackNode]
 	// should be discarded since its lifetime has terminated.
-	ConnectionID() *uint64
+	ConnectionID() *ConnID
 	// TODO(pato,ddirect): Do we eventually want to trigger writes to buffers asynchronously?
 	// SetFlagPending(flagPending func(numPendingEncapsulations int))
 }

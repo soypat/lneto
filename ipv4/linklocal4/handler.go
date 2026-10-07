@@ -26,7 +26,7 @@ import (
 //
 // [RFC3927]: https://datatracker.ietf.org/doc/html/rfc3927
 type Handler struct {
-	connID uint64
+	connID lneto.ConnID
 	now    func() time.Time
 
 	// nextActionAt is the time at which the next probe/announcement is due.
@@ -105,7 +105,7 @@ func (h *Handler) LocalPort() uint16 { return 0 }
 func (h *Handler) Protocol() uint64 { return uint64(ethernet.TypeARP) }
 
 // ConnectionID implements [lneto.StackNode].
-func (h *Handler) ConnectionID() *uint64 { return &h.connID }
+func (h *Handler) ConnectionID() *lneto.ConnID { return &h.connID }
 
 // State returns the current autoconfiguration state.
 func (h *Handler) State() State { return h.state }

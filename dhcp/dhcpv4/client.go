@@ -15,7 +15,7 @@ import (
 )
 
 type Client struct {
-	connID      uint64
+	connID      lneto.ConnID
 	reqHostname string
 	clientID    []byte
 	hostname    []byte
@@ -100,9 +100,9 @@ func (c *Client) BeginRequest(xid uint32, cfg RequestConfig) error {
 	return nil
 }
 
-func (c *Client) Protocol() uint64      { return uint64(lneto.IPProtoUDP) }
-func (c *Client) LocalPort() uint16     { return DefaultClientPort }
-func (c *Client) ConnectionID() *uint64 { return &c.connID }
+func (c *Client) Protocol() uint64            { return uint64(lneto.IPProtoUDP) }
+func (c *Client) LocalPort() uint16           { return DefaultClientPort }
+func (c *Client) ConnectionID() *lneto.ConnID { return &c.connID }
 
 func (c *Client) setIP(carrierFrame []byte, offsetToIP int) {
 	if offsetToIP < 0 {

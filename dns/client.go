@@ -11,7 +11,7 @@ import (
 )
 
 type Client struct {
-	connID          uint64
+	connID          lneto.ConnID
 	msg             Message
 	vld             lneto.Validator
 	txid            uint16
@@ -36,7 +36,7 @@ func (sudp *Client) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
 
 func (sudp *Client) LocalPort() uint16 { return sudp.lport }
 
-func (sudp *Client) ConnectionID() *uint64 { return &sudp.connID }
+func (sudp *Client) ConnectionID() *lneto.ConnID { return &sudp.connID }
 
 func (c *Client) StartResolve(localPort, txid uint16, cfg ResolveConfig) error {
 	nd := len(cfg.Questions)

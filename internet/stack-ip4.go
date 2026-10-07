@@ -17,7 +17,7 @@ import (
 // var _ lneto.StackNode = (*stackip4)(nil)
 
 type StackIPv4 struct {
-	connID uint64
+	connID lneto.ConnID
 	stackip4
 }
 
@@ -27,7 +27,7 @@ func (stackip4 *StackIPv4) Reset(vld *lneto.Validator, maxNodes int) error {
 	return nil
 }
 
-func (stackip4 *StackIPv4) ConnectionID() *uint64 {
+func (stackip4 *StackIPv4) ConnectionID() *lneto.ConnID {
 	return &stackip4.connID
 }
 

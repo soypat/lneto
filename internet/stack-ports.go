@@ -14,7 +14,7 @@ import (
 )
 
 type StackPorts struct {
-	connID     uint64
+	connID     lneto.ConnID
 	handlers   handlers
 	dstPortOff uint16
 	protocol   uint16
@@ -48,7 +48,7 @@ func (ps *StackPorts) LocalPort() uint16 { return 0 }
 
 func (ps *StackPorts) Protocol() uint64 { return uint64(ps.protocol) }
 
-func (ps *StackPorts) ConnectionID() *uint64 { return &ps.connID }
+func (ps *StackPorts) ConnectionID() *lneto.ConnID { return &ps.connID }
 
 func (ps *StackPorts) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (n int, err error) {
 	if int(ps.dstPortOff)+offsetToFrame+2 > len(carrierData) {
@@ -136,7 +136,7 @@ func (ps *StackPortsMACFiltered) LocalPort() uint16 { return 0 }
 
 func (ps *StackPortsMACFiltered) Protocol() uint64 { return uint64(ps.sp.protocol) }
 
-func (ps *StackPortsMACFiltered) ConnectionID() *uint64 { return &ps.sp.connID }
+func (ps *StackPortsMACFiltered) ConnectionID() *lneto.ConnID { return &ps.sp.connID }
 
 func (ps *StackPortsMACFiltered) Demux(b []byte, offset int) (err error) {
 	// No MAC Filtering on ingress. TODO?

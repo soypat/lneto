@@ -11,7 +11,7 @@ import (
 // rx/tx ring buffers and datagram queues without locking or deadlines.
 // [Conn] wraps Handler to provide a goroutine-safe socket API.
 type Handler struct {
-	connid   uint64
+	connid   lneto.ConnID
 	rxRing   internal.Ring
 	rxDgrams []struct {
 		length uint16

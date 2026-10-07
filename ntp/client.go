@@ -22,7 +22,7 @@ const (
 const sysprecRecalcNeeded int8 = 127
 
 type Client struct {
-	connID uint64
+	connID lneto.ConnID
 	start  time.Time
 	_now   func() time.Time
 	logger logger
@@ -55,7 +55,7 @@ func (c *Client) SetLogger(l *slog.Logger) { c.logger.log = l }
 
 func (c *Client) Protocol() uint64  { return 0 }
 func (c *Client) LocalPort() uint16 { return ClientPort }
-func (c *Client) ConnectionID() *uint64 {
+func (c *Client) ConnectionID() *lneto.ConnID {
 	return &c.connID
 }
 

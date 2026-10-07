@@ -18,7 +18,7 @@ type pool interface {
 }
 
 type Listener struct {
-	connID uint64
+	connID lneto.ConnID
 	mu     sync.Mutex
 	// incoming stores connections that are potential candidates for acceptance.
 	incoming []ConnHandle
@@ -61,7 +61,7 @@ func (listener *Listener) LocalPort() uint16 {
 }
 
 // ConnectionID implements [StackNode].
-func (listener *Listener) ConnectionID() *uint64 { return &listener.connID }
+func (listener *Listener) ConnectionID() *lneto.ConnID { return &listener.connID }
 
 // Protocol implements [StackNode].
 func (listener *Listener) Protocol() uint64 { return uint64(lneto.IPProtoTCP) }

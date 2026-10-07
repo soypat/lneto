@@ -5,7 +5,6 @@ import (
 	"math"
 	"net"
 	"slices"
-	"sync/atomic"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -14,9 +13,9 @@ import (
 // node is a concrete StackNode as stored in Stacks. Methods are devirtualized for performance benefits, especially on TinyGo.
 type node struct {
 	// currConnID stores the stack node *connID value on registration.
-	currConnID uint64
+	currConnID lneto.ConnID
 	// connID is StackNode.ConnectionID() return value.
-	connID *uint64
+	connID *lneto.ConnID
 	// cbnode has different definitions in tinygo and normal Go compiled programs
 	// for performance and heap control reasons.
 	callbacks cbnode
@@ -196,7 +195,7 @@ var (
 )
 
 func (node *node) IsInvalid() bool {
-	return node.callbacks.IsZeroed() || (node.connID != nil && node.currConnID != atomic.LoadUint64(node.connID))
+	return node.callbacks.IsZeroed() || (node.connID != nil && node.currConnID != internal.LoadConnID(node.connID))
 }
 
 func checkNodeErr(node *node, err error) (discard bool) {
@@ -207,10 +206,10 @@ func nodeFromStackNode(s lneto.StackNode, port uint16, protocol uint64, remoteAd
 	if protocol > math.MaxUint16 {
 		panic(">16bit protocol number unsupported")
 	}
-	var currConnID uint64
+	var currConnID lneto.ConnID
 	connIDPtr := s.ConnectionID()
 	if connIDPtr != nil {
-		currConnID = atomic.LoadUint64(connIDPtr)
+		currConnID = internal.LoadConnID(connIDPtr)
 	}
 	return node{
 		currConnID: currConnID,

@@ -16,7 +16,7 @@ const (
 )
 
 type Client struct {
-	connid uint64
+	connid lneto.ConnID
 	magic  uint32
 	_seq   uint16
 	id     uint16
@@ -69,7 +69,7 @@ func (client *Client) Protocol() uint64 { return uint64(lneto.IPProtoICMP) }
 
 func (client *Client) LocalPort() uint16 { return 0 }
 
-func (client *Client) ConnectionID() *uint64 { return &client.connid }
+func (client *Client) ConnectionID() *lneto.ConnID { return &client.connid }
 
 func (client *Client) Abort() {
 	client.Reset()

@@ -41,7 +41,7 @@ type ClientConfig struct {
 //
 // Client is not safe for concurrent use.
 type Client struct {
-	connID     uint64
+	connID     lneto.ConnID
 	cfg        ClientConfig
 	ntpState   ntp.Client
 	uniqueID   [32]byte
@@ -86,7 +86,7 @@ func (c *Client) Reset(cfg ClientConfig) error {
 }
 
 // ConnectionID implements [lneto.StackNode].
-func (c *Client) ConnectionID() *uint64 { return &c.connID }
+func (c *Client) ConnectionID() *lneto.ConnID { return &c.connID }
 
 // Protocol implements [lneto.StackNode].
 func (c *Client) Protocol() uint64 { return uint64(ntp.ServerPort) }
