@@ -88,7 +88,7 @@ type DelegatedPrefix struct {
 //	cl.BeginRequest(xid, RequestConfig{ClientHardwareAddr: mac})
 //	// drive Encapsulate / Demux calls via the network stack
 type Client struct {
-	connID uint64
+	connID lneto.ConnID
 	state  ClientState
 	xid    uint32 // lower 24 bits used
 
@@ -614,7 +614,7 @@ func (c *Client) NumNTPServerNames() int { return len(c.ntpNames) }
 // ConnectionID returns a pointer to the client's connection ID.
 // The value increments on each reset; callers should discard registrations when it changes.
 // Implements [lneto.StackNode].
-func (c *Client) ConnectionID() *uint64 { return &c.connID }
+func (c *Client) ConnectionID() *lneto.ConnID { return &c.connID }
 
 // LocalPort returns the DHCPv6 client port (546).
 // Implements [lneto.StackNode].

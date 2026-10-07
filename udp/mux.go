@@ -74,7 +74,7 @@ type MuxConfig struct {
 
 // muxHandler
 type muxHandler struct {
-	connid uint64
+	connid lneto.ConnID
 	// filterLPorts stores rx port ranges over which Handler can receive data.
 	// If not set will not filter UDP data.
 	filterLPorts []struct {
@@ -126,7 +126,7 @@ func (mh *muxHandler) Configure(cfg MuxConfig) error {
 func (mh *muxHandler) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
 
 // ConnectionID implements [lneto.StackNode].
-func (mh *muxHandler) ConnectionID() *uint64 { return &mh.connid }
+func (mh *muxHandler) ConnectionID() *lneto.ConnID { return &mh.connid }
 
 // LocalPort implements [lneto.StackNode] but not applicable to mux. Mux is a multi Rx/Tx port abstraction.
 func (mh *muxHandler) LocalPort() uint16 { return 0 }
