@@ -923,6 +923,37 @@ func TestZeroWindowProbe(t *testing.T) {
 	}
 }
 
+// TestSendRetransmitBounds verifies a segment starting below SND.NXT is sent as
+// a retransmission only if it ends at or below SND.NXT. One reaching past it
+// would put new data on the wire without advancing SND.NXT.
+func TestSendRetransmitBounds(t *testing.T) {
+	const issA, issB, windowA, sndWND = 100, 300, 1000, 1000
+	const inFlight = 10
+	for _, tc := range []struct {
+		name    string
+		seq     tcp.Value
+		datalen tcp.Size
+		wantErr bool
+	}{
+		{name: "all-outstanding", seq: issA, datalen: inFlight},
+		{name: "tail-outstanding", seq: issA + 5, datalen: 5},
+		{name: "past-snd-nxt", seq: issA + 5, datalen: 10, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var tcb tcp.ControlBlock
+			tcb.HelperInitState(tcp.StateEstablished, issA, issA+inFlight, windowA)
+			tcb.HelperInitRcv(issB, issB, sndWND)
+			seg := tcp.Segment{SEQ: tc.seq, ACK: issB, WND: windowA, Flags: tcp.FlagACK, DATALEN: tc.datalen}
+			if err := tcb.Send(seg); (err != nil) != tc.wantErr {
+				t.Fatalf("Send(%+v) = %v, want error %v", seg, err, tc.wantErr)
+			}
+			if tcb.SendNext() != issA+inFlight {
+				t.Fatalf("SND.NXT=%d, want %d", tcb.SendNext(), issA+inFlight)
+			}
+		})
+	}
+}
+
 func TestRcvFinWait2(t *testing.T) {
 	const windowA, windowB = 1000, 1000
 	const issA, issB = 100, 300
