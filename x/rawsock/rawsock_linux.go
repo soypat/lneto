@@ -1,4 +1,4 @@
-//go:build !tinygo && linux
+//go:build !tinygo && linux && !386
 
 package rawsock
 
