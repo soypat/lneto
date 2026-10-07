@@ -230,3 +230,36 @@ func TestStackAsync_ResetClearsSubnet(t *testing.T) {
 		t.Fatalf("first frame %s to %x, want IPv4 to the gateway %x", efrm.EtherTypeOrSize(), *efrm.DestinationHardwareAddr(), router)
 	}
 }
+
+// TestStack6_ResetForgetsNeighborQueries verifies a neighbor query left
+// unsent by a dial is dropped by Reset6 instead of being sent afterwards, and
+// that no pending resolve keeps pointing into the old connection.
+func TestStack6_ResetForgetsNeighborQueries(t *testing.T) {
+	cfg, _ := stack6PairConfigs(1, 1, 2)
+	s := DefaultStack6()
+	if err := s.Reset6(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnableICMP6(true); err != nil {
+		t.Fatal(err)
+	}
+	unknown := [16]byte{0x20, 0x01, 0x0d, 0xb8, 15: 9} // 2001:db8::9, never answers.
+	if err := s.DialUDP6(newUDPConn6(t), 5000, unknown, 5001); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reset6(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnableICMP6(true); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, ethernet.MaxMTU)
+	if n, err := s.EgressIPv6(buf); err != nil || n != 0 {
+		t.Errorf("EgressIPv6 after Reset6 = %d, %v; want nothing sent", n, err)
+	}
+	for _, p := range s.(*stack6).ndpPending {
+		if p.macBuf != nil {
+			t.Fatalf("pending resolve for %x survived Reset6", p.addr)
+		}
+	}
+}

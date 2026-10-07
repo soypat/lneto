@@ -78,6 +78,7 @@ func (c *ndpCache) ageEntries() {
 func (c *ndpCache) reset(maxLimit int) {
 	internal.SliceReuse(&c.entries, maxLimit)
 	c.entries = c.entries[:cap(c.entries)]
+	clear(c.entries)
 }
 
 func (c *ndpCache) getNextFlagged(flags ndpFlags) *ndpEntry {
