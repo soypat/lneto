@@ -79,6 +79,7 @@ func TestStackAsyncRegisterListenerUDP_ReceiveData(t *testing.T) {
 		RxBuf: make([]byte, testUDPBufSize), TxBuf: make([]byte, testUDPBufSize),
 		RxQueueSize: testUDPQueueSize, TxQueueSize: testUDPQueueSize,
 		RWBackoff: backoffYield,
+		MTU:       uint16(sv.MTU()),
 	}); err != nil {
 		t.Fatal("conn Configure:", err)
 	}
@@ -140,6 +141,7 @@ func TestStackAsyncRegisterListenerUDP_ReplyToClient(t *testing.T) {
 		RxBuf: make([]byte, testUDPBufSize), TxBuf: make([]byte, testUDPBufSize),
 		RxQueueSize: testUDPQueueSize, TxQueueSize: testUDPQueueSize,
 		RWBackoff: backoffYield,
+		MTU:       uint16(sv.MTU()),
 	}); err != nil {
 		t.Fatal("conn Configure:", err)
 	}
@@ -252,6 +254,7 @@ func TestStackAsyncRegisterListenerUDP_MultiSource(t *testing.T) {
 		RxBuf: make([]byte, testUDPBufSize), TxBuf: make([]byte, testUDPBufSize),
 		RxQueueSize: testUDPQueueSize, TxQueueSize: testUDPQueueSize,
 		RWBackoff: backoffYield,
+		MTU:       uint16(sv.MTU()),
 	}); err != nil {
 		t.Fatal("conn1 Configure:", err)
 	}
@@ -270,6 +273,7 @@ func TestStackAsyncRegisterListenerUDP_MultiSource(t *testing.T) {
 		RxBuf: make([]byte, testUDPBufSize), TxBuf: make([]byte, testUDPBufSize),
 		RxQueueSize: testUDPQueueSize, TxQueueSize: testUDPQueueSize,
 		RWBackoff: backoffYield,
+		MTU:       uint16(sv.MTU()),
 	}); err != nil {
 		t.Fatal("conn2 Configure:", err)
 	}
@@ -352,6 +356,7 @@ func TestStackGoUDPReadFromAddrNotAliased(t *testing.T) {
 			RxBuf: make([]byte, testUDPBufSize), TxBuf: make([]byte, testUDPBufSize),
 			RxQueueSize: testUDPQueueSize, TxQueueSize: testUDPQueueSize,
 			RWBackoff: backoffYield,
+			MTU:       uint16(sv.MTU()),
 		})
 		if err != nil {
 			t.Fatal(err)
