@@ -190,3 +190,43 @@ func resetTestTraffic(t *testing.T, s *StackAsync, finish bool) (frames [][]byte
 	pump()
 	return frames
 }
+
+// TestStackAsync_ResetClearsSubnet verifies Reset forgets a subnet set with
+// SetSubnet4: a destination in it is then sent to the gateway instead of being
+// resolved on the link.
+func TestStackAsync_ResetClearsSubnet(t *testing.T) {
+	cfg := resetTestConfig(576, 1, 1, 0, 1)
+	var s StackAsync
+	if err := s.Reset(cfg); err != nil {
+		t.Fatal(err)
+	}
+	s.SetSubnet4(s.Addr4(), 24)
+	if err := s.Reset(cfg); err != nil {
+		t.Fatal(err)
+	}
+	router := [6]byte{0x02, 0, 0, 0, 0, 0xfe}
+	s.SetGatewayHardwareAddr(router)
+	var u udp.Conn
+	err := u.Configure(udp.ConnConfig{RxBuf: make([]byte, 64), TxBuf: make([]byte, 64), RxQueueSize: 1, TxQueueSize: 1, RWBackoff: backoffYield, MTU: uint16(s.MTU())})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DialUDP(&u, 5000, netip.MustParseAddrPort("10.0.0.2:5001")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, ethernet.MaxFrameLength)
+	n, err := s.EgressEthernet(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	efrm, err := ethernet.NewFrame(buf[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if efrm.EtherTypeOrSize() != ethernet.TypeIPv4 || *efrm.DestinationHardwareAddr() != router {
+		t.Fatalf("first frame %s to %x, want IPv4 to the gateway %x", efrm.EtherTypeOrSize(), *efrm.DestinationHardwareAddr(), router)
+	}
+}
