@@ -597,7 +597,7 @@ func (conn *Conn) deadlineExceeded(deadline *time.Time) bool {
 }
 
 // ConnectionID implements [lneto.StackNode].
-func (conn *Conn) ConnectionID() *uint64 {
+func (conn *Conn) ConnectionID() *lneto.ConnID {
 	return conn.h.ConnectionID()
 }
 

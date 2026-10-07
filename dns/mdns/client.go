@@ -38,7 +38,7 @@ const (
 // Clients are attached to MDNS ports and function until manual detachment
 // due to their dual design: they double as a querier and service discovery.
 type Client struct {
-	connID uint64
+	connID lneto.ConnID
 	closed bool
 	lport  uint16
 	ip     []byte
@@ -82,7 +82,7 @@ func (c *Client) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
 
 func (c *Client) LocalPort() uint16 { return c.lport }
 
-func (c *Client) ConnectionID() *uint64 { return &c.connID }
+func (c *Client) ConnectionID() *lneto.ConnID { return &c.connID }
 
 type ResolveConfig struct {
 	Questions          []dns.Question

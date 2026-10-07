@@ -15,7 +15,7 @@ import (
 // It is meant to be embedded within StackNodes.
 // var _ lneto.StackNode = (*stackip6)(nil)
 type StackIPv6 struct {
-	connID uint64
+	connID lneto.ConnID
 	stackip6
 }
 
@@ -25,7 +25,7 @@ func (stackip6 *StackIPv6) Reset(vld *lneto.Validator, maxNodes int) error {
 	return nil
 }
 
-func (stackip6 *StackIPv6) ConnectionID() *uint64 {
+func (stackip6 *StackIPv6) ConnectionID() *lneto.ConnID {
 	return &stackip6.connID
 }
 

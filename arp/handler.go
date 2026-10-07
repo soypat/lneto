@@ -7,7 +7,7 @@ import (
 )
 
 type Handler struct {
-	connID       uint64
+	connID       lneto.ConnID
 	cache        cache
 	vld          lneto.Validator
 	ourProtoAddr []byte
@@ -31,7 +31,7 @@ func (h *Handler) LocalPort() uint16 { return 0 }
 
 func (h *Handler) Protocol() uint64 { return uint64(ethernet.TypeARP) }
 
-func (h *Handler) ConnectionID() *uint64 { return &h.connID }
+func (h *Handler) ConnectionID() *lneto.ConnID { return &h.connID }
 
 func (h *Handler) UpdateProtoAddr(protoAddr []byte) error {
 	if len(protoAddr) != len(h.ourProtoAddr) {

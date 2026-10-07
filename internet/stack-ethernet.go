@@ -33,7 +33,7 @@ type StackEthernetConfig struct {
 }
 
 type StackEthernet struct {
-	connID          uint64
+	connID          lneto.ConnID
 	handlers        handlers
 	mac             [6]byte
 	gwmac           [6]byte
@@ -122,7 +122,7 @@ func (ls *StackEthernet) MaxFrameLength() int {
 // Important to note that the actual ethernet frame size is MTU + Ethernet header (14) + CRC (4 if enabled), this is known as the Maximum Frame Length.
 func (ls *StackEthernet) MTU() int { return int(ls.mtu) }
 
-func (ls *StackEthernet) ConnectionID() *uint64 { return &ls.connID }
+func (ls *StackEthernet) ConnectionID() *lneto.ConnID { return &ls.connID }
 
 func (ls *StackEthernet) LocalPort() uint16 { return 0 }
 

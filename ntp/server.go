@@ -21,7 +21,7 @@ type ServerConfig struct {
 //
 // Server is not safe for concurrent use.
 type Server struct {
-	connID  uint64
+	connID  lneto.ConnID
 	_now    func() time.Time
 	stratum Stratum
 	prec    int8
@@ -57,7 +57,7 @@ func (h *Server) Reset(cfg ServerConfig) error {
 }
 
 // ConnectionID implements [lneto.StackNode].
-func (h *Server) ConnectionID() *uint64 { return &h.connID }
+func (h *Server) ConnectionID() *lneto.ConnID { return &h.connID }
 
 // Protocol implements [lneto.StackNode].
 func (h *Server) Protocol() uint64 { return 0 }

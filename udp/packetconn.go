@@ -128,7 +128,7 @@ func (pc *PacketConn) LocalPort() uint16 {
 func (pc *PacketConn) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
 
 // ConnectionID implements [lneto.StackNode].
-func (pc *PacketConn) ConnectionID() *uint64 { return &pc.m.connid }
+func (pc *PacketConn) ConnectionID() *lneto.ConnID { return &pc.m.connid }
 
 // Demux implements [lneto.StackNode].
 func (pc *PacketConn) Demux(carrierData []byte, frameOffset int) error {
@@ -248,7 +248,7 @@ func (pc *PacketConn) backoff(n uint) {
 	pc._backoff.Do(n)
 }
 
-func (pc *PacketConn) lockConnID() (uint64, error) {
+func (pc *PacketConn) lockConnID() (lneto.ConnID, error) {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 	if pc.m.closeCalled && pc.m.BufferedInput() == 0 {
