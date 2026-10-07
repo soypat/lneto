@@ -317,7 +317,9 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 		return tcb.MakeChallengeACK(), true
 	} else if !pending.HasAny(flagctl) && tcb.HasPendingRetransmit() {
 		// Optimist Strategy: retransmit oldest data once.
-		return Segment{SEQ: tcb.snd.UNA, DATALEN: Size(payloadLen), ACK: tcb.rcv.NXT, WND: tcb.rcv.WND, Flags: FlagACK}, true
+		if seg, ok := tcb.PendingRetransmit(tcb.snd.UNA, payloadLen); ok {
+			return seg, true
+		}
 	}
 	canSendData := tcb._state.txQueuedDataOpen()
 	if !canSendData {
@@ -565,7 +567,10 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	zeroWindowOK := tcb.snd.WND == 0 && seg.DATALEN <= 1 && seg.SEQ == tcb.snd.NXT
 	outOfWindow := checkSeq && !seg.SEQ.InWindow(tcb.snd.NXT, tcb.snd.WND) &&
 		!zeroWindowOK
-	isRetransmit := checkSeq && seg.SEQ.InRange(tcb.snd.UNA, tcb.snd.NXT)
+	// A retransmission resends only sent data: one reaching past snd.NXT would
+	// send new data without advancing snd.NXT.
+	isRetransmit := checkSeq && seg.SEQ.InRange(tcb.snd.UNA, tcb.snd.NXT) &&
+		Add(seg.SEQ, seg.LEN()).LessThanEq(tcb.snd.NXT)
 	switch {
 	case tcb._state == StateClosed && !isFirst:
 		err = io.ErrClosedPipe
