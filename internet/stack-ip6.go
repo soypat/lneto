@@ -108,7 +108,9 @@ func (si6 *stackip6) demux6(carrierData []byte, offset int) error {
 	proto := ifrm.NextHeader()
 	node := si6.handlers.nodeByProto(uint16(proto))
 	if node == nil {
-		si6.handlers.info("ip6:demux.drop", slog.String("proto", proto.String()))
+		if internal.LogEnabled(si6.handlers.log, slog.LevelInfo) { // String allocates for unnamed protocols.
+			si6.handlers.info("ip6:demux.drop", slog.String("proto", proto.String()))
+		}
 		return lneto.ErrPacketDrop
 	}
 	payload := ifrm.Payload()

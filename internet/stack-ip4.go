@@ -136,7 +136,9 @@ func (si4 *stackip4) demux4(carrierData []byte, offset int) error {
 	// nodeIdx := getNodeByProto(sb.handlers, uint16(proto))
 	if node == nil {
 		// Drop packet.
-		si4.handlers.info("ip:demux.drop", internal.SlogAddr4("dstaddr", ifrm.DestinationAddr()), slog.String("proto", ifrm.Protocol().String()))
+		if internal.LogEnabled(si4.handlers.log, slog.LevelInfo) { // String allocates for unnamed protocols.
+			si4.handlers.info("ip:demux.drop", internal.SlogAddr4("dstaddr", ifrm.DestinationAddr()), slog.String("proto", ifrm.Protocol().String()))
+		}
 		return lneto.ErrPacketDrop
 	}
 	// Incoming CRC Validation of common IP Protocols.
