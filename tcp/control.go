@@ -78,6 +78,10 @@ type ControlBlock struct {
 
 	// dupack counts received ACK==snd.UNA && ACK<snd.NXT received. Does not count ack that set UNA.
 	dupack uint8
+	// dupackWND is the window of the last incoming acknowledgement, which a
+	// duplicate ACK must repeat (RFC 5681 §2). snd.WND cannot serve: it does not
+	// shrink on an ACK that does not advance SND.UNA.
+	dupackWND Size
 	// nRetransmit counts number of retransmits sent since last UNA update.
 	nRetransmit uint8
 }
@@ -134,11 +138,14 @@ func (tcb *ControlBlock) IncomingIsKeepalive(incomingSegment Segment) bool {
 		incomingSegment.ACK == tcb.snd.NXT && incomingSegment.DATALEN == 0
 }
 
-// IncomingIsDupACK returns true if the ACK value is a duplicate acknowledgement:
-// the ACK equals the oldest unacknowledged sequence number (snd.UNA) meaning no
-// new data is acknowledged, while snd.UNA < snd.NXT meaning data is in flight.
-func (tcb *ControlBlock) IncomingIsDupACK(ack Value) bool {
-	return ack == tcb.snd.UNA && ack.LessThan(tcb.snd.NXT)
+// IncomingIsDupACK returns true if seg is a duplicate acknowledgement as
+// defined by RFC 5681 §2: data is outstanding (SND.UNA < SND.NXT), seg carries
+// no data, SYN, FIN and RST are off, it acknowledges SND.UNA and it advertises
+// the window of the last incoming acknowledgement. Call it before passing seg
+// to [ControlBlock.Recv].
+func (tcb *ControlBlock) IncomingIsDupACK(seg Segment) bool {
+	return seg.Flags.HasAny(FlagACK) && !seg.Flags.HasAny(flagctl) && seg.DATALEN == 0 &&
+		seg.ACK == tcb.snd.UNA && seg.ACK.LessThan(tcb.snd.NXT) && seg.WND == tcb.dupackWND
 }
 
 // MakeKeepalive creates a TCP keepalive segment. This segment
@@ -459,7 +466,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	}
 
 	if seg.Flags.HasAny(FlagACK) && seg.ACK.LessThanEq(tcb.snd.NXT) {
-		if tcb.IncomingIsDupACK(seg.ACK) && tcb.State().txQueuedDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < tcb.nRetransmit+retransmitMaxQueued+retransmitMaxQueued {
+		if tcb.IncomingIsDupACK(seg) && tcb.State().txQueuedDataOpen() && tcb.dupack < tcb.nRetransmit+retransmitMaxQueued+retransmitMaxQueued {
 			// Duplicate ack. Don't advance dupack counter past scb.nRetransmit+retransmitAfterDupacks
 			tcb.dupack++
 		} else if tcb.snd.UNA.LessThan(seg.ACK) {
@@ -468,6 +475,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 			tcb.dupack = 0
 			tcb.nRetransmit = 0
 		}
+		tcb.dupackWND = seg.WND
 	}
 
 	seglen := seg.LEN()

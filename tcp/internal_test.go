@@ -197,6 +197,7 @@ func (tcb *ControlBlock) HelperInitRcv(irs, nxt Value, remoteWindow Size) {
 	tcb.rcv.IRS = irs
 	tcb.rcv.NXT = nxt
 	tcb.snd.WND = remoteWindow
+	tcb.dupackWND = remoteWindow
 }
 
 func (tcb *ControlBlock) RelativeSendSpace() sendSpace {

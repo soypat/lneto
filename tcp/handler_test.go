@@ -1357,7 +1357,7 @@ func TestHandler_RetransmitAfter3DupACKs(t *testing.T) {
 
 	// Simulate 3 duplicate ACKs (ACK == UNA, no progress).
 	dup := server.scb.MakeDupACK()
-	if !client.scb.IncomingIsDupACK(dup.ACK) {
+	if !client.scb.IncomingIsDupACK(dup) {
 		t.Fatal("MakeRetransmitDupACK return should be considered a duplicate ACK by remote")
 	}
 	for i := range 3 {
@@ -1438,7 +1438,7 @@ func TestHandler_RetransmitAfterMultipleLossesBothDirections(t *testing.T) {
 
 		// Three dupACKs from receiver side (its rcv state has not advanced).
 		dup := receiver.scb.MakeDupACK()
-		if !sender.scb.IncomingIsDupACK(dup.ACK) {
+		if !sender.scb.IncomingIsDupACK(dup) {
 			t.Fatal("dup ACK not recognized as dupack by sender")
 		}
 		for i := range 3 {
@@ -1447,7 +1447,7 @@ func TestHandler_RetransmitAfterMultipleLossesBothDirections(t *testing.T) {
 			fb.SetSourcePort(receiver.LocalPort())
 			fb.SetDestinationPort(sender.LocalPort())
 			fb.SetSegment(dup, 5)
-			if !sender.scb.IncomingIsDupACK(dup.ACK) {
+			if !sender.scb.IncomingIsDupACK(dup) {
 				t.Fatal("expected incoming segment to be dupack")
 			}
 			if err := sender.Recv(pkt[:sizeHeaderTCP]); err != nil {
@@ -1702,12 +1702,13 @@ func TestRetransmit_CumulativeACK_NoSpurious(t *testing.T) {
 	hole := seg1.SEQ                         // snd.UNA: the lost (first unacked) segment.
 	cumAck := seg3.SEQ + Value(seg3.DATALEN) // all data sent == client snd.NXT.
 
+	wnd := client.scb.snd.WND // Unchanged: an ACK updating the window is no duplicate (RFC 5681 §2).
 	recvACK := func(seqv, ackv Value) error {
 		clear(pkt[:])
 		f, _ := NewFrame(pkt[:])
 		f.SetSourcePort(server.LocalPort())
 		f.SetDestinationPort(client.LocalPort())
-		f.SetSegment(Segment{SEQ: seqv, ACK: ackv, Flags: FlagACK, WND: 64000}, 5)
+		f.SetSegment(Segment{SEQ: seqv, ACK: ackv, Flags: FlagACK, WND: wnd}, 5)
 		return client.Recv(pkt[:sizeHeaderTCP])
 	}
 

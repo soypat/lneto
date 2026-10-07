@@ -820,6 +820,46 @@ func TestExchangeTest_ZeroWindowProbesDoNotAbort(t *testing.T) {
 	test.RunA(t)
 }
 
+// TestDuplicateACK verifies only duplicate ACKs as defined by RFC 5681 §2 count
+// toward fast retransmit: an ACK of SND.UNA carrying data or changing the
+// window does not, while repeats of a shrunk window do.
+func TestDuplicateACK(t *testing.T) {
+	const issA, issB, windowA, windowB, inFlight = 100, 300, 1000, 1000, 10
+	dup := func(wnd tcp.Size) tcp.Segment { return tcp.Segment{SEQ: issB, ACK: issA, Flags: tcp.FlagACK, WND: wnd} }
+	for _, tc := range []struct {
+		name string
+		acks []tcp.Segment
+		want bool // Fast retransmit pending after acks.
+	}{
+		{name: "pure", acks: []tcp.Segment{dup(windowB), dup(windowB), dup(windowB)}, want: true},
+		{name: "carries-data", acks: []tcp.Segment{
+			{SEQ: issB, ACK: issA, Flags: tcp.FlagACK, WND: windowB, DATALEN: 10},
+			{SEQ: issB + 10, ACK: issA, Flags: tcp.FlagACK, WND: windowB, DATALEN: 10},
+			{SEQ: issB + 20, ACK: issA, Flags: tcp.FlagACK, WND: windowB, DATALEN: 10},
+		}},
+		{name: "window-update", acks: []tcp.Segment{dup(windowB + 1), dup(windowB + 2), dup(windowB + 3)}},
+		{name: "shrunk-window", acks: []tcp.Segment{dup(800), dup(800), dup(800)}},
+		{name: "shrunk-window-repeated", acks: []tcp.Segment{dup(800), dup(800), dup(800), dup(800)}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var tcb tcp.ControlBlock
+			tcb.HelperInitState(tcp.StateEstablished, issA, issA, windowA)
+			tcb.HelperInitRcv(issB, issB, windowB)
+			if err := tcb.Send(tcp.Segment{SEQ: issA, ACK: issB, Flags: tcp.FlagACK, WND: windowA, DATALEN: inFlight}); err != nil {
+				t.Fatal(err)
+			}
+			for _, ack := range tc.acks {
+				if err := tcb.Recv(ack); err != nil {
+					t.Fatalf("Recv(%+v): %v", ack, err)
+				}
+			}
+			if got := tcb.HasPendingRetransmit(); got != tc.want {
+				t.Fatalf("HasPendingRetransmit()=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestZeroWindowProbe verifies a one-octet probe is offered only when the peer's
 // window is zero, nothing is outstanding and new data may be sent, that Send
 // accepts it while rejecting more than one octet, and that it is offered once.
