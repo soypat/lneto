@@ -44,8 +44,8 @@ type ConnConfig struct {
 	// If not set a default backoff strategy will be used. See [internal.BackoffConnRW].
 	RWBackoff lneto.BackoffStrategy
 	// MTU is mechanism to reject Write payloads that would not fit in an IP frame.
-	// Must be at least 48 to fit IPv6 and UDP headers. Write rejects payloads larger
-	// than MTU-28 for IPv4 remotes and MTU-48 for IPv6 remotes.
+	// Must be greater than 48 to fit IPv6 and UDP headers and 1 byte of data.
+	// [Conn.Write] assumes IPv6 framing until [Conn.Open] is called.
 	MTU uint16
 }
 
