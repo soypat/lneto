@@ -160,7 +160,7 @@ func fixIPTCPCRCs(pkt []byte) (fixable bool) {
 	}
 	v, ihl := ifrm.VersionAndIHL()
 	tl := ifrm.TotalLength()
-	if v != 4 || ihl < 5 || tl < uint16(ihl)*4 || int(tl) > len(pkt) {
+	if v != 4 || ihl < 5 || tl < uint16(ihl)*4 || int(tl) > len(efrm.Payload()) {
 		return false // Invalid frame
 	}
 	var crc lneto.CRC791
