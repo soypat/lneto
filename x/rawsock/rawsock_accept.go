@@ -22,8 +22,9 @@ func accept(fd int) (nfd int, remote Addr, err error) {
 	}
 	if rsa.Addr.Family == syscall.AF_INET {
 		sa4 := (*syscall.RawSockaddrInet4)(unsafe.Pointer(&rsa))
-		// Port is in network byte order in the sockaddr the kernel filled.
-		port := uint16(sa4.Port<<8) | uint16(sa4.Port>>8)
+		// Port is in network byte order whatever the host byte order.
+		p := (*[2]byte)(unsafe.Pointer(&sa4.Port))
+		port := uint16(p[0])<<8 | uint16(p[1])
 		remote = Addr(netip.AddrPortFrom(netip.AddrFrom4(sa4.Addr), port))
 	}
 	return int(r1), remote, nil
