@@ -6,6 +6,8 @@
 # Unignore all with extensions.
 !*.*
 !LICENSE
+# Go fuzz corpus files have no extension.
+!**/testdata/fuzz/**
 
 # Go workspaces.
 go.work
