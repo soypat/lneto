@@ -57,7 +57,8 @@ func TestHandler_DupACKRetransmitAfterClose(t *testing.T) {
 		t.Fatalf("Send after duplicate ACKs = %d, %v; want %d bytes", n, err, sizeHeaderTCP+len(data))
 	}
 	resent := mustSegment(t, buf[:n], len(data))
-	if resent.SEQ != initial.SEQ || resent.Flags != initial.Flags || !bytes.Equal(buf[sizeHeaderTCP:n], data) {
+	// The resend reaches SND.NXT, so it carries the unacknowledged FIN again.
+	if resent.SEQ != initial.SEQ || resent.Flags != initial.Flags|FlagFIN || !bytes.Equal(buf[sizeHeaderTCP:n], data) {
 		t.Fatalf("retransmission = %v, payload = %q", resent, buf[sizeHeaderTCP:n])
 	}
 	if client.scb.SendNext() != next || client.State() != StateFinWait1 {
@@ -69,6 +70,9 @@ func TestHandler_DupACKRetransmitAfterClose(t *testing.T) {
 	n, err = server.Read(buf)
 	if err != nil || !bytes.Equal(buf[:n], data) {
 		t.Fatalf("Read = %q, %v; want %q", buf[:n], err, data)
+	}
+	if server.State() != StateCloseWait {
+		t.Fatalf("server state = %v after the FIN, want %v", server.State(), StateCloseWait)
 	}
 }
 
