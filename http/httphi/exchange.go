@@ -609,7 +609,10 @@ func (exch *Exchange) RequestMultipart() (mp httpraw.Multipart, err error) {
 	if !httpraw.MediaTypeIs(contentType, "multipart/form-data") {
 		return mp, errNotMultipart
 	}
-	return mp, mp.SetContentType(contentType)
+	// Not "return mp, mp.SetContentType(...)": the spec leaves unordered whether
+	// mp is read before the call modifies it, and TinyGo reads it first.
+	err = mp.SetContentType(contentType)
+	return mp, err
 }
 
 // MultipartSink is a part of a multipart body together with the writer its
