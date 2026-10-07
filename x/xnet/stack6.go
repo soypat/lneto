@@ -102,6 +102,7 @@ func (s *stack6) Reset6(cfg *StackConfig) error {
 		ndpSlots := int(cfg.MaxActiveTCPPorts) + int(cfg.MaxActiveUDPPorts)
 		internal.SliceReuse(&s.ndpPending, ndpSlots)
 		s.ndpPending = s.ndpPending[:cap(s.ndpPending)] // all slots available for scan
+		clear(s.ndpPending)
 	}
 	return nil
 }
