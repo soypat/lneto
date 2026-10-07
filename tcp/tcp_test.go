@@ -820,6 +820,59 @@ func TestExchangeTest_ZeroWindowProbesDoNotAbort(t *testing.T) {
 	test.RunA(t)
 }
 
+// TestExchangeTest_DuplicateACK verifies only pure duplicate ACKs count toward
+// fast retransmit: an ACK of SND.UNA carrying data or updating the window does
+// not (RFC 5681 §2).
+func TestExchangeTest_DuplicateACK(t *testing.T) {
+	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
+	data := tcp.Segment{SEQ: issA, ACK: issB, Flags: tcp.FlagACK, WND: windowA, DATALEN: 10}
+	for _, tc := range []struct {
+		name string
+		dup  func(i int) tcp.Segment
+		want func(i int) *tcp.Segment // A's pending segment after the i'th ACK.
+	}{
+		{
+			name: "pure",
+			dup:  func(int) tcp.Segment { return tcp.Segment{SEQ: issB, ACK: issA, Flags: tcp.FlagACK, WND: windowB} },
+			want: func(i int) *tcp.Segment {
+				if i < 2 {
+					return nil
+				}
+				return &tcp.Segment{SEQ: issA, ACK: issB, Flags: tcp.FlagACK, WND: windowA} // Fast retransmit.
+			},
+		},
+		{
+			name: "carries-data",
+			dup: func(i int) tcp.Segment {
+				return tcp.Segment{SEQ: tcp.Add(issB, tcp.Size(10*i)), ACK: issA, Flags: tcp.FlagACK, WND: windowB, DATALEN: 10}
+			},
+			want: func(i int) *tcp.Segment {
+				return &tcp.Segment{SEQ: issA + 10, ACK: tcp.Add(issB, tcp.Size(10*(i+1))), Flags: tcp.FlagACK, WND: windowA}
+			},
+		},
+		{
+			name: "window-update",
+			dup: func(i int) tcp.Segment {
+				return tcp.Segment{SEQ: issB, ACK: issA, Flags: tcp.FlagACK, WND: tcp.Size(windowB + 1 + i)}
+			},
+			want: func(int) *tcp.Segment { return nil },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			steps := []tcp.SegmentStep{{Seg: data, Action: tcp.StepASends, AState: tcp.StateEstablished}}
+			for i := range 3 {
+				steps = append(steps, tcp.SegmentStep{Seg: tc.dup(i), Action: tcp.StepBSends, AState: tcp.StateEstablished, APending: tc.want(i)})
+			}
+			test := tcp.ExchangeTest{
+				ISSA: issA, ISSB: issB, WindowA: windowA, WindowB: windowB,
+				InitStateA: tcp.StateEstablished, InitStateB: tcp.StateEstablished,
+				Steps: steps,
+			}
+			test.RunA(t)
+		})
+	}
+}
+
 // TestZeroWindowProbe verifies a one-octet probe is offered only when the peer's
 // window is zero, nothing is outstanding and new data may be sent, that Send
 // accepts it while rejecting more than one octet, and that it is offered once.

@@ -1702,12 +1702,13 @@ func TestRetransmit_CumulativeACK_NoSpurious(t *testing.T) {
 	hole := seg1.SEQ                         // snd.UNA: the lost (first unacked) segment.
 	cumAck := seg3.SEQ + Value(seg3.DATALEN) // all data sent == client snd.NXT.
 
+	wnd := client.scb.snd.WND // Unchanged: an ACK updating the window is no duplicate (RFC 5681 §2).
 	recvACK := func(seqv, ackv Value) error {
 		clear(pkt[:])
 		f, _ := NewFrame(pkt[:])
 		f.SetSourcePort(server.LocalPort())
 		f.SetDestinationPort(client.LocalPort())
-		f.SetSegment(Segment{SEQ: seqv, ACK: ackv, Flags: FlagACK, WND: 64000}, 5)
+		f.SetSegment(Segment{SEQ: seqv, ACK: ackv, Flags: FlagACK, WND: wnd}, 5)
 		return client.Recv(pkt[:sizeHeaderTCP])
 	}
 
