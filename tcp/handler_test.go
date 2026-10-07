@@ -593,6 +593,35 @@ func TestTxBufferFreedOnACK(t *testing.T) {
 	}
 }
 
+// TestHandler_KeepaliveACKed verifies a keepalive (SEQ=RCV.NXT-1) is answered
+// with an ACK (RFC 9293 §3.8.4, RFC 1122 §4.2.3.6). Without one the peer counts
+// the keepalive as unanswered and eventually drops the connection.
+func TestHandler_KeepaliveACKed(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	client, server := newHandler(t, mtu, 4), newHandler(t, mtu, 4)
+	setupClientServer(t, rand.New(rand.NewSource(1)), client, server)
+	var buf [mtu]byte
+	establish(t, client, server, buf[:])
+	scb := server.ControlBlock()
+	keepalive := make([]byte, sizeHeaderTCP)
+	frame, _ := NewFrame(keepalive)
+	frame.SetSourcePort(client.LocalPort())
+	frame.SetDestinationPort(server.LocalPort())
+	frame.SetSegment(Segment{SEQ: scb.RecvNext() - 1, ACK: scb.SendNext(), WND: mtu, Flags: FlagACK}, 5)
+	if err := server.Recv(keepalive); err != nil {
+		t.Fatal(err)
+	}
+	n, err := server.Send(buf[:])
+	if err != nil {
+		t.Fatal(err)
+	} else if n == 0 {
+		t.Fatal("keepalive not acknowledged")
+	}
+	if got := mustSegment(t, buf[:n], 0); got.ACK != scb.RecvNext() || !got.Flags.HasAny(FlagACK) {
+		t.Fatalf("keepalive reply %v, want ACK of RCV.NXT %d", got, scb.RecvNext())
+	}
+}
+
 // TestHandler_ZeroWindowProbeACKed verifies a probe arriving after a zero window
 // was advertised for a full receive buffer is refused and acknowledged with the
 // current window instead of being silently dropped. A probe with RST draws no ACK.
