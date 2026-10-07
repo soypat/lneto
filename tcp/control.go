@@ -607,7 +607,9 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	case tcb._state == StateClosed:
 		err = io.ErrClosedPipe
 
-	case checkSEQ && tcb.rcv.WND == 0 && seg.DATALEN > 0 && seg.SEQ == tcb.rcv.NXT:
+	case checkSEQ && tcb.rcv.WND == 0 && seg.DATALEN > 0 && seg.SEQ == tcb.rcv.NXT,
+		// Linux probes a closed window with SEQ=RCV.NXT-1 and no data.
+		checkSEQ && tcb.rcv.WND == 0 && seg.DATALEN == 0 && seg.SEQ == tcb.rcv.NXT-1:
 		err = errZeroWindow
 
 	case checkSEQ && !seg.SEQ.InWindow(tcb.rcv.NXT, tcb.rcv.WND) && !zeroWindowOK:
