@@ -593,6 +593,35 @@ func TestTxBufferFreedOnACK(t *testing.T) {
 	}
 }
 
+// TestHandler_FINWithFullPacketQueue verifies the FIN goes out when the packet
+// queue is full of unacknowledged data. It carries no data and needs no slot;
+// held back, it also blocks the retransmission that would free one.
+func TestHandler_FINWithFullPacketQueue(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	const packets = 4
+	client, server := newHandler(t, mtu, packets), newHandler(t, mtu, packets)
+	setupClientServer(t, rand.New(rand.NewSource(3)), client, server)
+	var buf [mtu]byte
+	establish(t, client, server, buf[:])
+	for range packets {
+		if _, err := client.Write([]byte("data")); err != nil {
+			t.Fatal(err)
+		}
+		if n, err := client.Send(buf[:]); err != nil || n == 0 {
+			t.Fatal("send:", n, err)
+		}
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	n, err := client.Send(buf[:])
+	if err != nil || n == 0 {
+		t.Fatalf("Send after Close = %d, %v; want the FIN", n, err)
+	} else if seg := mustSegment(t, buf[:n], 0); !seg.Flags.HasAny(FlagFIN) || client.State() != StateFinWait1 {
+		t.Fatalf("sent %v in %s; want the FIN and FIN-WAIT-1", seg, client.State())
+	}
+}
+
 // TestHandler_WriteAfterCloseRefused verifies Write fails once Close was
 // called, including while the FIN is queued but not yet sent because a
 // challenge ACK owed to the peer went out first.
