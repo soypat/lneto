@@ -572,7 +572,7 @@ func (h *Handler) NextSegmentSYN() (syn, ack bool) {
 // [Handler.Send] call that can send data to remote peer. Use [Handler.Free] to know the maximum length the argument slice can be before erroring.
 func (h *Handler) Write(b []byte) (int, error) {
 	state := h.State()
-	if h.closing {
+	if h.closing || h.scb.pending[0].HasAny(FlagFIN) { // Close called, FIN not yet sent.
 		return 0, errConnectionClosing
 	} else if !state.TxDataOpen() { // Reject write call if data cannot be sent.
 		return 0, net.ErrClosed
