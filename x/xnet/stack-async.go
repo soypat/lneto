@@ -115,8 +115,9 @@ type StackConfig struct {
 	// not including ethernet header, ethernet CRC. It is determined by the NIC hardware and the route the packets take over the network.
 	// By far the most common value for MTU is 1500 as specified by IEEE 802.3. Jumbo/TUN MTUs up to 65535 allowed.
 	MTU uint16
-	// MaxDNSQueries limits how many DNS lookups may be active at once. Zero defaults to 2.
-	MaxDNSQueries uint16
+	// MaxDNSLookups limits how many DNS lookups may be active at once. Zero defaults to 2.
+	// CNAME restart/hops happen over a single lookup.
+	MaxDNSLookups uint16
 	// Accept multicast ethernet and IP packets. Needed for MDNS.
 	AcceptMulticast bool
 	// Accept broadcast IPv4 packets. Needed for managing access points and DHCPv4 servers.
@@ -329,12 +330,12 @@ func (s *StackAsync) Reset(cfg StackConfig) (err error) {
 	if cfg.DNSServer.IsValid() {
 		s.dnssv = cfg.DNSServer
 	}
-	maxDNSQueries := cfg.MaxDNSQueries
-	if maxDNSQueries == 0 {
-		maxDNSQueries = 2
+	maxDNSLookups := cfg.MaxDNSLookups
+	if maxDNSLookups == 0 {
+		maxDNSLookups = 2
 	}
 
-	err = s.dns.Configure(dns.ClientConfig{MaxLookups: int(maxDNSQueries)})
+	err = s.dns.Configure(dns.ClientConfig{MaxLookups: int(maxDNSLookups)})
 	if err != nil {
 		return err
 	}
@@ -683,12 +684,13 @@ func (s *StackAsync) dnsRand16() uint16 {
 }
 
 // LookupIPStart starts host resolution for type dns.TypeA/dns.TypeAAAA returning the lookup key for [StackAsync.LookupIPResult].
-// nans limits answer records decoded from response; CNAME records precede addresses so leave headroom for them.
+// nAns limits answer records decoded from response; CNAME records precede addresses so leave headroom for them.
 // Up to [StackConfig.MaxDNSQueries] lookups may be active at once after which [lneto.ErrExhausted] is returned.
-func (s *StackAsync) LookupIPStart(host dns.Name, qtype dns.Type, nans uint16) (txid uint16, err error) {
+// The lookup txid must be "released" after completion/end with [StackAsync.LookupIPPop].
+func (s *StackAsync) LookupIPStart(host dns.Name, qtype dns.Type, nAns uint16) (txid uint16, err error) {
 	// No defer: TinyGo will not inline functions with defer and emits unlock code per return.
 	s.mu.Lock()
-	txid, err = s.lookupIPStart(host, qtype, nans)
+	txid, err = s.lookupIPStart(host, qtype, nAns)
 	s.mu.Unlock()
 	return txid, err
 }
@@ -771,7 +773,7 @@ func (s *StackAsync) LookupIPPeek(txid uint16) (state dns.StateClientQuery, ok b
 }
 
 // LookupIPResponse returns the [dns.Message] containing the response for query txid.
-// [dns.Message] is owned by the stack and only valid until the next Lookup method is called on txid.
+// resp [dns.Message] is owned by the stack and only valid until the next Lookup method is called on txid.
 func (s *StackAsync) LookupIPResponse(txid uint16) (resp *dns.Message, flags dns.HeaderFlags, ok bool) {
 	s.mu.Lock()
 	resp, flags, ok = s.dns.LookupResponse(txid)
@@ -779,13 +781,8 @@ func (s *StackAsync) LookupIPResponse(txid uint16) (resp *dns.Message, flags dns
 	return resp, flags, ok
 }
 
-// LookupIPResult writes the addresses answering the lookup txid into dst and returns how many were written.
-// done is false while the lookup awaits its response. Once done it returns errDNSOnlyCNAME
-// if the answer is a CNAME without address, see [StackAsync.LookupIPFollowCNAME], and
-// [lneto.ErrExhausted] along with the addresses written if dst filled up.
-// The lookup stays active until removed with [StackAsync.LookupIPPop].
-
-// LookupIPResult is the workhorse
+// LookupIPResult reads addresses answers of lookup txid into dst and returns how many were written.
+// If answer is CNAME with no address, see [StackAsync.LookupIPFollowCNAME].
 func (s *StackAsync) LookupIPResult(txid uint16, dst []netip.Addr) (n int, state dns.StateClientQuery, err error) {
 	s.mu.Lock()
 	n, state, err = s.dns.LookupIPAnswers(txid, dst)
