@@ -198,9 +198,9 @@ func TestDNS_LookupIP(t *testing.T) {
 				}
 				addrs, err = client.StackBlocking(pump).DoLookupIP(dns.MustNewName(host), time.Second)
 			} else {
-				txid, err := client.LookupIPStart(dns.MustNewName(host), dns.TypeA)
-				if err != nil {
-					t.Fatal("LookupIPStart failed:", err)
+				txid, serr := client.LookupIPStart(dns.MustNewName(host), dns.TypeA)
+				if serr != nil {
+					t.Fatal("LookupIPStart failed:", serr)
 				}
 				if !srv.respond() {
 					t.Fatal("expected DNS query packet from client")
@@ -359,6 +359,50 @@ func TestDNS_LookupIPExhausted(t *testing.T) {
 	}
 	if _, err := client.LookupIPStart(dns.MustNewName("h2.example.com"), dns.TypeA); err != nil {
 		t.Fatal("start after pop:", err)
+	}
+}
+
+func TestDNS_DoLookupIPFreesLookupOnTimeout(t *testing.T) {
+	client := newDNSTestClient(t)
+	silent := client.StackBlocking(func(uint) time.Duration { return lneto.BackoffFlagNop })
+	// More timed out lookups than concurrent lookups allowed: each must free its slot.
+	for i := 0; i < 3; i++ {
+		_, err := silent.DoLookupIP(dns.MustNewName("timeout.example.com"), time.Millisecond)
+		if err != errDeadlineExceed {
+			t.Fatalf("lookup %d: got err=%v, want %v", i, err, errDeadlineExceed)
+		}
+	}
+	const host = "www.example.com"
+	srv := &dnsTestServer{t: t, client: client, zone: map[string][]dnsRR{host: {rrA(host, "192.0.2.9")}}}
+	pump := client.StackBlocking(func(uint) time.Duration {
+		srv.respond()
+		return lneto.BackoffFlagNop
+	})
+	addrs, err := pump.DoLookupIP(dns.MustNewName(host), time.Second)
+	if err != nil || len(addrs) != 1 || addrs[0] != netip.MustParseAddr("192.0.2.9") {
+		t.Fatalf("lookup after timeouts: %v %v", addrs, err)
+	}
+}
+
+func TestDNS_DoLookupIPResultOwnedByCaller(t *testing.T) {
+	client := newDNSTestClient(t)
+	srv := &dnsTestServer{t: t, client: client, zone: map[string][]dnsRR{
+		"a.example.com": {rrA("a.example.com", "192.0.2.1")},
+		"b.example.com": {rrA("b.example.com", "192.0.2.2")},
+	}}
+	pump := client.StackBlocking(func(uint) time.Duration {
+		srv.respond()
+		return lneto.BackoffFlagNop
+	})
+	first, err := pump.DoLookupIP(dns.MustNewName("a.example.com"), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pump.DoLookupIP(dns.MustNewName("b.example.com"), time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 || first[0] != netip.MustParseAddr("192.0.2.1") {
+		t.Fatalf("first result changed by later lookup: %v", first)
 	}
 }
 

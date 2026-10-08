@@ -50,12 +50,11 @@ type StackAsync struct {
 	dhcpResults DHCPResults
 	arpt        subnetTable
 
-	dnsUDP    internet.StackUDPPort
-	dns       dns.Client
-	ednsopt   dns.Resource
-	dnssv     netip.Addr
-	dnsCtr    uint64 // Input to keyed hash for unpredictable DNS txids and ports, see [StackAsync.dnsRand16].
-	dnsMaxAns uint16
+	dnsUDP  internet.StackUDPPort
+	dns     dns.Client
+	ednsopt dns.Resource
+	dnssv   netip.Addr
+	dnsCtr  uint64 // Input to keyed hash for unpredictable DNS txids and ports, see [StackAsync.dnsRand16].
 
 	// ephPort drives sequential ephemeral-port allocation (see
 	// [StackAsync.ephemeralPort]); zero means not yet seeded.
@@ -118,9 +117,6 @@ type StackConfig struct {
 	MTU uint16
 	// MaxDNSQueries limits how many DNS lookups may be active at once. Zero defaults to 2.
 	MaxDNSQueries uint16
-	// MaxDNSAnswers limits how many answer records are decoded per DNS response, CNAME records included.
-	// Zero defaults to 12.
-	MaxDNSAnswers uint16
 	// Accept multicast ethernet and IP packets. Needed for MDNS.
 	AcceptMulticast bool
 	// Accept broadcast IPv4 packets. Needed for managing access points and DHCPv4 servers.
@@ -337,10 +333,7 @@ func (s *StackAsync) Reset(cfg StackConfig) (err error) {
 	if maxDNSQueries == 0 {
 		maxDNSQueries = 2
 	}
-	s.dnsMaxAns = cfg.MaxDNSAnswers
-	if s.dnsMaxAns == 0 {
-		s.dnsMaxAns = 12
-	}
+
 	err = s.dns.Configure(dns.ClientConfig{MaxQueries: int(maxDNSQueries)})
 	if err != nil {
 		return err
@@ -675,7 +668,7 @@ var errDNSv6Transport = errors.New("DNS query over IPv6 transport not supported;
 // [StackAsync.LookupIPPop]. Up to [StackConfig.MaxDNSQueries] lookups may be active at once,
 // after which [lneto.ErrExhausted] is returned. The DNS query is always carried over IPv4 to
 // the configured DNS server; resolving over an IPv6 DNS transport is not yet supported.
-func (s *StackAsync) LookupIPStart(host dns.Name, qtype dns.Type) (txid uint16, err error) {
+func (s *StackAsync) LookupIPStart(host dns.Name, qtype dns.Type, nans uint16) (txid uint16, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.dnssv.IsValid() {
@@ -717,7 +710,7 @@ func (s *StackAsync) LookupIPStart(host dns.Name, qtype dns.Type) (txid uint16, 
 		},
 		EnableRecursion: true,
 		// CNAME records occupy answer slots before the addresses they alias.
-		MaxResponseAnswers: s.dnsMaxAns,
+		MaxResponseAnswers: nans,
 	})
 	if err != nil {
 		return 0, err
