@@ -79,7 +79,7 @@ const (
 	RCodeRefused RCode = 5 // refused
 )
 
-// StateClientQuery is the lifecycle state of a single DNS query.
+// StateClientQuery is the lifecycle state of a single DNS query(lookup).
 type StateClientQuery uint8
 
 const (
@@ -90,7 +90,24 @@ const (
 	CQueryAborted                             // query abandoned (connection error or caller abort)
 )
 
-//go:generate stringer -type=Type,Class,RCode,OpCode -linecomment -output stringers.go .
+func (q StateClientQuery) InProgress() bool {
+	return q == CQueryPending || q == CQueryOutstanding
+}
+
+//go:generate stringer -type=Type,Class,RCode,OpCode,genericError -linecomment -output stringers.go .
+
+type genericError uint8
+
+const (
+	_                  genericError = iota
+	ErrUnresolvedCNAME              // unresolved CNAME
+	ErrNoAnswer                     // no answer
+	ErrLookupOngoing                // lookup ongoing
+)
+
+func (ge genericError) Error() string {
+	return ge.String()
+}
 
 // common errors. Taken from golang.org/x/net/dns/dnsmessage module.
 var (

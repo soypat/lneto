@@ -334,7 +334,7 @@ func (s *StackAsync) Reset(cfg StackConfig) (err error) {
 		maxDNSQueries = 2
 	}
 
-	err = s.dns.Configure(dns.ClientConfig{MaxQueries: int(maxDNSQueries)})
+	err = s.dns.Configure(dns.ClientConfig{MaxLookups: int(maxDNSQueries)})
 	if err != nil {
 		return err
 	}
@@ -710,7 +710,7 @@ func (s *StackAsync) lookupIPStart(host dns.Name, qtype dns.Type, nans uint16) (
 		// Idle: pick a new unpredictable source port, which adds to the
 		// txid in protecting against spoofed responses (RFC 5452).
 		port := 1024 + s.dnsRand16()%(math.MaxUint16-1024)
-		err = s.dns.Configure(dns.ClientConfig{LocalPort: port, MaxQueries: s.dns.MaxLookups()})
+		err = s.dns.Configure(dns.ClientConfig{LocalPort: port, MaxLookups: s.dns.MaxLookups()})
 		if err != nil {
 			return 0, err
 		}
@@ -758,21 +758,21 @@ func (s *StackAsync) LookupIPFollowCNAME(txid uint16) (newTxid uint16, err error
 	return newTxid, nil
 }
 
-// LookupIPPop removes the lookup txid, freeing it for another lookup, and reports whether
-// it had completed. ok is false if no such lookup is active. Every lookup started must be popped.
-func (s *StackAsync) LookupIPPop(txid uint16) (completed, ok bool) {
+// LookupIPPop removes the lookup txid, freeing it for another lookup, and reports on query(lookup) state.
+// ok is false if no such lookup is active. Every lookup started must be popped.
+func (s *StackAsync) LookupIPPop(txid uint16) (state dns.StateClientQuery, ok bool) {
 	s.mu.Lock()
-	completed, ok = s.dns.LookupPop(txid)
+	state, ok = s.dns.LookupPop(txid)
 	s.mu.Unlock()
-	return completed, ok
+	return state, ok
 }
 
-// LookupIPPeek checks on query txid returning completed=true if response was received.
-func (s *StackAsync) LookupIPPeek(txid uint16) (completed, ok bool) {
+// LookupIPPeek checks on query txid returning the actual query(lookup) state.
+func (s *StackAsync) LookupIPPeek(txid uint16) (state dns.StateClientQuery, ok bool) {
 	s.mu.Lock()
-	completed, ok = s.dns.LookupPeek(txid)
+	state, ok = s.dns.LookupPeek(txid)
 	s.mu.Unlock()
-	return completed, ok
+	return state, ok
 }
 
 // LookupIPResponse returns the [dns.Message] containing the response for query txid.
@@ -789,35 +789,13 @@ func (s *StackAsync) LookupIPResponse(txid uint16) (resp *dns.Message, flags dns
 // if the answer is a CNAME without address, see [StackAsync.LookupIPFollowCNAME], and
 // [lneto.ErrExhausted] along with the addresses written if dst filled up.
 // The lookup stays active until removed with [StackAsync.LookupIPPop].
-func (s *StackAsync) LookupIPResult(txid uint16, dst []netip.Addr) (n int, done bool, err error) {
-	s.mu.Lock()
-	n, done, err = s.lookupIPResult(txid, dst)
-	s.mu.Unlock()
-	return n, done, err
-}
 
-func (s *StackAsync) lookupIPResult(txid uint16, dst []netip.Addr) (n int, done bool, err error) {
-	resp, flags, ok := s.dns.LookupResponse(txid)
-	if !ok {
-		if _, active := s.dns.LookupPeek(txid); !active {
-			return 0, true, errDNSNoLookup
-		}
-		return 0, false, errDNSNotDone
-	} else if rcode := flags.ResponseCode(); rcode != 0 {
-		return 0, true, rcode
-	} else if len(resp.Questions) == 0 {
-		return 0, true, errDNSNoAns
-	}
-	// The response echoes the question, which after following a CNAME holds the canonical name.
-	host := resp.Questions[0].Name
-	nans, err := resp.WriteAnswers(dst, host)
-	if nans == 0 && err == nil {
-		err = errDNSNoAns
-		if cname := resp.CanonicalName(host); cname.Len() != 0 {
-			err = errDNSOnlyCNAME
-		}
-	}
-	return int(nans), true, err
+// LookupIPResult is the workhorse
+func (s *StackAsync) LookupIPResult(txid uint16, dst []netip.Addr) (n int, state dns.StateClientQuery, err error) {
+	s.mu.Lock()
+	n, state, err = s.dns.LookupIPAnswers(txid, dst)
+	s.mu.Unlock()
+	return n, state, err
 }
 
 func (s *StackAsync) StartDHCPv4Request(request [4]byte) error {

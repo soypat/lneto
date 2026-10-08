@@ -195,8 +195,8 @@ func (s StackBlocking) DoLookupIPType(dst []netip.Addr, host dns.Name, timeout t
 func (s StackBlocking) waitLookupIP(txid uint16, deadline int64, dst []netip.Addr) (n int, err error) {
 	var backoffs uint
 	for ok := true; ok; ok = s.checkDeadline(deadline) == nil {
-		n, done, err := s.async.LookupIPResult(txid, dst)
-		if done {
+		n, state, err := s.async.LookupIPResult(txid, dst)
+		if !state.InProgress() {
 			return n, err
 		}
 		s.backoff(backoffs)
