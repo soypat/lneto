@@ -8,9 +8,6 @@ import (
 	"github.com/soypat/lneto"
 )
 
-// clientTestResponseFlags are QR=1 (response), RD=1, RA=1.
-const clientTestResponseFlags = HeaderFlags(1<<15 | 1<<8 | 1<<7)
-
 func newTestClient(t testing.TB, maxQueries int) *Client {
 	t.Helper()
 	var client Client
@@ -51,28 +48,14 @@ func encapsulateTestQuery(t testing.TB, client *Client) uint16 {
 }
 
 func testAnswers(host string, firstOctet byte, n int) ([]Resource, []netip.Addr) {
-	name := MustNewName(host)
 	rsc := make([]Resource, n)
 	addrs := make([]netip.Addr, n)
 	for i := range rsc {
 		ip := [4]byte{firstOctet, 0, 2, byte(i + 1)}
-		rsc[i] = NewResource(name, TypeA, ClassINET, 300, ip[:])
+		rsc[i] = testA(host, ip)
 		addrs[i] = netip.AddrFrom4(ip)
 	}
 	return rsc, addrs
-}
-
-func testResponse(t testing.TB, txid uint16, flags HeaderFlags, host string, qtype Type, answers []Resource) []byte {
-	t.Helper()
-	msg := Message{
-		Questions: []Question{{Name: MustNewName(host), Type: qtype, Class: ClassINET}},
-		Answers:   answers,
-	}
-	wire, err := msg.AppendTo(nil, txid, flags)
-	if err != nil {
-		t.Fatal("encode response:", err)
-	}
-	return wire
 }
 
 // checkTestAnswers checks the response to txid holds exactly want for host.
@@ -85,7 +68,7 @@ func checkTestAnswers(t testing.TB, client *Client, txid uint16, host string, wa
 	resp, flags, ok := client.Response(txid)
 	if !ok {
 		t.Fatalf("txid %#x: no response", txid)
-	} else if flags != clientTestResponseFlags {
+	} else if flags != testResponseFlags {
 		t.Fatalf("txid %#x: flags %v", txid, flags)
 	}
 	dst := make([]netip.Addr, len(want)+1)
@@ -120,13 +103,13 @@ func TestClient_ConcurrentQueries(t *testing.T) {
 	rscA, wantA := testAnswers(hostA, 10, 2)
 	rscB, wantB := testAnswers(hostB, 20, 3)
 	// Responses arrive in reverse order.
-	if err := client.Demux(testResponse(t, txidB, clientTestResponseFlags, hostB, TypeA, rscB), 0); err != nil {
+	if err := client.Demux(testResponse(t, txidB, testResponseFlags, hostB, TypeA, rscB), 0); err != nil {
 		t.Fatal(err)
 	}
 	if completed, ok := client.ResolvePeek(txidA); completed || !ok {
 		t.Fatalf("A completed=%v ok=%v before its response", completed, ok)
 	}
-	if err := client.Demux(testResponse(t, txidA, clientTestResponseFlags, hostA, TypeA, rscA), 0); err != nil {
+	if err := client.Demux(testResponse(t, txidA, testResponseFlags, hostA, TypeA, rscA), 0); err != nil {
 		t.Fatal(err)
 	}
 	checkTestAnswers(t, client, txidA, hostA, wantA)
@@ -182,16 +165,16 @@ func TestClient_RejectsMismatchedResponse(t *testing.T) {
 	const host = "example.com"
 	const txid = 0x1234
 	rsc, want := testAnswers(host, 30, 1)
-	good := testResponse(t, txid, clientTestResponseFlags, host, TypeA, rsc)
+	good := testResponse(t, txid, testResponseFlags, host, TypeA, rsc)
 	tests := []struct {
 		name string
 		resp []byte
 	}{
-		{name: "wrong txid", resp: testResponse(t, txid+1, clientTestResponseFlags, host, TypeA, rsc)},
+		{name: "wrong txid", resp: testResponse(t, txid+1, testResponseFlags, host, TypeA, rsc)},
 		{name: "not a response", resp: testResponse(t, txid, NewClientHeaderFlags(OpCodeQuery, true), host, TypeA, rsc)},
-		{name: "other name", resp: testResponse(t, txid, clientTestResponseFlags, "example.org", TypeA, rsc)},
-		{name: "other type", resp: testResponse(t, txid, clientTestResponseFlags, host, TypeAAAA, rsc)},
-		{name: "longer name", resp: testResponse(t, txid, clientTestResponseFlags, "www.example.com", TypeA, rsc)},
+		{name: "other name", resp: testResponse(t, txid, testResponseFlags, "example.org", TypeA, rsc)},
+		{name: "other type", resp: testResponse(t, txid, testResponseFlags, host, TypeAAAA, rsc)},
+		{name: "longer name", resp: testResponse(t, txid, testResponseFlags, "www.example.com", TypeA, rsc)},
 		{name: "header only", resp: good[:SizeHeader]},
 	}
 	for _, tt := range tests {
@@ -229,7 +212,7 @@ func TestClient_CaseRandomizedQuestion(t *testing.T) {
 	encapsulateTestQuery(t, client)
 	rsc, want := testAnswers("www.example.com", 40, 1)
 	// Server echoes the question with DNS 0x20 randomized case.
-	resp := testResponse(t, txid, clientTestResponseFlags, "wWw.ExAmPlE.CoM", TypeA, rsc)
+	resp := testResponse(t, txid, testResponseFlags, "wWw.ExAmPlE.CoM", TypeA, rsc)
 	if err := client.Demux(resp, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +229,7 @@ func TestClient_PopSemantics(t *testing.T) {
 	startTestResolve(t, client, txid, host, 1)
 	encapsulateTestQuery(t, client)
 	rsc, _ := testAnswers(host, 50, 1)
-	if err := client.Demux(testResponse(t, txid, clientTestResponseFlags, host, TypeA, rsc), 0); err != nil {
+	if err := client.Demux(testResponse(t, txid, testResponseFlags, host, TypeA, rsc), 0); err != nil {
 		t.Fatal(err)
 	}
 	if completed, ok := client.ResolvePop(txid); !completed || !ok {
@@ -273,7 +256,7 @@ func TestClient_ManyAnswers(t *testing.T) {
 	startTestResolve(t, client, txid, host, 8)
 	encapsulateTestQuery(t, client)
 	rsc, want := testAnswers(host, 60, 8)
-	if err := client.Demux(testResponse(t, txid, clientTestResponseFlags, host, TypeA, rsc), 0); err != nil {
+	if err := client.Demux(testResponse(t, txid, testResponseFlags, host, TypeA, rsc), 0); err != nil {
 		t.Fatal(err)
 	}
 	checkTestAnswers(t, client, txid, host, want)
@@ -290,7 +273,7 @@ func TestClient_ZeroAllocReuse(t *testing.T) {
 		MaxResponseAnswers: 4,
 	}
 	rsc, _ := testAnswers(host, 70, 4)
-	resp := testResponse(t, txid, clientTestResponseFlags, host, TypeA, rsc)
+	resp := testResponse(t, txid, testResponseFlags, host, TypeA, rsc)
 	var buf [512]byte
 	var dst [4]netip.Addr
 	// Keep another query active so popping exercises removal of a non-last slot.
@@ -372,7 +355,6 @@ func TestClient_AbortAndIdle(t *testing.T) {
 func TestClient_ReceivesDNSResponse(t *testing.T) {
 	const hostname = "example.com"
 	const txid = uint16(12345)
-	const clientPort = uint16(54321)
 	const maxAnswers = 4
 	allIPs := [5][4]byte{
 		{192, 0, 2, 1},
@@ -393,50 +375,16 @@ func TestClient_ReceivesDNSResponse(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			name := MustNewName(hostname)
-			responseMsg := Message{
-				Questions: []Question{{
-					Name:  name,
-					Type:  TypeA,
-					Class: ClassINET,
-				}},
-				Answers: make([]Resource, len(tt.responseIPs)),
+			rsc := make([]Resource, len(tt.responseIPs))
+			for i, ip := range tt.responseIPs {
+				rsc[i] = testA(hostname, ip)
 			}
-			for i := range tt.responseIPs {
-				responseMsg.Answers[i] = NewResource(name, TypeA, ClassINET, 300, tt.responseIPs[i][:])
-			}
+			dnsPayload := testResponse(t, txid, testResponseFlags, hostname, TypeA, rsc)
 
-			// Response flags: QR=1 (response), RD=1, RA=1.
-			responseFlags := HeaderFlags(1<<15 | 1<<8 | 1<<7)
-			var responseBuf [512]byte
-			dnsPayload, err := responseMsg.AppendTo(responseBuf[:0], txid, responseFlags)
-			if err != nil {
-				t.Fatal("failed to build DNS response:", err)
-			}
-
-			var client Client
-			err = client.Configure(ClientConfig{LocalPort: clientPort, MaxQueries: 1})
-			if err != nil {
-				t.Fatal(err)
-			}
-			err = client.StartResolve(txid, ResolveConfig{
-				Questions: []Question{{
-					Name:  name,
-					Type:  TypeA,
-					Class: ClassINET,
-				}},
-				EnableRecursion:    true,
-				MaxResponseAnswers: maxAnswers,
-			})
-			if err != nil {
-				t.Fatal("failed to start DNS resolve:", err)
-			}
-
+			client := newTestClient(t, 1)
+			startTestResolve(t, client, txid, hostname, maxAnswers)
 			// Encapsulate the query to move the client into the outstanding state.
-			var queryBuf [512]byte
-			_, err = client.Encapsulate(queryBuf[:], 0, 0)
-			if err != nil {
-				t.Fatal("failed to encapsulate DNS query:", err)
-			}
+			encapsulateTestQuery(t, client)
 			if err := client.Demux(dnsPayload, 0); err != nil {
 				t.Fatal("failed to demux DNS response:", err)
 			}
@@ -471,15 +419,6 @@ func TestClient_ReceivesDNSResponse(t *testing.T) {
 	}
 }
 
-func testCNAME(t testing.TB, owner, target string) Resource {
-	t.Helper()
-	wire, err := (&Question{Name: MustNewName(target)}).Name.AppendTo(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return NewResource(MustNewName(owner), TypeCNAME, ClassINET, 300, wire)
-}
-
 func TestClient_ResolveCanonical(t *testing.T) {
 	const host, alias = "a.example.com", "edge.cdn.example.net"
 	const txid, hopTxid = 0x1000, 0x2000
@@ -497,7 +436,7 @@ func TestClient_ResolveCanonical(t *testing.T) {
 		t.Fatal(err)
 	}
 	encapsulateTestQuery(t, client)
-	cnameOnly := testResponse(t, txid, clientTestResponseFlags, host, TypeA, []Resource{testCNAME(t, host, alias)})
+	cnameOnly := testResponse(t, txid, testResponseFlags, host, TypeA, []Resource{testCNAME(t, host, alias)})
 	if err = client.Demux(cnameOnly, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -535,7 +474,7 @@ func TestClient_ResolveCanonical(t *testing.T) {
 		t.Errorf("hop query lost EDNS0 record: %v", sent.Additionals)
 	}
 	rsc, want := testAnswers(alias, 80, 1)
-	if err = client.Demux(testResponse(t, hopTxid, clientTestResponseFlags, alias, TypeA, rsc), 0); err != nil {
+	if err = client.Demux(testResponse(t, hopTxid, testResponseFlags, alias, TypeA, rsc), 0); err != nil {
 		t.Fatal(err)
 	}
 	checkTestAnswers(t, client, hopTxid, alias, want)
@@ -552,10 +491,10 @@ func TestClient_ResolveCanonicalErrors(t *testing.T) {
 		newTxid uint16
 	}{
 		{name: "pending", newTxid: 0x2000},
-		{name: "rcode", resp: testResponse(t, txid, clientTestResponseFlags|HeaderFlags(RCodeServerFailure), host, TypeA, nil), newTxid: 0x2000},
-		{name: "no CNAME", resp: testResponse(t, txid, clientTestResponseFlags, host, TypeA, rsc), newTxid: 0x2000},
-		{name: "zero txid", resp: testResponse(t, txid, clientTestResponseFlags, host, TypeA, cname), newTxid: 0},
-		{name: "txid in use", resp: testResponse(t, txid, clientTestResponseFlags, host, TypeA, cname), newTxid: 0x3000},
+		{name: "rcode", resp: testResponse(t, txid, testResponseFlags|HeaderFlags(RCodeServerFailure), host, TypeA, nil), newTxid: 0x2000},
+		{name: "no CNAME", resp: testResponse(t, txid, testResponseFlags, host, TypeA, rsc), newTxid: 0x2000},
+		{name: "zero txid", resp: testResponse(t, txid, testResponseFlags, host, TypeA, cname), newTxid: 0},
+		{name: "txid in use", resp: testResponse(t, txid, testResponseFlags, host, TypeA, cname), newTxid: 0x3000},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -598,9 +537,9 @@ func TestClient_ResolveCanonicalZeroAlloc(t *testing.T) {
 		EnableRecursion:    true,
 		MaxResponseAnswers: 4,
 	}
-	cnameOnly := testResponse(t, txid, clientTestResponseFlags, host, TypeA, []Resource{testCNAME(t, host, alias)})
+	cnameOnly := testResponse(t, txid, testResponseFlags, host, TypeA, []Resource{testCNAME(t, host, alias)})
 	rsc, _ := testAnswers(alias, 100, 2)
-	final := testResponse(t, hopTxid, clientTestResponseFlags, alias, TypeA, rsc)
+	final := testResponse(t, hopTxid, testResponseFlags, alias, TypeA, rsc)
 	aliasName := MustNewName(alias)
 	var buf [512]byte
 	var dst [4]netip.Addr
