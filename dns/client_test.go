@@ -20,7 +20,7 @@ func newTestClient(t testing.TB, maxQueries int) *Client {
 
 func startTestResolve(t testing.TB, client *Client, txid uint16, host string, maxAnswers uint16) {
 	t.Helper()
-	err := client.StartResolve(txid, ResolveConfig{
+	err := client.ResolveStart(txid, ResolveConfig{
 		Questions:          []Question{{Name: MustNewName(host), Type: TypeA, Class: ClassINET}},
 		EnableRecursion:    true,
 		MaxResponseAnswers: maxAnswers,
@@ -65,7 +65,7 @@ func checkTestAnswers(t testing.TB, client *Client, txid uint16, host string, wa
 	if !ok || !completed {
 		t.Fatalf("txid %#x: completed=%v ok=%v", txid, completed, ok)
 	}
-	resp, flags, ok := client.Response(txid)
+	resp, flags, ok := client.ResolveResponse(txid)
 	if !ok {
 		t.Fatalf("txid %#x: no response", txid)
 	} else if flags != testResponseFlags {
@@ -118,19 +118,19 @@ func TestClient_ConcurrentQueries(t *testing.T) {
 
 func TestClient_Exhausted(t *testing.T) {
 	client := newTestClient(t, 2)
-	if client.QueryCapacity() != 2 {
-		t.Fatalf("QueryCapacity=%d, want 2", client.QueryCapacity())
+	if client.CapQueries() != 2 {
+		t.Fatalf("QueryCapacity=%d, want 2", client.CapQueries())
 	}
 	startTestResolve(t, client, 1, "a.com", 1)
 	startTestResolve(t, client, 2, "b.com", 1)
 	cfg := ResolveConfig{Questions: []Question{{Name: MustNewName("c.com"), Type: TypeA, Class: ClassINET}}}
-	if err := client.StartResolve(3, cfg); !errors.Is(err, lneto.ErrExhausted) {
+	if err := client.ResolveStart(3, cfg); !errors.Is(err, lneto.ErrExhausted) {
 		t.Fatalf("err=%v, want ErrExhausted", err)
 	}
 	if completed, ok := client.ResolvePop(1); completed || !ok {
 		t.Fatalf("pop pending: completed=%v ok=%v", completed, ok)
 	}
-	if err := client.StartResolve(3, cfg); err != nil {
+	if err := client.ResolveStart(3, cfg); err != nil {
 		t.Fatal("start after pop:", err)
 	}
 	// Remaining queries are intact after the pop.
@@ -143,20 +143,20 @@ func TestClient_StartResolveInvalid(t *testing.T) {
 	client := newTestClient(t, 2)
 	startTestResolve(t, client, 7, "a.com", 1)
 	cfg := ResolveConfig{Questions: []Question{{Name: MustNewName("b.com"), Type: TypeA, Class: ClassINET}}}
-	if err := client.StartResolve(7, cfg); err == nil {
+	if err := client.ResolveStart(7, cfg); err == nil {
 		t.Fatal("duplicate active txid accepted")
 	}
-	if err := client.StartResolve(8, ResolveConfig{}); err == nil {
+	if err := client.ResolveStart(8, ResolveConfig{}); err == nil {
 		t.Fatal("zero questions accepted")
 	}
-	if err := client.StartResolve(8, ResolveConfig{Questions: []Question{{Type: TypeA, Class: ClassINET}}}); err == nil {
+	if err := client.ResolveStart(8, ResolveConfig{Questions: []Question{{Type: TypeA, Class: ClassINET}}}); err == nil {
 		t.Fatal("empty question name accepted")
 	}
 	// Failed starts do not hold a slot.
 	if client.NumQueries() != 1 {
 		t.Fatalf("NumQueries=%d after failed starts, want 1", client.NumQueries())
 	}
-	if err := client.StartResolve(8, cfg); err != nil {
+	if err := client.ResolveStart(8, cfg); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -186,7 +186,7 @@ func TestClient_RejectsMismatchedResponse(t *testing.T) {
 			if completed, ok := client.ResolvePeek(txid); completed || !ok {
 				t.Fatalf("completed=%v ok=%v after mismatched response", completed, ok)
 			}
-			if _, _, ok := client.Response(txid); ok {
+			if _, _, ok := client.ResolveResponse(txid); ok {
 				t.Fatal("response available after mismatched response")
 			}
 			if err := client.Demux(good, 0); err != nil {
@@ -241,7 +241,7 @@ func TestClient_PopSemantics(t *testing.T) {
 	if completed, ok := client.ResolvePop(txid); completed || ok {
 		t.Fatalf("second pop: completed=%v ok=%v", completed, ok)
 	}
-	if _, _, ok := client.Response(txid); ok {
+	if _, _, ok := client.ResolveResponse(txid); ok {
 		t.Fatal("response after pop")
 	}
 	if client.NumQueries() != 0 {
@@ -277,11 +277,11 @@ func TestClient_ZeroAllocReuse(t *testing.T) {
 	var buf [512]byte
 	var dst [4]netip.Addr
 	// Keep another query active so popping exercises removal of a non-last slot.
-	if err := client.StartResolve(txid+1, cfg); err != nil {
+	if err := client.ResolveStart(txid+1, cfg); err != nil {
 		t.Fatal(err)
 	}
 	cycle := func() {
-		if err := client.StartResolve(txid, cfg); err != nil {
+		if err := client.ResolveStart(txid, cfg); err != nil {
 			panic(err)
 		}
 		for {
@@ -295,7 +295,7 @@ func TestClient_ZeroAllocReuse(t *testing.T) {
 		if err := client.Demux(resp, 0); err != nil {
 			panic(err)
 		}
-		msg, _, ok := client.Response(txid)
+		msg, _, ok := client.ResolveResponse(txid)
 		if !ok {
 			panic("no response")
 		}
@@ -389,7 +389,7 @@ func TestClient_ReceivesDNSResponse(t *testing.T) {
 				t.Fatal("failed to demux DNS response:", err)
 			}
 
-			resp, _, ok := client.Response(txid)
+			resp, _, ok := client.ResolveResponse(txid)
 			if !ok {
 				t.Fatal("no response")
 			}
@@ -426,7 +426,7 @@ func TestClient_ResolveCanonical(t *testing.T) {
 	var edns Resource
 	setEDNS0(&edns, 1232, nil)
 	client := newTestClient(t, 1)
-	err := client.StartResolve(txid, ResolveConfig{
+	err := client.ResolveStart(txid, ResolveConfig{
 		Questions:          []Question{{Name: MustNewName(host), Type: TypeA, Class: ClassINET}},
 		Additional:         []Resource{edns},
 		EnableRecursion:    true,
@@ -440,7 +440,7 @@ func TestClient_ResolveCanonical(t *testing.T) {
 	if err = client.Demux(cnameOnly, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err = client.ResolveCanonical(txid, hopTxid); err != nil {
+	if err = client.ResolveCanonicalRestart(txid, hopTxid); err != nil {
 		t.Fatal("hop:", err)
 	}
 	if _, ok := client.ResolvePeek(txid); ok {
@@ -508,7 +508,7 @@ func TestClient_ResolveCanonicalErrors(t *testing.T) {
 				}
 			}
 			completed, _ := client.ResolvePeek(txid)
-			if err := client.ResolveCanonical(txid, tt.newTxid); err == nil {
+			if err := client.ResolveCanonicalRestart(txid, tt.newTxid); err == nil {
 				t.Fatal("hop succeeded")
 			}
 			// Failed hop leaves the query as it was.
@@ -519,7 +519,7 @@ func TestClient_ResolveCanonicalErrors(t *testing.T) {
 	}
 	t.Run("unknown txid", func(t *testing.T) {
 		client := newTestClient(t, 1)
-		if err := client.ResolveCanonical(1, 2); err == nil {
+		if err := client.ResolveCanonicalRestart(1, 2); err == nil {
 			t.Fatal("hop of unknown txid succeeded")
 		}
 	})
@@ -544,7 +544,7 @@ func TestClient_ResolveCanonicalZeroAlloc(t *testing.T) {
 	var buf [512]byte
 	var dst [4]netip.Addr
 	cycle := func() {
-		if err := client.StartResolve(txid, cfg); err != nil {
+		if err := client.ResolveStart(txid, cfg); err != nil {
 			panic(err)
 		}
 		if n, err := client.Encapsulate(buf[:], -1, 0); err != nil || n == 0 {
@@ -553,7 +553,7 @@ func TestClient_ResolveCanonicalZeroAlloc(t *testing.T) {
 		if err := client.Demux(cnameOnly, 0); err != nil {
 			panic(err)
 		}
-		if err := client.ResolveCanonical(txid, hopTxid); err != nil {
+		if err := client.ResolveCanonicalRestart(txid, hopTxid); err != nil {
 			panic(err)
 		}
 		if n, err := client.Encapsulate(buf[:], -1, 0); err != nil || n == 0 {
@@ -562,7 +562,7 @@ func TestClient_ResolveCanonicalZeroAlloc(t *testing.T) {
 		if err := client.Demux(final, 0); err != nil {
 			panic(err)
 		}
-		resp, _, ok := client.Response(hopTxid)
+		resp, _, ok := client.ResolveResponse(hopTxid)
 		if !ok {
 			panic("no response")
 		}
@@ -606,7 +606,7 @@ func TestClient_CNAMEResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = client.StartResolve(txid, ResolveConfig{
+	err = client.ResolveStart(txid, ResolveConfig{
 		Questions: []Question{{
 			Name:  name,
 			Type:  TypeA,
@@ -626,7 +626,7 @@ func TestClient_CNAMEResponse(t *testing.T) {
 	if err := client.Demux(response, 0); err != nil {
 		t.Fatal("failed to demux DNS response:", err)
 	}
-	resp, _, ok := client.Response(txid)
+	resp, _, ok := client.ResolveResponse(txid)
 	if !ok {
 		t.Fatal("no response")
 	}

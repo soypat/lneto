@@ -15,7 +15,7 @@ var errNoCNAME = errors.New("no CNAME in DNS response")
 
 // Client resolves DNS queries over UDP. Several queries may be in flight at once,
 // each identified by its transaction ID (txid) as the key to [Client.ResolvePeek],
-// [Client.ResolvePop] and [Client.Response]. All queries share the client's local port.
+// [Client.ResolvePop] and [Client.ResolveResponse]. All queries share the client's local port.
 type Client struct {
 	connID uint64
 	// queries holds active queries. Its capacity is fixed by [ClientConfig.MaxQueries];
@@ -26,7 +26,7 @@ type Client struct {
 }
 
 // query is one DNS query keyed by its txid. It keeps the sections it sends
-// apart from its response so it can be sent again, see [Client.ResolveCanonical].
+// apart from its response so it can be sent again, see [Client.ResolveCanonicalRestart].
 type query struct {
 	questions       []Question
 	additional      []Resource
@@ -87,13 +87,13 @@ func (c *Client) SetLocalPort(port uint16) error {
 // NumQueries returns the number of active queries, sent or not, completed or not.
 func (c *Client) NumQueries() int { return len(c.queries) }
 
-// QueryCapacity returns the maximum number of queries that may be active at once.
-func (c *Client) QueryCapacity() int { return cap(c.queries) }
+// CapQueries returns the maximum number of queries that may be active at once.
+func (c *Client) CapQueries() int { return cap(c.queries) }
 
-// StartResolve starts a query identified by txid, which is sent on the next call to [Client.Encapsulate].
+// ResolveStart starts a query identified by txid, which is sent on the next call to [Client.Encapsulate].
 // Returns [lneto.ErrExhausted] if [ClientConfig.MaxQueries] are active and
 // [lneto.ErrAlreadyRegistered] if a query with the same txid is active.
-func (c *Client) StartResolve(txid uint16, cfg ResolveConfig) error {
+func (c *Client) ResolveStart(txid uint16, cfg ResolveConfig) error {
 	nd := len(cfg.Questions)
 	if nd > math.MaxUint16 || nd == 0 || txid == 0 {
 		return lneto.ErrInvalidConfig
@@ -141,7 +141,7 @@ func (c *Client) ResolvePeek(txid uint16) (completed, ok bool) {
 
 // ResolvePop removes the query txid, freeing its slot for another query, and reports whether
 // it had completed. ok is false if no such query is active. The response returned by
-// [Client.Response] for txid must not be used afterwards.
+// [Client.ResolveResponse] for txid must not be used afterwards.
 func (c *Client) ResolvePop(txid uint16) (completed, ok bool) {
 	idx := c.qidx(txid)
 	if idx < 0 {
@@ -152,11 +152,11 @@ func (c *Client) ResolvePop(txid uint16) (completed, ok bool) {
 	return completed, true
 }
 
-// Response returns the decoded response to the completed query txid and its header flags,
+// ResolveResponse returns the decoded response to the completed query txid and its header flags,
 // where [HeaderFlags.ResponseCode] reports whether the query succeeded. ok is false if the
 // query is not active or has not completed. resp is owned by the client and valid until
 // txid is removed with [Client.ResolvePop], [Client.Reset] or [Client.Abort].
-func (c *Client) Response(txid uint16) (resp *Message, flags HeaderFlags, ok bool) {
+func (c *Client) ResolveResponse(txid uint16) (resp *Message, flags HeaderFlags, ok bool) {
 	idx := c.qidx(txid)
 	if idx < 0 || c.queries[idx].state != CQueryDone {
 		return nil, 0, false
@@ -165,13 +165,13 @@ func (c *Client) Response(txid uint16) (resp *Message, flags HeaderFlags, ok boo
 	return &q.resp, q.respFlags, true
 }
 
-// ResolveCanonical restarts the completed query txid as newTxid, querying the canonical name
+// ResolveCanonicalRestart restarts the completed query txid as newTxid, querying the canonical name
 // its response holds for its question. Use it after a response with CNAME records and no
 // address to follow the CNAME chain. The query keeps its slot and memory, its question type
 // and additional records; the response to txid must not be used afterwards.
 // Returns [lneto.ErrAlreadyRegistered] if newTxid is in use and [lneto.ErrUnsupported] for
 // queries with more than one question. A failed call leaves the query unchanged.
-func (c *Client) ResolveCanonical(txid, newTxid uint16) error {
+func (c *Client) ResolveCanonicalRestart(txid, newTxid uint16) error {
 	idx := c.qidx(txid)
 	if idx < 0 || c.queries[idx].state != CQueryDone {
 		return errNoResponse
