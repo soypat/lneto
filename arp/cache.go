@@ -106,6 +106,7 @@ func (c *cache) age() {
 func (c *cache) reset(size int) {
 	internal.SliceReuse(&c.entries, size)
 	c.entries = c.entries[:cap(c.entries)] // maximize queries given allocation.
+	clear(c.entries)
 }
 
 func (c *cache) getNextFlagged(entryHasFlags eflags) *entry {
