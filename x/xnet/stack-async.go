@@ -662,11 +662,6 @@ func (s *StackAsync) RegisterListenerUDP6(pktconn *udp.PacketConn) (err error) {
 var (
 	errDNSv6Transport = errors.New("DNS query over IPv6 transport not supported; configure an IPv4 DNS server")
 	errNoDNSServer    = errors.New("no DNS server- did DHCP complete? You can set a predetermined DNS server in Stack configuration")
-	errDNSNotDone     = errors.New("DNS not done")
-	errDNSNoLookup    = errors.New("no such DNS lookup")
-	errDNSNoAns       = errors.New("no address in DNS answer")
-	// errDNSOnlyCNAME is returned when the answer ends in a CNAME without address.
-	errDNSOnlyCNAME = errors.New("DNS answer is CNAME without address")
 )
 
 // newDNSTxid returns a txid that is non-zero, unused by active lookups and unpredictable.

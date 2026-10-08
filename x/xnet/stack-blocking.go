@@ -180,7 +180,7 @@ func (s StackBlocking) DoLookupIPType(dst []netip.Addr, host dns.Name, timeout t
 	defer func() { s.async.LookupIPPop(txid) }()
 	for queries := 1; ; queries++ {
 		n, err := s.waitLookupIP(txid, deadline, dst)
-		if err != errDNSOnlyCNAME || queries == maxCNAMEqueries {
+		if err != dns.ErrUnresolvedCNAME || queries == maxCNAMEqueries {
 			return n, err // nil(OK) or non-only-cname error.
 		}
 		hopTxid, err := s.async.LookupIPFollowCNAME(txid)

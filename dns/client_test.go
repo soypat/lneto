@@ -62,7 +62,7 @@ func testAnswers(host string, firstOctet byte, n int) ([]Resource, []netip.Addr)
 func checkTestAnswers(t testing.TB, client *Client, txid uint16, host string, want []netip.Addr) {
 	t.Helper()
 	state, ok := client.LookupPeek(txid)
-	if !ok || state.InProgress() {
+	if !ok || state != CQueryDone {
 		t.Fatalf("txid %#x: state=%v ok=%v", txid, state, ok)
 	}
 	resp, flags, ok := client.LookupResponse(txid)
@@ -106,7 +106,7 @@ func TestClient_ConcurrentLookups(t *testing.T) {
 	if err := client.Demux(testResponse(t, txidB, testResponseFlags, hostB, TypeA, rscB), 0); err != nil {
 		t.Fatal(err)
 	}
-	if state, ok := client.LookupPeek(txidA); !state.InProgress() || !ok {
+	if state, ok := client.LookupPeek(txidA); state != CQueryOutstanding || !ok {
 		t.Fatalf("A state=%v ok=%v before its response", state, ok)
 	}
 	if err := client.Demux(testResponse(t, txidA, testResponseFlags, hostA, TypeA, rscA), 0); err != nil {
@@ -127,7 +127,7 @@ func TestClient_Exhausted(t *testing.T) {
 	if err := client.LookupStart(3, cfg); !errors.Is(err, lneto.ErrExhausted) {
 		t.Fatalf("err=%v, want ErrExhausted", err)
 	}
-	if state, ok := client.LookupPop(1); !state.InProgress() || !ok {
+	if state, ok := client.LookupPop(1); state != CQueryPending || !ok {
 		t.Fatalf("pop pending: state=%v ok=%v", state, ok)
 	}
 	if err := client.LookupStart(3, cfg); err != nil {
@@ -183,7 +183,7 @@ func TestClient_RejectsMismatchedResponse(t *testing.T) {
 			startTestLookup(t, client, txid, host, 1)
 			encapsulateTestQuery(t, client)
 			client.Demux(tt.resp, 0)
-			if state, ok := client.LookupPeek(txid); !state.InProgress() || !ok {
+			if state, ok := client.LookupPeek(txid); state != CQueryOutstanding || !ok {
 				t.Fatalf("state=%v ok=%v after mismatched response", state, ok)
 			}
 			if _, _, ok := client.LookupResponse(txid); ok {
@@ -199,7 +199,7 @@ func TestClient_RejectsMismatchedResponse(t *testing.T) {
 		client := newTestClient(t, 1)
 		startTestLookup(t, client, txid, host, 1)
 		client.Demux(good, 0)
-		if state, _ := client.LookupPeek(txid); !state.InProgress() {
+		if state, _ := client.LookupPeek(txid); state != CQueryPending {
 			t.Fatal("completed by response to unsent query")
 		}
 	})
@@ -223,7 +223,7 @@ func TestClient_PopSemantics(t *testing.T) {
 	const host = "example.com"
 	const txid = 0x5555
 	client := newTestClient(t, 1)
-	if state, ok := client.LookupPeek(txid); state.InProgress() || ok {
+	if state, ok := client.LookupPeek(txid); ok {
 		t.Fatalf("unknown txid: state=%v ok=%v", state, ok)
 	}
 	startTestLookup(t, client, txid, host, 1)
@@ -232,13 +232,13 @@ func TestClient_PopSemantics(t *testing.T) {
 	if err := client.Demux(testResponse(t, txid, testResponseFlags, host, TypeA, rsc), 0); err != nil {
 		t.Fatal(err)
 	}
-	if state, ok := client.LookupPop(txid); !state.InProgress() || !ok {
+	if state, ok := client.LookupPop(txid); state != CQueryDone || !ok {
 		t.Fatalf("pop: state=%v ok=%v", state, ok)
 	}
-	if state, ok := client.LookupPeek(txid); state.InProgress() || ok {
+	if state, ok := client.LookupPeek(txid); ok {
 		t.Fatalf("peek after pop: state=%v ok=%v", state, ok)
 	}
-	if state, ok := client.LookupPop(txid); state.InProgress() || ok {
+	if state, ok := client.LookupPop(txid); ok {
 		t.Fatalf("second pop: state=%v ok=%v", state, ok)
 	}
 	if _, _, ok := client.LookupResponse(txid); ok {
@@ -352,7 +352,7 @@ func TestClient_ZeroAllocReuse(t *testing.T) {
 		if n, err := msg.WriteAnswers(dst[:], name); err != nil || n != 4 {
 			panic(err)
 		}
-		if state, ok := client.LookupPop(txid); !state.InProgress() || !ok {
+		if state, ok := client.LookupPop(txid); state != CQueryDone || !ok {
 			panic("pop failed")
 		}
 	}
@@ -477,7 +477,7 @@ func TestClient_LookupCanonical(t *testing.T) {
 	if _, ok := client.LookupPeek(txid); ok {
 		t.Fatal("old txid still active after hop")
 	}
-	if state, ok := client.LookupPeek(hopTxid); state.InProgress() || !ok {
+	if state, ok := client.LookupPeek(hopTxid); state != CQueryPending || !ok {
 		t.Fatalf("hop lookup: state=%v ok=%v, want pending", state, ok)
 	}
 	if client.NumLookups() != 1 {
@@ -538,13 +538,13 @@ func TestClient_LookupCanonicalErrors(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			completed, _ := client.LookupPeek(txid)
+			before, _ := client.LookupPeek(txid)
 			if err := client.LookupCanonicalRestart(txid, tt.newTxid); err == nil {
 				t.Fatal("hop succeeded")
 			}
 			// Failed hop leaves the lookup as it was.
-			if c, ok := client.LookupPeek(txid); !ok || c != completed {
-				t.Fatalf("lookup changed by failed hop: completed=%v ok=%v", c, ok)
+			if state, ok := client.LookupPeek(txid); !ok || state != before {
+				t.Fatalf("lookup changed by failed hop: state=%v ok=%v", state, ok)
 			}
 		})
 	}
@@ -600,7 +600,7 @@ func TestClient_LookupCanonicalZeroAlloc(t *testing.T) {
 		if n, err := resp.WriteAnswers(dst[:], aliasName); err != nil || n != 2 {
 			panic(err)
 		}
-		if state, ok := client.LookupPop(hopTxid); !state.InProgress() || !ok {
+		if state, ok := client.LookupPop(hopTxid); state != CQueryDone || !ok {
 			panic("pop")
 		}
 	}

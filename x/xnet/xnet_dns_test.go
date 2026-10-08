@@ -164,7 +164,7 @@ func TestDNS_LookupIP(t *testing.T) {
 			// Async API does not requery.
 			name:    "CNAME only",
 			zone:    cnameChain(host, 1, "192.0.2.201"),
-			wantErr: errDNSOnlyCNAME, wantQueries: 1,
+			wantErr: dns.ErrUnresolvedCNAME, wantQueries: 1,
 		},
 		{
 			name: "CNAME only requery", blocking: true,
@@ -181,7 +181,7 @@ func TestDNS_LookupIP(t *testing.T) {
 			// One hop more than the limit allows: gives up without exceeding it.
 			name: "CNAME chain past query limit", blocking: true,
 			zone:    cnameChain(host, maxCNAMEqueries, "192.0.2.204"),
-			wantErr: errDNSOnlyCNAME, wantQueries: maxCNAMEqueries,
+			wantErr: dns.ErrUnresolvedCNAME, wantQueries: maxCNAMEqueries,
 		},
 	}
 	// Shared client: each lookup must not see the previous one's result, so wantAddr is unique per case.
@@ -319,8 +319,8 @@ func TestDNS_LookupIPFollowCNAME(t *testing.T) {
 	}
 	srv.respond()
 	var dst [4]netip.Addr
-	if _, err = lookupTestResult(t, client, txid, dst[:]); err != errDNSOnlyCNAME {
-		t.Fatalf("got err=%v, want %v", err, errDNSOnlyCNAME)
+	if _, err = lookupTestResult(t, client, txid, dst[:]); err != dns.ErrUnresolvedCNAME {
+		t.Fatalf("got err=%v, want %v", err, dns.ErrUnresolvedCNAME)
 	}
 	hopTxid, err := client.LookupIPFollowCNAME(txid)
 	if err != nil {
@@ -331,7 +331,7 @@ func TestDNS_LookupIPFollowCNAME(t *testing.T) {
 	if _, ok := client.LookupIPPop(txid); ok {
 		t.Fatal("old txid still active after following CNAME")
 	}
-	if n, done, _ := client.LookupIPResult(hopTxid, dst[:]); done || n != 0 {
+	if n, state, _ := client.LookupIPResult(hopTxid, dst[:]); !state.InProgress() || n != 0 {
 		t.Fatal("hop done before its response")
 	}
 	srv.respond()
@@ -357,8 +357,8 @@ func TestDNS_LookupIPExhausted(t *testing.T) {
 	if _, err := client.LookupIPStart(dns.MustNewName("h2.example.com"), dns.TypeA, 4); !errors.Is(err, lneto.ErrExhausted) {
 		t.Fatalf("got err=%v, want ErrExhausted", err)
 	}
-	if completed, ok := client.LookupIPPop(txids[0]); completed || !ok {
-		t.Fatalf("pop pending: completed=%v ok=%v", completed, ok)
+	if state, ok := client.LookupIPPop(txids[0]); state != dns.CQueryPending || !ok {
+		t.Fatalf("pop pending: state=%v ok=%v", state, ok)
 	}
 	if _, err := client.LookupIPStart(dns.MustNewName("h2.example.com"), dns.TypeA, 4); err != nil {
 		t.Fatal("start after pop:", err)
