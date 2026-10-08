@@ -672,8 +672,14 @@ var errDNSv6Transport = errors.New("DNS query over IPv6 transport not supported;
 // after which [lneto.ErrExhausted] is returned. The DNS query is always carried over IPv4 to
 // the configured DNS server; resolving over an IPv6 DNS transport is not yet supported.
 func (s *StackAsync) LookupIPStart(host dns.Name, qtype dns.Type, nans uint16) (txid uint16, err error) {
+	// No defer: TinyGo will not inline functions with defer and emits unlock code per return.
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	txid, err = s.lookupIPStart(host, qtype, nans)
+	s.mu.Unlock()
+	return txid, err
+}
+
+func (s *StackAsync) lookupIPStart(host dns.Name, qtype dns.Type, nans uint16) (txid uint16, err error) {
 	if !s.dnssv.IsValid() {
 		return 0, errNoDNSServer
 	} else if !s.dnssv.Is4() {
@@ -726,9 +732,9 @@ func (s *StackAsync) LookupIPStart(host dns.Name, qtype dns.Type, nans uint16) (
 // It returns the new lookup's key; txid is no longer valid.
 func (s *StackAsync) LookupIPFollowCNAME(txid uint16) (newTxid uint16, err error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	newTxid = s.newDNSTxid()
 	err = s.dns.ResolveCanonicalRestart(txid, newTxid)
+	s.mu.Unlock()
 	if err != nil {
 		return 0, err
 	}
@@ -739,8 +745,9 @@ func (s *StackAsync) LookupIPFollowCNAME(txid uint16) (newTxid uint16, err error
 // it had completed. ok is false if no such lookup is active. Every lookup started must be popped.
 func (s *StackAsync) LookupIPPop(txid uint16) (completed, ok bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.dns.ResolvePop(txid)
+	completed, ok = s.dns.ResolvePop(txid)
+	s.mu.Unlock()
+	return completed, ok
 }
 
 // newDNSTxid returns a txid that is non-zero, unused by active lookups and unpredictable.
@@ -777,7 +784,12 @@ var (
 // The lookup stays active until removed with [StackAsync.LookupIPPop].
 func (s *StackAsync) LookupIPResult(txid uint16, dst []netip.Addr) (n int, done bool, err error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	n, done, err = s.lookupIPResult(txid, dst)
+	s.mu.Unlock()
+	return n, done, err
+}
+
+func (s *StackAsync) lookupIPResult(txid uint16, dst []netip.Addr) (n int, done bool, err error) {
 	resp, flags, ok := s.dns.ResolveResponse(txid)
 	if !ok {
 		if _, active := s.dns.ResolvePeek(txid); !active {
