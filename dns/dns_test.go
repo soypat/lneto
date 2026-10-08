@@ -225,8 +225,22 @@ func TestDecodeMessage(t *testing.T) {
 
 func TestMessage_Validate(t *testing.T) {
 	name := MustNewName("example.com")
+
+	// EDNS options.
 	var opt Resource
-	opt.SetEDNS0(512, 0, 0, nil)
+	const rcode = 0
+	const udplen = 512
+	const zflags = 0
+	ednsData := []byte{}
+	opt.RawSet(ResourceHeader{
+		Name:   MustNewName("."),
+		Type:   TypeOPT,
+		Class:  Class(udplen), // udp length
+		TTL:    uint32(rcode)<<24 | 0<<16 | uint32(zflags),
+		Length: uint16(len(ednsData)),
+	}, append(opt.RawData()[:0], ednsData...))
+
+	// opt.SetEDNS0(512, 0, 0, nil)
 	tests := []struct {
 		desc    string
 		msg     Message
