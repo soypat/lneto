@@ -304,8 +304,15 @@ func TestTCPListener_CloseUnblocksAccept(t *testing.T) {
 
 	var l tcplistener
 	// Sleep rather than yield between polls so Accept is genuinely parked in the
-	// loop when Close lands, instead of spinning a core for the whole test.
-	l.sleep = func(consecutiveBackoffs uint) time.Duration { return time.Millisecond }
+	// loop when Close lands, instead of spinning a core for the whole test. The
+	// first backoff signals that Accept has reached its poll loop.
+	parked := make(chan struct{})
+	l.sleep = func(consecutiveBackoffs uint) time.Duration {
+		if consecutiveBackoffs == 0 {
+			close(parked)
+		}
+		return time.Millisecond
+	}
 	l.localAddr = net.TCPAddrFromAddrPort(netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 0, 0, 1}), svPort))
 	err = l.l.Reset(svPort, pool)
 	if err != nil {
@@ -322,7 +329,14 @@ func TestTCPListener_CloseUnblocksAccept(t *testing.T) {
 		}
 		accepted <- err
 	}()
-	time.Sleep(20 * time.Millisecond) // Let Accept reach its poll loop.
+	select {
+	case <-parked:
+	case err := <-accepted:
+		t.Fatalf("Accept returned before polling: %v", err)
+	case <-time.After(5 * time.Second):
+		l.Close()
+		t.Fatal("Accept did not reach its poll loop")
+	}
 
 	if err := l.Close(); err != nil {
 		t.Fatal("Close while Accept is blocked:", err)
