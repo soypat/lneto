@@ -3,6 +3,7 @@ package xnet
 import (
 	"context"
 	"errors"
+	"math"
 	"net"
 	"net/netip"
 	"time"
@@ -152,23 +153,31 @@ func (s StackBlocking) DoLookupIP(dst []netip.Addr, host dns.Name, timeout time.
 	return s.DoLookupIPType(dst, host, timeout, dns.TypeA)
 }
 
-// maxCNAMEqueries is the maximum number of queries DoLookupIPType sends while
-// following CNAME-only answers, including the query for the original host.
-const maxCNAMEqueries = 3
+const (
+	// maxCNAMEqueries is the maximum number of queries DoLookupIPType sends while
+	// following CNAME-only answers, including the query for the original host.
+	maxCNAMEqueries = 3
+	// cnameAnswerHeadroom is how many answer records DoLookupIPType decodes beyond len(dst)
+	// for the CNAME records that precede the addresses they alias in a response.
+	cnameAnswerHeadroom = 8
+)
 
 // DoLookupIPType resolves host for the given record type (dns.TypeA or dns.TypeAAAA),
-// blocking until a response arrives or the timeout elapses. CNAME-only answers are
-// followed with a new query for the canonical name. The returned slice is owned by the caller.
+// blocking until a response arrives or the timeout elapses. It writes up to len(dst) addresses
+// into dst and returns how many were written. CNAME-only answers are followed with a new
+// query for the canonical name.
 func (s StackBlocking) DoLookupIPType(dst []netip.Addr, host dns.Name, timeout time.Duration, qtype dns.Type) (naddr int, err error) {
+	if len(dst) == 0 {
+		return 0, lneto.ErrShortBuffer
+	}
 	deadline := s.deadlineTO(timeout)
-	txid, err := s.async.LookupIPStart(host, qtype)
+	nans := min(len(dst)+cnameAnswerHeadroom, math.MaxUint16)
+	txid, err := s.async.LookupIPStart(host, qtype, uint16(nans))
 	if err != nil {
 		return 0, err
 	}
 	// Pop whichever lookup is current on return so its slot is freed, timeouts included.
 	defer func() { s.async.LookupIPPop(txid) }()
-	s.async.mu.Lock()
-	s.async.mu.Unlock()
 	for queries := 1; ; queries++ {
 		n, err := s.waitLookupIP(txid, deadline, dst)
 		if err != errDNSOnlyCNAME || queries == maxCNAMEqueries {

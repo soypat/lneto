@@ -196,9 +196,12 @@ func TestDNS_LookupIP(t *testing.T) {
 					srv.respond()
 					return lneto.BackoffFlagNop
 				}
-				addrs, err = client.StackBlocking(pump).DoLookupIP(dns.MustNewName(host), time.Second)
+				var dst [4]netip.Addr
+				var n int
+				n, err = client.StackBlocking(pump).DoLookupIP(dst[:], dns.MustNewName(host), time.Second)
+				addrs = dst[:n]
 			} else {
-				txid, serr := client.LookupIPStart(dns.MustNewName(host), dns.TypeA)
+				txid, serr := client.LookupIPStart(dns.MustNewName(host), dns.TypeA, 4)
 				if serr != nil {
 					t.Fatal("LookupIPStart failed:", serr)
 				}
@@ -245,11 +248,11 @@ func TestDNS_LookupIPConcurrent(t *testing.T) {
 		hostA: {rrA(hostA, "192.0.2.1")},
 		hostB: {rrA(hostB, "198.51.100.1")},
 	}}
-	txidA, err := client.LookupIPStart(dns.MustNewName(hostA), dns.TypeA)
+	txidA, err := client.LookupIPStart(dns.MustNewName(hostA), dns.TypeA, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
-	txidB, err := client.LookupIPStart(dns.MustNewName(hostB), dns.TypeA)
+	txidB, err := client.LookupIPStart(dns.MustNewName(hostB), dns.TypeA, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +262,7 @@ func TestDNS_LookupIPConcurrent(t *testing.T) {
 	if n, done, _ := client.LookupIPResult(txidA, make([]netip.Addr, 1)); done || n != 0 {
 		t.Fatal("lookup done before any response")
 	}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if !srv.respond() {
 			t.Fatalf("expected query %d", i)
 		}
@@ -294,7 +297,7 @@ func TestDNS_LookupIPManyAddresses(t *testing.T) {
 	}
 	client := newDNSTestClient(t)
 	srv := &dnsTestServer{t: t, client: client, zone: zone}
-	txid, err := client.LookupIPStart(dns.MustNewName(host), dns.TypeA)
+	txid, err := client.LookupIPStart(dns.MustNewName(host), dns.TypeA, 8)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +313,7 @@ func TestDNS_LookupIPFollowCNAME(t *testing.T) {
 	const host = "www.example.com"
 	client := newDNSTestClient(t)
 	srv := &dnsTestServer{t: t, client: client, zone: cnameChain(host, 1, "192.0.2.77")}
-	txid, err := client.LookupIPStart(dns.MustNewName(host), dns.TypeA)
+	txid, err := client.LookupIPStart(dns.MustNewName(host), dns.TypeA, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,20 +347,20 @@ func TestDNS_LookupIPFollowCNAME(t *testing.T) {
 func TestDNS_LookupIPExhausted(t *testing.T) {
 	client := newDNSTestClient(t) // Default of 2 concurrent lookups.
 	var txids []uint16
-	for i := 0; i < 2; i++ {
-		txid, err := client.LookupIPStart(dns.MustNewName(fmt.Sprintf("h%d.example.com", i)), dns.TypeA)
+	for i := range 2 {
+		txid, err := client.LookupIPStart(dns.MustNewName(fmt.Sprintf("h%d.example.com", i)), dns.TypeA, 4)
 		if err != nil {
 			t.Fatal(err)
 		}
 		txids = append(txids, txid)
 	}
-	if _, err := client.LookupIPStart(dns.MustNewName("h2.example.com"), dns.TypeA); !errors.Is(err, lneto.ErrExhausted) {
+	if _, err := client.LookupIPStart(dns.MustNewName("h2.example.com"), dns.TypeA, 4); !errors.Is(err, lneto.ErrExhausted) {
 		t.Fatalf("got err=%v, want ErrExhausted", err)
 	}
 	if completed, ok := client.LookupIPPop(txids[0]); completed || !ok {
 		t.Fatalf("pop pending: completed=%v ok=%v", completed, ok)
 	}
-	if _, err := client.LookupIPStart(dns.MustNewName("h2.example.com"), dns.TypeA); err != nil {
+	if _, err := client.LookupIPStart(dns.MustNewName("h2.example.com"), dns.TypeA, 4); err != nil {
 		t.Fatal("start after pop:", err)
 	}
 }
@@ -366,8 +369,9 @@ func TestDNS_DoLookupIPFreesLookupOnTimeout(t *testing.T) {
 	client := newDNSTestClient(t)
 	silent := client.StackBlocking(func(uint) time.Duration { return lneto.BackoffFlagNop })
 	// More timed out lookups than concurrent lookups allowed: each must free its slot.
-	for i := 0; i < 3; i++ {
-		_, err := silent.DoLookupIP(dns.MustNewName("timeout.example.com"), time.Millisecond)
+	var dst [4]netip.Addr
+	for i := range 3 {
+		_, err := silent.DoLookupIP(dst[:], dns.MustNewName("timeout.example.com"), time.Millisecond)
 		if err != errDeadlineExceed {
 			t.Fatalf("lookup %d: got err=%v, want %v", i, err, errDeadlineExceed)
 		}
@@ -378,31 +382,41 @@ func TestDNS_DoLookupIPFreesLookupOnTimeout(t *testing.T) {
 		srv.respond()
 		return lneto.BackoffFlagNop
 	})
-	addrs, err := pump.DoLookupIP(dns.MustNewName(host), time.Second)
-	if err != nil || len(addrs) != 1 || addrs[0] != netip.MustParseAddr("192.0.2.9") {
-		t.Fatalf("lookup after timeouts: %v %v", addrs, err)
+	n, err := pump.DoLookupIP(dst[:], dns.MustNewName(host), time.Second)
+	if err != nil || n != 1 || dst[0] != netip.MustParseAddr("192.0.2.9") {
+		t.Fatalf("lookup after timeouts: %v %v", dst[:n], err)
 	}
 }
 
-func TestDNS_DoLookupIPResultOwnedByCaller(t *testing.T) {
+// TestDNS_DoLookupIPCNAMEHeadroom checks a destination sized for the addresses alone still
+// resolves an answer whose CNAME records precede the address in a single query.
+func TestDNS_DoLookupIPCNAMEHeadroom(t *testing.T) {
+	const host = "www.example.com"
 	client := newDNSTestClient(t)
-	srv := &dnsTestServer{t: t, client: client, zone: map[string][]dnsRR{
-		"a.example.com": {rrA("a.example.com", "192.0.2.1")},
-		"b.example.com": {rrA("b.example.com", "192.0.2.2")},
-	}}
+	srv := &dnsTestServer{t: t, client: client, zone: map[string][]dnsRR{host: {
+		rrCNAME(host, "cdn1.example.net"),
+		rrCNAME("cdn1.example.net", "cdn2.example.net"),
+		rrA("cdn2.example.net", "192.0.2.10"),
+	}}}
 	pump := client.StackBlocking(func(uint) time.Duration {
 		srv.respond()
 		return lneto.BackoffFlagNop
 	})
-	first, err := pump.DoLookupIP(dns.MustNewName("a.example.com"), time.Second)
-	if err != nil {
-		t.Fatal(err)
+	var dst [1]netip.Addr
+	n, err := pump.DoLookupIP(dst[:], dns.MustNewName(host), time.Second)
+	if err != nil || n != 1 || dst[0] != netip.MustParseAddr("192.0.2.10") {
+		t.Fatalf("got %v err=%v", dst[:n], err)
 	}
-	if _, err = pump.DoLookupIP(dns.MustNewName("b.example.com"), time.Second); err != nil {
-		t.Fatal(err)
+	if srv.queries != 1 {
+		t.Fatalf("got %d queries, want 1: CNAME records must not crowd out the address", srv.queries)
 	}
-	if len(first) != 1 || first[0] != netip.MustParseAddr("192.0.2.1") {
-		t.Fatalf("first result changed by later lookup: %v", first)
+}
+
+func TestDNS_DoLookupIPEmptyDst(t *testing.T) {
+	client := newDNSTestClient(t)
+	pump := client.StackBlocking(func(uint) time.Duration { return lneto.BackoffFlagNop })
+	if _, err := pump.DoLookupIP(nil, dns.MustNewName("www.example.com"), time.Second); !errors.Is(err, lneto.ErrShortBuffer) {
+		t.Fatalf("got err=%v, want ErrShortBuffer", err)
 	}
 }
 
@@ -423,12 +437,12 @@ func egressDNSTestPort(t *testing.T, client *StackAsync) uint16 {
 
 func TestDNS_LookupIPPort(t *testing.T) {
 	client := newDNSTestClient(t)
-	txidA, err := client.LookupIPStart(dns.MustNewName("a.example.com"), dns.TypeA)
+	txidA, err := client.LookupIPStart(dns.MustNewName("a.example.com"), dns.TypeA, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
 	portA := egressDNSTestPort(t, client)
-	txidB, err := client.LookupIPStart(dns.MustNewName("b.example.com"), dns.TypeA)
+	txidB, err := client.LookupIPStart(dns.MustNewName("b.example.com"), dns.TypeA, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +452,7 @@ func TestDNS_LookupIPPort(t *testing.T) {
 	}
 	client.LookupIPPop(txidA)
 	client.LookupIPPop(txidB)
-	if _, err = client.LookupIPStart(dns.MustNewName("c.example.com"), dns.TypeA); err != nil {
+	if _, err = client.LookupIPStart(dns.MustNewName("c.example.com"), dns.TypeA, 4); err != nil {
 		t.Fatal(err)
 	}
 	if portC := egressDNSTestPort(t, client); portC == portA {
