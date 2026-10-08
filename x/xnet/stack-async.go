@@ -678,7 +678,7 @@ func (s *StackAsync) LookupIPStart(host dns.Name, qtype dns.Type, nans uint16) (
 		return 0, errNoDNSServer
 	} else if !s.dnssv.Is4() {
 		return 0, errDNSv6Transport
-	} else if s.dns.NumQueries() == s.dns.QueryCapacity() {
+	} else if s.dns.NumQueries() == s.dns.CapQueries() {
 		return 0, lneto.ErrExhausted
 	}
 	if s.dns.NumQueries() == 0 {
@@ -700,7 +700,7 @@ func (s *StackAsync) LookupIPStart(host dns.Name, qtype dns.Type, nans uint16) (
 	// 100 bytes covers IPv4 max header (60) + UDP (8) + 32 byte margin.
 	edns0.SetResource(&s.ednsopt, uint16(s.link.MTU())-100, 0, 0, nil)
 	txid = s.newDNSTxid()
-	err = s.dns.StartResolve(txid, dns.ResolveConfig{
+	err = s.dns.ResolveStart(txid, dns.ResolveConfig{
 		Questions: []dns.Question{
 			{
 				Name:  host,
@@ -728,7 +728,7 @@ func (s *StackAsync) LookupIPFollowCNAME(txid uint16) (newTxid uint16, err error
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	newTxid = s.newDNSTxid()
-	err = s.dns.ResolveCanonical(txid, newTxid)
+	err = s.dns.ResolveCanonicalRestart(txid, newTxid)
 	if err != nil {
 		return 0, err
 	}
@@ -778,7 +778,7 @@ var (
 func (s *StackAsync) LookupIPResult(txid uint16, dst []netip.Addr) (n int, done bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	resp, flags, ok := s.dns.Response(txid)
+	resp, flags, ok := s.dns.ResolveResponse(txid)
 	if !ok {
 		if _, active := s.dns.ResolvePeek(txid); !active {
 			return 0, true, errDNSNoLookup
