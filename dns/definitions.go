@@ -7,6 +7,89 @@ import (
 	"github.com/soypat/lneto"
 )
 
+const allowCompression = true
+
+// Types taken from golang.org/x/net/dns/dnsmessage package. See https://pkg.go.dev/golang.org/x/net/dns/dnsmessage.
+
+// Type is a type of DNS request and response.
+type Type uint16
+
+const (
+	// ResourceHeader.Type and Question.Type
+	TypeA     Type = 1  // A
+	TypeNS    Type = 2  // NS
+	TypeCNAME Type = 5  // CNAME
+	TypeSOA   Type = 6  // SOA
+	TypePTR   Type = 12 // PTR
+	TypeMX    Type = 15 // MX
+	TypeTXT   Type = 16 // TXT
+	TypeAAAA  Type = 28 // AAAA
+	TypeSRV   Type = 33 // SRV
+	TypeOPT   Type = 41 // OPT
+
+	TypeHTTPS Type = 65 // HTTPS SSE
+	// Question.Type
+	TypeWKS   Type = 11  // WKS
+	TypeHINFO Type = 13  // HINFO
+	TypeMINFO Type = 14  // MINFO
+	TypeAXFR  Type = 252 // AXFR
+	TypeALL   Type = 255 // ALL
+)
+
+func (tp Type) IsIPAddr() bool { return tp == TypeA || tp == TypeAAAA }
+
+// A Class is a type of network.
+type Class uint16
+
+const (
+	// ResourceHeader.Class and Question.Class
+	ClassINET   Class = 1 // INET
+	ClassCSNET  Class = 2 // CSNET
+	ClassCHAOS  Class = 3 // CHAOS
+	ClassHESIOD Class = 4 // HESIOD
+
+	// Question.Class
+	ClassANY Class = 255 // ANY
+)
+
+// An OpCode is a DNS operation code which specifies the type of query.
+type OpCode uint16
+
+const (
+	OpCodeQuery        OpCode = 0 // Standard query
+	OpCodeInverseQuery OpCode = 1 // Inverse query
+	OpCodeStatus       OpCode = 2 // Server status request
+)
+
+// An RCode is a DNS response status code.
+type RCode uint16
+
+const (
+	// No error condition.
+	RCodeSuccess RCode = 0 // success
+	// Format error - The name server was unable to interpret the query.
+	RCodeFormatError RCode = 1 // format error
+	// Server failure - The name server was unable to process this query due to a	problem with the name server.
+	RCodeServerFailure RCode = 2 // server failure
+	// Name Error - Meaningful only for responses from an authoritative name server, this code signifies that the	domain name referenced in the query does not exist.
+	RCodeNameError RCode = 3 // name error
+	// Not implemented - The name server does not support the requested kind of query.
+	RCodeNotImplemented RCode = 4 // not implemented
+	// Refused - The name server refuses to perform the specified operation for policy reasons. For example, a name server may not wish to provide the information to the particular requester, or a name server may not wish to perform a particular operation (e.g., zone transfer) for particular data.
+	RCodeRefused RCode = 5 // refused
+)
+
+// StateClientQuery is the lifecycle state of a single DNS query.
+type StateClientQuery uint8
+
+const (
+	CQueryIdle        StateClientQuery = iota // no active query (zero value)
+	CQueryPending                             // query built, not yet transmitted
+	CQueryOutstanding                         // transmitted; awaiting response (RFC 7766 §9.3)
+	CQueryDone                                // response received and decoded
+	CQueryAborted                             // query abandoned (connection error or caller abort)
+)
+
 //go:generate stringer -type=Type,Class,RCode,OpCode -linecomment -output stringers.go .
 
 // common errors. Taken from golang.org/x/net/dns/dnsmessage module.
@@ -167,89 +250,6 @@ func (flags HeaderFlags) appendF(buf []byte) []byte {
 	buf = append(buf, flags.ResponseCode().String()...)
 	return buf
 }
-
-const allowCompression = true
-
-// Types taken from golang.org/x/net/dns/dnsmessage package. See https://pkg.go.dev/golang.org/x/net/dns/dnsmessage.
-
-// Type is a type of DNS request and response.
-type Type uint16
-
-const (
-	// ResourceHeader.Type and Question.Type
-	TypeA     Type = 1  // A
-	TypeNS    Type = 2  // NS
-	TypeCNAME Type = 5  // CNAME
-	TypeSOA   Type = 6  // SOA
-	TypePTR   Type = 12 // PTR
-	TypeMX    Type = 15 // MX
-	TypeTXT   Type = 16 // TXT
-	TypeAAAA  Type = 28 // AAAA
-	TypeSRV   Type = 33 // SRV
-	TypeOPT   Type = 41 // OPT
-
-	TypeHTTPS Type = 65 // HTTPS SSE
-	// Question.Type
-	TypeWKS   Type = 11  // WKS
-	TypeHINFO Type = 13  // HINFO
-	TypeMINFO Type = 14  // MINFO
-	TypeAXFR  Type = 252 // AXFR
-	TypeALL   Type = 255 // ALL
-)
-
-func (tp Type) IsIPAddr() bool { return tp == TypeA || tp == TypeAAAA }
-
-// A Class is a type of network.
-type Class uint16
-
-const (
-	// ResourceHeader.Class and Question.Class
-	ClassINET   Class = 1 // INET
-	ClassCSNET  Class = 2 // CSNET
-	ClassCHAOS  Class = 3 // CHAOS
-	ClassHESIOD Class = 4 // HESIOD
-
-	// Question.Class
-	ClassANY Class = 255 // ANY
-)
-
-// An OpCode is a DNS operation code which specifies the type of query.
-type OpCode uint16
-
-const (
-	OpCodeQuery        OpCode = 0 // Standard query
-	OpCodeInverseQuery OpCode = 1 // Inverse query
-	OpCodeStatus       OpCode = 2 // Server status request
-)
-
-// An RCode is a DNS response status code.
-type RCode uint16
-
-const (
-	// No error condition.
-	RCodeSuccess RCode = 0 // success
-	// Format error - The name server was unable to interpret the query.
-	RCodeFormatError RCode = 1 // format error
-	// Server failure - The name server was unable to process this query due to a	problem with the name server.
-	RCodeServerFailure RCode = 2 // server failure
-	// Name Error - Meaningful only for responses from an authoritative name server, this code signifies that the	domain name referenced in the query does not exist.
-	RCodeNameError RCode = 3 // name error
-	// Not implemented - The name server does not support the requested kind of query.
-	RCodeNotImplemented RCode = 4 // not implemented
-	// Refused - The name server refuses to perform the specified operation for policy reasons. For example, a name server may not wish to provide the information to the particular requester, or a name server may not wish to perform a particular operation (e.g., zone transfer) for particular data.
-	RCodeRefused RCode = 5 // refused
-)
-
-// StateClientQuery is the lifecycle state of a single DNS query.
-type StateClientQuery uint8
-
-const (
-	CQueryIdle        StateClientQuery = iota // no active query (zero value)
-	CQueryPending                             // query built, not yet transmitted
-	CQueryOutstanding                         // transmitted; awaiting response (RFC 7766 §9.3)
-	CQueryDone                                // response received and decoded
-	CQueryAborted                             // query abandoned (connection error or caller abort)
-)
 
 func b2u8(b bool) uint8 {
 	if b {
