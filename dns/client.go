@@ -3,7 +3,6 @@ package dns
 import (
 	"errors"
 	"math"
-	"slices"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -118,21 +117,20 @@ func (q *query) reset(txid uint16, cfg ResolveConfig) {
 	if maxAns == 0 {
 		maxAns = nd
 	}
+	q.enableRecursion = cfg.EnableRecursion
+	// Copy sections: the caller may modify its slices while the query is active.
+	internal.SliceCopyFrom(&q.questions, cfg.Questions)
+	internal.SliceCopyFrom(&q.additional, cfg.Additional)
+	q.restart(txid)
+	q.resp.LimitResourceDecoding(nd, maxAns, 0, 0)
+}
+
+// restart makes the query pending as txid, discarding its response.
+func (q *query) restart(txid uint16) {
+	q.resp.Reset()
 	q.txid = txid
 	q.respFlags = 0
 	q.state = CQueryPending
-	q.enableRecursion = cfg.EnableRecursion
-	// Copy sections: the caller may modify its slices while the query is active.
-	sliceReuseLen(&q.questions, len(cfg.Questions))
-	for i := range cfg.Questions {
-		q.questions[i].CopyFrom(cfg.Questions[i])
-	}
-	sliceReuseLen(&q.additional, len(cfg.Additional))
-	for i := range cfg.Additional {
-		q.additional[i].CopyFrom(cfg.Additional[i])
-	}
-	q.resp.Reset()
-	q.resp.LimitResourceDecoding(nd, maxAns, 0, 0)
 }
 
 // ResolvePeek reports whether the query txid has completed. ok is false if no such query is active.
@@ -198,10 +196,7 @@ func (c *Client) ResolveCanonicalRestart(txid, newTxid uint16) error {
 		return err
 	}
 	q.questions[0].Name.CopyFrom(cname) // cname aliases q.resp, never the question.
-	q.resp.Reset()
-	q.txid = newTxid
-	q.respFlags = 0
-	q.state = CQueryPending
+	q.restart(newTxid)
 	return nil
 }
 
@@ -304,12 +299,6 @@ func (c *Client) qidx(txid uint16) int {
 		}
 	}
 	return -1
-}
-
-// sliceReuseLen sets the length of s to n, keeping the buffers held by elements
-// past its length for reuse by CopyFrom. Allocates only if cap(s) < n.
-func sliceReuseLen[T any](s *[]T, n int) {
-	*s = slices.Grow((*s)[:0], n)[:n]
 }
 
 // qidxRemove deletes the query at idx by swapping it past the end, keeping its buffers for reuse.

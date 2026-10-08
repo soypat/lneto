@@ -1,6 +1,8 @@
 package internal
 
-import "unsafe"
+import (
+	"unsafe"
+)
 
 // BytesEqual is heapless replacement of [bytes.Equal] since it allocates in tinygo.
 // https://github.com/tinygo-org/tinygo/issues/4045
@@ -95,6 +97,26 @@ func SliceReuse[T any](buf *[]T, n int) {
 	}
 }
 
+// SliceCopyFrom sets *dst to a deep copy of src using T's CopyFrom method.
+// Buffers held by dst's elements, including those past its length, are reused.
+// Allocates only if cap(*dst) < len(src), then with capacity exactly len(src).
+// func SliceCopyFrom[T any, PT interface {
+// 	*T
+// 	CopyFrom(T)
+// }](dst *[]T, src []T) {
+// 	n := len(src)
+// 	if cap(*dst) < n {
+// 		grown := make([]T, n)
+// 		copy(grown, (*dst)[:cap(*dst)]) // Keep element buffers.
+// 		*dst = grown
+// 	} else {
+// 		*dst = (*dst)[:n]
+// 	}
+// 	for i := range src {
+// 		PT(&(*dst)[i]).CopyFrom(src[i])
+// 	}
+// }
+
 // SliceReclaim extends the slice length by one and returns a pointer to
 // the new last element. The returned element is not zeroed, so callers
 // can reuse any existing allocations it may hold from prior use.
@@ -129,4 +151,18 @@ func SliceDequeueFront[T any](a *[]T) T {
 	n := copy(s, s[1:])
 	*a = s[:n]
 	return v
+}
+
+// SliceCopyFrom reslices dst to src's length, growing buffer if necessary
+// and calls dst[i].CopyFrom(src[i]) on first len(src) elements.
+func SliceCopyFrom[T any, PT interface {
+	*T
+	CopyFrom(T)
+}](dst *[]T, src []T) {
+	SliceReuse(dst, len(src))
+	d := (*dst)[:len(src)]
+	for i := range d {
+		PT(&d[i]).CopyFrom(src[i])
+	}
+	*dst = d
 }
