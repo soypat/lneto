@@ -218,6 +218,7 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 	}
 	if h.scb.IncomingIsKeepalive(segIncoming) {
 		h.info("tcp.Handler:rx-keepalive", slog.Uint64("port", uint64(h.localPort)))
+		h.scb.pending[0] |= FlagACK // RFC 9293 §3.8.4: a keepalive is acknowledged.
 		return nil
 	}
 

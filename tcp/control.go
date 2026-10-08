@@ -599,7 +599,8 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	acksOld := hasAck && !tcb.snd.UNA.LessThan(seg.ACK)
 	acksUnsentData := hasAck && !seg.ACK.LessThanEq(tcb.snd.NXT)
 	ctlOrDataSegment := established && (seg.DATALEN > 0 || flags.HasAny(FlagFIN|FlagRST))
-	zeroWindowOK := tcb.rcv.WND == 0 && seg.DATALEN == 0 && seg.SEQ == tcb.rcv.NXT
+	// RFC 9293 §3.10.7.4: a zero window still accepts valid ACKs and RSTs (MUST-66).
+	zeroWindowOK := tcb.rcv.WND == 0 && seg.SEQ == tcb.rcv.NXT && (seg.DATALEN == 0 || flags.HasAny(FlagRST))
 	// See section 3.4 of RFC 9293 for more on these checks.
 	switch {
 	case seg.WND > maxWindow:
@@ -607,7 +608,9 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	case tcb._state == StateClosed:
 		err = io.ErrClosedPipe
 
-	case checkSEQ && tcb.rcv.WND == 0 && seg.DATALEN > 0 && seg.SEQ == tcb.rcv.NXT:
+	case checkSEQ && tcb.rcv.WND == 0 && seg.DATALEN > 0 && seg.SEQ == tcb.rcv.NXT && !flags.HasAny(FlagRST),
+		// Linux probes a closed window with SEQ=RCV.NXT-1 and no data.
+		checkSEQ && tcb.rcv.WND == 0 && seg.DATALEN == 0 && seg.SEQ == tcb.rcv.NXT-1:
 		err = errZeroWindow
 
 	case checkSEQ && !seg.SEQ.InWindow(tcb.rcv.NXT, tcb.rcv.WND) && !zeroWindowOK:

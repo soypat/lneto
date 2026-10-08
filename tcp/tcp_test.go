@@ -1,7 +1,9 @@
 package tcp_test
 
 import (
+	"errors"
 	"math/rand"
+	"net"
 	"testing"
 
 	"github.com/soypat/lneto"
@@ -792,11 +794,14 @@ func TestClose_PartialACKDoesNotAdvance(t *testing.T) {
 }
 
 // TestExchangeTest_ZeroWindowProbesDoNotAbort verifies that data at RCV.NXT
-// against a zero receive window is refused and acknowledged without counting
-// toward the challenge-ACK abort (RFC 9293 §3.10.7.4, RFC 1122 §4.2.2.17).
+// against a zero receive window, and the empty probe Linux sends at RCV.NXT-1,
+// are refused and acknowledged without counting toward the challenge-ACK abort,
+// and that an RST at RCV.NXT still resets the connection (RFC 9293 §3.10.7.4,
+// MUST-66, RFC 1122 §4.2.2.17).
 func TestExchangeTest_ZeroWindowProbesDoNotAbort(t *testing.T) {
 	const issA, issB, windowB = 100, 300, 1000
 	probe := tcp.Segment{SEQ: issB, ACK: issA, Flags: tcp.FlagACK, WND: windowB, DATALEN: 1}
+	linuxProbe := tcp.Segment{SEQ: issB - 1, ACK: issA, Flags: tcp.FlagACK, WND: windowB} // tcp_xmit_probe_skb.
 	probeRST := probe
 	probeRST.Flags |= tcp.FlagRST
 	ack := tcp.Segment{SEQ: issA, ACK: issB, Flags: tcp.FlagACK}
@@ -805,9 +810,11 @@ func TestExchangeTest_ZeroWindowProbesDoNotAbort(t *testing.T) {
 		steps = append(steps,
 			tcp.SegmentStep{Seg: probe, Action: tcp.StepBSends, AState: tcp.StateEstablished, APending: &ack, WantErr: tcp.ErrZeroWindow},
 			tcp.SegmentStep{Seg: ack, Action: tcp.StepASends, AState: tcp.StateEstablished},
+			tcp.SegmentStep{Seg: linuxProbe, Action: tcp.StepBSends, AState: tcp.StateEstablished, APending: &ack, WantErr: tcp.ErrZeroWindow},
+			tcp.SegmentStep{Seg: ack, Action: tcp.StepASends, AState: tcp.StateEstablished},
 		)
 	}
-	steps = append(steps, tcp.SegmentStep{Seg: probeRST, Action: tcp.StepBSends, AState: tcp.StateEstablished, WantErr: tcp.ErrZeroWindow})
+	steps = append(steps, tcp.SegmentStep{Seg: probeRST, Action: tcp.StepBSends, AState: tcp.StateClosed, WantErr: net.ErrClosed})
 	test := tcp.ExchangeTest{
 		ISSA:       issA,
 		ISSB:       issB,
@@ -949,6 +956,38 @@ func TestSendRetransmitBounds(t *testing.T) {
 			}
 			if tcb.SendNext() != issA+inFlight {
 				t.Fatalf("SND.NXT=%d, want %d", tcb.SendNext(), issA+inFlight)
+			}
+		})
+	}
+}
+
+func TestZeroWindowACKProcessing(t *testing.T) {
+	const issA, issB, windowB, inFlight = 100, 300, 1000, 10
+	ack := tcp.Segment{SEQ: issA + inFlight, ACK: issB, Flags: tcp.FlagACK}
+	for _, tc := range []struct {
+		name    string
+		dataLen tcp.Size
+		wantUNA tcp.Value
+		wantErr error
+		pending *tcp.Segment
+	}{
+		{name: "acceptable-ACK", wantUNA: issA + inFlight},
+		{name: "unacceptable-data-probe", dataLen: 1, wantUNA: issA, wantErr: tcp.ErrZeroWindow, pending: &ack},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var tcb tcp.ControlBlock
+			tcb.HelperInitState(tcp.StateEstablished, issA, issA+inFlight, 0)
+			tcb.HelperInitRcv(issB, issB, windowB)
+			seg := tcp.Segment{SEQ: issB, ACK: issA + inFlight, Flags: tcp.FlagACK, WND: windowB, DATALEN: tc.dataLen}
+			if err := tcb.Recv(seg); !errors.Is(err, tc.wantErr) {
+				t.Fatalf("Recv() = %v, want %v", err, tc.wantErr)
+			}
+			if tcb.SendUNA() != tc.wantUNA || tcb.State() != tcp.StateEstablished || tcb.RecvNext() != issB {
+				t.Fatalf("UNA=%d state=%s RCV.NXT=%d; want %d ESTABLISHED %d", tcb.SendUNA(), tcb.State(), tcb.RecvNext(), tc.wantUNA, issB)
+			}
+			pending, ok := tcb.PendingSegment(0)
+			if ok != (tc.pending != nil) || (tc.pending != nil && pending != *tc.pending) {
+				t.Fatalf("pending=%v present=%v; want %v", pending, ok, tc.pending)
 			}
 		})
 	}
