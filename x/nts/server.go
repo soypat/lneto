@@ -29,7 +29,7 @@ type ServerConfig struct {
 //
 // Server is NOT safe for concurrent use.
 type Server struct {
-	connID   uint64
+	connID   lneto.ConnID
 	cfg      ServerConfig
 	ntpState ntp.Server
 	nonce    [maxNonceLen]byte
@@ -75,7 +75,7 @@ func (s *Server) Reset(cfg ServerConfig) error {
 }
 
 // ConnectionID implements [lneto.StackNode].
-func (s *Server) ConnectionID() *uint64 { return &s.connID }
+func (s *Server) ConnectionID() *lneto.ConnID { return &s.connID }
 
 // Protocol implements [lneto.StackNode].
 func (s *Server) Protocol() uint64 { return uint64(ntp.ServerPort) }

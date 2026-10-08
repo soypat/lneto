@@ -131,7 +131,7 @@ func (conn *Conn) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
 // ConnectionID returns a pointer to the connection ID. The value changes on
 // each [Conn.Configure] or [Conn.Abort] call, signaling to the stack that the
 // previous registration is no longer valid.
-func (conn *Conn) ConnectionID() *uint64 { return &conn.h.connid }
+func (conn *Conn) ConnectionID() *lneto.ConnID { return &conn.h.connid }
 
 // Write enqueues a single datagram to be sent. The entire payload is queued atomically.
 func (conn *Conn) Write(b []byte) (int, error) {
@@ -317,7 +317,7 @@ func (conn *Conn) backoff(consecutiveBackoffs uint) {
 	conn._backoff.Do(consecutiveBackoffs)
 }
 
-func (conn *Conn) lockPipeConnID() (uint64, error) {
+func (conn *Conn) lockPipeConnID() (lneto.ConnID, error) {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	if conn.h.closeCalled && len(conn.h.rxDgrams) == 0 {

@@ -19,7 +19,7 @@ import (
 type Handler struct {
 	// connid is [lneto.StackNode.ConnectionID] value. Changes on clean close tx finish
 	// while handle stays unchanged so users holding a [ConnHandle] can keep reading until [io.EOF].
-	connid uint64
+	connid lneto.ConnID
 	// handle is used primarily by [ConnHandle] to keep track of
 	// instance validity throughout asynchronous user interaction similar to a generational handle.
 	handle uint32
@@ -58,7 +58,7 @@ type Handler struct {
 // reset clears all state except [ControlBlock] state. So [Handler.State] will remain unchanged. See [Handler.Abort] for full reset.
 func (h *Handler) reset(localPort, remotePort uint16, iss Value) {
 	atomic.AddUint32(&h.handle, 1)
-	atomic.AddUint64(&h.connid, 1) // Accessed concurrently by stacks.
+	internal.IncConnID(&h.connid) // Accessed concurrently by stacks.
 	h.localPort = localPort
 	h.remotePort = remotePort
 	h.closing = false
@@ -85,7 +85,7 @@ func (h *Handler) SetLoggers(handler, scb *slog.Logger) {
 
 // ConnectionID returns the stack registration identifier. It changes every time the connection
 // is opened, aborted or done transmitting after a clean close; stacks discard the registration then.
-func (h *Handler) ConnectionID() *uint64 {
+func (h *Handler) ConnectionID() *lneto.ConnID {
 	return &h.connid
 }
 
@@ -249,7 +249,7 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 	}
 	if h.IsTxOver() {
 		// Clean close completed (CLOSED or TIME-WAIT with nothing left to send).
-		atomic.AddUint64(&h.connid, 1)
+		internal.IncConnID(&h.connid)
 	}
 	if h.scb.State() == StateClosed {
 		// TCB aborted, likely because it received an ACK in LastAck state.
@@ -550,7 +550,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 	} else if h.IsTxOver() {
 		// Final ACK of clean close sent. Release stack registration but keep
 		// handle so Read can still drain buffered data and report io.EOF.
-		atomic.AddUint64(&h.connid, 1)
+		internal.IncConnID(&h.connid)
 	}
 	return datalen, nil
 }

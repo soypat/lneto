@@ -12,7 +12,7 @@ import (
 var errOptionNotFit = errors.New("DHCPv4: options dont fit")
 
 type Server struct {
-	connID       uint64
+	connID       lneto.ConnID
 	nextAddr     [4]byte
 	subnet       ipv4.Prefix
 	hosts        map[[36]byte]serverEntry
@@ -97,9 +97,9 @@ func (sv *Server) Configure(cfg ServerConfig) error {
 	return nil
 }
 
-func (sv *Server) ConnectionID() *uint64 { return &sv.connID }
-func (sv *Server) Protocol() uint64      { return uint64(lneto.IPProtoUDP) }
-func (sv *Server) LocalPort() uint16     { return sv.port }
+func (sv *Server) ConnectionID() *lneto.ConnID { return &sv.connID }
+func (sv *Server) Protocol() uint64            { return uint64(lneto.IPProtoUDP) }
+func (sv *Server) LocalPort() uint16           { return sv.port }
 
 func (sv *Server) Demux(carrierData []byte, frameOffset int) error {
 	isIPLayer := frameOffset >= 28
