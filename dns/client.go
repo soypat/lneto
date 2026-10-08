@@ -102,17 +102,28 @@ func (c *Client) ResolveStart(txid uint16, cfg ResolveConfig) error {
 	} else if len(c.queries) == cap(c.queries) {
 		return lneto.ErrExhausted
 	}
-	maxAns := cfg.MaxResponseAnswers
-	if maxAns == 0 {
-		maxAns = uint16(nd)
+	validateSections(&c.vld, cfg.Questions, nil, nil, cfg.Additional)
+	if err := c.vld.ErrPop(); err != nil {
+		return err
 	}
 	q := internal.SliceReclaim(&c.queries)
+	q.reset(txid, cfg)
+	return nil
+}
+
+// reset sets the query up as a pending query txid with cfg's sections. cfg must be validated.
+func (q *query) reset(txid uint16, cfg ResolveConfig) {
+	nd := uint16(len(cfg.Questions))
+	maxAns := cfg.MaxResponseAnswers
+	if maxAns == 0 {
+		maxAns = nd
+	}
 	q.txid = txid
 	q.respFlags = 0
 	q.state = CQueryPending
 	q.enableRecursion = cfg.EnableRecursion
 	// Copy sections: the caller may modify its slices while the query is active.
-	sliceReuseLen(&q.questions, nd)
+	sliceReuseLen(&q.questions, len(cfg.Questions))
 	for i := range cfg.Questions {
 		q.questions[i].CopyFrom(cfg.Questions[i])
 	}
@@ -121,13 +132,7 @@ func (c *Client) ResolveStart(txid uint16, cfg ResolveConfig) error {
 		q.additional[i].CopyFrom(cfg.Additional[i])
 	}
 	q.resp.Reset()
-	q.resp.LimitResourceDecoding(uint16(nd), maxAns, 0, 0)
-	validateSections(&c.vld, q.questions, nil, nil, q.additional)
-	if err := c.vld.ErrPop(); err != nil {
-		c.qidxRemove(len(c.queries) - 1)
-		return err
-	}
-	return nil
+	q.resp.LimitResourceDecoding(nd, maxAns, 0, 0)
 }
 
 // ResolvePeek reports whether the query txid has completed. ok is false if no such query is active.
