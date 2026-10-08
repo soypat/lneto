@@ -1,24 +1,46 @@
 package dns
 
 import (
-	"log/slog"
+	"errors"
 	"math"
-	"net"
-	"net/netip"
+	"slices"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
 )
 
+var _ lneto.StackNode = (*Client)(nil) // Compile-time guarantee of interface implementation.
+
+var errNoCNAME = errors.New("no CNAME in DNS response")
+
+// Client resolves DNS queries over UDP. Several queries may be in flight at once,
+// each identified by its transaction ID (txid) as the key to [Client.ResolvePeek],
+// [Client.ResolvePop] and [Client.Response]. All queries share the client's local port.
 type Client struct {
-	connID          uint64
-	msg             Message
-	vld             lneto.Validator
+	connID uint64
+	// queries holds active queries. Its capacity is fixed by [ClientConfig.MaxQueries];
+	// elements past its length keep their Message buffers for reuse.
+	queries []query
+	vld     lneto.Validator
+	lport   uint16
+}
+
+// query is one DNS query keyed by its txid. It keeps the sections it sends
+// apart from its response so it can be sent again, see [Client.ResolveCanonical].
+type query struct {
+	questions       []Question
+	additional      []Resource
+	resp            Message
 	txid            uint16
-	lport           uint16
 	respFlags       HeaderFlags
 	state           StateClientQuery
 	enableRecursion bool
+}
+
+type ClientConfig struct {
+	LocalPort uint16
+	// MaxQueries is the maximum number of queries that may be active at once.
+	MaxQueries int
 }
 
 type ResolveConfig struct {
@@ -32,55 +54,181 @@ type ResolveConfig struct {
 	MaxResponseAnswers uint16
 }
 
-func (sudp *Client) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
-
-func (sudp *Client) LocalPort() uint16 { return sudp.lport }
-
-func (sudp *Client) ConnectionID() *uint64 { return &sudp.connID }
-
-func (c *Client) StartResolve(localPort, txid uint16, cfg ResolveConfig) error {
-	nd := len(cfg.Questions)
-	if nd > math.MaxUint16 || nd == 0 {
+// Configure discards all queries and configures the client. It invalidates the
+// client's previous registration on a stack, see [Client.ConnectionID].
+func (c *Client) Configure(cfg ClientConfig) error {
+	if cfg.MaxQueries <= 0 || cfg.MaxQueries > math.MaxUint16 {
 		return lneto.ErrInvalidConfig
+	}
+	c.connID++
+	c.lport = cfg.LocalPort
+	internal.SliceReuse(&c.queries, cfg.MaxQueries)
+	return nil
+}
+
+func (c *Client) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
+
+func (c *Client) LocalPort() uint16 { return c.lport }
+
+func (c *Client) ConnectionID() *uint64 { return &c.connID }
+
+// SetLocalPort changes the port queries are sent from. It invalidates the client's
+// previous registration on a stack so it must be registered again.
+// Returns [lneto.ErrBadState] while any query is active.
+func (c *Client) SetLocalPort(port uint16) error {
+	if len(c.queries) > 0 {
+		return lneto.ErrBadState
+	}
+	c.connID++
+	c.lport = port
+	return nil
+}
+
+// NumQueries returns the number of active queries, sent or not, completed or not.
+func (c *Client) NumQueries() int { return len(c.queries) }
+
+// QueryCapacity returns the maximum number of queries that may be active at once.
+func (c *Client) QueryCapacity() int { return cap(c.queries) }
+
+// StartResolve starts a query identified by txid, which is sent on the next call to [Client.Encapsulate].
+// Returns [lneto.ErrExhausted] if [ClientConfig.MaxQueries] are active and
+// [lneto.ErrAlreadyRegistered] if a query with the same txid is active.
+func (c *Client) StartResolve(txid uint16, cfg ResolveConfig) error {
+	nd := len(cfg.Questions)
+	if nd > math.MaxUint16 || nd == 0 || txid == 0 {
+		return lneto.ErrInvalidConfig
+	} else if c.qidx(txid) >= 0 {
+		return lneto.ErrAlreadyRegistered
+	} else if len(c.queries) == cap(c.queries) {
+		return lneto.ErrExhausted
 	}
 	maxAns := cfg.MaxResponseAnswers
 	if maxAns == 0 {
 		maxAns = uint16(nd)
 	}
-	c.reset(localPort, txid, CQueryPending, cfg.EnableRecursion)
-	c.msg.LimitResourceDecoding(uint16(nd), maxAns, 0, 0)
-	c.msg.AddQuestions(cfg.Questions)
-	c.msg.AddAdditionals(cfg.Additional)
-	c.msg.Validate(&c.vld)
+	q := internal.SliceReclaim(&c.queries)
+	q.txid = txid
+	q.respFlags = 0
+	q.state = CQueryPending
+	q.enableRecursion = cfg.EnableRecursion
+	// Copy sections: the caller may modify its slices while the query is active.
+	sliceReuseLen(&q.questions, nd)
+	for i := range cfg.Questions {
+		q.questions[i].CopyFrom(cfg.Questions[i])
+	}
+	sliceReuseLen(&q.additional, len(cfg.Additional))
+	for i := range cfg.Additional {
+		q.additional[i].CopyFrom(cfg.Additional[i])
+	}
+	q.resp.Reset()
+	q.resp.LimitResourceDecoding(uint16(nd), maxAns, 0, 0)
+	validateSections(&c.vld, q.questions, nil, nil, q.additional)
 	if err := c.vld.ErrPop(); err != nil {
-		c.Abort()
+		c.qidxRemove(len(c.queries) - 1)
 		return err
 	}
 	return nil
 }
 
+// ResolvePeek reports whether the query txid has completed. ok is false if no such query is active.
+func (c *Client) ResolvePeek(txid uint16) (completed, ok bool) {
+	idx := c.qidx(txid)
+	if idx < 0 {
+		return false, false
+	}
+	return c.queries[idx].state == CQueryDone, true
+}
+
+// ResolvePop removes the query txid, freeing its slot for another query, and reports whether
+// it had completed. ok is false if no such query is active. The response returned by
+// [Client.Response] for txid must not be used afterwards.
+func (c *Client) ResolvePop(txid uint16) (completed, ok bool) {
+	idx := c.qidx(txid)
+	if idx < 0 {
+		return false, false
+	}
+	completed = c.queries[idx].state == CQueryDone
+	c.qidxRemove(idx)
+	return completed, true
+}
+
+// Response returns the decoded response to the completed query txid and its header flags,
+// where [HeaderFlags.ResponseCode] reports whether the query succeeded. ok is false if the
+// query is not active or has not completed. resp is owned by the client and valid until
+// txid is removed with [Client.ResolvePop], [Client.Reset] or [Client.Abort].
+func (c *Client) Response(txid uint16) (resp *Message, flags HeaderFlags, ok bool) {
+	idx := c.qidx(txid)
+	if idx < 0 || c.queries[idx].state != CQueryDone {
+		return nil, 0, false
+	}
+	q := &c.queries[idx]
+	return &q.resp, q.respFlags, true
+}
+
+// ResolveCanonical restarts the completed query txid as newTxid, querying the canonical name
+// its response holds for its question. Use it after a response with CNAME records and no
+// address to follow the CNAME chain. The query keeps its slot and memory, its question type
+// and additional records; the response to txid must not be used afterwards.
+// Returns [lneto.ErrAlreadyRegistered] if newTxid is in use and [lneto.ErrUnsupported] for
+// queries with more than one question. A failed call leaves the query unchanged.
+func (c *Client) ResolveCanonical(txid, newTxid uint16) error {
+	idx := c.qidx(txid)
+	if idx < 0 || c.queries[idx].state != CQueryDone {
+		return errNoResponse
+	} else if newTxid == 0 {
+		return lneto.ErrInvalidConfig
+	} else if c.qidx(newTxid) >= 0 {
+		return lneto.ErrAlreadyRegistered
+	}
+	q := &c.queries[idx]
+	if rcode := q.respFlags.ResponseCode(); rcode != 0 {
+		return rcode
+	} else if len(q.questions) != 1 {
+		return lneto.ErrUnsupported
+	}
+	cname := q.resp.CanonicalName(q.questions[0].Name)
+	if cname.Len() == 0 {
+		return errNoCNAME
+	} else if err := cname.validate(); err != nil {
+		return err
+	}
+	q.questions[0].Name.CopyFrom(cname) // cname aliases q.resp, never the question.
+	q.resp.Reset()
+	q.txid = newTxid
+	q.respFlags = 0
+	q.state = CQueryPending
+	return nil
+}
+
+// Reset removes all queries.
+func (c *Client) Reset() {
+	c.queries = c.queries[:0]
+}
+
+// Abort removes all queries and invalidates the client's registration on a stack.
+func (c *Client) Abort() {
+	c.Reset()
+	c.connID++
+}
+
+// Encapsulate writes the first query not yet sent. Returns 0 and nil error if there is none.
 func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
-	if c.isClosed() {
-		return 0, net.ErrClosed
-	} else if c.state != CQueryPending {
+	idx := c.qidxPending()
+	if idx < 0 {
 		return 0, nil
 	}
-
-	msg := &c.msg
+	q := &c.queries[idx]
 	frame := carrierData[offsetToFrame:]
-	msglen := msg.Len()
+	msglen := uint16(SizeHeader + lenSections(q.questions, nil, nil, q.additional))
 	if msglen > uint16(len(frame)) {
 		return 0, errCalcLen
 	}
-
-	data, err := msg.AppendTo(frame[:0], c.txid, NewClientHeaderFlags(OpCodeQuery, c.enableRecursion))
+	flags := NewClientHeaderFlags(OpCodeQuery, q.enableRecursion)
+	n, err := PutMessage(frame, q.txid, flags, q.questions, nil, nil, q.additional)
 	if err != nil {
 		return 0, err
-	} else if len(data) > int(msglen) {
-		internal.LogAttrs(nil, slog.LevelError, "dns:unexpected-write", slog.Int("got", len(data)), slog.Int("want", int(msglen)))
-		return 0, lneto.ErrBug
 	}
-	c.state = CQueryOutstanding
+	q.state = CQueryOutstanding
 	// Unset don't frag since DNS requests go through LOTS of nodes.
 	// if frameOffset >= 28 {
 	// 	version := carrierData[0] >> 4
@@ -88,86 +236,80 @@ func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) 
 	// 		carrierData[6], carrierData[7] = 0, 0 // unset IP Flags.
 	// 	}
 	// }
-	return len(data), nil
+	return n, nil
 }
 
+// Demux decodes a response to a sent query, matched by txid, opcode and question section.
+// Frames that answer no query are ignored.
 func (c *Client) Demux(carrierData []byte, frameOffset int) error {
-	if c.isClosed() {
-		return net.ErrClosed
-	} else if c.state != CQueryOutstanding {
-		return nil
-	}
 	frame := carrierData[frameOffset:]
 	f, err := NewFrame(frame)
 	if err != nil {
 		return err
 	}
-	flags := f.Flags()
-	if f.TxID() != c.txid || !flags.IsResponse() {
+	idx := c.qidx(f.TxID())
+	if idx < 0 || c.queries[idx].state != CQueryOutstanding || !c.queries[idx].isResponse(f) {
 		return nil // Not meant for our client.
 	}
-	c.respFlags = flags
-	c.state = CQueryDone
-	msg := &c.msg
-	_, incompleteButOK, err := msg.Decode(frame)
+	q := &c.queries[idx]
+	q.respFlags = f.Flags()
+	q.state = CQueryDone
+	_, incompleteButOK, err := q.resp.Decode(frame)
 	if err != nil && !incompleteButOK {
 		return err
 	}
 	return nil
 }
 
-func (c *Client) isClosed() bool {
-	return c.state == CQueryIdle || c.state == CQueryAborted
+// isResponse reports whether frame responds to the query: response flag set,
+// same opcode and same question section. txid is checked by the caller.
+func (q *query) isResponse(f Frame) bool {
+	flags := f.Flags()
+	if !flags.IsResponse() || flags.OpCode() != OpCodeQuery || int(f.QDCount()) != len(q.questions) {
+		return false
+	}
+	off := uint16(SizeHeader)
+	for i := range q.questions {
+		var ok bool
+		off, ok = q.questions[i].equalWireFold(f.buf, off)
+		if !ok {
+			return false
+		}
+	}
+	return true
 }
 
-func (c *Client) ResponseCopyTo(dst *Message) (done bool, err error) {
-	if !c.respFlags.IsResponse() {
-		return false, nil
+// qidxPending gets query index of next pending query.
+func (c *Client) qidxPending() int {
+	idx := -1
+	for i := range c.queries {
+		if c.queries[i].state == CQueryPending {
+			idx = i
+			break
+		}
 	}
-	dst.CopyFrom(c.msg)
-	rcode := c.respFlags.ResponseCode()
-	if rcode != 0 {
-		return true, rcode
-	}
-	return true, nil
+	return idx
 }
 
-func (c *Client) ResponseAnswerLookup(dst []netip.Addr, host Name) (uint16, error) {
-	if !c.respFlags.IsResponse() {
-		return 0, nil
+// qidx returns query index matching transaction ID.
+func (c *Client) qidx(txid uint16) int {
+	for i := range c.queries {
+		if c.queries[i].txid == txid {
+			return i
+		}
 	}
-	rcode := c.respFlags.ResponseCode()
-	if rcode != 0 {
-		return 0, rcode
-	}
-	return c.msg.WriteAnswers(dst, host)
+	return -1
 }
 
-// ResponseCanonicalName returns the end of the CNAME chain rooted at host.
-// Returns zero [Name] if there is no valid response or no CNAME for host.
-func (c *Client) ResponseCanonicalName(host Name) Name {
-	if !c.respFlags.IsResponse() || c.respFlags.ResponseCode() != 0 {
-		return Name{}
-	}
-	return c.msg.CanonicalName(host)
+// sliceReuseLen sets the length of s to n, keeping the buffers held by elements
+// past its length for reuse by CopyFrom. Allocates only if cap(s) < n.
+func sliceReuseLen[T any](s *[]T, n int) {
+	*s = slices.Grow((*s)[:0], n)[:n]
 }
 
-func (c *Client) ResponseFlags() (HeaderFlags, bool) {
-	return c.respFlags, c.respFlags.IsResponse()
-}
-
-func (c *Client) Abort() {
-	c.reset(0, 0, CQueryAborted, false)
-}
-
-func (c *Client) reset(lport, txid uint16, state StateClientQuery, enableRecursion bool) {
-	*c = Client{
-		connID:          c.connID + 1,
-		lport:           lport,
-		txid:            txid,
-		msg:             c.msg,
-		state:           state,
-		enableRecursion: enableRecursion,
-	}
-	c.msg.Reset()
+// qidxRemove deletes the query at idx by swapping it past the end, keeping its buffers for reuse.
+func (c *Client) qidxRemove(idx int) {
+	last := len(c.queries) - 1
+	c.queries[idx], c.queries[last] = c.queries[last], c.queries[idx]
+	c.queries = c.queries[:last]
 }

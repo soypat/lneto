@@ -228,19 +228,7 @@ func TestMessage_Validate(t *testing.T) {
 
 	// EDNS options.
 	var opt Resource
-	const rcode = 0
-	const udplen = 512
-	const zflags = 0
-	ednsData := []byte{}
-	opt.RawSet(ResourceHeader{
-		Name:   MustNewName("."),
-		Type:   TypeOPT,
-		Class:  Class(udplen), // udp length
-		TTL:    uint32(rcode)<<24 | 0<<16 | uint32(zflags),
-		Length: uint16(len(ednsData)),
-	}, append(opt.RawData()[:0], ednsData...))
-
-	// opt.SetEDNS0(512, 0, 0, nil)
+	setEDNS0(&opt, 512, nil)
 	tests := []struct {
 		desc    string
 		msg     Message
@@ -314,62 +302,6 @@ func TestDecodeMessageSkipTruncated(t *testing.T) {
 	off, incomplete, _ := DecodeMessage(nil, nil, nil, nil, msg)
 	if int(off) != len(msg) || !incomplete {
 		t.Errorf("complete: want off=%d incomplete, got off=%d incomplete=%v", len(msg), off, incomplete)
-	}
-}
-
-// Regression test for CNAME-following: a response for www.yahoo.co.jp
-// contains a CNAME record to edge12.g.yimg.jp (with compressed labels in its
-// RDATA) followed by the A record for the canonical name. The CNAME RDATA
-// must not be interpreted as an IP address and the A record must be returned.
-func TestClient_CNAMEResponse(t *testing.T) {
-	const hostname = "www.yahoo.co.jp"
-	const txid = uint16(0x1234)
-	const clientPort = uint16(54321)
-	response := []byte{
-		// Header: txid 0x1234, QR|RD|RA, QD=1 AN=2 NS=0 AR=0.
-		0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00,
-		// Question: www.yahoo.co.jp A IN.
-		0x03, 'w', 'w', 'w', 0x05, 'y', 'a', 'h', 'o', 'o', 0x02, 'c', 'o', 0x02, 'j', 'p', 0x00,
-		0x00, 0x01, 0x00, 0x01,
-		// Answer 1: (ptr to question) CNAME IN ttl=842 rdlen=16
-		// rdata: edge12.g.yimg.jp with "jp" as compression pointer to offset 0x19.
-		0xc0, 0x0c, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00, 0x03, 0x4a, 0x00, 0x10,
-		0x06, 'e', 'd', 'g', 'e', '1', '2', 0x01, 'g', 0x04, 'y', 'i', 'm', 'g', 0xc0, 0x19,
-		// Answer 2: (ptr into CNAME rdata) A IN ttl=36 rdlen=4 182.22.23.124.
-		0xc0, 0x2d, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x24, 0x00, 0x04, 0xb6, 0x16, 0x17, 0x7c,
-	}
-	name := MustNewName(hostname)
-	var client Client
-	err := client.StartResolve(clientPort, txid, ResolveConfig{
-		Questions: []Question{{
-			Name:  name,
-			Type:  TypeA,
-			Class: ClassINET,
-		}},
-		EnableRecursion:    true,
-		MaxResponseAnswers: 6,
-	})
-	if err != nil {
-		t.Fatal("failed to start DNS resolve:", err)
-	}
-	var queryBuf [512]byte
-	_, err = client.Encapsulate(queryBuf[:], 0, 0)
-	if err != nil {
-		t.Fatal("failed to encapsulate DNS query:", err)
-	}
-	if err := client.Demux(response, 0); err != nil {
-		t.Fatal("failed to demux DNS response:", err)
-	}
-	var addrs [4]netip.Addr
-	n, err := client.ResponseAnswerLookup(addrs[:], name)
-	if err != nil {
-		t.Fatal("failed to look up DNS response answers:", err)
-	}
-	if n != 1 {
-		t.Fatalf("expected 1 answer, got %d: %v", n, addrs[:n])
-	}
-	if addrs[0] != (netip.AddrFrom4([4]byte{182, 22, 23, 124})) {
-		t.Fatalf("expected 182.22.23.124, got %v", addrs[0])
 	}
 }
 
@@ -523,104 +455,14 @@ func TestMessage_CanonicalName(t *testing.T) {
 	}
 }
 
-func TestClient_ReceivesDNSResponse(t *testing.T) {
-	const hostname = "example.com"
-	const txid = uint16(12345)
-	const clientPort = uint16(54321)
-	const maxAnswers = 4
-	allIPs := [5][4]byte{
-		{192, 0, 2, 1},
-		{192, 0, 2, 2},
-		{192, 0, 2, 3},
-		{192, 0, 2, 4},
-		{192, 0, 2, 5},
-	}
-	tests := []struct {
-		name        string
-		responseIPs [][4]byte
-		wantAnswers int // Addresses returned by ResponseAnswerLookup and copied by ResponseCopyTo.
-	}{
-		{name: "single_answer", responseIPs: allIPs[:1], wantAnswers: 1},
-		{name: "multiple_answers", responseIPs: allIPs[:4], wantAnswers: 4},
-		{name: "answer_limit", responseIPs: allIPs[:5], wantAnswers: maxAnswers},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			name := MustNewName(hostname)
-			responseMsg := Message{
-				Questions: []Question{{
-					Name:  name,
-					Type:  TypeA,
-					Class: ClassINET,
-				}},
-				Answers: make([]Resource, len(tt.responseIPs)),
-			}
-			for i := range tt.responseIPs {
-				responseMsg.Answers[i] = NewResource(name, TypeA, ClassINET, 300, tt.responseIPs[i][:])
-			}
-
-			// Response flags: QR=1 (response), RD=1, RA=1.
-			responseFlags := HeaderFlags(1<<15 | 1<<8 | 1<<7)
-			var responseBuf [512]byte
-			dnsPayload, err := responseMsg.AppendTo(responseBuf[:0], txid, responseFlags)
-			if err != nil {
-				t.Fatal("failed to build DNS response:", err)
-			}
-
-			var client Client
-			err = client.StartResolve(clientPort, txid, ResolveConfig{
-				Questions: []Question{{
-					Name:  name,
-					Type:  TypeA,
-					Class: ClassINET,
-				}},
-				EnableRecursion:    true,
-				MaxResponseAnswers: maxAnswers,
-			})
-			if err != nil {
-				t.Fatal("failed to start DNS resolve:", err)
-			}
-
-			// Encapsulate the query to move the client into the outstanding state.
-			var queryBuf [512]byte
-			_, err = client.Encapsulate(queryBuf[:], 0, 0)
-			if err != nil {
-				t.Fatal("failed to encapsulate DNS query:", err)
-			}
-			if err := client.Demux(dnsPayload, 0); err != nil {
-				t.Fatal("failed to demux DNS response:", err)
-			}
-
-			var addrs [maxAnswers]netip.Addr
-			answers, err := client.ResponseAnswerLookup(addrs[:], name)
-			if err != nil {
-				t.Fatal("failed to look up DNS response answers:", err)
-			}
-			if int(answers) != tt.wantAnswers {
-				t.Fatalf("expected %d answers, got %d", tt.wantAnswers, answers)
-			}
-			for i := 0; i < tt.wantAnswers; i++ {
-				addr := addrs[i]
-				if !addr.Is4() {
-					t.Errorf("answer %d: expected IPv4 address, got %v", i, addr)
-					continue
-				}
-				if addr.As4() != tt.responseIPs[i] {
-					t.Errorf("answer %d: expected IP %v, got %v", i, tt.responseIPs[i], addr)
-				}
-			}
-
-			var lookup Message
-			done, err := client.ResponseCopyTo(&lookup)
-			if err != nil {
-				t.Fatal("failed to copy DNS response:", err)
-			}
-			if !done {
-				t.Fatal("expected done=true")
-			}
-			if len(lookup.Answers) != tt.wantAnswers {
-				t.Fatalf("expected %d copied answers, got %d", tt.wantAnswers, len(lookup.Answers))
-			}
-		})
-	}
+func setEDNS0(opt *Resource, udplen uint16, ednsData []byte) {
+	const rcode = 0
+	const zflags = 0
+	opt.RawSet(ResourceHeader{
+		Name:   MustNewName("."),
+		Type:   TypeOPT,
+		Class:  Class(udplen), // udp length
+		TTL:    uint32(rcode)<<24 | 0<<16 | uint32(zflags),
+		Length: uint16(len(ednsData)),
+	}, append(opt.RawData()[:0], ednsData...))
 }

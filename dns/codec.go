@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"math"
 	"strconv"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/internal"
 )
 
 // Global parameters.
@@ -91,6 +93,47 @@ func NextLabel(data []byte) (start_RelOrAbs, endRel uint16, isAbsPointer bool, e
 		err = errReserved
 	}
 	return start_RelOrAbs, endRel, isAbsPointer, err
+}
+
+// PutMessage writes a DNS message with the given header fields and sections to dst
+// in wire format and returns length of written data. Nil sections are encoded as empty. It is the counterpart of [DecodeMessage].
+// If the message is too long for the buffer [lneto.ErrShortBuffer] is returned.
+func PutMessage(dst []byte, txid uint16, flags HeaderFlags, questions []Question, answers, authorities, additionals []Resource) (n int, err error) {
+	toWrite := SizeHeader + lenSections(questions, answers, authorities, additionals)
+	if len(dst) < toWrite {
+		return 0, lneto.ErrShortBuffer
+	}
+	dst = dst[:0]
+	// Set the buffer directly with header fields.
+	f, err := NewFrame(dst[len(dst) : len(dst)+SizeHeader])
+	if err != nil {
+		return 0, err
+	}
+	f.SetTxID(txid)
+	f.SetFlags(flags)
+	f.SetQDCount(uint16(len(questions)))
+	f.SetANCount(uint16(len(answers)))
+	f.SetNSCount(uint16(len(authorities)))
+	f.SetARCount(uint16(len(additionals)))
+	dst = dst[:len(dst)+SizeHeader]
+	for i := range questions {
+		dst, err = questions[i].appendTo(dst)
+		if err != nil {
+			return len(dst), err
+		}
+	}
+	for _, rs := range [...][]Resource{answers, authorities, additionals} {
+		for i := range rs {
+			dst, err = rs[i].appendTo(dst)
+			if err != nil {
+				return len(dst), err
+			}
+		}
+	}
+	if len(dst) != toWrite {
+		panic("dns: toWrite!=n")
+	}
+	return len(dst), nil
 }
 
 // DecodeMessage decodes the DNS message into question, answer, authority and additional resources.
@@ -212,6 +255,37 @@ func skipResource(msg []byte, off uint16) (_ uint16, err error) {
 		return off, lneto.ErrTruncatedFrame
 	}
 	return uint16(end), nil
+}
+
+// validateSections checks the sections can be encoded by [EncodeMessage] into a well-formed DNS message.
+func validateSections(vld *lneto.Validator, questions []Question, answers, authorities, additionals []Resource) {
+	if SizeHeader+lenSections(questions, answers, authorities, additionals) > math.MaxUint16 {
+		vld.AddError(errResTooLong)
+		return
+	}
+	for i := range questions {
+		if err := questions[i].Name.validate(); err != nil {
+			vld.AddError(err)
+		}
+	}
+	validateResources(vld, answers, false)
+	validateResources(vld, authorities, false)
+	validateResources(vld, additionals, true)
+}
+
+// lenSections returns the wire length of all sections. It is an int so
+// [validateSections] can detect messages that overflow the uint16 [Message.Len].
+// Each record is summed as an int too: [Resource.Len] wraps for RDLENGTH near 65535.
+func lenSections(questions []Question, answers, authorities, additionals []Resource) (l int) {
+	for i := range questions {
+		l += len(questions[i].Name.data) + 4
+	}
+	for _, rs := range [...][]Resource{answers, authorities, additionals} {
+		for i := range rs {
+			l += rs[i].wireLen()
+		}
+	}
+	return l
 }
 
 func caporzero[T any](v *[]T) int {
@@ -514,6 +588,20 @@ func (dst *Question) CopyFrom(q Question) {
 func append16(b []byte, v uint16) []byte {
 	binary.BigEndian.PutUint16(b[len(b):len(b)+2], v)
 	return b[:len(b)+2]
+}
+
+// equalWireFold reports whether the uncompressed question at msg[off:] equals q and returns
+// the offset past it. Names compare under ASCII case folding since servers may echo the
+// question with randomized case (DNS 0x20). Label lengths are never letters so fold safely.
+func (q *Question) equalWireFold(msg []byte, off uint16) (next uint16, ok bool) {
+	nameEnd := int(off) + len(q.Name.data)
+	end := nameEnd + 4
+	if end > len(msg) || !internal.BytesEqualFoldASCII(q.Name.data, msg[off:nameEnd]) ||
+		binary.BigEndian.Uint16(msg[nameEnd:]) != uint16(q.Type) ||
+		binary.BigEndian.Uint16(msg[nameEnd+2:]) != uint16(q.Class) {
+		return off, false
+	}
+	return uint16(end), true
 }
 
 func append32(b []byte, v uint32) []byte {
