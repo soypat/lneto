@@ -593,6 +593,65 @@ func TestTxBufferFreedOnACK(t *testing.T) {
 	}
 }
 
+// TestHandler_FINWithFullPacketQueue verifies the FIN goes out when the packet
+// queue is full of unacknowledged data. It carries no data and needs no slot;
+// held back, it also blocks the retransmission that would free one.
+func TestHandler_FINWithFullPacketQueue(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	const packets = 4
+	client, server := newHandler(t, mtu, packets), newHandler(t, mtu, packets)
+	setupClientServer(t, rand.New(rand.NewSource(3)), client, server)
+	var buf [mtu]byte
+	establish(t, client, server, buf[:])
+	for range packets {
+		if _, err := client.Write([]byte("data")); err != nil {
+			t.Fatal(err)
+		}
+		if n, err := client.Send(buf[:]); err != nil || n == 0 {
+			t.Fatal("send:", n, err)
+		}
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	n, err := client.Send(buf[:])
+	if err != nil || n == 0 {
+		t.Fatalf("Send after Close = %d, %v; want the FIN", n, err)
+	} else if seg := mustSegment(t, buf[:n], 0); !seg.Flags.HasAny(FlagFIN) || client.State() != StateFinWait1 {
+		t.Fatalf("sent %v in %s; want the FIN and FIN-WAIT-1", seg, client.State())
+	}
+}
+
+// TestHandler_WriteAfterCloseRefused verifies Write fails once Close was
+// called, including while the FIN is queued but not yet sent because a
+// challenge ACK owed to the peer went out first.
+func TestHandler_WriteAfterCloseRefused(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	client, server := newHandler(t, mtu, 4), newHandler(t, mtu, 4)
+	setupClientServer(t, rand.New(rand.NewSource(3)), client, server)
+	var buf [mtu]byte
+	establish(t, client, server, buf[:])
+	// A segment far outside the window draws a challenge ACK (RFC 5961 §4).
+	cb := client.ControlBlock()
+	pkt := make([]byte, sizeHeaderTCP)
+	frm, _ := NewFrame(pkt)
+	frm.SetSourcePort(server.LocalPort())
+	frm.SetDestinationPort(client.LocalPort())
+	frm.SetSegment(Segment{SEQ: cb.RecvNext() + 1<<30, ACK: cb.SendNext(), WND: mtu, Flags: FlagACK}, 5)
+	client.Recv(pkt)
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := client.Send(buf[:]); err != nil || n == 0 {
+		t.Fatal("send:", n, err)
+	} else if seg := mustSegment(t, buf[:n], 0); seg.Flags.HasAny(FlagFIN) {
+		t.Fatalf("sent %v; the test needs the challenge ACK first, the FIN held", seg)
+	}
+	if n, err := client.Write([]byte("late")); err == nil || n != 0 {
+		t.Fatalf("Write after Close = %d, %v in %s; want an error", n, err, client.State())
+	}
+}
+
 // TestHandler_KeepaliveACKed verifies a keepalive (SEQ=RCV.NXT-1) is answered
 // with an ACK (RFC 9293 §3.8.4, RFC 1122 §4.2.3.6). Without one the peer counts
 // the keepalive as unanswered and eventually drops the connection.

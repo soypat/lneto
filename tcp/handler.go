@@ -427,6 +427,10 @@ func (h *Handler) Send(b []byte) (int, error) {
 		}
 		if doRtx {
 			rtxAt, rtx = h.bufTx.retransmitBoundary(rtxFrom)
+			if !rtx && rtxFrom == h.scb.snd.NXT-1 {
+				// A FIN sent alone has no queued packet; PendingRetransmit resends it.
+				rtxAt, rtx = rtxFrom, true
+			}
 		}
 		if o, _ := tfrm.OffsetAndFlags(); o > offset && int(o)*4 < len(b) {
 			offset = o
@@ -484,6 +488,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 			// Resends are not new data, so txLimit does not apply.
 			segment, ok = h.scb.PendingRetransmit(rtxAt, maxPayload)
 		}
+		resend := ok
 		if !ok {
 			if txLimit < Size(maxPayload) {
 				// Policy clamped new data.
@@ -506,6 +511,9 @@ func (h *Handler) Send(b []byte) (int, error) {
 			n, err := h.bufTx.MakePacket(b[optHead:optHead+int(segment.DATALEN)], segment.SEQ)
 			if err != nil {
 				return 0, err
+			}
+			if resend && Size(n) < segment.DATALEN {
+				segment.Flags &^= FlagFIN // The FIN follows the data left out.
 			}
 			segment.DATALEN = Size(n)
 			if n > 0 {
@@ -564,7 +572,7 @@ func (h *Handler) NextSegmentSYN() (syn, ack bool) {
 // [Handler.Send] call that can send data to remote peer. Use [Handler.Free] to know the maximum length the argument slice can be before erroring.
 func (h *Handler) Write(b []byte) (int, error) {
 	state := h.State()
-	if h.closing {
+	if h.closing || h.scb.pending[0].HasAny(FlagFIN) { // Close called, FIN not yet sent.
 		return 0, errConnectionClosing
 	} else if !state.TxDataOpen() { // Reject write call if data cannot be sent.
 		return 0, net.ErrClosed
