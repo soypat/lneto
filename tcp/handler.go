@@ -256,7 +256,7 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		// Clean up connection now unless read pending.
 		return net.ErrClosed
 	}
-	if prevState != h.scb.State() {
+	if prevState != h.scb.State() && h.logenabled(slog.LevelInfo) {
 		h.info("tcp.Handler:rx-statechange", slog.Uint64("port", uint64(h.localPort)), slog.String("old", prevState.String()), slog.String("new", h.scb.State().String()), slog.String("rxflags", segIncoming.Flags.String()))
 	}
 	if h.policyEnabled() {
