@@ -305,13 +305,57 @@ func TestDecodeMessageSkipTruncated(t *testing.T) {
 	}
 }
 
+// testResponseFlags are QR=1 (response), RD=1, RA=1.
+const testResponseFlags = HeaderFlags(1<<15 | 1<<8 | 1<<7)
+
+func testA(owner string, ip [4]byte) Resource {
+	return NewResource(MustNewName(owner), TypeA, ClassINET, 300, ip[:])
+}
+
+func testCNAME(t testing.TB, owner, target string) Resource {
+	t.Helper()
+	tname := MustNewName(target)
+	wire, err := tname.AppendTo(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewResource(MustNewName(owner), TypeCNAME, ClassINET, 300, wire)
+}
+
+// testResponse encodes a response to a single question for host with the given answers.
+func testResponse(t testing.TB, txid uint16, flags HeaderFlags, host string, qtype Type, answers []Resource) []byte {
+	t.Helper()
+	msg := Message{
+		Questions: []Question{{Name: MustNewName(host), Type: qtype, Class: ClassINET}},
+		Answers:   answers,
+	}
+	wire, err := msg.AppendTo(nil, txid, flags)
+	if err != nil {
+		t.Fatal("encode response:", err)
+	}
+	return wire
+}
+
+// decodeTestMessage decodes a message of one question, up to 4 answers and up to 1 additional.
+func decodeTestMessage(t testing.TB, wire []byte) *Message {
+	t.Helper()
+	var msg Message
+	msg.LimitResourceDecoding(1, 4, 0, 1)
+	_, incomplete, err := msg.Decode(wire)
+	if incomplete || err != nil {
+		t.Fatalf("decode: incomplete=%v err=%v", incomplete, err)
+	}
+	return &msg
+}
+
 // Table-driven tests for Message.WriteAnswers covering answer reordering
 // and cyclic CNAME aliases.
 func TestMessage_WriteAnswers(t *testing.T) {
 	tests := []struct {
 		name     string
 		host     string
-		response []byte
+		response []byte     // Raw wire response, for cases exercising name compression.
+		answers  []Resource // Encoded into a response for host when response is nil.
 		want     []netip.Addr
 	}{
 		{
@@ -337,19 +381,10 @@ func TestMessage_WriteAnswers(t *testing.T) {
 			want: []netip.Addr{netip.AddrFrom4([4]byte{182, 22, 23, 124})},
 		},
 		{
-			name: "CNAME cycle terminates",
-			host: "a.com",
-			response: []byte{
-				// Header: txid 0xabcd, QR|RD|RA, QD=1 AN=2 NS=0 AR=0.
-				0xab, 0xcd, 0x81, 0x80, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00,
-				// Question: a.com A IN.
-				0x01, 'a', 0x03, 'c', 'o', 'm', 0x00, 0x00, 0x01, 0x00, 0x01,
-				// Answer 1: a.com CNAME b.com.
-				0x01, 'a', 0x03, 'c', 'o', 'm', 0x00, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x07, 0x01, 'b', 0x03, 'c', 'o', 'm', 0x00,
-				// Answer 2: b.com CNAME a.com.
-				0x01, 'b', 0x03, 'c', 'o', 'm', 0x00, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x07, 0x01, 'a', 0x03, 'c', 'o', 'm', 0x00,
-			},
-			want: nil,
+			name:    "CNAME cycle terminates",
+			host:    "a.com",
+			answers: []Resource{testCNAME(t, "a.com", "b.com"), testCNAME(t, "b.com", "a.com")},
+			want:    nil,
 		},
 		{
 			name: "CNAME target case differs from owner name",
@@ -357,27 +392,17 @@ func TestMessage_WriteAnswers(t *testing.T) {
 			// A server picks the case of both the CNAME target and the owner
 			// name of the record it aliases, and may randomize it (DNS 0x20),
 			// so the two must compare under ASCII case folding.
-			response: []byte{
-				// Header: txid 0xabcd, QR|RD|RA, QD=1 AN=2 NS=0 AR=0.
-				0xab, 0xcd, 0x81, 0x80, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00,
-				// Question: a.com A IN.
-				0x01, 'a', 0x03, 'c', 'o', 'm', 0x00, 0x00, 0x01, 0x00, 0x01,
-				// Answer 1: a.com CNAME B.CoM.
-				0x01, 'a', 0x03, 'c', 'o', 'm', 0x00, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x07, 0x01, 'B', 0x03, 'C', 'o', 'M', 0x00,
-				// Answer 2: b.com A IN ttl=10 rdlen=4 1.2.3.4.
-				0x01, 'b', 0x03, 'c', 'o', 'm', 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x04, 0x01, 0x02, 0x03, 0x04,
-			},
-			want: []netip.Addr{netip.AddrFrom4([4]byte{1, 2, 3, 4})},
+			answers: []Resource{testCNAME(t, "a.com", "B.CoM"), testA("b.com", [4]byte{1, 2, 3, 4})},
+			want:    []netip.Addr{netip.AddrFrom4([4]byte{1, 2, 3, 4})},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var msg Message
-			msg.LimitResourceDecoding(1, 4, 0, 0)
-			_, incomplete, err := msg.Decode(tt.response)
-			if incomplete || err != nil {
-				t.Fatal("decode:", incomplete, err)
+			wire := tt.response
+			if wire == nil {
+				wire = testResponse(t, 0xabcd, testResponseFlags, tt.host, TypeA, tt.answers)
 			}
+			msg := decodeTestMessage(t, wire)
 			var addrs [4]netip.Addr
 			n, err := msg.WriteAnswers(addrs[:], MustNewName(tt.host))
 			if err != nil {
@@ -397,17 +422,8 @@ func TestMessage_WriteAnswers(t *testing.T) {
 
 func TestMessage_CanonicalName(t *testing.T) {
 	const host = "a.com"
-	cname := func(owner, target string) Resource {
-		tname := MustNewName(target)
-		data, err := tname.AppendTo(nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return NewResource(MustNewName(owner), TypeCNAME, ClassINET, 10, data)
-	}
-	a := func(owner string) Resource {
-		return NewResource(MustNewName(owner), TypeA, ClassINET, 10, []byte{1, 2, 3, 4})
-	}
+	cname := func(owner, target string) Resource { return testCNAME(t, owner, target) }
+	a := func(owner string) Resource { return testA(owner, [4]byte{1, 2, 3, 4}) }
 	tests := []struct {
 		name    string
 		answers []Resource
@@ -420,24 +436,9 @@ func TestMessage_CanonicalName(t *testing.T) {
 		{name: "CNAME target case differs", answers: []Resource{cname("a.com", "B.CoM"), cname("b.com", "c.com")}, want: "c.com"},
 		{name: "CNAME cycle terminates", answers: []Resource{cname("a.com", "b.com"), cname("b.com", "a.com")}, anyWant: true},
 	}
-	// Response flags: QR=1 (response), RD=1, RA=1.
-	responseFlags := HeaderFlags(1<<15 | 1<<8 | 1<<7)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			response := Message{
-				Questions: []Question{{Name: MustNewName(host), Type: TypeA, Class: ClassINET}},
-				Answers:   tt.answers,
-			}
-			wire, err := response.AppendTo(nil, 0xabcd, responseFlags)
-			if err != nil {
-				t.Fatal("encode:", err)
-			}
-			var msg Message
-			msg.LimitResourceDecoding(1, 4, 0, 0)
-			_, incomplete, err := msg.Decode(wire)
-			if incomplete || err != nil {
-				t.Fatal("decode:", incomplete, err)
-			}
+			msg := decodeTestMessage(t, testResponse(t, 0xabcd, testResponseFlags, host, TypeA, tt.answers))
 			got := msg.CanonicalName(MustNewName(host))
 			if tt.anyWant {
 				return

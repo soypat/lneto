@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"net/netip"
 	"sync"
 	"time"
@@ -49,11 +50,12 @@ type StackAsync struct {
 	dhcpResults DHCPResults
 	arpt        subnetTable
 
-	dnsUDP  internet.StackUDPPort
-	dns     dns.Client
-	ednsopt dns.Resource
-	lookup  dns.Message
-	dnssv   netip.Addr
+	dnsUDP    internet.StackUDPPort
+	dns       dns.Client
+	ednsopt   dns.Resource
+	dnssv     netip.Addr
+	dnsCtr    uint64 // Input to keyed hash for unpredictable DNS txids and ports, see [StackAsync.dnsRand16].
+	dnsMaxAns uint16
 
 	// ephPort drives sequential ephemeral-port allocation (see
 	// [StackAsync.ephemeralPort]); zero means not yet seeded.
@@ -70,8 +72,7 @@ type StackAsync struct {
 	prng uint32
 	key  [16]byte // See [tcp.ISN].
 
-	addrBuf    [6]byte // Temporary buffer for As4()/HardwareAddr6() results to avoid heap escapes.
-	addrbufnip [4]netip.Addr
+	addrBuf [6]byte // Temporary buffer for As4()/HardwareAddr6() results to avoid heap escapes.
 
 	stats Statistics
 
@@ -115,6 +116,11 @@ type StackConfig struct {
 	// not including ethernet header, ethernet CRC. It is determined by the NIC hardware and the route the packets take over the network.
 	// By far the most common value for MTU is 1500 as specified by IEEE 802.3. Jumbo/TUN MTUs up to 65535 allowed.
 	MTU uint16
+	// MaxDNSQueries limits how many DNS lookups may be active at once. Zero defaults to 2.
+	MaxDNSQueries uint16
+	// MaxDNSAnswers limits how many answer records are decoded per DNS response, CNAME records included.
+	// Zero defaults to 12.
+	MaxDNSAnswers uint16
 	// Accept multicast ethernet and IP packets. Needed for MDNS.
 	AcceptMulticast bool
 	// Accept broadcast IPv4 packets. Needed for managing access points and DHCPv4 servers.
@@ -326,6 +332,18 @@ func (s *StackAsync) Reset(cfg StackConfig) (err error) {
 	s.stats = Statistics{}
 	if cfg.DNSServer.IsValid() {
 		s.dnssv = cfg.DNSServer
+	}
+	maxDNSQueries := cfg.MaxDNSQueries
+	if maxDNSQueries == 0 {
+		maxDNSQueries = 2
+	}
+	s.dnsMaxAns = cfg.MaxDNSAnswers
+	if s.dnsMaxAns == 0 {
+		s.dnsMaxAns = 12
+	}
+	err = s.dns.Configure(dns.ClientConfig{MaxQueries: int(maxDNSQueries)})
+	if err != nil {
+		return err
 	}
 	if s.ipv6enabled {
 		err = s.link.RegisterEthernet(s.stack6.IPv6Stack())
@@ -652,27 +670,41 @@ var errNoDNSServer = errors.New("no DNS server- did DHCP complete? You can set a
 
 var errDNSv6Transport = errors.New("DNS query over IPv6 transport not supported; configure an IPv4 DNS server")
 
-func (s *StackAsync) StartLookupIP(host dns.Name) error {
-	return s.StartLookupIPType(host, dns.TypeA)
-}
-
-// StartLookupIPType begins resolving host for the given record type (e.g. dns.TypeA
-// or dns.TypeAAAA). The DNS query is always carried over IPv4 to the configured DNS
-// server; resolving over an IPv6 DNS transport is not yet supported.
-func (s *StackAsync) StartLookupIPType(host dns.Name, qtype dns.Type) error {
+// LookupIPStart begins resolving host for the given record type (e.g. dns.TypeA
+// or dns.TypeAAAA) and returns the lookup's key for [StackAsync.LookupIPResult] and
+// [StackAsync.LookupIPPop]. Up to [StackConfig.MaxDNSQueries] lookups may be active at once,
+// after which [lneto.ErrExhausted] is returned. The DNS query is always carried over IPv4 to
+// the configured DNS server; resolving over an IPv6 DNS transport is not yet supported.
+func (s *StackAsync) LookupIPStart(host dns.Name, qtype dns.Type) (txid uint16, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.dnssv.IsValid() {
-		return errNoDNSServer
+		return 0, errNoDNSServer
+	} else if !s.dnssv.Is4() {
+		return 0, errDNSv6Transport
+	} else if s.dns.NumQueries() == s.dns.QueryCapacity() {
+		return 0, lneto.ErrExhausted
 	}
-	if !s.dnssv.Is4() {
-		return errDNSv6Transport
+	if s.dns.NumQueries() == 0 {
+		// Idle: pick a new unpredictable source port, which adds to the
+		// txid in protecting against spoofed responses (RFC 5452).
+		port := 1024 + s.dnsRand16()%(math.MaxUint16-1024)
+		err = s.dns.SetLocalPort(port)
+		if err != nil {
+			return 0, err
+		}
+		*(*[4]byte)(s.addrBuf[:4]) = s.dnssv.As4()
+		s.dnsUDP.SetStackNode(&s.dns, s.addrBuf[:4], dns.ServerPort)
+		err = s.udps.RegisterMACFiltered(&s.dnsUDP, nil)
+		if err != nil {
+			return 0, err
+		}
 	}
 	// EDNS0 buffer size: MTU minus overhead for IP+UDP headers and safety margin.
 	// 100 bytes covers IPv4 max header (60) + UDP (8) + 32 byte margin.
 	edns0.SetResource(&s.ednsopt, uint16(s.link.MTU())-100, 0, 0, nil)
-	rand := s.prand32()
-	err := s.dns.StartResolve(uint16(rand>>1)+1024, uint16(rand), dns.ResolveConfig{
+	txid = s.newDNSTxid()
+	err = s.dns.StartResolve(txid, dns.ResolveConfig{
 		Questions: []dns.Question{
 			{
 				Name:  host,
@@ -684,49 +716,93 @@ func (s *StackAsync) StartLookupIPType(host dns.Name, qtype dns.Type) error {
 			s.ednsopt,
 		},
 		EnableRecursion: true,
-		// Leave headroom above the address buffer for CNAME records, which
-		// occupy answer slots before the addresses they alias.
-		MaxResponseAnswers: uint16(len(s.addrbufnip)) + 8,
+		// CNAME records occupy answer slots before the addresses they alias.
+		MaxResponseAnswers: s.dnsMaxAns,
 	})
 	if err != nil {
-		return err
+		return 0, err
 	}
-	*(*[4]byte)(s.addrBuf[:4]) = s.dnssv.As4()
-	s.dnsUDP.SetStackNode(&s.dns, s.addrBuf[:4], dns.ServerPort)
-	err = s.udps.RegisterMACFiltered(&s.dnsUDP, nil)
-	return err
+	return txid, nil
+}
+
+// LookupIPFollowCNAME restarts the lookup txid, whose response held a CNAME record and no address
+// (see errDNSOnlyCNAME in [StackAsync.LookupIPResult]), to resolve the canonical name.
+// It returns the new lookup's key; txid is no longer valid.
+func (s *StackAsync) LookupIPFollowCNAME(txid uint16) (newTxid uint16, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	newTxid = s.newDNSTxid()
+	err = s.dns.ResolveCanonical(txid, newTxid)
+	if err != nil {
+		return 0, err
+	}
+	return newTxid, nil
+}
+
+// LookupIPPop removes the lookup txid, freeing it for another lookup, and reports whether
+// it had completed. ok is false if no such lookup is active. Every lookup started must be popped.
+func (s *StackAsync) LookupIPPop(txid uint16) (completed, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dns.ResolvePop(txid)
+}
+
+// newDNSTxid returns a txid that is non-zero, unused by active lookups and unpredictable.
+func (s *StackAsync) newDNSTxid() uint16 {
+	for {
+		txid := s.dnsRand16()
+		if _, active := s.dns.ResolvePeek(txid); txid != 0 && !active {
+			return txid
+		}
+	}
+}
+
+// dnsRand16 returns a keyed hash of a counter, so observed DNS txids and ports
+// reveal nothing about later ones, unlike values drawn from [StackAsync.Prand32].
+func (s *StackAsync) dnsRand16() uint16 {
+	var buf [8]byte
+	binary.LittleEndian.PutUint64(buf[:], s.dnsCtr)
+	s.dnsCtr++
+	return uint16(internal.SipHash24(&s.key, buf[:]))
 }
 
 var (
-	errDNSNotDone = errors.New("DNS not done")
-	errDNSNoAns   = errors.New("no address in DNS answer")
+	errDNSNotDone  = errors.New("DNS not done")
+	errDNSNoLookup = errors.New("no such DNS lookup")
+	errDNSNoAns    = errors.New("no address in DNS answer")
 	// errDNSOnlyCNAME is returned when the answer ends in a CNAME without address.
 	errDNSOnlyCNAME = errors.New("DNS answer is CNAME without address")
 )
 
-// copyResultCanonicalName copies the end of the CNAME chain for host into dst.
-// dst is left empty if host has no CNAME.
-func (s *StackAsync) copyResultCanonicalName(dst *dns.Name, host dns.Name) {
+// LookupIPResult writes the addresses answering the lookup txid into dst and returns how many were written.
+// done is false while the lookup awaits its response. Once done it returns errDNSOnlyCNAME
+// if the answer is a CNAME without address, see [StackAsync.LookupIPFollowCNAME], and
+// [lneto.ErrExhausted] along with the addresses written if dst filled up.
+// The lookup stays active until removed with [StackAsync.LookupIPPop].
+func (s *StackAsync) LookupIPResult(txid uint16, dst []netip.Addr) (n int, done bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	dst.CopyFrom(s.dns.ResponseCanonicalName(host))
-}
-
-func (s *StackAsync) ResultLookupIP(host dns.Name) ([]netip.Addr, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, ok := s.dns.ResponseFlags()
+	resp, flags, ok := s.dns.Response(txid)
 	if !ok {
-		return nil, false, errDNSNotDone
+		if _, active := s.dns.ResolvePeek(txid); !active {
+			return 0, true, errDNSNoLookup
+		}
+		return 0, false, errDNSNotDone
+	} else if rcode := flags.ResponseCode(); rcode != 0 {
+		return 0, true, rcode
+	} else if len(resp.Questions) == 0 {
+		return 0, true, errDNSNoAns
 	}
-	n, err := s.dns.ResponseAnswerLookup(s.addrbufnip[:], host)
-	if n == 0 && err == nil {
+	// The response echoes the question, which after following a CNAME holds the canonical name.
+	host := resp.Questions[0].Name
+	nans, err := resp.WriteAnswers(dst, host)
+	if nans == 0 && err == nil {
 		err = errDNSNoAns
-		if cname := s.dns.ResponseCanonicalName(host); cname.Len() != 0 {
+		if cname := resp.CanonicalName(host); cname.Len() != 0 {
 			err = errDNSOnlyCNAME
 		}
 	}
-	return s.addrbufnip[:n], true, err
+	return int(nans), true, err
 }
 
 func (s *StackAsync) StartDHCPv4Request(request [4]byte) error {
