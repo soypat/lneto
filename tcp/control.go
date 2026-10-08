@@ -441,6 +441,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	// (modular LessThan would otherwise return false for 0.LessThan(largeISS)).
 	// Within that, duplicate ACKs (non-advancing) may only open the window, never shrink it.
 	wlUnset := tcb.snd.WL1 == 0 && tcb.snd.WL2 == 0
+	prevWND := tcb.snd.WND
 	if wlUnset || tcb.snd.WL1.LessThan(seg.SEQ) || (tcb.snd.WL1 == seg.SEQ && tcb.snd.WL2.LessThanEq(seg.ACK)) {
 		if tcb.snd.UNA.LessThan(seg.ACK) || seg.WND > tcb.snd.WND {
 			tcb.snd.WND = seg.WND
@@ -450,8 +451,11 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	}
 
 	if seg.Flags.HasAny(FlagACK) && seg.ACK.LessThanEq(tcb.snd.NXT) {
-		if tcb.IncomingIsDupACK(seg.ACK) && tcb.State().txQueuedDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < tcb.nRetransmit+retransmitMaxQueued+retransmitMaxQueued {
-			// Duplicate ack. Don't advance dupack counter past scb.nRetransmit+retransmitAfterDupacks
+		// RFC 5681 §2: a duplicate ACK carries no data and leaves the window unchanged.
+		isDupACK := tcb.IncomingIsDupACK(seg.ACK) && seg.DATALEN == 0 && seg.WND == prevWND
+		if isDupACK && tcb.State().txQueuedDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < tcb.nRetransmit+retransmitAfterDupacks+retransmitMaxQueued-1 {
+			// Duplicate ack. Stop counting once retransmitMaxQueued retransmissions
+			// are queued (see HasPendingRetransmit).
 			tcb.dupack++
 		} else if tcb.snd.UNA.LessThan(seg.ACK) {
 			// Only update ACK if it advances UNA and is not in the future.
@@ -548,7 +552,10 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
 	zeroWindowOK := tcb.snd.WND == 0 && seg.DATALEN <= 1 && seg.SEQ == tcb.snd.NXT
 	outOfWindow := checkSeq && !seg.SEQ.InWindow(tcb.snd.NXT, tcb.snd.WND) &&
 		!zeroWindowOK
-	isRetransmit := checkSeq && seg.SEQ.InRange(tcb.snd.UNA, tcb.snd.NXT)
+	// A retransmission resends only sent data: one reaching past snd.NXT would
+	// send new data without advancing snd.NXT.
+	isRetransmit := checkSeq && seg.SEQ.InRange(tcb.snd.UNA, tcb.snd.NXT) &&
+		Add(seg.SEQ, seg.LEN()).LessThanEq(tcb.snd.NXT)
 	switch {
 	case tcb._state == StateClosed && !isFirst:
 		err = io.ErrClosedPipe
