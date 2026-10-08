@@ -27,6 +27,7 @@ const (
 	ErrBadState                             // operation invalid in current state
 	ErrBadSignature                         // bad signature
 	ErrConnRefused                          // connection refused
+	ErrNoSuchResource                       // no such resource
 	// Below are potentially good future error additions
 	// based on one or two encountered use cases, example use case included.
 	/*

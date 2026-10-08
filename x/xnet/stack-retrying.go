@@ -63,21 +63,23 @@ func (s StackRetrying) DoNTP(ntpHost netip.Addr, timeout time.Duration, retries 
 	}
 	return -1, errRetriesExceeded
 }
-func (s StackRetrying) DoLookupIP(host dns.Name, timeout time.Duration, retries int) (addrs []netip.Addr, err error) {
+
+// DoLookupIP resolves host's IPv4 addresses, retrying on failure. See [StackBlocking.DoLookupIPType].
+func (s StackRetrying) DoLookupIP(dst []netip.Addr, host dns.Name, timeout time.Duration, retries int) (naddr int, err error) {
 	if !s.block.async.dnssv.IsValid() {
-		return nil, errNoDNSServer
+		return 0, errNoDNSServer
 	}
 	expectEnd := time.Now().Add(timeout * time.Duration(retries))
 	for range retries {
-		addrs, err = s.block.DoLookupIP(host, timeout)
+		naddr, err = s.block.DoLookupIP(dst, host, timeout)
 		if err == nil {
-			return addrs, nil
+			return naddr, nil
 		}
 	}
 	if time.Now().Before(expectEnd) {
-		return addrs, err
+		return naddr, err
 	}
-	return nil, errRetriesExceeded
+	return 0, errRetriesExceeded
 }
 
 func (s StackRetrying) DoResolveHardwareAddress6(addr netip.Addr, timeout time.Duration, retries int) (hw [6]byte, err error) {

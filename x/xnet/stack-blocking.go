@@ -3,6 +3,7 @@ package xnet
 import (
 	"context"
 	"errors"
+	"math"
 	"net"
 	"net/netip"
 	"time"
@@ -148,45 +149,60 @@ func (s StackBlocking) DoResolveHardwareAddress6(addr netip.Addr, timeout time.D
 	return hw, err
 }
 
-func (s StackBlocking) DoLookupIP(host dns.Name, timeout time.Duration) (addrs []netip.Addr, err error) {
-	return s.DoLookupIPType(host, timeout, dns.TypeA)
+func (s StackBlocking) DoLookupIP(dst []netip.Addr, host dns.Name, timeout time.Duration) (naddr int, err error) {
+	return s.DoLookupIPType(dst, host, timeout, dns.TypeA)
 }
 
-// maxCNAMEqueries is the maximum number of queries DoLookupIPType sends while
-// following CNAME-only answers, including the query for the original host.
-const maxCNAMEqueries = 3
+const (
+	// maxCNAMEqueries is the maximum number of queries DoLookupIPType sends while
+	// following CNAME-only answers, including the query for the original host.
+	maxCNAMEqueries = 3
+	// cnameAnswerHeadroom is how many answer records DoLookupIPType decodes beyond len(dst)
+	// for the CNAME records that precede the addresses they alias in a response.
+	cnameAnswerHeadroom = 8
+)
 
 // DoLookupIPType resolves host for the given record type (dns.TypeA or dns.TypeAAAA),
-// blocking until a response arrives or the timeout elapses.
-func (s StackBlocking) DoLookupIPType(host dns.Name, timeout time.Duration, qtype dns.Type) (addrs []netip.Addr, err error) {
-	deadline := s.deadlineTO(timeout)
-	var cname dns.Name // Owns its buffer: the next query overwrites the response.
-	for range maxCNAMEqueries {
-		addrs, err = s.lookupIPType(host, deadline, qtype)
-		if err != errDNSOnlyCNAME {
-			return addrs, err // nil(OK) or non-only-cname error.
-		}
-		s.async.copyResultCanonicalName(&cname, host)
-		host = cname
+// blocking until a response arrives or the timeout elapses. It writes up to len(dst) addresses
+// into dst and returns how many were written. CNAME-only answers are followed with a new
+// query for the canonical name.
+func (s StackBlocking) DoLookupIPType(dst []netip.Addr, host dns.Name, timeout time.Duration, qtype dns.Type) (naddr int, err error) {
+	if len(dst) == 0 {
+		return 0, lneto.ErrShortBuffer
 	}
-	return nil, errDNSOnlyCNAME
+	deadline := s.deadlineTO(timeout)
+	nans := min(len(dst)+cnameAnswerHeadroom, math.MaxUint16)
+	txid, err := s.async.LookupIPStart(host, qtype, uint16(nans))
+	if err != nil {
+		return 0, err
+	}
+	// Pop whichever lookup is current on return so its slot is freed, timeouts included.
+	defer func() { s.async.LookupIPPop(txid) }()
+	for queries := 1; ; queries++ {
+		n, err := s.waitLookupIP(txid, deadline, dst)
+		if err != dns.ErrUnresolvedCNAME || queries == maxCNAMEqueries {
+			return n, err // nil(OK) or non-only-cname error.
+		}
+		hopTxid, err := s.async.LookupIPFollowCNAME(txid)
+		if err != nil {
+			return 0, err // txid still active: popped by defer.
+		}
+		txid = hopTxid
+	}
 }
 
-func (s StackBlocking) lookupIPType(host dns.Name, deadline int64, qtype dns.Type) (addrs []netip.Addr, err error) {
-	err = s.async.StartLookupIPType(host, qtype)
-	if err != nil {
-		return nil, err
-	}
+// waitLookupIP polls the lookup txid until it is done or the deadline passes.
+func (s StackBlocking) waitLookupIP(txid uint16, deadline int64, dst []netip.Addr) (n int, err error) {
 	var backoffs uint
 	for ok := true; ok; ok = s.checkDeadline(deadline) == nil {
-		addrs, completed, err := s.async.ResultLookupIP(host)
-		if completed {
-			return addrs, err
+		n, state, err := s.async.LookupIPResult(txid, dst)
+		if !state.InProgress() {
+			return n, err
 		}
 		s.backoff(backoffs)
 		backoffs++
 	}
-	return nil, errDeadlineExceed
+	return 0, errDeadlineExceed
 }
 
 var errTCPFailedToConnect = errors.New("tcp failed to connect")

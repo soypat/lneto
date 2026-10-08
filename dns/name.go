@@ -113,7 +113,7 @@ func (n Name) TrimLabels(skip int) Name {
 }
 
 // Len returns the length over-the-wire of the encoded Name.
-func (n *Name) Len() uint16 {
+func (n Name) Len() uint16 {
 	if len(n.data) > math.MaxUint16 {
 		panic("size of DNS name data overflows 16bits")
 	}

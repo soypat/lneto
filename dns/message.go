@@ -116,26 +116,10 @@ func (m *Message) WriteAnswers(dst []netip.Addr, host Name) (n uint16, err error
 }
 
 func (dst *Message) CopyFrom(m Message) {
-	internal.SliceReuse(&dst.Questions, len(m.Questions))
-	internal.SliceReuse(&dst.Answers, len(m.Answers))
-	internal.SliceReuse(&dst.Authorities, len(m.Authorities))
-	internal.SliceReuse(&dst.Additionals, len(m.Additionals))
-	dst.Questions = dst.Questions[:len(m.Questions)]
-	dst.Answers = dst.Answers[:len(m.Answers)]
-	dst.Authorities = dst.Authorities[:len(m.Authorities)]
-	dst.Additionals = dst.Additionals[:len(m.Additionals)]
-	for i := range dst.Questions {
-		dst.Questions[i].CopyFrom(m.Questions[i])
-	}
-	for i := range dst.Answers {
-		dst.Answers[i].CopyFrom(m.Answers[i])
-	}
-	for i := range dst.Authorities {
-		dst.Authorities[i].CopyFrom(m.Authorities[i])
-	}
-	for i := range dst.Additionals {
-		dst.Additionals[i].CopyFrom(m.Additionals[i])
-	}
+	internal.SliceCopyFrom(&dst.Questions, m.Questions)
+	internal.SliceCopyFrom(&dst.Answers, m.Answers)
+	internal.SliceCopyFrom(&dst.Authorities, m.Authorities)
+	internal.SliceCopyFrom(&dst.Additionals, m.Additionals)
 }
 
 // LimitResourceDecoding sets the maximum number of resources that can be decoded
