@@ -65,7 +65,7 @@ func (c *CRC791) Reset() { *c = CRC791{} }
 func NeverZeroSum(sum16 uint16) uint16 {
 	// 0x0000 and 0xffff are the same number in ones' complement math
 	if sum16 == 0 {
-		return 0xffff
+		// return 0xffff naughty
 	}
 	return sum16
 }
