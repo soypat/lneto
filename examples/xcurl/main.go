@@ -274,13 +274,14 @@ func run() (err error) {
 	if flagDoNTP {
 		timeLookupNTP := timer("NTP IP lookup")
 		const ntpHost = "pool.ntp.org"
-		addrs, err := rstack.DoLookupIP(dns.MustNewName(ntpHost), internetTimeout, internetRetries)
+		var ntpAddrs [1]netip.Addr
+		_, err := rstack.DoLookupIP(ntpAddrs[:], dns.MustNewName(ntpHost), internetTimeout, internetRetries)
 		if err != nil {
 			return fmt.Errorf("NTP address lookup of %q failed: %w", ntpHost, err)
 		}
 		timeLookupNTP()
 		timeNTP := timer("NTP exchange")
-		offset, err := rstack.DoNTP(addrs[0], internetTimeout, internetRetries)
+		offset, err := rstack.DoNTP(ntpAddrs[0], internetTimeout, internetRetries)
 		if err != nil {
 			return fmt.Errorf("NTP address lookup of %q failed: %w", ntpHost, err)
 		}
@@ -292,10 +293,12 @@ func run() (err error) {
 		fmt.Println("NTP completed. You are", offset.Abs().String(), relative, "of the NTP server")
 	}
 	timeResolveIP := timer("resolve " + flagHostToResolve)
-	addrs, err := rstack.DoLookupIP(hostToResolve, internetTimeout, internetRetries)
+	var addrBuf [4]netip.Addr
+	naddr, err := rstack.DoLookupIP(addrBuf[:], hostToResolve, internetTimeout, internetRetries)
 	if err != nil {
 		return fmt.Errorf("DNS of host %q failed: %w", flagHostToResolve, err)
 	}
+	addrs := addrBuf[:naddr]
 	timeResolveIP()
 	fmt.Printf("DNS resolution of %q complete and resolved to %v\n", flagHostToResolve, addrs)
 	var conn tcp.Conn

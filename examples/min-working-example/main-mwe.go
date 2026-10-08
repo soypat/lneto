@@ -96,7 +96,8 @@ func run(ctx context.Context, stack *xnet.StackAsync) error {
 	}
 	stack.SetGatewayHardwareAddr(gateway)
 	if !OnlyTCP { // Can exclude DNS and NTP from binary with onlytcp flag.
-		addrs, err := rstack.DoLookupIP(dns.MustNewName("pool.ntp.org"), time.Second, 2)
+		var addrs [1]netip.Addr
+		_, err := rstack.DoLookupIP(addrs[:], dns.MustNewName("pool.ntp.org"), time.Second, 2)
 		if err != nil {
 			return err
 		}

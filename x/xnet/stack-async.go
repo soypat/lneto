@@ -665,7 +665,10 @@ var errDNSv6Transport = errors.New("DNS query over IPv6 transport not supported;
 
 // LookupIPStart begins resolving host for the given record type (e.g. dns.TypeA
 // or dns.TypeAAAA) and returns the lookup's key for [StackAsync.LookupIPResult] and
-// [StackAsync.LookupIPPop]. Up to [StackConfig.MaxDNSQueries] lookups may be active at once,
+// [StackAsync.LookupIPPop]. nans is the number of answer records decoded from the response;
+// CNAME records precede the addresses they alias and count towards it, so leave headroom for them.
+// Lookups with a larger nans than the stack has seen before allocate the extra room.
+// Up to [StackConfig.MaxDNSQueries] lookups may be active at once,
 // after which [lneto.ErrExhausted] is returned. The DNS query is always carried over IPv4 to
 // the configured DNS server; resolving over an IPv6 DNS transport is not yet supported.
 func (s *StackAsync) LookupIPStart(host dns.Name, qtype dns.Type, nans uint16) (txid uint16, err error) {
