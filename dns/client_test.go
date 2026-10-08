@@ -8,10 +8,10 @@ import (
 	"github.com/soypat/lneto"
 )
 
-func newTestClient(t testing.TB, maxQueries int) *Client {
+func newTestClient(t testing.TB, maxLookups int) *Client {
 	t.Helper()
 	var client Client
-	err := client.Configure(ClientConfig{LocalPort: 54321, MaxQueries: maxQueries})
+	err := client.Configure(ClientConfig{LocalPort: 54321, MaxLookups: maxLookups})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,9 +61,9 @@ func testAnswers(host string, firstOctet byte, n int) ([]Resource, []netip.Addr)
 // checkTestAnswers checks the response to txid holds exactly want for host.
 func checkTestAnswers(t testing.TB, client *Client, txid uint16, host string, want []netip.Addr) {
 	t.Helper()
-	completed, ok := client.LookupPeek(txid)
-	if !ok || !completed {
-		t.Fatalf("txid %#x: completed=%v ok=%v", txid, completed, ok)
+	state, ok := client.LookupPeek(txid)
+	if !ok || state.InProgress() {
+		t.Fatalf("txid %#x: state=%v ok=%v", txid, state, ok)
 	}
 	resp, flags, ok := client.LookupResponse(txid)
 	if !ok {
@@ -83,14 +83,14 @@ func checkTestAnswers(t testing.TB, client *Client, txid uint16, host string, wa
 	}
 }
 
-func TestClient_ConcurrentQueries(t *testing.T) {
+func TestClient_ConcurrentLookups(t *testing.T) {
 	const hostA, hostB = "a.example.com", "b.example.org"
 	const txidA, txidB = 0x1111, 0x2222
 	client := newTestClient(t, 2)
 	startTestLookup(t, client, txidA, hostA, 4)
 	startTestLookup(t, client, txidB, hostB, 4)
 	if client.NumLookups() != 2 {
-		t.Fatalf("NumQueries=%d, want 2", client.NumLookups())
+		t.Fatalf("NumLookups=%d, want 2", client.NumLookups())
 	}
 	sent := [2]uint16{encapsulateTestQuery(t, client), encapsulateTestQuery(t, client)}
 	if sent != [2]uint16{txidA, txidB} && sent != [2]uint16{txidB, txidA} {
@@ -106,8 +106,8 @@ func TestClient_ConcurrentQueries(t *testing.T) {
 	if err := client.Demux(testResponse(t, txidB, testResponseFlags, hostB, TypeA, rscB), 0); err != nil {
 		t.Fatal(err)
 	}
-	if completed, ok := client.LookupPeek(txidA); completed || !ok {
-		t.Fatalf("A completed=%v ok=%v before its response", completed, ok)
+	if state, ok := client.LookupPeek(txidA); !state.InProgress() || !ok {
+		t.Fatalf("A state=%v ok=%v before its response", state, ok)
 	}
 	if err := client.Demux(testResponse(t, txidA, testResponseFlags, hostA, TypeA, rscA), 0); err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestClient_ConcurrentQueries(t *testing.T) {
 func TestClient_Exhausted(t *testing.T) {
 	client := newTestClient(t, 2)
 	if client.MaxLookups() != 2 {
-		t.Fatalf("QueryCapacity=%d, want 2", client.MaxLookups())
+		t.Fatalf("MaxLookups=%d, want 2", client.MaxLookups())
 	}
 	startTestLookup(t, client, 1, "a.com", 1)
 	startTestLookup(t, client, 2, "b.com", 1)
@@ -127,15 +127,15 @@ func TestClient_Exhausted(t *testing.T) {
 	if err := client.LookupStart(3, cfg); !errors.Is(err, lneto.ErrExhausted) {
 		t.Fatalf("err=%v, want ErrExhausted", err)
 	}
-	if completed, ok := client.LookupPop(1); completed || !ok {
-		t.Fatalf("pop pending: completed=%v ok=%v", completed, ok)
+	if state, ok := client.LookupPop(1); !state.InProgress() || !ok {
+		t.Fatalf("pop pending: state=%v ok=%v", state, ok)
 	}
 	if err := client.LookupStart(3, cfg); err != nil {
 		t.Fatal("start after pop:", err)
 	}
-	// Remaining queries are intact after the pop.
+	// Remaining lookups are intact after the pop.
 	if _, ok := client.LookupPeek(2); !ok {
-		t.Fatal("query 2 lost after popping query 1")
+		t.Fatal("lookup 2 lost after popping lookup 1")
 	}
 }
 
@@ -154,7 +154,7 @@ func TestClient_LookupStartInvalid(t *testing.T) {
 	}
 	// Failed starts do not hold a slot.
 	if client.NumLookups() != 1 {
-		t.Fatalf("NumQueries=%d after failed starts, want 1", client.NumLookups())
+		t.Fatalf("NumLookups=%d after failed starts, want 1", client.NumLookups())
 	}
 	if err := client.LookupStart(8, cfg); err != nil {
 		t.Fatal(err)
@@ -183,8 +183,8 @@ func TestClient_RejectsMismatchedResponse(t *testing.T) {
 			startTestLookup(t, client, txid, host, 1)
 			encapsulateTestQuery(t, client)
 			client.Demux(tt.resp, 0)
-			if completed, ok := client.LookupPeek(txid); completed || !ok {
-				t.Fatalf("completed=%v ok=%v after mismatched response", completed, ok)
+			if state, ok := client.LookupPeek(txid); !state.InProgress() || !ok {
+				t.Fatalf("state=%v ok=%v after mismatched response", state, ok)
 			}
 			if _, _, ok := client.LookupResponse(txid); ok {
 				t.Fatal("response available after mismatched response")
@@ -199,7 +199,7 @@ func TestClient_RejectsMismatchedResponse(t *testing.T) {
 		client := newTestClient(t, 1)
 		startTestLookup(t, client, txid, host, 1)
 		client.Demux(good, 0)
-		if completed, _ := client.LookupPeek(txid); completed {
+		if state, _ := client.LookupPeek(txid); !state.InProgress() {
 			t.Fatal("completed by response to unsent query")
 		}
 	})
@@ -223,8 +223,8 @@ func TestClient_PopSemantics(t *testing.T) {
 	const host = "example.com"
 	const txid = 0x5555
 	client := newTestClient(t, 1)
-	if completed, ok := client.LookupPeek(txid); completed || ok {
-		t.Fatalf("unknown txid: completed=%v ok=%v", completed, ok)
+	if state, ok := client.LookupPeek(txid); state.InProgress() || ok {
+		t.Fatalf("unknown txid: state=%v ok=%v", state, ok)
 	}
 	startTestLookup(t, client, txid, host, 1)
 	encapsulateTestQuery(t, client)
@@ -232,20 +232,20 @@ func TestClient_PopSemantics(t *testing.T) {
 	if err := client.Demux(testResponse(t, txid, testResponseFlags, host, TypeA, rsc), 0); err != nil {
 		t.Fatal(err)
 	}
-	if completed, ok := client.LookupPop(txid); !completed || !ok {
-		t.Fatalf("pop: completed=%v ok=%v", completed, ok)
+	if state, ok := client.LookupPop(txid); !state.InProgress() || !ok {
+		t.Fatalf("pop: state=%v ok=%v", state, ok)
 	}
-	if completed, ok := client.LookupPeek(txid); completed || ok {
-		t.Fatalf("peek after pop: completed=%v ok=%v", completed, ok)
+	if state, ok := client.LookupPeek(txid); state.InProgress() || ok {
+		t.Fatalf("peek after pop: state=%v ok=%v", state, ok)
 	}
-	if completed, ok := client.LookupPop(txid); completed || ok {
-		t.Fatalf("second pop: completed=%v ok=%v", completed, ok)
+	if state, ok := client.LookupPop(txid); state.InProgress() || ok {
+		t.Fatalf("second pop: state=%v ok=%v", state, ok)
 	}
 	if _, _, ok := client.LookupResponse(txid); ok {
 		t.Fatal("response after pop")
 	}
 	if client.NumLookups() != 0 {
-		t.Fatalf("NumQueries=%d after pop, want 0", client.NumLookups())
+		t.Fatalf("NumLookups=%d after pop, want 0", client.NumLookups())
 	}
 }
 
@@ -326,7 +326,7 @@ func TestClient_ZeroAllocReuse(t *testing.T) {
 	resp := testResponse(t, txid, testResponseFlags, host, TypeA, rsc)
 	var buf [512]byte
 	var dst [4]netip.Addr
-	// Keep another query active so popping exercises removal of a non-last slot.
+	// Keep another lookup active so popping exercises removal of a non-last slot.
 	if err := client.LookupStart(txid+1, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -352,13 +352,13 @@ func TestClient_ZeroAllocReuse(t *testing.T) {
 		if n, err := msg.WriteAnswers(dst[:], name); err != nil || n != 4 {
 			panic(err)
 		}
-		if completed, ok := client.LookupPop(txid); !completed || !ok {
+		if state, ok := client.LookupPop(txid); !state.InProgress() || !ok {
 			panic("pop failed")
 		}
 	}
 	cycle() // Warm up slot buffers.
 	if allocs := testing.AllocsPerRun(100, cycle); allocs != 0 {
-		t.Fatalf("got %v allocations per query cycle, want 0", allocs)
+		t.Fatalf("got %v allocations per lookup cycle, want 0", allocs)
 	}
 }
 
@@ -376,10 +376,10 @@ func TestClient_AbortAndIdle(t *testing.T) {
 		t.Fatal("connection ID unchanged after Abort")
 	}
 	if client.NumLookups() != 0 {
-		t.Fatalf("NumQueries=%d after Abort", client.NumLookups())
+		t.Fatalf("NumLookups=%d after Abort", client.NumLookups())
 	}
 	if _, ok := client.LookupPeek(1); ok {
-		t.Fatal("query survived Abort")
+		t.Fatal("lookup survived Abort")
 	}
 }
 
@@ -477,11 +477,11 @@ func TestClient_LookupCanonical(t *testing.T) {
 	if _, ok := client.LookupPeek(txid); ok {
 		t.Fatal("old txid still active after hop")
 	}
-	if completed, ok := client.LookupPeek(hopTxid); completed || !ok {
-		t.Fatalf("hop query: completed=%v ok=%v, want pending", completed, ok)
+	if state, ok := client.LookupPeek(hopTxid); state.InProgress() || !ok {
+		t.Fatalf("hop lookup: state=%v ok=%v, want pending", state, ok)
 	}
 	if client.NumLookups() != 1 {
-		t.Fatalf("NumQueries=%d after hop, want 1", client.NumLookups())
+		t.Fatalf("NumLookups=%d after hop, want 1", client.NumLookups())
 	}
 	// The hop query asks for the alias and keeps the EDNS0 record.
 	var buf [512]byte
@@ -518,7 +518,7 @@ func TestClient_LookupCanonicalErrors(t *testing.T) {
 	cname := []Resource{testCNAME(t, host, "b.example.net")}
 	tests := []struct {
 		name    string
-		resp    []byte // Nil leaves the query pending.
+		resp    []byte // Nil leaves the lookup pending.
 		newTxid uint16
 	}{
 		{name: "pending", newTxid: 0x2000},
@@ -542,9 +542,9 @@ func TestClient_LookupCanonicalErrors(t *testing.T) {
 			if err := client.LookupCanonicalRestart(txid, tt.newTxid); err == nil {
 				t.Fatal("hop succeeded")
 			}
-			// Failed hop leaves the query as it was.
+			// Failed hop leaves the lookup as it was.
 			if c, ok := client.LookupPeek(txid); !ok || c != completed {
-				t.Fatalf("query changed by failed hop: completed=%v ok=%v", c, ok)
+				t.Fatalf("lookup changed by failed hop: completed=%v ok=%v", c, ok)
 			}
 		})
 	}
@@ -600,7 +600,7 @@ func TestClient_LookupCanonicalZeroAlloc(t *testing.T) {
 		if n, err := resp.WriteAnswers(dst[:], aliasName); err != nil || n != 2 {
 			panic(err)
 		}
-		if completed, ok := client.LookupPop(hopTxid); !completed || !ok {
+		if state, ok := client.LookupPop(hopTxid); !state.InProgress() || !ok {
 			panic("pop")
 		}
 	}
@@ -633,7 +633,7 @@ func TestClient_CNAMEResponse(t *testing.T) {
 	}
 	name := MustNewName(hostname)
 	var client Client
-	err := client.Configure(ClientConfig{LocalPort: clientPort, MaxQueries: 1})
+	err := client.Configure(ClientConfig{LocalPort: clientPort, MaxLookups: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

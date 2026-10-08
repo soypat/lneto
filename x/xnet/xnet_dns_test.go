@@ -209,12 +209,12 @@ func TestDNS_LookupIP(t *testing.T) {
 					t.Fatal("expected DNS query packet from client")
 				}
 				var dst [4]netip.Addr
-				n, done, rerr := client.LookupIPResult(txid, dst[:])
-				if !done {
+				n, state, rerr := client.LookupIPResult(txid, dst[:])
+				if state.InProgress() {
 					t.Fatal("DNS lookup not done after response")
 				}
-				if completed, ok := client.LookupIPPop(txid); !completed || !ok {
-					t.Fatalf("pop: completed=%v ok=%v", completed, ok)
+				if state, ok := client.LookupIPPop(txid); state.InProgress() || !ok {
+					t.Fatalf("pop: state=%v ok=%v", state, ok)
 				}
 				addrs, err = dst[:n], rerr
 			}
@@ -234,8 +234,8 @@ func TestDNS_LookupIP(t *testing.T) {
 // lookupTestResult polls lookup txid once and fails the test unless it is done.
 func lookupTestResult(t *testing.T, client *StackAsync, txid uint16, dst []netip.Addr) ([]netip.Addr, error) {
 	t.Helper()
-	n, done, err := client.LookupIPResult(txid, dst)
-	if !done {
+	n, state, err := client.LookupIPResult(txid, dst)
+	if state.InProgress() {
 		t.Fatalf("lookup %#x not done", txid)
 	}
 	return dst[:n], err
@@ -259,7 +259,7 @@ func TestDNS_LookupIPConcurrent(t *testing.T) {
 	if txidA == 0 || txidB == 0 || txidA == txidB {
 		t.Fatalf("txids must be distinct and non-zero: %#x %#x", txidA, txidB)
 	}
-	if n, done, _ := client.LookupIPResult(txidA, make([]netip.Addr, 1)); done || n != 0 {
+	if n, state, _ := client.LookupIPResult(txidA, make([]netip.Addr, 1)); !state.InProgress() || n != 0 {
 		t.Fatal("lookup done before any response")
 	}
 	for i := range 2 {
@@ -277,8 +277,8 @@ func TestDNS_LookupIPConcurrent(t *testing.T) {
 		t.Fatalf("lookup B: %v %v", addrs, err)
 	}
 	for _, txid := range []uint16{txidA, txidB} {
-		if completed, ok := client.LookupIPPop(txid); !completed || !ok {
-			t.Fatalf("pop %#x: completed=%v ok=%v", txid, completed, ok)
+		if state, ok := client.LookupIPPop(txid); state.InProgress() || !ok {
+			t.Fatalf("pop %#x: state=%v ok=%v", txid, state, ok)
 		}
 		if _, ok := client.LookupIPPop(txid); ok {
 			t.Fatalf("second pop of %#x succeeded", txid)

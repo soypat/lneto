@@ -213,16 +213,19 @@ func _() {
 	_ = x[ErrTruncatedFrame-18]
 	_ = x[ErrMissingHALConfig-19]
 	_ = x[ErrBadState-20]
+	_ = x[ErrBadSignature-21]
+	_ = x[ErrConnRefused-22]
+	_ = x[ErrNoSuchResource-23]
 }
 
 const (
 	_errGeneric_name_0 = "lneto-bug(use build tag \"debugheaplog\")packet droppedincorrect checksumzero source(port/addr)zero destination(port/addr)short bufferbuffer fullinvalid addressunsupportedmismatchmismatched lengthinvalid configuration"
-	_errGeneric_name_1 = "invalid fieldinvalid length fieldresource exhaustedprotocol already registeredtruncated framemissing HAL configurationoperation invalid in current state"
+	_errGeneric_name_1 = "invalid fieldinvalid length fieldresource exhaustedprotocol already registeredtruncated framemissing HAL configurationoperation invalid in current statebad signatureconnection refusedno such resource"
 )
 
 var (
 	_errGeneric_index_0 = [...]uint8{0, 39, 53, 71, 93, 120, 132, 143, 158, 169, 177, 194, 215}
-	_errGeneric_index_1 = [...]uint8{0, 13, 33, 51, 78, 93, 118, 152}
+	_errGeneric_index_1 = [...]uint8{0, 13, 33, 51, 78, 93, 118, 152, 165, 183, 199}
 )
 
 func (i errGeneric) String() string {
@@ -230,7 +233,7 @@ func (i errGeneric) String() string {
 	case 1 <= i && i <= 12:
 		i -= 1
 		return _errGeneric_name_0[_errGeneric_index_0[i]:_errGeneric_index_0[i+1]]
-	case 14 <= i && i <= 20:
+	case 14 <= i && i <= 23:
 		i -= 14
 		return _errGeneric_name_1[_errGeneric_index_1[i]:_errGeneric_index_1[i+1]]
 	default:
