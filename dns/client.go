@@ -1,7 +1,6 @@
 package dns
 
 import (
-	"errors"
 	"math"
 
 	"github.com/soypat/lneto"
@@ -10,23 +9,21 @@ import (
 
 var _ lneto.StackNode = (*Client)(nil) // Compile-time guarantee of interface implementation.
 
-var errNoCNAME = errors.New("no CNAME in DNS response")
-
-// Client resolves DNS queries over UDP. Several queries may be in flight at once,
-// each identified by its transaction ID (txid) as the key to [Client.ResolvePeek],
-// [Client.ResolvePop] and [Client.ResolveResponse]. All queries share the client's local port.
+// Client provides parallel query resolution via Lookup* methods. Currently only supports UDP.
 type Client struct {
 	connID uint64
-	// queries holds active queries. Its capacity is fixed by [ClientConfig.MaxQueries];
-	// elements past its length keep their Message buffers for reuse.
-	queries []query
-	vld     lneto.Validator
-	lport   uint16
+	// looksies holds query slots. Its length is fixed by [ClientConfig.MaxQueries] and
+	// slots never move so the *Message returned by [Client.LookupResponse] stays valid.
+	looksies []lookup
+	// lidxs is a permutation of queries' indices: lidxs[:len] index active queries
+	// and lidxs[len:len(queries)] index free slots, which keep their buffers for reuse.
+	lidxs []uint16
+	vld   lneto.Validator
+	lport uint16
 }
 
-// query is one DNS query keyed by its txid. It keeps the sections it sends
-// apart from its response so it can be sent again, see [Client.ResolveCanonicalRestart].
-type query struct {
+// lookup stores a single lookup state with restart ability for canonical name resolution.
+type lookup struct {
 	questions       []Question
 	additional      []Resource
 	resp            Message
@@ -42,26 +39,34 @@ type ClientConfig struct {
 	MaxQueries int
 }
 
-type ResolveConfig struct {
+type LookupConfig struct {
 	Questions       []Question
 	Additional      []Resource
 	EnableRecursion bool
-	// MaxResponseAnswers limits how many answer records are decoded from the
-	// DNS response. If zero it defaults to the number of Questions. Answers
-	// are decoded in wire order regardless of type, so a response resolved
-	// through CNAMEs needs room for the CNAME records as well as the addresses.
+	// MaxResponseAnswers hard-limits how many answer records decoded from response.
 	MaxResponseAnswers uint16
 }
 
-// Configure discards all queries and configures the client. It invalidates the
-// client's previous registration on a stack, see [Client.ConnectionID].
+// Configure discards ongoing/pending/active queries and configures client. Also increments connection ID.
 func (c *Client) Configure(cfg ClientConfig) error {
 	if cfg.MaxQueries <= 0 || cfg.MaxQueries > math.MaxUint16 {
 		return lneto.ErrInvalidConfig
 	}
 	c.connID++
 	c.lport = cfg.LocalPort
-	internal.SliceReuse(&c.queries, cfg.MaxQueries)
+	n := cfg.MaxQueries
+	if cap(c.looksies) < n {
+		grown := make([]lookup, n)
+		copy(grown, c.looksies[:cap(c.looksies)]) // Keep slot buffers.
+		c.looksies = grown
+	} else {
+		c.looksies = c.looksies[:n]
+	}
+	internal.SliceReuse(&c.lidxs, n)
+	for i := range n {
+		c.lidxs = append(c.lidxs, uint16(i))
+	}
+	c.lidxs = c.lidxs[:0]
 	return nil
 }
 
@@ -71,47 +76,33 @@ func (c *Client) LocalPort() uint16 { return c.lport }
 
 func (c *Client) ConnectionID() *uint64 { return &c.connID }
 
-// SetLocalPort changes the port queries are sent from. It invalidates the client's
-// previous registration on a stack so it must be registered again.
-// Returns [lneto.ErrBadState] while any query is active.
-func (c *Client) SetLocalPort(port uint16) error {
-	if len(c.queries) > 0 {
-		return lneto.ErrBadState
-	}
-	c.connID++
-	c.lport = port
-	return nil
-}
+// NumLookups returns the number of active queries, sent or not, completed or not.
+func (c *Client) NumLookups() int { return len(c.lidxs) }
 
-// NumQueries returns the number of active queries, sent or not, completed or not.
-func (c *Client) NumQueries() int { return len(c.queries) }
+// MaxLookups returns the maximum number of queries that may be active at once.
+func (c *Client) MaxLookups() int { return len(c.looksies) }
 
-// CapQueries returns the maximum number of queries that may be active at once.
-func (c *Client) CapQueries() int { return cap(c.queries) }
-
-// ResolveStart starts a query identified by txid, which is sent on the next call to [Client.Encapsulate].
-// Returns [lneto.ErrExhausted] if [ClientConfig.MaxQueries] are active and
-// [lneto.ErrAlreadyRegistered] if a query with the same txid is active.
-func (c *Client) ResolveStart(txid uint16, cfg ResolveConfig) error {
+// LookupStart starts a query identified by txid which must be unique.
+func (c *Client) LookupStart(txid uint16, cfg LookupConfig) error {
 	nd := len(cfg.Questions)
 	if nd > math.MaxUint16 || nd == 0 || txid == 0 {
 		return lneto.ErrInvalidConfig
 	} else if c.qidx(txid) >= 0 {
 		return lneto.ErrAlreadyRegistered
-	} else if len(c.queries) == cap(c.queries) {
+	} else if len(c.lidxs) == len(c.looksies) {
 		return lneto.ErrExhausted
 	}
 	validateSections(&c.vld, cfg.Questions, nil, nil, cfg.Additional)
 	if err := c.vld.ErrPop(); err != nil {
 		return err
 	}
-	q := internal.SliceReclaim(&c.queries)
-	q.reset(txid, cfg)
+	c.lidxs = c.lidxs[:len(c.lidxs)+1] // Claim first free slot.
+	c.qat(len(c.lidxs)-1).reset(txid, cfg)
 	return nil
 }
 
 // reset sets the query up as a pending query txid with cfg's sections. cfg must be validated.
-func (q *query) reset(txid uint16, cfg ResolveConfig) {
+func (q *lookup) reset(txid uint16, cfg LookupConfig) {
 	nd := uint16(len(cfg.Questions))
 	maxAns := cfg.MaxResponseAnswers
 	if maxAns == 0 {
@@ -126,64 +117,57 @@ func (q *query) reset(txid uint16, cfg ResolveConfig) {
 }
 
 // restart makes the query pending as txid, discarding its response.
-func (q *query) restart(txid uint16) {
+func (q *lookup) restart(txid uint16) {
 	q.resp.Reset()
 	q.txid = txid
 	q.respFlags = 0
 	q.state = CQueryPending
 }
 
-// ResolvePeek reports whether the query txid has completed. ok is false if no such query is active.
-func (c *Client) ResolvePeek(txid uint16) (completed, ok bool) {
+// LookupPeek reports whether the query txid has completed. ok is false if no such query is active.
+func (c *Client) LookupPeek(txid uint16) (completed, ok bool) {
 	idx := c.qidx(txid)
 	if idx < 0 {
 		return false, false
 	}
-	return c.queries[idx].state == CQueryDone, true
+	return c.qat(idx).state == CQueryDone, true
 }
 
-// ResolvePop removes the query txid, freeing its slot for another query, and reports whether
-// it had completed. ok is false if no such query is active. The response returned by
-// [Client.ResolveResponse] for txid must not be used afterwards.
-func (c *Client) ResolvePop(txid uint16) (completed, ok bool) {
+// LookupPop removes the query by txid. completed=true if the query already completed.
+func (c *Client) LookupPop(txid uint16) (completed, ok bool) {
 	idx := c.qidx(txid)
 	if idx < 0 {
 		return false, false
 	}
-	completed = c.queries[idx].state == CQueryDone
+	completed = c.qat(idx).state == CQueryDone
 	c.qidxRemove(idx)
 	return completed, true
 }
 
-// ResolveResponse returns the decoded response to the completed query txid and its header flags,
-// where [HeaderFlags.ResponseCode] reports whether the query succeeded. ok is false if the
-// query is not active or has not completed. resp is owned by the client and valid until
-// txid is removed with [Client.ResolvePop], [Client.Reset] or [Client.Abort].
-func (c *Client) ResolveResponse(txid uint16) (resp *Message, flags HeaderFlags, ok bool) {
+// LookupResponse returns the decoded response corresponding to the query identied by txid. See [HeaderFlags.ResponseCode] to check if query succesful.
+// resp is owned by Client and valid until txid removed with [Client.LookupPop], [Client.Reset], [Client.Abort] or [Client.Configure],
+// or restarted with [Client.LookupCanonicalRestart]. Starting, completing or removing other queries does not affect resp.
+func (c *Client) LookupResponse(txid uint16) (resp *Message, flags HeaderFlags, ok bool) {
 	idx := c.qidx(txid)
-	if idx < 0 || c.queries[idx].state != CQueryDone {
+	if idx < 0 || c.qat(idx).state != CQueryDone {
 		return nil, 0, false
 	}
-	q := &c.queries[idx]
+	q := c.qat(idx)
 	return &q.resp, q.respFlags, true
 }
 
-// ResolveCanonicalRestart restarts the completed query txid as newTxid, querying the canonical name
-// its response holds for its question. Use it after a response with CNAME records and no
-// address to follow the CNAME chain. The query keeps its slot and memory, its question type
-// and additional records; the response to txid must not be used afterwards.
-// Returns [lneto.ErrAlreadyRegistered] if newTxid is in use and [lneto.ErrUnsupported] for
-// queries with more than one question. A failed call leaves the query unchanged.
-func (c *Client) ResolveCanonicalRestart(txid, newTxid uint16) error {
+// LookupCanonicalRestart restarts a completed query txid as newTxid, querying the canonical name its response holds.
+// Use when [Message.WriteAnswers] outputs no addresses and [Message.CanonicalName] output is non-zero lengthed.
+func (c *Client) LookupCanonicalRestart(txid, newTxid uint16) error {
 	idx := c.qidx(txid)
-	if idx < 0 || c.queries[idx].state != CQueryDone {
+	if idx < 0 || c.qat(idx).state != CQueryDone {
 		return errNoResponse
 	} else if newTxid == 0 {
 		return lneto.ErrInvalidConfig
 	} else if c.qidx(newTxid) >= 0 {
 		return lneto.ErrAlreadyRegistered
 	}
-	q := &c.queries[idx]
+	q := c.qat(idx)
 	if rcode := q.respFlags.ResponseCode(); rcode != 0 {
 		return rcode
 	} else if len(q.questions) != 1 {
@@ -202,7 +186,7 @@ func (c *Client) ResolveCanonicalRestart(txid, newTxid uint16) error {
 
 // Reset removes all queries.
 func (c *Client) Reset() {
-	c.queries = c.queries[:0]
+	c.lidxs = c.lidxs[:0]
 }
 
 // Abort removes all queries and invalidates the client's registration on a stack.
@@ -217,7 +201,7 @@ func (c *Client) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) 
 	if idx < 0 {
 		return 0, nil
 	}
-	q := &c.queries[idx]
+	q := c.qat(idx)
 	frame := carrierData[offsetToFrame:]
 	msglen := uint16(SizeHeader + lenSections(q.questions, nil, nil, q.additional))
 	if msglen > uint16(len(frame)) {
@@ -248,10 +232,10 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 		return err
 	}
 	idx := c.qidx(f.TxID())
-	if idx < 0 || c.queries[idx].state != CQueryOutstanding || !c.queries[idx].isResponse(f) {
+	if idx < 0 || c.qat(idx).state != CQueryOutstanding || !c.qat(idx).isResponse(f) {
 		return nil // Not meant for our client.
 	}
-	q := &c.queries[idx]
+	q := c.qat(idx)
 	q.respFlags = f.Flags()
 	q.state = CQueryDone
 	_, incompleteButOK, err := q.resp.Decode(frame)
@@ -263,7 +247,7 @@ func (c *Client) Demux(carrierData []byte, frameOffset int) error {
 
 // isResponse reports whether frame responds to the query: response flag set,
 // same opcode and same question section. txid is checked by the caller.
-func (q *query) isResponse(f Frame) bool {
+func (q *lookup) isResponse(f Frame) bool {
 	flags := f.Flags()
 	if !flags.IsResponse() || flags.OpCode() != OpCodeQuery || int(f.QDCount()) != len(q.questions) {
 		return false
@@ -279,11 +263,16 @@ func (q *query) isResponse(f Frame) bool {
 	return true
 }
 
-// qidxPending gets query index of next pending query.
+// qat returns the active query at position idx of qidxs.
+func (c *Client) qat(idx int) *lookup {
+	return &c.looksies[c.lidxs[idx]]
+}
+
+// qidxPending gets qidxs position of next pending query.
 func (c *Client) qidxPending() int {
 	idx := -1
-	for i := range c.queries {
-		if c.queries[i].state == CQueryPending {
+	for i := range c.lidxs {
+		if c.qat(i).state == CQueryPending {
 			idx = i
 			break
 		}
@@ -291,19 +280,20 @@ func (c *Client) qidxPending() int {
 	return idx
 }
 
-// qidx returns query index matching transaction ID.
+// qidx returns qidxs position of active query matching transaction ID.
 func (c *Client) qidx(txid uint16) int {
-	for i := range c.queries {
-		if c.queries[i].txid == txid {
+	for i := range c.lidxs {
+		if c.qat(i).txid == txid {
 			return i
 		}
 	}
 	return -1
 }
 
-// qidxRemove deletes the query at idx by swapping it past the end, keeping its buffers for reuse.
+// qidxRemove frees the query at qidxs position idx by swapping its slot index past the end.
+// The query itself stays in place, keeping its buffers for reuse.
 func (c *Client) qidxRemove(idx int) {
-	last := len(c.queries) - 1
-	c.queries[idx], c.queries[last] = c.queries[last], c.queries[idx]
-	c.queries = c.queries[:last]
+	last := len(c.lidxs) - 1
+	c.lidxs[idx], c.lidxs[last] = c.lidxs[last], c.lidxs[idx]
+	c.lidxs = c.lidxs[:last]
 }

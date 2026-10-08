@@ -115,6 +115,7 @@ var (
 	errTooManyAdditionals = lneto.ErrExhausted
 
 	errNonCanonicalName = errors.New("name is not in canonical format (it must end with a .)")
+	errNoCNAME          = errors.New("no CNAME in DNS response")
 	errStringTooLong    = errors.New("character string exceeds maximum length (255)")
 	errCompressedSRV    = errors.New("compressed name in SRV resource data")
 	errEmptyDomainName  = errors.New("empty domain name")

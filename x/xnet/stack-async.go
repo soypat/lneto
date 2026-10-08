@@ -659,18 +659,37 @@ func (s *StackAsync) RegisterListenerUDP6(pktconn *udp.PacketConn) (err error) {
 	return s.stack6.RegisterListenerUDP6(pktconn)
 }
 
-var errNoDNSServer = errors.New("no DNS server- did DHCP complete? You can set a predetermined DNS server in Stack configuration")
+var (
+	errDNSv6Transport = errors.New("DNS query over IPv6 transport not supported; configure an IPv4 DNS server")
+	errNoDNSServer    = errors.New("no DNS server- did DHCP complete? You can set a predetermined DNS server in Stack configuration")
+	errDNSNotDone     = errors.New("DNS not done")
+	errDNSNoLookup    = errors.New("no such DNS lookup")
+	errDNSNoAns       = errors.New("no address in DNS answer")
+	// errDNSOnlyCNAME is returned when the answer ends in a CNAME without address.
+	errDNSOnlyCNAME = errors.New("DNS answer is CNAME without address")
+)
 
-var errDNSv6Transport = errors.New("DNS query over IPv6 transport not supported; configure an IPv4 DNS server")
+// newDNSTxid returns a txid that is non-zero, unused by active lookups and unpredictable.
+func (s *StackAsync) newDNSTxid() uint16 {
+	for {
+		txid := s.dnsRand16()
+		if _, active := s.dns.LookupPeek(txid); txid != 0 && !active {
+			return txid
+		}
+	}
+}
 
-// LookupIPStart begins resolving host for the given record type (e.g. dns.TypeA
-// or dns.TypeAAAA) and returns the lookup's key for [StackAsync.LookupIPResult] and
-// [StackAsync.LookupIPPop]. nans is the number of answer records decoded from the response;
-// CNAME records precede the addresses they alias and count towards it, so leave headroom for them.
-// Lookups with a larger nans than the stack has seen before allocate the extra room.
-// Up to [StackConfig.MaxDNSQueries] lookups may be active at once,
-// after which [lneto.ErrExhausted] is returned. The DNS query is always carried over IPv4 to
-// the configured DNS server; resolving over an IPv6 DNS transport is not yet supported.
+// dnsRand16 returns secure keyed hash to prevent spoofing attacks via DNS port/txid.
+func (s *StackAsync) dnsRand16() uint16 {
+	var buf [8]byte
+	binary.LittleEndian.PutUint64(buf[:], s.dnsCtr)
+	s.dnsCtr++
+	return uint16(internal.SipHash24(&s.key, buf[:]))
+}
+
+// LookupIPStart starts host resolution for type dns.TypeA/dns.TypeAAAA returning the lookup key for [StackAsync.LookupIPResult].
+// nans limits answer records decoded from response; CNAME records precede addresses so leave headroom for them.
+// Up to [StackConfig.MaxDNSQueries] lookups may be active at once after which [lneto.ErrExhausted] is returned.
 func (s *StackAsync) LookupIPStart(host dns.Name, qtype dns.Type, nans uint16) (txid uint16, err error) {
 	// No defer: TinyGo will not inline functions with defer and emits unlock code per return.
 	s.mu.Lock()
@@ -684,14 +703,14 @@ func (s *StackAsync) lookupIPStart(host dns.Name, qtype dns.Type, nans uint16) (
 		return 0, errNoDNSServer
 	} else if !s.dnssv.Is4() {
 		return 0, errDNSv6Transport
-	} else if s.dns.NumQueries() == s.dns.CapQueries() {
+	} else if s.dns.NumLookups() == s.dns.MaxLookups() {
 		return 0, lneto.ErrExhausted
 	}
-	if s.dns.NumQueries() == 0 {
+	if s.dns.NumLookups() == 0 {
 		// Idle: pick a new unpredictable source port, which adds to the
 		// txid in protecting against spoofed responses (RFC 5452).
 		port := 1024 + s.dnsRand16()%(math.MaxUint16-1024)
-		err = s.dns.SetLocalPort(port)
+		err = s.dns.Configure(dns.ClientConfig{LocalPort: port, MaxQueries: s.dns.MaxLookups()})
 		if err != nil {
 			return 0, err
 		}
@@ -706,7 +725,7 @@ func (s *StackAsync) lookupIPStart(host dns.Name, qtype dns.Type, nans uint16) (
 	// 100 bytes covers IPv4 max header (60) + UDP (8) + 32 byte margin.
 	edns0.SetResource(&s.ednsopt, uint16(s.link.MTU())-100, 0, 0, nil)
 	txid = s.newDNSTxid()
-	err = s.dns.ResolveStart(txid, dns.ResolveConfig{
+	err = s.dns.LookupStart(txid, dns.LookupConfig{
 		Questions: []dns.Question{
 			{
 				Name:  host,
@@ -727,13 +746,11 @@ func (s *StackAsync) lookupIPStart(host dns.Name, qtype dns.Type, nans uint16) (
 	return txid, nil
 }
 
-// LookupIPFollowCNAME restarts the lookup txid, whose response held a CNAME record and no address
-// (see errDNSOnlyCNAME in [StackAsync.LookupIPResult]), to resolve the canonical name.
-// It returns the new lookup's key; txid is no longer valid.
+// LookupIPFollowCNAME restarts lookup txid if response held CNAME but no address.
 func (s *StackAsync) LookupIPFollowCNAME(txid uint16) (newTxid uint16, err error) {
 	s.mu.Lock()
 	newTxid = s.newDNSTxid()
-	err = s.dns.ResolveCanonicalRestart(txid, newTxid)
+	err = s.dns.LookupCanonicalRestart(txid, newTxid)
 	s.mu.Unlock()
 	if err != nil {
 		return 0, err
@@ -745,37 +762,27 @@ func (s *StackAsync) LookupIPFollowCNAME(txid uint16) (newTxid uint16, err error
 // it had completed. ok is false if no such lookup is active. Every lookup started must be popped.
 func (s *StackAsync) LookupIPPop(txid uint16) (completed, ok bool) {
 	s.mu.Lock()
-	completed, ok = s.dns.ResolvePop(txid)
+	completed, ok = s.dns.LookupPop(txid)
 	s.mu.Unlock()
 	return completed, ok
 }
 
-// newDNSTxid returns a txid that is non-zero, unused by active lookups and unpredictable.
-func (s *StackAsync) newDNSTxid() uint16 {
-	for {
-		txid := s.dnsRand16()
-		if _, active := s.dns.ResolvePeek(txid); txid != 0 && !active {
-			return txid
-		}
-	}
+// LookupIPPeek checks on query txid returning completed=true if response was received.
+func (s *StackAsync) LookupIPPeek(txid uint16) (completed, ok bool) {
+	s.mu.Lock()
+	completed, ok = s.dns.LookupPeek(txid)
+	s.mu.Unlock()
+	return completed, ok
 }
 
-// dnsRand16 returns a keyed hash of a counter, so observed DNS txids and ports
-// reveal nothing about later ones, unlike values drawn from [StackAsync.Prand32].
-func (s *StackAsync) dnsRand16() uint16 {
-	var buf [8]byte
-	binary.LittleEndian.PutUint64(buf[:], s.dnsCtr)
-	s.dnsCtr++
-	return uint16(internal.SipHash24(&s.key, buf[:]))
+// LookupIPResponse returns the [dns.Message] containing the response for query txid.
+// [dns.Message] is owned by the stack and only valid until the next Lookup method is called on txid.
+func (s *StackAsync) LookupIPResponse(txid uint16) (resp *dns.Message, flags dns.HeaderFlags, ok bool) {
+	s.mu.Lock()
+	resp, flags, ok = s.dns.LookupResponse(txid)
+	s.mu.Unlock()
+	return resp, flags, ok
 }
-
-var (
-	errDNSNotDone  = errors.New("DNS not done")
-	errDNSNoLookup = errors.New("no such DNS lookup")
-	errDNSNoAns    = errors.New("no address in DNS answer")
-	// errDNSOnlyCNAME is returned when the answer ends in a CNAME without address.
-	errDNSOnlyCNAME = errors.New("DNS answer is CNAME without address")
-)
 
 // LookupIPResult writes the addresses answering the lookup txid into dst and returns how many were written.
 // done is false while the lookup awaits its response. Once done it returns errDNSOnlyCNAME
@@ -790,9 +797,9 @@ func (s *StackAsync) LookupIPResult(txid uint16, dst []netip.Addr) (n int, done 
 }
 
 func (s *StackAsync) lookupIPResult(txid uint16, dst []netip.Addr) (n int, done bool, err error) {
-	resp, flags, ok := s.dns.ResolveResponse(txid)
+	resp, flags, ok := s.dns.LookupResponse(txid)
 	if !ok {
-		if _, active := s.dns.ResolvePeek(txid); !active {
+		if _, active := s.dns.LookupPeek(txid); !active {
 			return 0, true, errDNSNoLookup
 		}
 		return 0, false, errDNSNotDone
