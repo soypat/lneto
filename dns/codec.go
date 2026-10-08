@@ -95,9 +95,7 @@ func NextLabel(data []byte) (start_RelOrAbs, endRel uint16, isAbsPointer bool, e
 	return start_RelOrAbs, endRel, isAbsPointer, err
 }
 
-// PutMessage writes a DNS message with the given header fields and sections to dst
-// in wire format and returns length of written data. Nil sections are encoded as empty. It is the counterpart of [DecodeMessage].
-// If the message is too long for the buffer [lneto.ErrShortBuffer] is returned.
+// PutMessage writes DNS message to dst in wire format and returns length written. Nil sections encoded as empty.
 func PutMessage(dst []byte, txid uint16, flags HeaderFlags, questions []Question, answers, authorities, additionals []Resource) (n int, err error) {
 	toWrite := SizeHeader + lenSections(questions, answers, authorities, additionals)
 	if len(dst) < toWrite {

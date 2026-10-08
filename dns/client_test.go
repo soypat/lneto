@@ -18,9 +18,9 @@ func newTestClient(t testing.TB, maxQueries int) *Client {
 	return &client
 }
 
-func startTestResolve(t testing.TB, client *Client, txid uint16, host string, maxAnswers uint16) {
+func startTestLookup(t testing.TB, client *Client, txid uint16, host string, maxAnswers uint16) {
 	t.Helper()
-	err := client.ResolveStart(txid, ResolveConfig{
+	err := client.LookupStart(txid, LookupConfig{
 		Questions:          []Question{{Name: MustNewName(host), Type: TypeA, Class: ClassINET}},
 		EnableRecursion:    true,
 		MaxResponseAnswers: maxAnswers,
@@ -61,11 +61,11 @@ func testAnswers(host string, firstOctet byte, n int) ([]Resource, []netip.Addr)
 // checkTestAnswers checks the response to txid holds exactly want for host.
 func checkTestAnswers(t testing.TB, client *Client, txid uint16, host string, want []netip.Addr) {
 	t.Helper()
-	completed, ok := client.ResolvePeek(txid)
+	completed, ok := client.LookupPeek(txid)
 	if !ok || !completed {
 		t.Fatalf("txid %#x: completed=%v ok=%v", txid, completed, ok)
 	}
-	resp, flags, ok := client.ResolveResponse(txid)
+	resp, flags, ok := client.LookupResponse(txid)
 	if !ok {
 		t.Fatalf("txid %#x: no response", txid)
 	} else if flags != testResponseFlags {
@@ -87,10 +87,10 @@ func TestClient_ConcurrentQueries(t *testing.T) {
 	const hostA, hostB = "a.example.com", "b.example.org"
 	const txidA, txidB = 0x1111, 0x2222
 	client := newTestClient(t, 2)
-	startTestResolve(t, client, txidA, hostA, 4)
-	startTestResolve(t, client, txidB, hostB, 4)
-	if client.NumQueries() != 2 {
-		t.Fatalf("NumQueries=%d, want 2", client.NumQueries())
+	startTestLookup(t, client, txidA, hostA, 4)
+	startTestLookup(t, client, txidB, hostB, 4)
+	if client.NumLookups() != 2 {
+		t.Fatalf("NumQueries=%d, want 2", client.NumLookups())
 	}
 	sent := [2]uint16{encapsulateTestQuery(t, client), encapsulateTestQuery(t, client)}
 	if sent != [2]uint16{txidA, txidB} && sent != [2]uint16{txidB, txidA} {
@@ -106,7 +106,7 @@ func TestClient_ConcurrentQueries(t *testing.T) {
 	if err := client.Demux(testResponse(t, txidB, testResponseFlags, hostB, TypeA, rscB), 0); err != nil {
 		t.Fatal(err)
 	}
-	if completed, ok := client.ResolvePeek(txidA); completed || !ok {
+	if completed, ok := client.LookupPeek(txidA); completed || !ok {
 		t.Fatalf("A completed=%v ok=%v before its response", completed, ok)
 	}
 	if err := client.Demux(testResponse(t, txidA, testResponseFlags, hostA, TypeA, rscA), 0); err != nil {
@@ -118,45 +118,45 @@ func TestClient_ConcurrentQueries(t *testing.T) {
 
 func TestClient_Exhausted(t *testing.T) {
 	client := newTestClient(t, 2)
-	if client.CapQueries() != 2 {
-		t.Fatalf("QueryCapacity=%d, want 2", client.CapQueries())
+	if client.MaxLookups() != 2 {
+		t.Fatalf("QueryCapacity=%d, want 2", client.MaxLookups())
 	}
-	startTestResolve(t, client, 1, "a.com", 1)
-	startTestResolve(t, client, 2, "b.com", 1)
-	cfg := ResolveConfig{Questions: []Question{{Name: MustNewName("c.com"), Type: TypeA, Class: ClassINET}}}
-	if err := client.ResolveStart(3, cfg); !errors.Is(err, lneto.ErrExhausted) {
+	startTestLookup(t, client, 1, "a.com", 1)
+	startTestLookup(t, client, 2, "b.com", 1)
+	cfg := LookupConfig{Questions: []Question{{Name: MustNewName("c.com"), Type: TypeA, Class: ClassINET}}}
+	if err := client.LookupStart(3, cfg); !errors.Is(err, lneto.ErrExhausted) {
 		t.Fatalf("err=%v, want ErrExhausted", err)
 	}
-	if completed, ok := client.ResolvePop(1); completed || !ok {
+	if completed, ok := client.LookupPop(1); completed || !ok {
 		t.Fatalf("pop pending: completed=%v ok=%v", completed, ok)
 	}
-	if err := client.ResolveStart(3, cfg); err != nil {
+	if err := client.LookupStart(3, cfg); err != nil {
 		t.Fatal("start after pop:", err)
 	}
 	// Remaining queries are intact after the pop.
-	if _, ok := client.ResolvePeek(2); !ok {
+	if _, ok := client.LookupPeek(2); !ok {
 		t.Fatal("query 2 lost after popping query 1")
 	}
 }
 
-func TestClient_StartResolveInvalid(t *testing.T) {
+func TestClient_LookupStartInvalid(t *testing.T) {
 	client := newTestClient(t, 2)
-	startTestResolve(t, client, 7, "a.com", 1)
-	cfg := ResolveConfig{Questions: []Question{{Name: MustNewName("b.com"), Type: TypeA, Class: ClassINET}}}
-	if err := client.ResolveStart(7, cfg); err == nil {
+	startTestLookup(t, client, 7, "a.com", 1)
+	cfg := LookupConfig{Questions: []Question{{Name: MustNewName("b.com"), Type: TypeA, Class: ClassINET}}}
+	if err := client.LookupStart(7, cfg); err == nil {
 		t.Fatal("duplicate active txid accepted")
 	}
-	if err := client.ResolveStart(8, ResolveConfig{}); err == nil {
+	if err := client.LookupStart(8, LookupConfig{}); err == nil {
 		t.Fatal("zero questions accepted")
 	}
-	if err := client.ResolveStart(8, ResolveConfig{Questions: []Question{{Type: TypeA, Class: ClassINET}}}); err == nil {
+	if err := client.LookupStart(8, LookupConfig{Questions: []Question{{Type: TypeA, Class: ClassINET}}}); err == nil {
 		t.Fatal("empty question name accepted")
 	}
 	// Failed starts do not hold a slot.
-	if client.NumQueries() != 1 {
-		t.Fatalf("NumQueries=%d after failed starts, want 1", client.NumQueries())
+	if client.NumLookups() != 1 {
+		t.Fatalf("NumQueries=%d after failed starts, want 1", client.NumLookups())
 	}
-	if err := client.ResolveStart(8, cfg); err != nil {
+	if err := client.LookupStart(8, cfg); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -180,13 +180,13 @@ func TestClient_RejectsMismatchedResponse(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := newTestClient(t, 1)
-			startTestResolve(t, client, txid, host, 1)
+			startTestLookup(t, client, txid, host, 1)
 			encapsulateTestQuery(t, client)
 			client.Demux(tt.resp, 0)
-			if completed, ok := client.ResolvePeek(txid); completed || !ok {
+			if completed, ok := client.LookupPeek(txid); completed || !ok {
 				t.Fatalf("completed=%v ok=%v after mismatched response", completed, ok)
 			}
-			if _, _, ok := client.ResolveResponse(txid); ok {
+			if _, _, ok := client.LookupResponse(txid); ok {
 				t.Fatal("response available after mismatched response")
 			}
 			if err := client.Demux(good, 0); err != nil {
@@ -197,9 +197,9 @@ func TestClient_RejectsMismatchedResponse(t *testing.T) {
 	}
 	t.Run("before query sent", func(t *testing.T) {
 		client := newTestClient(t, 1)
-		startTestResolve(t, client, txid, host, 1)
+		startTestLookup(t, client, txid, host, 1)
 		client.Demux(good, 0)
-		if completed, _ := client.ResolvePeek(txid); completed {
+		if completed, _ := client.LookupPeek(txid); completed {
 			t.Fatal("completed by response to unsent query")
 		}
 	})
@@ -208,7 +208,7 @@ func TestClient_RejectsMismatchedResponse(t *testing.T) {
 func TestClient_CaseRandomizedQuestion(t *testing.T) {
 	const txid = 0x0420
 	client := newTestClient(t, 1)
-	startTestResolve(t, client, txid, "www.example.com", 1)
+	startTestLookup(t, client, txid, "www.example.com", 1)
 	encapsulateTestQuery(t, client)
 	rsc, want := testAnswers("www.example.com", 40, 1)
 	// Server echoes the question with DNS 0x20 randomized case.
@@ -223,37 +223,87 @@ func TestClient_PopSemantics(t *testing.T) {
 	const host = "example.com"
 	const txid = 0x5555
 	client := newTestClient(t, 1)
-	if completed, ok := client.ResolvePeek(txid); completed || ok {
+	if completed, ok := client.LookupPeek(txid); completed || ok {
 		t.Fatalf("unknown txid: completed=%v ok=%v", completed, ok)
 	}
-	startTestResolve(t, client, txid, host, 1)
+	startTestLookup(t, client, txid, host, 1)
 	encapsulateTestQuery(t, client)
 	rsc, _ := testAnswers(host, 50, 1)
 	if err := client.Demux(testResponse(t, txid, testResponseFlags, host, TypeA, rsc), 0); err != nil {
 		t.Fatal(err)
 	}
-	if completed, ok := client.ResolvePop(txid); !completed || !ok {
+	if completed, ok := client.LookupPop(txid); !completed || !ok {
 		t.Fatalf("pop: completed=%v ok=%v", completed, ok)
 	}
-	if completed, ok := client.ResolvePeek(txid); completed || ok {
+	if completed, ok := client.LookupPeek(txid); completed || ok {
 		t.Fatalf("peek after pop: completed=%v ok=%v", completed, ok)
 	}
-	if completed, ok := client.ResolvePop(txid); completed || ok {
+	if completed, ok := client.LookupPop(txid); completed || ok {
 		t.Fatalf("second pop: completed=%v ok=%v", completed, ok)
 	}
-	if _, _, ok := client.ResolveResponse(txid); ok {
+	if _, _, ok := client.LookupResponse(txid); ok {
 		t.Fatal("response after pop")
 	}
-	if client.NumQueries() != 0 {
-		t.Fatalf("NumQueries=%d after pop, want 0", client.NumQueries())
+	if client.NumLookups() != 0 {
+		t.Fatalf("NumQueries=%d after pop, want 0", client.NumLookups())
 	}
+}
+
+func TestClient_ResponseStableAcrossPop(t *testing.T) {
+	const hostA, hostB, hostC = "a.example.com", "b.example.org", "c.example.net"
+	const txidA, txidB, txidC = 0x1111, 0x2222, 0x3333
+	client := newTestClient(t, 2)
+	startTestLookup(t, client, txidA, hostA, 4)
+	startTestLookup(t, client, txidB, hostB, 4)
+	encapsulateTestQuery(t, client)
+	encapsulateTestQuery(t, client)
+	rscA, _ := testAnswers(hostA, 10, 2)
+	rscB, wantB := testAnswers(hostB, 20, 3)
+	if err := client.Demux(testResponse(t, txidA, testResponseFlags, hostA, TypeA, rscA), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Demux(testResponse(t, txidB, testResponseFlags, hostB, TypeA, rscB), 0); err != nil {
+		t.Fatal(err)
+	}
+	respB, _, ok := client.LookupResponse(txidB)
+	if !ok {
+		t.Fatal("no response for B")
+	}
+	checkResp := func(when string) {
+		t.Helper()
+		got, _, ok := client.LookupResponse(txidB)
+		if !ok || got != respB {
+			t.Fatalf("%s: B response pointer changed", when)
+		}
+		dst := make([]netip.Addr, len(wantB)+1)
+		n, err := respB.WriteAnswers(dst, MustNewName(hostB))
+		if err != nil || int(n) != len(wantB) {
+			t.Fatalf("%s: n=%d err=%v, want %d", when, n, err, len(wantB))
+		}
+		for i := range wantB {
+			if dst[i] != wantB[i] {
+				t.Fatalf("%s: addr %d=%v, want %v", when, i, dst[i], wantB[i])
+			}
+		}
+	}
+	if _, ok := client.LookupPop(txidA); !ok {
+		t.Fatal("pop A failed")
+	}
+	checkResp("after pop A")
+	startTestLookup(t, client, txidC, hostC, 4)
+	encapsulateTestQuery(t, client)
+	rscC, _ := testAnswers(hostC, 30, 1)
+	if err := client.Demux(testResponse(t, txidC, testResponseFlags, hostC, TypeA, rscC), 0); err != nil {
+		t.Fatal(err)
+	}
+	checkResp("after C completes")
 }
 
 func TestClient_ManyAnswers(t *testing.T) {
 	const host = "example.com"
 	const txid = 0x0808
 	client := newTestClient(t, 1)
-	startTestResolve(t, client, txid, host, 8)
+	startTestLookup(t, client, txid, host, 8)
 	encapsulateTestQuery(t, client)
 	rsc, want := testAnswers(host, 60, 8)
 	if err := client.Demux(testResponse(t, txid, testResponseFlags, host, TypeA, rsc), 0); err != nil {
@@ -267,7 +317,7 @@ func TestClient_ZeroAllocReuse(t *testing.T) {
 	const txid = 0x3333
 	client := newTestClient(t, 2)
 	name := MustNewName(host)
-	cfg := ResolveConfig{
+	cfg := LookupConfig{
 		Questions:          []Question{{Name: name, Type: TypeA, Class: ClassINET}},
 		EnableRecursion:    true,
 		MaxResponseAnswers: 4,
@@ -277,11 +327,11 @@ func TestClient_ZeroAllocReuse(t *testing.T) {
 	var buf [512]byte
 	var dst [4]netip.Addr
 	// Keep another query active so popping exercises removal of a non-last slot.
-	if err := client.ResolveStart(txid+1, cfg); err != nil {
+	if err := client.LookupStart(txid+1, cfg); err != nil {
 		t.Fatal(err)
 	}
 	cycle := func() {
-		if err := client.ResolveStart(txid, cfg); err != nil {
+		if err := client.LookupStart(txid, cfg); err != nil {
 			panic(err)
 		}
 		for {
@@ -295,14 +345,14 @@ func TestClient_ZeroAllocReuse(t *testing.T) {
 		if err := client.Demux(resp, 0); err != nil {
 			panic(err)
 		}
-		msg, _, ok := client.ResolveResponse(txid)
+		msg, _, ok := client.LookupResponse(txid)
 		if !ok {
 			panic("no response")
 		}
 		if n, err := msg.WriteAnswers(dst[:], name); err != nil || n != 4 {
 			panic(err)
 		}
-		if completed, ok := client.ResolvePop(txid); !completed || !ok {
+		if completed, ok := client.LookupPop(txid); !completed || !ok {
 			panic("pop failed")
 		}
 	}
@@ -312,42 +362,23 @@ func TestClient_ZeroAllocReuse(t *testing.T) {
 	}
 }
 
-func TestClient_SetLocalPort(t *testing.T) {
-	client := newTestClient(t, 1)
-	connID := *client.ConnectionID()
-	startTestResolve(t, client, 1, "a.com", 1)
-	if err := client.SetLocalPort(1000); !errors.Is(err, lneto.ErrBadState) {
-		t.Fatalf("SetLocalPort with active query: err=%v, want ErrBadState", err)
-	}
-	client.ResolvePop(1)
-	if err := client.SetLocalPort(1000); err != nil {
-		t.Fatal(err)
-	}
-	if client.LocalPort() != 1000 {
-		t.Fatalf("LocalPort=%d, want 1000", client.LocalPort())
-	}
-	if *client.ConnectionID() == connID {
-		t.Fatal("connection ID unchanged after port change")
-	}
-}
-
 func TestClient_AbortAndIdle(t *testing.T) {
 	client := newTestClient(t, 2)
 	var buf [512]byte
 	if n, err := client.Encapsulate(buf[:], -1, 0); n != 0 || err != nil {
 		t.Fatalf("idle encapsulate n=%d err=%v, want 0 and nil", n, err)
 	}
-	startTestResolve(t, client, 1, "a.com", 1)
-	startTestResolve(t, client, 2, "b.com", 1)
+	startTestLookup(t, client, 1, "a.com", 1)
+	startTestLookup(t, client, 2, "b.com", 1)
 	connID := *client.ConnectionID()
 	client.Abort()
 	if *client.ConnectionID() == connID {
 		t.Fatal("connection ID unchanged after Abort")
 	}
-	if client.NumQueries() != 0 {
-		t.Fatalf("NumQueries=%d after Abort", client.NumQueries())
+	if client.NumLookups() != 0 {
+		t.Fatalf("NumQueries=%d after Abort", client.NumLookups())
 	}
-	if _, ok := client.ResolvePeek(1); ok {
+	if _, ok := client.LookupPeek(1); ok {
 		t.Fatal("query survived Abort")
 	}
 }
@@ -382,14 +413,14 @@ func TestClient_ReceivesDNSResponse(t *testing.T) {
 			dnsPayload := testResponse(t, txid, testResponseFlags, hostname, TypeA, rsc)
 
 			client := newTestClient(t, 1)
-			startTestResolve(t, client, txid, hostname, maxAnswers)
+			startTestLookup(t, client, txid, hostname, maxAnswers)
 			// Encapsulate the query to move the client into the outstanding state.
 			encapsulateTestQuery(t, client)
 			if err := client.Demux(dnsPayload, 0); err != nil {
 				t.Fatal("failed to demux DNS response:", err)
 			}
 
-			resp, _, ok := client.ResolveResponse(txid)
+			resp, _, ok := client.LookupResponse(txid)
 			if !ok {
 				t.Fatal("no response")
 			}
@@ -419,14 +450,14 @@ func TestClient_ReceivesDNSResponse(t *testing.T) {
 	}
 }
 
-func TestClient_ResolveCanonical(t *testing.T) {
+func TestClient_LookupCanonical(t *testing.T) {
 	const host, alias = "a.example.com", "edge.cdn.example.net"
 	const txid, hopTxid = 0x1000, 0x2000
 
 	var edns Resource
 	setEDNS0(&edns, 1232, nil)
 	client := newTestClient(t, 1)
-	err := client.ResolveStart(txid, ResolveConfig{
+	err := client.LookupStart(txid, LookupConfig{
 		Questions:          []Question{{Name: MustNewName(host), Type: TypeA, Class: ClassINET}},
 		Additional:         []Resource{edns},
 		EnableRecursion:    true,
@@ -440,17 +471,17 @@ func TestClient_ResolveCanonical(t *testing.T) {
 	if err = client.Demux(cnameOnly, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err = client.ResolveCanonicalRestart(txid, hopTxid); err != nil {
+	if err = client.LookupCanonicalRestart(txid, hopTxid); err != nil {
 		t.Fatal("hop:", err)
 	}
-	if _, ok := client.ResolvePeek(txid); ok {
+	if _, ok := client.LookupPeek(txid); ok {
 		t.Fatal("old txid still active after hop")
 	}
-	if completed, ok := client.ResolvePeek(hopTxid); completed || !ok {
+	if completed, ok := client.LookupPeek(hopTxid); completed || !ok {
 		t.Fatalf("hop query: completed=%v ok=%v, want pending", completed, ok)
 	}
-	if client.NumQueries() != 1 {
-		t.Fatalf("NumQueries=%d after hop, want 1", client.NumQueries())
+	if client.NumLookups() != 1 {
+		t.Fatalf("NumQueries=%d after hop, want 1", client.NumLookups())
 	}
 	// The hop query asks for the alias and keeps the EDNS0 record.
 	var buf [512]byte
@@ -480,7 +511,7 @@ func TestClient_ResolveCanonical(t *testing.T) {
 	checkTestAnswers(t, client, hopTxid, alias, want)
 }
 
-func TestClient_ResolveCanonicalErrors(t *testing.T) {
+func TestClient_LookupCanonicalErrors(t *testing.T) {
 	const host = "a.example.com"
 	const txid = 0x1000
 	rsc, _ := testAnswers(host, 90, 1)
@@ -499,39 +530,39 @@ func TestClient_ResolveCanonicalErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := newTestClient(t, 2)
-			startTestResolve(t, client, txid, host, 4)
-			startTestResolve(t, client, 0x3000, "other.example.com", 4)
+			startTestLookup(t, client, txid, host, 4)
+			startTestLookup(t, client, 0x3000, "other.example.com", 4)
 			encapsulateTestQuery(t, client)
 			if tt.resp != nil {
 				if err := client.Demux(tt.resp, 0); err != nil {
 					t.Fatal(err)
 				}
 			}
-			completed, _ := client.ResolvePeek(txid)
-			if err := client.ResolveCanonicalRestart(txid, tt.newTxid); err == nil {
+			completed, _ := client.LookupPeek(txid)
+			if err := client.LookupCanonicalRestart(txid, tt.newTxid); err == nil {
 				t.Fatal("hop succeeded")
 			}
 			// Failed hop leaves the query as it was.
-			if c, ok := client.ResolvePeek(txid); !ok || c != completed {
+			if c, ok := client.LookupPeek(txid); !ok || c != completed {
 				t.Fatalf("query changed by failed hop: completed=%v ok=%v", c, ok)
 			}
 		})
 	}
 	t.Run("unknown txid", func(t *testing.T) {
 		client := newTestClient(t, 1)
-		if err := client.ResolveCanonicalRestart(1, 2); err == nil {
+		if err := client.LookupCanonicalRestart(1, 2); err == nil {
 			t.Fatal("hop of unknown txid succeeded")
 		}
 	})
 }
 
-func TestClient_ResolveCanonicalZeroAlloc(t *testing.T) {
+func TestClient_LookupCanonicalZeroAlloc(t *testing.T) {
 	const host, alias = "a.example.com", "edge.cdn.example.net"
 	const txid, hopTxid = 0x1000, 0x2000
 	var edns Resource
 	setEDNS0(&edns, 1232, nil)
 	client := newTestClient(t, 1)
-	cfg := ResolveConfig{
+	cfg := LookupConfig{
 		Questions:          []Question{{Name: MustNewName(host), Type: TypeA, Class: ClassINET}},
 		Additional:         []Resource{edns},
 		EnableRecursion:    true,
@@ -544,7 +575,7 @@ func TestClient_ResolveCanonicalZeroAlloc(t *testing.T) {
 	var buf [512]byte
 	var dst [4]netip.Addr
 	cycle := func() {
-		if err := client.ResolveStart(txid, cfg); err != nil {
+		if err := client.LookupStart(txid, cfg); err != nil {
 			panic(err)
 		}
 		if n, err := client.Encapsulate(buf[:], -1, 0); err != nil || n == 0 {
@@ -553,7 +584,7 @@ func TestClient_ResolveCanonicalZeroAlloc(t *testing.T) {
 		if err := client.Demux(cnameOnly, 0); err != nil {
 			panic(err)
 		}
-		if err := client.ResolveCanonicalRestart(txid, hopTxid); err != nil {
+		if err := client.LookupCanonicalRestart(txid, hopTxid); err != nil {
 			panic(err)
 		}
 		if n, err := client.Encapsulate(buf[:], -1, 0); err != nil || n == 0 {
@@ -562,14 +593,14 @@ func TestClient_ResolveCanonicalZeroAlloc(t *testing.T) {
 		if err := client.Demux(final, 0); err != nil {
 			panic(err)
 		}
-		resp, _, ok := client.ResolveResponse(hopTxid)
+		resp, _, ok := client.LookupResponse(hopTxid)
 		if !ok {
 			panic("no response")
 		}
 		if n, err := resp.WriteAnswers(dst[:], aliasName); err != nil || n != 2 {
 			panic(err)
 		}
-		if completed, ok := client.ResolvePop(hopTxid); !completed || !ok {
+		if completed, ok := client.LookupPop(hopTxid); !completed || !ok {
 			panic("pop")
 		}
 	}
@@ -606,7 +637,7 @@ func TestClient_CNAMEResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = client.ResolveStart(txid, ResolveConfig{
+	err = client.LookupStart(txid, LookupConfig{
 		Questions: []Question{{
 			Name:  name,
 			Type:  TypeA,
@@ -626,7 +657,7 @@ func TestClient_CNAMEResponse(t *testing.T) {
 	if err := client.Demux(response, 0); err != nil {
 		t.Fatal("failed to demux DNS response:", err)
 	}
-	resp, _, ok := client.ResolveResponse(txid)
+	resp, _, ok := client.LookupResponse(txid)
 	if !ok {
 		t.Fatal("no response")
 	}

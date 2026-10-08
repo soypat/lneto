@@ -97,26 +97,6 @@ func SliceReuse[T any](buf *[]T, n int) {
 	}
 }
 
-// SliceCopyFrom sets *dst to a deep copy of src using T's CopyFrom method.
-// Buffers held by dst's elements, including those past its length, are reused.
-// Allocates only if cap(*dst) < len(src), then with capacity exactly len(src).
-// func SliceCopyFrom[T any, PT interface {
-// 	*T
-// 	CopyFrom(T)
-// }](dst *[]T, src []T) {
-// 	n := len(src)
-// 	if cap(*dst) < n {
-// 		grown := make([]T, n)
-// 		copy(grown, (*dst)[:cap(*dst)]) // Keep element buffers.
-// 		*dst = grown
-// 	} else {
-// 		*dst = (*dst)[:n]
-// 	}
-// 	for i := range src {
-// 		PT(&(*dst)[i]).CopyFrom(src[i])
-// 	}
-// }
-
 // SliceReclaim extends the slice length by one and returns a pointer to
 // the new last element. The returned element is not zeroed, so callers
 // can reuse any existing allocations it may hold from prior use.
