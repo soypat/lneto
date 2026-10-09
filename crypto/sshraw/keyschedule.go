@@ -71,6 +71,9 @@ type KeySchedule struct {
 //	hc.SetCipherAEAD(aead, &iv, strict)
 //	clear(key[:])
 func (ks *KeySchedule) InstallCipherAEADKeys(hc *HalfConn, aead lcrypto.AEADCipher, keyLen int, clientToServer, strict bool) error {
+	if !hc.isZeroized() {
+		return lneto.ErrBadState
+	}
 	if err := ks.canInstall(keyLen); err != nil {
 		return err
 	}
@@ -99,6 +102,9 @@ func (ks *KeySchedule) InstallCipherAEADKeys(hc *HalfConn, aead lcrypto.AEADCiph
 //	hc.SetCipherFrame(pc, strict)
 //	clear(key[:])
 func (ks *KeySchedule) InstallCipherFrameKeys(hc *HalfConn, pc CipherFrame, keyLen int, clientToServer, strict bool) error {
+	if !hc.isZeroized() {
+		return lneto.ErrBadState
+	}
 	if err := ks.canInstall(keyLen); err != nil {
 		return err
 	} else if err = hc.SetCipherFrame(pc, strict); err != nil {
