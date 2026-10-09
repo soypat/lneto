@@ -133,10 +133,22 @@ func (tcb *ControlBlock) IncomingIsKeepalive(incomingSegment Segment) bool {
 		incomingSegment.ACK == tcb.snd.NXT && incomingSegment.DATALEN == 0
 }
 
-// IncomingIsDupACK returns true if the ACK value is a duplicate acknowledgement:
-// the ACK equals the oldest unacknowledged sequence number (snd.UNA) meaning no
-// new data is acknowledged, while snd.UNA < snd.NXT meaning data is in flight.
-func (tcb *ControlBlock) IncomingIsDupACK(ack Value) bool {
+// IncomingIsDupACK returns true for duplicate acks by RFC 5681 §2:
+//   - data is in flight (snd.UNA < snd.NXT)
+//   - Control flags off (SYN,FIN,RST)
+//   - incoming ACK equals snd.UNA: no new data acked
+//   - advertised window is equal to current send window
+//
+// Must be called before the segment is passed to [ControlBlock.Recv], which may update the send window.
+func (tcb *ControlBlock) IncomingIsDupACK(seg Segment) bool {
+	return tcb.isDupACK(seg.ACK) && seg.WND == tcb.snd.WND &&
+		seg.DATALEN == 0 && seg.Flags.HasAny(FlagACK) && !seg.Flags.HasAny(flagctl)
+
+}
+
+// isDupACK is a partial check of whether a incoming ACK value has been seen before.
+// Use [ControlBlock.IncomingIsDupACK] for a more complete check as per RFC 5681.
+func (tcb *ControlBlock) isDupACK(ack Value) bool {
 	return ack == tcb.snd.UNA && ack.LessThan(tcb.snd.NXT)
 }
 
@@ -441,6 +453,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	// (modular LessThan would otherwise return false for 0.LessThan(largeISS)).
 	// Within that, duplicate ACKs (non-advancing) may only open the window, never shrink it.
 	wlUnset := tcb.snd.WL1 == 0 && tcb.snd.WL2 == 0
+	isDupACK := tcb.IncomingIsDupACK(seg) // must be called before snd.WND update
 	if wlUnset || tcb.snd.WL1.LessThan(seg.SEQ) || (tcb.snd.WL1 == seg.SEQ && tcb.snd.WL2.LessThanEq(seg.ACK)) {
 		if tcb.snd.UNA.LessThan(seg.ACK) || seg.WND > tcb.snd.WND {
 			tcb.snd.WND = seg.WND
@@ -450,8 +463,8 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	}
 
 	if seg.Flags.HasAny(FlagACK) && seg.ACK.LessThanEq(tcb.snd.NXT) {
-		if tcb.IncomingIsDupACK(seg.ACK) && tcb.State().txQueuedDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < tcb.nRetransmit+retransmitMaxQueued+retransmitMaxQueued {
-			// Duplicate ack. Don't advance dupack counter past scb.nRetransmit+retransmitAfterDupacks
+		if isDupACK && tcb.State().txQueuedDataOpen() && tcb.dupack < tcb.nRetransmit+retransmitMaxQueued+retransmitMaxQueued {
+			// Duplicate ack. We don't count dupack if we've queued retransmitMaxQueued retransmissions (see [ControlBlock.HasPendingRetransmit]).
 			tcb.dupack++
 		} else if tcb.snd.UNA.LessThan(seg.ACK) {
 			// Only update ACK if it advances UNA and is not in the future.

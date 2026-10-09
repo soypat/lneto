@@ -314,7 +314,7 @@ func TestPendingSegment_RetransmitAfter3DupACKs(t *testing.T) {
 			Flags: FlagACK,
 			WND:   wnd,
 		}
-		if !tcb.IncomingIsDupACK(dup.ACK) {
+		if !tcb.IncomingIsDupACK(dup) {
 			t.Fatal("supposed duplicate ack segment not considered dupack")
 		}
 		if err := tcb.Recv(dup); err != nil {
@@ -373,6 +373,40 @@ func TestPendingSegment_RetransmitAfter3DupACKs(t *testing.T) {
 	}
 	if tcb.nRetransmit != 0 {
 		t.Fatalf("nRetransmit after progress = %d; want 0", tcb.nRetransmit)
+	}
+}
+
+// TestDupACKRetransmitsQueued verifies a burst of duplicate ACKs queues at most
+// retransmitMaxQueued fast retransmissions, and that each one sent lets one more
+// duplicate ACK queue another.
+func TestDupACKRetransmitsQueued(t *testing.T) {
+	const iss, remoteISS, wnd = 100, 500, 1024
+	var tcb ControlBlock
+	tcb.HelperInitState(StateEstablished, iss, iss+10, wnd)
+	tcb.HelperInitRcv(remoteISS, remoteISS+1, wnd)
+	dup := Segment{SEQ: remoteISS + 1, ACK: iss, Flags: FlagACK, WND: wnd}
+	sendQueued := func() (n int) {
+		for ; tcb.HasPendingRetransmit(); n++ {
+			seg, _ := tcb.PendingSegment(1)
+			if err := tcb.Send(seg); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return n
+	}
+	for range retransmitAfterDupacks + 10 {
+		if err := tcb.Recv(dup); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := sendQueued(); n != retransmitMaxQueued {
+		t.Fatalf("burst queued %d retransmissions, want %d", n, retransmitMaxQueued)
+	}
+	if err := tcb.Recv(dup); err != nil {
+		t.Fatal(err)
+	}
+	if n := sendQueued(); n != 1 {
+		t.Fatalf("duplicate ACK after the burst queued %d retransmissions, want 1", n)
 	}
 }
 
