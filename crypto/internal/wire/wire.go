@@ -7,17 +7,15 @@ package wire
 
 import (
 	"encoding/binary"
-
-	"github.com/soypat/lneto"
 )
 
 // Encoder writes big endian structures to a fixed buffer, the counterpart of [Decoder].
 // A write past the end of buf sets err and all later writes are dropped, so
 // callers check err once after writing.
 type Encoder struct {
-	buf []byte
-	off int
-	err error
+	buf    []byte
+	off    int
+	failed bool
 }
 
 // Reset makes e write to buf starting at off, keeping buf[:off].
@@ -26,27 +24,26 @@ func (e *Encoder) Reset(buf []byte, off int) { *e = Encoder{buf: buf, off: off} 
 // Len returns the number of bytes of buf written, including the ones kept by Reset.
 func (e *Encoder) Len() int { return e.off }
 
-// Err returns the first error, usually [lneto.ErrShortBuffer].
-func (e *Encoder) Err() error { return e.err }
-
-// Fail sets err if no error is set yet.
-func (e *Encoder) Fail(err error) {
-	if e.err == nil {
-		e.err = err
-	}
-}
-
 // next reserves n bytes. It returns nil if they do not fit.
 func (e *Encoder) next(n int) []byte {
-	if e.err == nil && (n < 0 || len(e.buf)-e.off < n) {
-		e.err = lneto.ErrShortBuffer
-	}
-	if e.err != nil {
+	failed := n < 0 || len(e.buf)-e.off < n
+	if e.checkFail(failed) {
 		return nil
 	}
 	e.off += n
 	return e.buf[e.off-n : e.off]
 }
+
+func (e *Encoder) checkFail(failed bool) bool {
+	e.failed = e.failed || failed
+	if failed {
+		e.failed = true
+	}
+	return e.failed
+}
+
+func (e *Encoder) IsFailed() bool { return e.failed }
+func (e *Encoder) Fail()          { e.failed = true }
 
 func (e *Encoder) Uint8(v uint8) {
 	if b := e.next(1); b != nil {
@@ -81,7 +78,7 @@ func (e *Encoder) Bytes(v []byte) {
 
 // Rest returns the unwritten part of buf for a callee to write into. Commit with Advance.
 func (e *Encoder) Rest() []byte {
-	if e.err != nil {
+	if e.failed {
 		return nil
 	}
 	return e.buf[e.off:]
@@ -98,7 +95,7 @@ func (e *Encoder) Reserve(n int) []byte { return e.next(n) }
 // for in-place transforms that grow the data. Commit growth with Advance.
 // Since returns nil if Encoder is in failed state.
 func (e *Encoder) Since(start int) []byte {
-	if e.err != nil {
+	if e.failed {
 		return nil
 	}
 	return e.buf[start:e.off:len(e.buf)]
@@ -111,31 +108,29 @@ func (e *Encoder) Open(width int) (start int) {
 }
 
 // Close writes the length of the content written since Open returned start.
-func (e *Encoder) Close(start, width int) {
-	if e.err != nil {
-		return
-	}
+func (e *Encoder) Close(start, width int) (fieldOverflow bool) {
 	n := uint64(e.off - start) // uint64 so 8*width never reaches the shifted width on 32-bit targets.
-	if n>>(8*width) != 0 {
-		e.err = lneto.ErrInvalidLengthField
-		return
+	overflow := n>>(8*width) != 0
+	if e.checkFail(overflow) {
+		return overflow
 	}
 	for i := start - 1; i >= start-width; i-- {
 		e.buf[i] = byte(n)
 		n >>= 8
 	}
+	return false
 }
 
 // Decoder reads big endian structures, adding the first error to its validator.
 // Once the validator has an error all reads return zero values and do not advance.
 type Decoder struct {
-	buf []byte
-	off int
-	vld *lneto.Validator
+	buf    []byte
+	off    int
+	failed bool
 }
 
 // Reset makes d read buf from its start, adding errors to vld.
-func (d *Decoder) Reset(buf []byte, vld *lneto.Validator) { *d = Decoder{buf: buf, vld: vld} }
+func (d *Decoder) Reset(buf []byte) { *d = Decoder{buf: buf} }
 
 // Off returns the number of bytes read.
 func (d *Decoder) Off() int { return d.off }
@@ -144,11 +139,9 @@ func (d *Decoder) Off() int { return d.off }
 func (d *Decoder) Remaining() int { return len(d.buf) - d.off }
 
 // Fail adds err to the validator if it has no error yet.
-func (d *Decoder) Fail(err error) {
-	if !d.vld.HasError() {
-		d.vld.AddError(err)
-	}
-}
+func (d *Decoder) Fail() { d.failed = true }
+
+func (d *Decoder) IsFailed() bool { return d.failed }
 
 func (d *Decoder) Uint8() (v uint8) {
 	if d.failLen(1) {
@@ -195,11 +188,8 @@ func (d *Decoder) Advance(n uint32) {
 
 // failLen takes a uint32 so that a peer's length never converts to a negative int on 32-bit targets.
 func (d *Decoder) failLen(n uint32) (failed bool) {
-	if d.vld.HasError() {
-		return true
-	} else if uint64(len(d.buf)-d.off) < uint64(n) {
-		d.vld.AddError(lneto.ErrTruncatedFrame)
-		return true
+	if !d.failed {
+		d.failed = uint64(len(d.buf)-d.off) < uint64(n)
 	}
-	return false
+	return d.failed
 }

@@ -27,30 +27,30 @@ func (ch HelloClientMsg) Random() *[SizeHelloRandom]byte {
 
 // Decode parses the HelloClientMsg body bytes. First byte is start of version.
 // Decode fails if message is not complete.
-func (d *HelloClientMsg) Decode(body []byte, vld *lneto.Validator) (int, error) {
+func (d *HelloClientMsg) Decode(body []byte) (int, error) {
 	d.reset()
 	var dec decoder
-	dec.Reset(body, vld)
+	dec.Reset(body)
 	dec.Advance(2 + SizeHelloRandom)
 	sidLen := int(dec.Uint8())
 	if sidLen > MaxSessionIDLen {
-		vld.AddError(lneto.ErrInvalidLengthField)
+		dec.Fail(lneto.ErrInvalidLengthField)
 	}
 	dec.Advance(uint32(sidLen))
 	suitesLen := int(dec.Uint16())
-	if suitesLen < 2 || suitesLen%2 != 0 {
-		vld.AddError(lneto.ErrInvalidLengthField)
+	if !dec.IsFailed() && (suitesLen < 2 || suitesLen%2 != 0) {
+		dec.Fail(lneto.ErrInvalidLengthField)
 	}
 	dec.Advance(uint32(suitesLen))
 	compLen := int(dec.Uint8())
-	if compLen == 0 {
-		vld.AddError(lneto.ErrInvalidLengthField)
+	if !dec.IsFailed() && compLen == 0 {
+		dec.Fail(lneto.ErrInvalidLengthField)
 	}
 	dec.Advance(uint32(compLen))
 	extsLen := dec.Uint16()
 	dec.Advance(uint32(extsLen))
-	if vld.HasError() {
-		return dec.Off(), vld.ErrPop()
+	if dec.IsFailed() {
+		return dec.Off(), dec.Err()
 	}
 	d.buf = body
 	d._extOff = dec.Off() - int(extsLen)
@@ -120,21 +120,21 @@ func (h *HelloServerMsg) Extensions() []byte {
 
 // Decode parses the HelloServerMsg body bytes. First byte is start of version.
 // Decode fails if message is not complete.
-func (d *HelloServerMsg) Decode(body []byte, vld *lneto.Validator) (int, error) {
+func (d *HelloServerMsg) Decode(body []byte) (int, error) {
 	d.reset()
 	var dec decoder
-	dec.Reset(body, vld)
+	dec.Reset(body)
 	dec.Advance(2 + SizeHelloRandom)
 	sidLen := int(dec.Uint8())
 	if sidLen > MaxSessionIDLen {
-		vld.AddError(lneto.ErrInvalidLengthField)
+		dec.Fail(lneto.ErrInvalidLengthField)
 	}
 	dec.Advance(uint32(sidLen))
 	dec.Advance(2 + 1) // cipher_suite and legacy_compression_method.
 	extsLen := dec.Uint16()
 	dec.Advance(uint32(extsLen))
-	if vld.HasError() {
-		return dec.Off(), vld.ErrPop()
+	if dec.IsFailed() {
+		return dec.Off(), dec.Err()
 	}
 	d.buf = body
 	d._extOff = dec.Off() - int(extsLen)
@@ -341,14 +341,48 @@ func checkVec8(data []byte) error {
 }
 
 // decoder provides a API to readably decode TLS packets, see [wire.Decoder].
-type decoder struct{ wire.Decoder }
+type decoder struct {
+	wire.Decoder
+	_err error
+}
+
+func (dec *decoder) Fail(err error) {
+	dec._err = err
+	dec.Decoder.Fail()
+}
+
+func (dec *decoder) Err() (err error) {
+	if dec._err != nil {
+		err = dec._err
+	} else if dec.Decoder.IsFailed() {
+		err = lneto.ErrTruncatedFrame
+	}
+	return err
+}
 
 type encoder = wire.Encoder
 
 // Encoder writes TLS structures to a fixed buffer, the counterpart of [decoder].
-// A write past the end of buf sets err and all later writes are dropped, so
-// callers check err once after writing.
-type Encoder struct{ encoder }
+// A write past the end of buf fails the encoder and all later writes are dropped,
+// so callers check Err once after writing.
+type Encoder struct {
+	encoder
+	err error
+}
+
+func (e *Encoder) Fail(err error) {
+	e.err = err
+	e.encoder.Fail()
+}
+
+func (e *Encoder) Err() (err error) {
+	if e.err != nil {
+		err = e.err
+	} else if e.encoder.IsFailed() {
+		err = lneto.ErrShortBuffer
+	}
+	return err
+}
 
 // StartMessage writes a handshake message header whose length is set by EndMessage.
 func (e *Encoder) StartMessage(typ HandshakeType) (start int) {
@@ -378,7 +412,7 @@ func (e *Encoder) EndRecord(start int) { e.Close(start+SizeHeaderRecord, 2) }
 // SealRecord protects with hc the content written since StartRecord returned start.
 func (e *Encoder) SealRecord(hc *HalfConn, start int, ct ContentType) {
 	plain := e.Since(start)
-	if e.Err() != nil {
+	if e.IsFailed() {
 		return
 	}
 	rec, err := hc.Seal(plain, ct)

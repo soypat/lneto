@@ -106,8 +106,8 @@ func TestEncoderIdent(t *testing.T) {
 		buf := make([]byte, 2*maxIdentLen)
 		e.Reset(buf, 0)
 		e.Ident("2.0", tc.software, tc.comments)
-		if !errors.Is(e.Err(), tc.wantErr) {
-			t.Errorf("%q %q: err=%v, want %v", tc.software, tc.comments, e.Err(), tc.wantErr)
+		if e.IsFailed() != (tc.wantErr != nil) {
+			t.Errorf("%q %q: failed=%v, want %v", tc.software, tc.comments, e.IsFailed(), tc.wantErr != nil)
 			continue
 		} else if tc.wantErr != nil {
 			continue

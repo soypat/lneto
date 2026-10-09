@@ -1,3 +1,22 @@
+/*
+package sshraw implements low level abstractions of the SSH transport as per RFC 4253.
+
+The SSH transport layer is a secure, low level transport protocol.
+It provides strong encryption, cryptographic host authentication, and
+integrity protection.
+Authentication in this protocol level is host-based; this protocol
+does not perform user authentication.  A higher level protocol for
+user authentication can be designed on top of this protocol.
+
+The protocol has been designed to be simple and flexible to allow
+parameter negotiation, and to minimize the number of round-trips.
+The key exchange method, public key algorithm, symmetric encryption
+algorithm, message authentication algorithm, and hash algorithm are
+all negotiated.  It is expected that in most environments, only 2
+round-trips will be needed for full key exchange, server
+authentication, service request, and acceptance notification of
+service request.  The worst case is 3 round-trips.
+*/
 package sshraw
 
 import (
@@ -83,6 +102,31 @@ const (
 	MsgChannelSuccess          MsgType = 99  // CHANNEL_SUCCESS
 	MsgChannelFailure          MsgType = 100 // CHANNEL_FAILURE
 )
+
+// IsTransport reports whether mt is a transport layer message, 1 to 49, RFC 4250 4.1.2.
+func (mt MsgType) IsTransport() bool { return mt >= 1 && mt <= 49 }
+
+// IsKex reports whether mt is an algorithm negotiation or key exchange method
+// message, 20 to 49. During the first key exchange under strict key exchange
+// any other message must end the connection. During any key exchange, between
+// KEXINIT and NEWKEYS, only these and transport messages below 20 besides
+// SERVICE_REQUEST and SERVICE_ACCEPT may be sent, RFC 4253 7.1.
+func (mt MsgType) IsKex() bool { return mt >= 20 && mt <= 49 }
+
+// IsUserauth reports whether mt is a user authentication message, 50 to 79.
+func (mt MsgType) IsUserauth() bool { return mt >= 50 && mt <= 79 }
+
+// IsConnection reports whether mt is a connection protocol message, 80 to 127,
+// channel messages included.
+func (mt MsgType) IsConnection() bool { return mt >= 80 && mt <= 127 }
+
+// IsChannel reports whether mt is a channel message, 90 to 127. All but
+// CHANNEL_OPEN begin with the recipient channel number.
+func (mt MsgType) IsChannel() bool { return mt >= 90 && mt <= 127 }
+
+// IsLocal reports whether mt is reserved for local extensions, 192 to 255.
+// Numbers 128 to 191 are reserved for client protocols and belong to no range.
+func (mt MsgType) IsLocal() bool { return mt >= 192 }
 
 // DisconnectReason is the reason code of SSH_MSG_DISCONNECT, RFC 4250 4.2.2.
 type DisconnectReason uint32

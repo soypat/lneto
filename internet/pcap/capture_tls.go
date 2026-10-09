@@ -246,8 +246,8 @@ func (pc *PacketBreakdown) captureTLSServerHello(finfo *Frame, body []byte) {
 // decodeTLSHello decodes a hello body and reports whether it can be broken down.
 // A hello that did not decode has no field offsets to show: the error and the
 // raw bytes are all a capture can say.
-func (pc *PacketBreakdown) decodeTLSHello(finfo *Frame, body []byte, decode func([]byte, *lneto.Validator) (int, error)) bool {
-	n, err := decode(body, pc.validator())
+func (pc *PacketBreakdown) decodeTLSHello(finfo *Frame, body []byte, decode func([]byte) (int, error)) bool {
+	n, err := decode(body)
 	if err == nil && n != len(body) {
 		err = lneto.ErrInvalidLengthField // Trailing bytes after the extensions.
 	}

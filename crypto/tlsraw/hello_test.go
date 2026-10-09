@@ -285,14 +285,13 @@ func TestValidateTypeTruncation(t *testing.T) {
 // TestValidateTypeRFC8448 walks the extensions of a real handshake to catch a
 // validator tightened past traffic that must be accepted.
 func TestValidateTypeRFC8448(t *testing.T) {
-	var vld lneto.Validator
 	var ch HelloClientMsg
-	if _, err := ch.Decode(rfc8448.ClientHello[SizeHeaderHandshake:], &vld); err != nil {
+	if _, err := ch.Decode(rfc8448.ClientHello[SizeHeaderHandshake:]); err != nil {
 		t.Fatal(err)
 	}
 	walkExtensions(t, ch.Extensions(), false, func(ExtensionFrame) {})
 	var sh HelloServerMsg
-	if _, err := sh.Decode(rfc8448.ServerHello[SizeHeaderHandshake:], &vld); err != nil {
+	if _, err := sh.Decode(rfc8448.ServerHello[SizeHeaderHandshake:]); err != nil {
 		t.Fatal(err)
 	}
 	walkExtensions(t, sh.Extensions(), true, func(ExtensionFrame) {})
