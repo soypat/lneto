@@ -178,7 +178,7 @@ func TestNoDeps(t *testing.T) {
 func TestCRC791Properties(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	buf := make([]byte, 256)
-	for i := 0; i < 2000; i++ {
+	for range 2000 {
 		n := 2 + rng.Intn(len(buf)-2)
 		data := buf[:n]
 		rng.Read(data)
