@@ -1,0 +1,204 @@
+diff --git a/tcp/control.go b/tcp/control.go
+index 894d968..a8f503c 100644
+--- a/tcp/control.go
++++ b/tcp/control.go
+@@ -441,6 +441,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
+ 	// (modular LessThan would otherwise return false for 0.LessThan(largeISS)).
+ 	// Within that, duplicate ACKs (non-advancing) may only open the window, never shrink it.
+ 	wlUnset := tcb.snd.WL1 == 0 && tcb.snd.WL2 == 0
++	prevWND := tcb.snd.WND
+ 	if wlUnset || tcb.snd.WL1.LessThan(seg.SEQ) || (tcb.snd.WL1 == seg.SEQ && tcb.snd.WL2.LessThanEq(seg.ACK)) {
+ 		if tcb.snd.UNA.LessThan(seg.ACK) || seg.WND > tcb.snd.WND {
+ 			tcb.snd.WND = seg.WND
+@@ -450,8 +451,11 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
+ 	}
+ 
+ 	if seg.Flags.HasAny(FlagACK) && seg.ACK.LessThanEq(tcb.snd.NXT) {
+-		if tcb.IncomingIsDupACK(seg.ACK) && tcb.State().txQueuedDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < tcb.nRetransmit+retransmitMaxQueued+retransmitMaxQueued {
+-			// Duplicate ack. Don't advance dupack counter past scb.nRetransmit+retransmitAfterDupacks
++		// RFC 5681 §2: a duplicate ACK carries no data and leaves the window unchanged.
++		isDupACK := tcb.IncomingIsDupACK(seg.ACK) && seg.DATALEN == 0 && seg.WND == prevWND
++		if isDupACK && tcb.State().txQueuedDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < tcb.nRetransmit+retransmitAfterDupacks+retransmitMaxQueued-1 {
++			// Duplicate ack. Stop counting once retransmitMaxQueued retransmissions
++			// are queued (see HasPendingRetransmit).
+ 			tcb.dupack++
+ 		} else if tcb.snd.UNA.LessThan(seg.ACK) {
+ 			// Only update ACK if it advances UNA and is not in the future.
+@@ -548,7 +552,10 @@ func (tcb *ControlBlock) validateOutgoingSegment(seg Segment) (err error) {
+ 	zeroWindowOK := tcb.snd.WND == 0 && seg.DATALEN <= 1 && seg.SEQ == tcb.snd.NXT
+ 	outOfWindow := checkSeq && !seg.SEQ.InWindow(tcb.snd.NXT, tcb.snd.WND) &&
+ 		!zeroWindowOK
+-	isRetransmit := checkSeq && seg.SEQ.InRange(tcb.snd.UNA, tcb.snd.NXT)
++	// A retransmission resends only sent data: one reaching past snd.NXT would
++	// send new data without advancing snd.NXT.
++	isRetransmit := checkSeq && seg.SEQ.InRange(tcb.snd.UNA, tcb.snd.NXT) &&
++		Add(seg.SEQ, seg.LEN()).LessThanEq(tcb.snd.NXT)
+ 	switch {
+ 	case tcb._state == StateClosed && !isFirst:
+ 		err = io.ErrClosedPipe
+diff --git a/tcp/control_test.go b/tcp/control_test.go
+index 77d45ef..4023ee7 100644
+--- a/tcp/control_test.go
++++ b/tcp/control_test.go
+@@ -294,6 +294,40 @@ func TestCloseWait_NoAutoFINBeforeUserClose(t *testing.T) {
+ 	}
+ }
+ 
++// TestDupACKRetransmitsQueued verifies a burst of duplicate ACKs queues at most
++// retransmitMaxQueued fast retransmissions, and that each one sent lets one more
++// duplicate ACK queue another.
++func TestDupACKRetransmitsQueued(t *testing.T) {
++	const iss, remoteISS, wnd = 100, 500, 1024
++	var tcb ControlBlock
++	tcb.HelperInitState(StateEstablished, iss, iss+10, wnd)
++	tcb.HelperInitRcv(remoteISS, remoteISS+1, wnd)
++	dup := Segment{SEQ: remoteISS + 1, ACK: iss, Flags: FlagACK, WND: wnd}
++	sendQueued := func() (n int) {
++		for ; tcb.HasPendingRetransmit(); n++ {
++			seg, _ := tcb.PendingSegment(1)
++			if err := tcb.Send(seg); err != nil {
++				t.Fatal(err)
++			}
++		}
++		return n
++	}
++	for range retransmitAfterDupacks + 10 {
++		if err := tcb.Recv(dup); err != nil {
++			t.Fatal(err)
++		}
++	}
++	if n := sendQueued(); n != retransmitMaxQueued {
++		t.Fatalf("burst queued %d retransmissions, want %d", n, retransmitMaxQueued)
++	}
++	if err := tcb.Recv(dup); err != nil {
++		t.Fatal(err)
++	}
++	if n := sendQueued(); n != 1 {
++		t.Fatalf("duplicate ACK after the burst queued %d retransmissions, want 1", n)
++	}
++}
++
+ func TestPendingSegment_RetransmitAfter3DupACKs(t *testing.T) {
+ 	const (
+ 		iss       Value = 100
+diff --git a/tcp/handler_test.go b/tcp/handler_test.go
+index bacafb7..b53583f 100644
+--- a/tcp/handler_test.go
++++ b/tcp/handler_test.go
+@@ -1702,12 +1702,13 @@ func TestRetransmit_CumulativeACK_NoSpurious(t *testing.T) {
+ 	hole := seg1.SEQ                         // snd.UNA: the lost (first unacked) segment.
+ 	cumAck := seg3.SEQ + Value(seg3.DATALEN) // all data sent == client snd.NXT.
+ 
++	wnd := client.scb.snd.WND // Unchanged: an ACK updating the window is no duplicate (RFC 5681 §2).
+ 	recvACK := func(seqv, ackv Value) error {
+ 		clear(pkt[:])
+ 		f, _ := NewFrame(pkt[:])
+ 		f.SetSourcePort(server.LocalPort())
+ 		f.SetDestinationPort(client.LocalPort())
+-		f.SetSegment(Segment{SEQ: seqv, ACK: ackv, Flags: FlagACK, WND: 64000}, 5)
++		f.SetSegment(Segment{SEQ: seqv, ACK: ackv, Flags: FlagACK, WND: wnd}, 5)
+ 		return client.Recv(pkt[:sizeHeaderTCP])
+ 	}
+ 
+diff --git a/tcp/tcp_test.go b/tcp/tcp_test.go
+index a395c9e..9f92b2f 100644
+--- a/tcp/tcp_test.go
++++ b/tcp/tcp_test.go
+@@ -820,6 +820,59 @@ func TestExchangeTest_ZeroWindowProbesDoNotAbort(t *testing.T) {
+ 	test.RunA(t)
+ }
+ 
++// TestExchangeTest_DuplicateACK verifies only pure duplicate ACKs count toward
++// fast retransmit: an ACK of SND.UNA carrying data or updating the window does
++// not (RFC 5681 §2).
++func TestExchangeTest_DuplicateACK(t *testing.T) {
++	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
++	data := tcp.Segment{SEQ: issA, ACK: issB, Flags: tcp.FlagACK, WND: windowA, DATALEN: 10}
++	for _, tc := range []struct {
++		name string
++		dup  func(i int) tcp.Segment
++		want func(i int) *tcp.Segment // A's pending segment after the i'th ACK.
++	}{
++		{
++			name: "pure",
++			dup:  func(int) tcp.Segment { return tcp.Segment{SEQ: issB, ACK: issA, Flags: tcp.FlagACK, WND: windowB} },
++			want: func(i int) *tcp.Segment {
++				if i < 2 {
++					return nil
++				}
++				return &tcp.Segment{SEQ: issA, ACK: issB, Flags: tcp.FlagACK, WND: windowA} // Fast retransmit.
++			},
++		},
++		{
++			name: "carries-data",
++			dup: func(i int) tcp.Segment {
++				return tcp.Segment{SEQ: tcp.Add(issB, tcp.Size(10*i)), ACK: issA, Flags: tcp.FlagACK, WND: windowB, DATALEN: 10}
++			},
++			want: func(i int) *tcp.Segment {
++				return &tcp.Segment{SEQ: issA + 10, ACK: tcp.Add(issB, tcp.Size(10*(i+1))), Flags: tcp.FlagACK, WND: windowA}
++			},
++		},
++		{
++			name: "window-update",
++			dup: func(i int) tcp.Segment {
++				return tcp.Segment{SEQ: issB, ACK: issA, Flags: tcp.FlagACK, WND: tcp.Size(windowB + 1 + i)}
++			},
++			want: func(int) *tcp.Segment { return nil },
++		},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			steps := []tcp.SegmentStep{{Seg: data, Action: tcp.StepASends, AState: tcp.StateEstablished}}
++			for i := range 3 {
++				steps = append(steps, tcp.SegmentStep{Seg: tc.dup(i), Action: tcp.StepBSends, AState: tcp.StateEstablished, APending: tc.want(i)})
++			}
++			test := tcp.ExchangeTest{
++				ISSA: issA, ISSB: issB, WindowA: windowA, WindowB: windowB,
++				InitStateA: tcp.StateEstablished, InitStateB: tcp.StateEstablished,
++				Steps: steps,
++			}
++			test.RunA(t)
++		})
++	}
++}
++
+ // TestZeroWindowProbe verifies a one-octet probe is offered only when the peer's
+ // window is zero, nothing is outstanding and new data may be sent, that Send
+ // accepts it while rejecting more than one octet, and that it is offered once.
+@@ -870,6 +923,37 @@ func TestZeroWindowProbe(t *testing.T) {
+ 	}
+ }
+ 
++// TestSendRetransmitBounds verifies a segment starting below SND.NXT is sent as
++// a retransmission only if it ends at or below SND.NXT. One reaching past it
++// would put new data on the wire without advancing SND.NXT.
++func TestSendRetransmitBounds(t *testing.T) {
++	const issA, issB, windowA, sndWND = 100, 300, 1000, 1000
++	const inFlight = 10
++	for _, tc := range []struct {
++		name    string
++		seq     tcp.Value
++		datalen tcp.Size
++		wantErr bool
++	}{
++		{name: "all-outstanding", seq: issA, datalen: inFlight},
++		{name: "tail-outstanding", seq: issA + 5, datalen: 5},
++		{name: "past-snd-nxt", seq: issA + 5, datalen: 10, wantErr: true},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			var tcb tcp.ControlBlock
++			tcb.HelperInitState(tcp.StateEstablished, issA, issA+inFlight, windowA)
++			tcb.HelperInitRcv(issB, issB, sndWND)
++			seg := tcp.Segment{SEQ: tc.seq, ACK: issB, WND: windowA, Flags: tcp.FlagACK, DATALEN: tc.datalen}
++			if err := tcb.Send(seg); (err != nil) != tc.wantErr {
++				t.Fatalf("Send(%+v) = %v, want error %v", seg, err, tc.wantErr)
++			}
++			if tcb.SendNext() != issA+inFlight {
++				t.Fatalf("SND.NXT=%d, want %d", tcb.SendNext(), issA+inFlight)
++			}
++		})
++	}
++}
++
+ func TestRcvFinWait2(t *testing.T) {
+ 	const windowA, windowB = 1000, 1000
+ 	const issA, issB = 100, 300

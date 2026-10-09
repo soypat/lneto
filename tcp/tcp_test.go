@@ -791,6 +791,59 @@ func TestClose_PartialACKDoesNotAdvance(t *testing.T) {
 	})
 }
 
+// TestExchangeTest_DuplicateACK verifies only pure duplicate ACKs count toward
+// fast retransmit: an ACK of SND.UNA carrying data or updating the window does
+// not (RFC 5681 §2).
+func TestExchangeTest_DuplicateACK(t *testing.T) {
+	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
+	data := tcp.Segment{SEQ: issA, ACK: issB, Flags: tcp.FlagACK, WND: windowA, DATALEN: 10}
+	for _, tc := range []struct {
+		name string
+		dup  func(i int) tcp.Segment
+		want func(i int) *tcp.Segment // A's pending segment after the i'th ACK.
+	}{
+		{
+			name: "pure",
+			dup:  func(int) tcp.Segment { return tcp.Segment{SEQ: issB, ACK: issA, Flags: tcp.FlagACK, WND: windowB} },
+			want: func(i int) *tcp.Segment {
+				if i < 2 {
+					return nil
+				}
+				return &tcp.Segment{SEQ: issA, ACK: issB, Flags: tcp.FlagACK, WND: windowA} // Fast retransmit.
+			},
+		},
+		{
+			name: "carries-data",
+			dup: func(i int) tcp.Segment {
+				return tcp.Segment{SEQ: tcp.Add(issB, tcp.Size(10*i)), ACK: issA, Flags: tcp.FlagACK, WND: windowB, DATALEN: 10}
+			},
+			want: func(i int) *tcp.Segment {
+				return &tcp.Segment{SEQ: issA + 10, ACK: tcp.Add(issB, tcp.Size(10*(i+1))), Flags: tcp.FlagACK, WND: windowA}
+			},
+		},
+		{
+			name: "window-update",
+			dup: func(i int) tcp.Segment {
+				return tcp.Segment{SEQ: issB, ACK: issA, Flags: tcp.FlagACK, WND: tcp.Size(windowB + 1 + i)}
+			},
+			want: func(int) *tcp.Segment { return nil },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			steps := []tcp.SegmentStep{{Seg: data, Action: tcp.StepASends, AState: tcp.StateEstablished}}
+			for i := range 3 {
+				steps = append(steps, tcp.SegmentStep{Seg: tc.dup(i), Action: tcp.StepBSends, AState: tcp.StateEstablished, APending: tc.want(i)})
+			}
+			test := tcp.ExchangeTest{
+				ISSA: issA, ISSB: issB, WindowA: windowA, WindowB: windowB,
+				InitStateA: tcp.StateEstablished, InitStateB: tcp.StateEstablished,
+				Steps: steps,
+			}
+			test.RunA(t)
+		})
+	}
+}
+
 // TestExchangeTest_ZeroWindowProbesDoNotAbort verifies that data at RCV.NXT
 // against a zero receive window is refused and acknowledged without counting
 // toward the challenge-ACK abort (RFC 9293 §3.10.7.4, RFC 1122 §4.2.2.17).
