@@ -2,6 +2,7 @@ package lneto_test
 
 import (
 	"bytes"
+	"encoding/binary"
 	"math/rand"
 	"os"
 	"testing"
@@ -170,5 +171,99 @@ func TestNoDeps(t *testing.T) {
 	}
 	if bytes.Contains(data, []byte("require")) {
 		t.Fatal("no dependencies allowed in lneto")
+	}
+}
+
+// TestCRC791Properties checks RFC 1071 behaviour of CRC791 over random data.
+func TestCRC791Properties(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	buf := make([]byte, 256)
+	for i := 0; i < 2000; i++ {
+		n := 2 + rng.Intn(len(buf)-2)
+		data := buf[:n]
+		rng.Read(data)
+
+		// Receiver verification: sender zeroes the checksum field, computes
+		// the checksum and stores it. Summing the whole packet must yield zero.
+		off := 2 * rng.Intn(n/2)
+		data[off], data[off+1] = 0, 0
+		var crc lneto.CRC791
+		sum := lneto.NeverZeroSum(crc.PayloadSum16(data))
+		binary.BigEndian.PutUint16(data[off:], sum)
+		if got := crc.PayloadSum16(data); got != 0 {
+			t.Fatalf("n=%d off=%d: verification sum got %#x, want 0", n, off, got)
+		}
+
+		// PayloadSum16 must not mutate running state.
+		if got := crc.Sum16(); got != 0xffff {
+			t.Fatalf("PayloadSum16 mutated state: Sum16()=%#x", got)
+		}
+
+		// Odd length is zero padded: appending a zero byte changes nothing.
+		want := crc.PayloadSum16(data)
+		if n%2 == 1 {
+			padded := append(data[:n:n], 0)
+			if got := crc.PayloadSum16(padded); got != want {
+				t.Fatalf("n=%d: padded sum %#x != odd sum %#x", n, got, want)
+			}
+		}
+
+		// Split invariance: arbitrary even-sized chunks give the same result.
+		rest := data
+		for len(rest) > 1 {
+			chunk := 2 * rng.Intn(len(rest)/2+1)
+			crc.WriteEven(rest[:chunk])
+			rest = rest[chunk:]
+		}
+		if got := crc.PayloadSum16(rest); got != want {
+			t.Fatalf("n=%d: chunked sum %#x != one-shot %#x", n, got, want)
+		}
+
+		// AddUint32/AddUint16 equivalent to writing big-endian bytes.
+		crc.Reset()
+		even := data[:n&^1]
+		wantEven := crc.PayloadSum16(even)
+		j := 0
+		for ; j+4 <= len(even); j += 4 {
+			crc.AddUint32(binary.BigEndian.Uint32(even[j:]))
+		}
+		if j < len(even) {
+			crc.AddUint16(binary.BigEndian.Uint16(even[j:]))
+		}
+		if got := crc.Sum16(); got != wantEven {
+			t.Fatalf("n=%d: AddUint sum %#x, want %#x", n, got, wantEven)
+		}
+
+		// Byte order independence (RFC 1071 §2B): swapping bytes of every
+		// 16-bit word yields the byte-swapped checksum.
+		crc.Reset()
+		swapped := make([]byte, len(even))
+		for j := 0; j < len(even); j += 2 {
+			swapped[j], swapped[j+1] = even[j+1], even[j]
+		}
+		wantSwapped := wantEven<<8 | wantEven>>8
+		if got := crc.PayloadSum16(swapped); got != wantSwapped {
+			t.Fatalf("n=%d: swapped sum %#x, want %#x", n, got, wantSwapped)
+		}
+	}
+}
+
+// TestCRC791NegativeZero checks data whose ones' complement sum is 0xffff
+// (negative zero). Raw checksum is 0x0000, which UDP reserves for "no checksum",
+// so NeverZeroSum must transmit 0xffff instead and it must still verify.
+func TestCRC791NegativeZero(t *testing.T) {
+	data := []byte{0x12, 0x34, 0xed, 0xcb, 0, 0} // 0x1234+0xedcb = 0xffff; last word is checksum field.
+	var crc lneto.CRC791
+	raw := crc.PayloadSum16(data)
+	if raw != 0 {
+		t.Fatalf("raw checksum got %#x, want 0", raw)
+	}
+	sum := lneto.NeverZeroSum(raw)
+	if sum != 0xffff {
+		t.Fatalf("NeverZeroSum(0) got %#x, want 0xffff", sum)
+	}
+	binary.BigEndian.PutUint16(data[4:], sum)
+	if got := crc.PayloadSum16(data); got != 0 {
+		t.Fatalf("verification sum got %#x, want 0", got)
 	}
 }
