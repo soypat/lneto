@@ -18,10 +18,9 @@ func TestHandshakeRFC8448(t *testing.T) {
 	const paranoid = true
 	// ClientHello sent by client.
 	var scratch [32]byte
-	var vld lneto.Validator
 	body := rfc8448.ClientHello[SizeHeaderHandshake:]
 	var ch HelloClientMsg
-	n, err := ch.Decode(body, &vld)
+	n, err := ch.Decode(body)
 	if err != nil {
 		t.Fatal(err)
 	} else if n != len(body) {
@@ -67,7 +66,7 @@ func TestHandshakeRFC8448(t *testing.T) {
 	// ServerHello.
 	body = rfc8448.ServerHello[SizeHeaderHandshake:]
 	var sh HelloServerMsg
-	n, err = sh.Decode(body, &vld)
+	n, err = sh.Decode(body)
 	if err != nil {
 		t.Fatal(err)
 	} else if n != len(body) {

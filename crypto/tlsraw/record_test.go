@@ -140,8 +140,8 @@ func TestEncoderSealRecord(t *testing.T) {
 	e.EndRecord(start)
 	e.SealRecord(&viaEnc, start, ContentTypeApplicationData)
 	e.Uint8(0xff) // Next write lands after the record.
-	if e.Err() != nil {
-		t.Fatal(e.Err())
+	if e.IsFailed() {
+		t.Fatal("encode failed")
 	} else if got := buf[prefix : len(buf)-1]; !bytes.Equal(got, want) {
 		t.Fatalf("record %x, want %x", got, want)
 	} else if e.Len() != len(buf) || buf[len(buf)-1] != 0xff {
@@ -153,8 +153,8 @@ func TestEncoderSealRecord(t *testing.T) {
 	e.Bytes(content)
 	e.EndRecord(start)
 	e.SealRecord(&viaEnc, start, ContentTypeApplicationData)
-	if !errors.Is(e.Err(), lneto.ErrShortBuffer) {
-		t.Fatalf("short buffer err=%v, want %v", e.Err(), lneto.ErrShortBuffer)
+	if !e.IsFailed() {
+		t.Fatal("short buffer did not fail")
 	}
 }
 
