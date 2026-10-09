@@ -40,7 +40,8 @@ type CipherFrame interface { // TODO: rename lcrypto.CipherAEAD.
 }
 
 // HalfConn protects binary packets in one direction after SetAEAD or SetFrameCipher is called, usually after [MsgNewKeys].
-// HalfConn expects packets input via Seal and Open to be of their [Frame.WireLength]
+// HalfConn expects packets input via Seal and Open to be of their [Frame.WireLength].
+// SetCipher* methods do not zero current ciphers- it is the responsibility of the user to call [HalfConn.Zeroize] responsibly.
 type HalfConn struct {
 	used     uint64 // Packets protected with the current key.
 	cipherA  lcrypto.AEADCipher
@@ -55,7 +56,6 @@ type HalfConn struct {
 // SetCipherAEAD installs aead, keyed with the derived key, and the matching IV. strict
 // restarts sequence numbers, see [HalfConn.Seq]. HalfConn is zeroed excepting sequence number on failure.
 func (hc *HalfConn) SetCipherAEAD(aead lcrypto.AEADCipher, iv *[12]byte, strict bool) error {
-	hc.zeroize(hc.seq) // early key zeroization.
 	overhead := aead.Overhead()
 	if aead.NonceSize() != len(iv) || overhead != 16 { // All AEADs are 16.
 		return lneto.ErrInvalidConfig
@@ -75,7 +75,6 @@ func (hc *HalfConn) SetCipherAEAD(aead lcrypto.AEADCipher, iv *[12]byte, strict 
 // (CVE-2023-48795); callers may want to refuse it then.
 // HalfConn is zeroed excepting sequence number on failure.
 func (hc *HalfConn) SetCipherFrame(cf CipherFrame, strict bool) error {
-	hc.zeroize(hc.seq) // early key zeroization.
 	overhead := cf.Overhead()
 	if cf.BlockSize() != minBlockSize || overhead != 16 { // 16: omit support for encrypt->MAC.
 		return lneto.ErrInvalidConfig
@@ -106,9 +105,14 @@ func (hc *HalfConn) HasKeys() bool { return hc.aead && hc.cipherA != nil || hc.c
 func (hc *HalfConn) useAEAD() bool    { return hc.aead }
 func (hc *HalfConn) useFCipher() bool { return hc.cipherF != nil }
 
-// Zeroize forgets the keys and the sequence number. It drops references to the supplied Cipher.
+// Zeroize calls Zeroize method on ciphers and zeroes all other internal state and drops reference to cipher.
 func (hc *HalfConn) Zeroize() {
 	hc.zeroize(0)
+}
+
+// isZeroized returns true if HalfConn is in zeroized state with no installed cipher..
+func (hc *HalfConn) isZeroized() bool {
+	return !(hc.useAEAD() || hc.useFCipher())
 }
 
 // zeroize zeros struct and ciphers and sets seq.
