@@ -281,7 +281,7 @@ func Negotiate(client, server []byte) (name []byte, ok bool) {
 
 // nextName splits off the first name of a non-empty list.
 func nextName(list []byte) (name, rest []byte) {
-	for i := 0; i < len(list); i++ {
+	for i := range list {
 		if list[i] == ',' {
 			return list[:i], list[i+1:]
 		}
