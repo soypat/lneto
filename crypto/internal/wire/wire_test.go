@@ -3,6 +3,8 @@ package wire
 import (
 	"bytes"
 	"testing"
+
+	"github.com/soypat/lneto"
 )
 
 func TestEncoderShortBuffer(t *testing.T) {
@@ -99,6 +101,48 @@ func TestDecoder(t *testing.T) {
 	}
 	if d.Uint8() != 0 || d.Off() != 9 {
 		t.Fatalf("read after failure off=%d", d.Off())
+	}
+}
+
+func TestEncoderErr(t *testing.T) {
+	var e EncoderErr
+	e.Reset(make([]byte, 1), 0)
+	e.Uint16(1)
+	if e.Err() != lneto.ErrShortBuffer {
+		t.Fatalf("short write err=%v", e.Err())
+	}
+	e.Reset(make([]byte, 1), 0)
+	if e.Err() != nil || e.IsFailed() {
+		t.Fatalf("after Reset err=%v failed=%v", e.Err(), e.IsFailed())
+	}
+	e.Fail(lneto.ErrInvalidField)
+	if e.Err() != lneto.ErrInvalidField || !e.IsFailed() {
+		t.Fatalf("Fail err=%v failed=%v", e.Err(), e.IsFailed())
+	}
+	e.Reset(make([]byte, 1), 0)
+	if e.Err() != nil {
+		t.Fatalf("after Reset err=%v", e.Err())
+	}
+}
+
+func TestDecoderErr(t *testing.T) {
+	var d DecoderErr
+	d.Reset([]byte{1})
+	d.Uint16()
+	if d.Err() != lneto.ErrTruncatedFrame {
+		t.Fatalf("short read err=%v", d.Err())
+	}
+	d.Reset([]byte{1})
+	if d.Err() != nil || d.IsFailed() {
+		t.Fatalf("after Reset err=%v failed=%v", d.Err(), d.IsFailed())
+	}
+	d.Fail(lneto.ErrInvalidField)
+	if d.Err() != lneto.ErrInvalidField || !d.IsFailed() {
+		t.Fatalf("Fail err=%v failed=%v", d.Err(), d.IsFailed())
+	}
+	d.Reset([]byte{1})
+	if d.Err() != nil {
+		t.Fatalf("after Reset err=%v", d.Err())
 	}
 }
 

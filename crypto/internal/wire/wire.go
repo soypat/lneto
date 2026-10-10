@@ -7,7 +7,62 @@ package wire
 
 import (
 	"encoding/binary"
+
+	"github.com/soypat/lneto"
 )
+
+type encoder = Encoder
+type decoder = Decoder
+
+// EncoderErr is an [Encoder] that records why it failed, for protocol packages to embed.
+type EncoderErr struct {
+	encoder
+	_err error
+}
+
+// Reset makes e write to buf starting at off, keeping buf[:off], and clears its error.
+func (e *EncoderErr) Reset(buf []byte, off int) { *e = EncoderErr{}; e.encoder.Reset(buf, off) }
+
+// Fail fails the encoder with err.
+func (e *EncoderErr) Fail(err error) {
+	e._err = err
+	e.encoder.Fail()
+}
+
+// Err returns the error passed to Fail, or [lneto.ErrShortBuffer] if a write did not fit.
+func (e *EncoderErr) Err() (err error) {
+	if e._err != nil {
+		err = e._err
+	} else if e.IsFailed() {
+		err = lneto.ErrShortBuffer
+	}
+	return err
+}
+
+// DecoderErr is a [Decoder] that records why it failed, for protocol packages to embed.
+type DecoderErr struct {
+	decoder
+	_err error
+}
+
+// Reset makes d read buf from its start and clears its error.
+func (d *DecoderErr) Reset(buf []byte) { *d = DecoderErr{}; d.decoder.Reset(buf) }
+
+// Fail fails the decoder with err.
+func (d *DecoderErr) Fail(err error) {
+	d._err = err
+	d.decoder.Fail()
+}
+
+// Err returns the error passed to Fail, or [lneto.ErrTruncatedFrame] if a read ran past the end.
+func (d *DecoderErr) Err() (err error) {
+	if d._err != nil {
+		err = d._err
+	} else if d.IsFailed() {
+		err = lneto.ErrTruncatedFrame
+	}
+	return err
+}
 
 // Encoder writes big endian structures to a fixed buffer, the counterpart of [Decoder].
 // A write past the end of buf sets err and all later writes are dropped, so
