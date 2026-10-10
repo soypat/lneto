@@ -161,8 +161,8 @@ func (ks *KeySchedule) SetSecret(shared []byte, hashed bool) error {
 	} else {
 		e.MPInt(shared)
 	}
-	if e.Err() != nil {
-		return e.Err()
+	if err := e.Err(); err != nil {
+		return err
 	}
 	ks.klen = uint8(e.Len())
 	return nil
@@ -271,12 +271,14 @@ func (ks *KeySchedule) Zeroize() {
 	ks.sidlen = 0
 }
 
-type encoder = wire.Encoder
+type encoderErr = wire.EncoderErr
 
 // Encoder writes SSH structures to a fixed buffer, the counterpart of [decoder].
-// A write past the end of buf sets err and all later writes are dropped, so
-// callers check err once after writing.
-type Encoder struct{ encoder }
+// A write past the end of buf fails the encoder and all later writes are dropped,
+// so callers check Err once after writing.
+type Encoder struct {
+	encoderErr
+}
 
 // Bool writes 1 for true and 0 for false, the only values RFC 4251 5 allows to be sent.
 func (e *Encoder) Bool(v bool) {
@@ -357,7 +359,7 @@ func (e *Encoder) EndPacket(start, blockSize int, aad bool, rand io.Reader) []by
 	if bs+minPadding-1 > 255 {
 		e.Fail(lneto.ErrInvalidConfig)
 	}
-	if e.Err() != nil {
+	if e.IsFailed() {
 		return nil
 	}
 	covered := e.Len() - start
