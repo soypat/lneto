@@ -9,7 +9,14 @@ import (
 	"github.com/soypat/lneto/ipv4"
 )
 
-var errOptionNotFit = errors.New("DHCPv4: options dont fit")
+var (
+	errOptionNotFit    = errors.New("DHCPv4: options dont fit")
+	errPoolExhausted   = errors.New("dhcpv4 server: address pool exhausted")
+	errUnknownClient   = errors.New("dhcpv4 server: request for non existing client")
+	errUnexpectedXID   = errors.New("dhcpv4 server: unexpected XID for client")
+	errUnexpectedState = errors.New("dhcpv4 server: request in unexpected state")
+	errUnhandledMsg    = errors.New("dhcpv4 server: unhandled message type")
+)
 
 type Server struct {
 	connID       uint64
@@ -178,7 +185,7 @@ func (sv *Server) Demux(carrierData []byte, frameOffset int) error {
 		if !clientExists {
 			addr, ok := sv.allocAddr(reqAddr)
 			if !ok {
-				return errors.New("dhcpv4 server: address pool exhausted")
+				return errPoolExhausted
 			}
 			client.addr = addr
 		}
@@ -195,14 +202,11 @@ func (sv *Server) Demux(carrierData []byte, frameOffset int) error {
 
 	case MsgRequest:
 		if !clientExists {
-			err = errors.New("request for non existing client")
+			return errUnknownClient
 		} else if dfrm.XID() != client.xid {
-			err = errors.New("unexpected XID for client")
+			return errUnexpectedXID
 		} else if client.state != StateSelecting && client.state != StateRequesting {
-			err = errors.New("DHCP request unexpected state")
-		}
-		if err != nil {
-			break
+			return errUnexpectedState
 		}
 		if client.state == StateSelecting {
 			client.state = StateRequesting
@@ -219,10 +223,7 @@ func (sv *Server) Demux(carrierData []byte, frameOffset int) error {
 		}
 
 	default:
-		err = errors.New("unhandled message type: " + msgType.String())
-	}
-	if err != nil {
-		return errors.New("dhcpv4 server demux fail on " + msgType.String())
+		return errUnhandledMsg
 	}
 	sv.hosts[clientIDRaw] = client
 	return nil
@@ -231,10 +232,11 @@ func (sv *Server) Demux(carrierData []byte, frameOffset int) error {
 func (sv *Server) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
 	carrierIsIP := offsetToIP >= 0
 	dfrm, err := NewFrame(carrierData[offsetToFrame:])
-	optBuf := dfrm.OptionsPayload()[:]
 	if err != nil {
 		return 0, err
-	} else if len(optBuf) < 255 {
+	}
+	optBuf := dfrm.OptionsPayload()
+	if len(optBuf) < 255 {
 		return 0, errOptionNotFit
 	}
 	if sv.pending == 0 {
@@ -332,27 +334,33 @@ func (sv *Server) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 }
 
 // allocAddr allocates the next available address from the pool.
-// If reqAddr is a valid 4-byte address within the subnet and not already assigned,
-// it is preferred. Returns false if the pool is exhausted.
+// If reqAddr is a usable 4-byte address it is preferred. Returns false if the pool is exhausted.
 func (sv *Server) allocAddr(reqAddr []byte) ([4]byte, bool) {
-	if len(reqAddr) == 4 {
-		candidate := [4]byte(reqAddr)
-		if sv.subnet.Contains(candidate) && candidate != sv.siaddr && !sv.isAddrAssigned(candidate) {
-			return candidate, true
+	if len(reqAddr) == 4 && sv.isAddrUsable([4]byte(reqAddr)) {
+		return [4]byte(reqAddr), true
+	}
+	// At most len(hosts)+5 addresses are unusable (leases, network, broadcast,
+	// server, gateway, DNS), so if any address is free the cursor reaches it
+	// within that many steps. Wrapping past the subnet end is harmless.
+	for range len(sv.hosts) + 6 {
+		a := sv.nextAddr
+		sv.nextAddr = sv.subnet.Next(a)
+		if sv.isAddrUsable(a) {
+			return a, true
 		}
 	}
-	// Reject broadcast address (all host bits set).
-	a := sv.nextAddr
-	sv.nextAddr = sv.subnet.Next(sv.nextAddr)
-	if sv.nextAddr == sv.siaddr {
-		sv.nextAddr = sv.subnet.Next(sv.nextAddr)
+	return [4]byte{}, false
+}
+
+// isAddrUsable reports whether addr may be leased: inside the subnet, not the
+// network or broadcast address, not an address the server advertises and not already leased.
+func (sv *Server) isAddrUsable(addr [4]byte) bool {
+	if !sv.subnet.Contains(addr) || addr == sv.siaddr || addr == sv.gwaddr || addr == sv.dns {
+		return false
 	}
-	hostBits := uint(32 - sv.subnet.Bits())
-	hostMask := ^uint32(0) >> (32 - hostBits)
-	if binary.BigEndian.Uint32(a[:])&hostMask == hostMask {
-		return [4]byte{}, false
-	}
-	return a, true
+	hostMask := ^uint32(0) >> sv.subnet.Bits()
+	host := binary.BigEndian.Uint32(addr[:]) & hostMask
+	return host != 0 && host != hostMask && !sv.isAddrAssigned(addr)
 }
 
 func (sv *Server) isAddrAssigned(addr [4]byte) bool {

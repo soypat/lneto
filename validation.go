@@ -18,6 +18,7 @@ func (vf ValidateFlags) has(v ValidateFlags) bool {
 }
 
 type Validator struct {
+	firstErr    error
 	accum       []error
 	accumBitpos []BitPosErr
 	flags       ValidateFlags
@@ -28,6 +29,7 @@ func (v *Validator) Flags() ValidateFlags {
 }
 
 func (v *Validator) ResetErr() {
+	v.firstErr = nil
 	v.accum = v.accum[:0]
 	v.accumBitpos = v.accumBitpos[:0]
 }
@@ -36,32 +38,35 @@ func (v *Validator) HasError() bool {
 	if v.flags.has(validateReserved) {
 		panic("reserved bit set")
 	}
-	return len(v.accum) != 0
+	return v.firstErr != nil
 }
 
 // ErrPop returns the error(s) accumulated in the validator and clears them.
 func (v *Validator) ErrPop() (err error) {
-	if len(v.accum) == 1 {
-		err = v.accum[0]
-		v.ResetErr()
-	} else if len(v.accum) > 0 {
-		err = errors.Join(v.accum...)
-		v.ResetErr()
+	if len(v.accum) == 0 {
+		err = v.firstErr
+	} else {
+		err = errors.Join(append([]error{v.firstErr}, v.accum...)...)
 	}
+	v.ResetErr()
 	return err
 }
 
 func (v *Validator) gotErr(err error) {
-	v.accum = append(v.accum, err)
+	if v.firstErr == nil {
+		v.firstErr = err
+	} else {
+		v.accum = append(v.accum, err)
+	}
 }
 
 func (v *Validator) AddError(err error) {
 	if err == nil {
 		panic("error argument to AddError cannot be nil")
-	} else if len(v.accum) != 0 && !v.flags.has(validateAllowMultiErrors) {
+	} else if v.firstErr != nil && !v.flags.has(validateAllowMultiErrors) {
 		return
 	}
-	v.accum = append(v.accum, err)
+	v.gotErr(err)
 }
 
 func (v *Validator) AddBitPosErr(bitStart, bitLen int, err error) {
@@ -71,7 +76,7 @@ func (v *Validator) AddBitPosErr(bitStart, bitLen int, err error) {
 		panic("zero bitlen")
 	}
 	v.accumBitpos = append(v.accumBitpos, BitPosErr{BitStart: bitStart, BitLen: bitLen, Err: err})
-	v.accum = append(v.accum, &v.accumBitpos[len(v.accumBitpos)-1])
+	v.gotErr(&v.accumBitpos[len(v.accumBitpos)-1])
 }
 
 type BitPosErr struct {
