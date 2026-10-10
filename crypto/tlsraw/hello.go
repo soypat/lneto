@@ -342,46 +342,16 @@ func checkVec8(data []byte) error {
 
 // decoder provides a API to readably decode TLS packets, see [wire.Decoder].
 type decoder struct {
-	wire.Decoder
-	_err error
+	wire.DecoderErr
 }
 
-func (dec *decoder) Fail(err error) {
-	dec._err = err
-	dec.Decoder.Fail()
-}
-
-func (dec *decoder) Err() (err error) {
-	if dec._err != nil {
-		err = dec._err
-	} else if dec.Decoder.IsFailed() {
-		err = lneto.ErrTruncatedFrame
-	}
-	return err
-}
-
-type encoder = wire.Encoder
+type encoderErr = wire.EncoderErr
 
 // Encoder writes TLS structures to a fixed buffer, the counterpart of [decoder].
 // A write past the end of buf fails the encoder and all later writes are dropped,
 // so callers check Err once after writing.
 type Encoder struct {
-	encoder
-	err error
-}
-
-func (e *Encoder) Fail(err error) {
-	e.err = err
-	e.encoder.Fail()
-}
-
-func (e *Encoder) Err() (err error) {
-	if e.err != nil {
-		err = e.err
-	} else if e.encoder.IsFailed() {
-		err = lneto.ErrShortBuffer
-	}
-	return err
+	encoderErr
 }
 
 // StartMessage writes a handshake message header whose length is set by EndMessage.

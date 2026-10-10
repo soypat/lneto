@@ -271,28 +271,13 @@ func (ks *KeySchedule) Zeroize() {
 	ks.sidlen = 0
 }
 
-type encoder = wire.Encoder
+type encoderErr = wire.EncoderErr
 
 // Encoder writes SSH structures to a fixed buffer, the counterpart of [decoder].
-// A write past the end of buf sets err and all later writes are dropped, so
-// callers check err once after writing.
+// A write past the end of buf fails the encoder and all later writes are dropped,
+// so callers check Err once after writing.
 type Encoder struct {
-	encoder
-	err error
-}
-
-func (e *Encoder) Fail(err error) {
-	e.err = err
-	e.encoder.Fail()
-}
-
-func (e *Encoder) Err() (err error) {
-	if e.err != nil {
-		err = e.err
-	} else if e.encoder.IsFailed() {
-		err = lneto.ErrInvalidLengthField
-	}
-	return err
+	encoderErr
 }
 
 // Bool writes 1 for true and 0 for false, the only values RFC 4251 5 allows to be sent.

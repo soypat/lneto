@@ -160,26 +160,7 @@ func (m *KexInitMsg) WrongGuess(own *KexInitMsg) bool {
 
 // decoder provides an API to readably decode SSH messages, RFC 4251 5, see [wire.Decoder].
 type decoder struct {
-	wire.Decoder
-	_err error
-}
-
-func (dec *decoder) Fail(err error) {
-	dec._err = err
-	dec.Decoder.Fail()
-}
-
-func (dec *decoder) Err() (err error) {
-	if dec._err != nil {
-		err = dec._err
-	} else if dec.Decoder.IsFailed() {
-		err = lneto.ErrTruncatedFrame
-	}
-	return err
-}
-
-func (dec *decoder) IsFailed() bool {
-	return dec.Decoder.IsFailed() || dec._err != nil
+	wire.DecoderErr
 }
 
 // Bool decodes a boolean. Any non-zero value is true, RFC 4251 5.
