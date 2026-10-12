@@ -14,7 +14,7 @@ func (tcb *ControlBlock) rcvListen(seg Segment) (pending Flags, err error) {
 
 	// We must respond with SYN|ACK frame after receiving SYN in listen state (three way handshake).
 	tcb.pending[0] = synack
-	tcb._state = StateSynRcvd
+	tcb.newState(StateSynRcvd)
 	return synack, nil
 }
 
@@ -33,13 +33,13 @@ func (tcb *ControlBlock) rcvSynSent(seg Segment) (pending Flags, err error) {
 	}
 
 	if hasAck {
-		tcb._state = StateEstablished
+		tcb.newState(StateEstablished)
 		pending = FlagACK
 		tcb.resetRcv(tcb.rcv.WND, seg.SEQ)
 	} else {
 		// Simultaneous connection sync edge case.
 		pending = synack
-		tcb._state = StateSynRcvd
+		tcb.newState(StateSynRcvd)
 		tcb.resetSnd(tcb.snd.ISS, seg.WND)
 		tcb.resetRcv(tcb.rcv.WND, seg.SEQ)
 	}
@@ -57,7 +57,7 @@ func (tcb *ControlBlock) rcvSynRcvd(seg Segment) (pending Flags, err error) {
 	if err != nil {
 		return 0, err
 	}
-	tcb._state = StateEstablished
+	tcb.newState(StateEstablished)
 	return 0, nil
 }
 
@@ -69,7 +69,7 @@ func (tcb *ControlBlock) rcvEstablished(seg Segment) (pending Flags, err error) 
 		pending = FlagACK
 		if hasFin {
 			// See Figure 5: TCP Connection State Diagram of RFC 9293.
-			tcb._state = StateCloseWait
+			tcb.newState(StateCloseWait)
 			// RFC 9293 §3.5: CLOSE-WAIT allows local side to continue sending.
 			// Do NOT auto-queue FIN here; user must call Close() explicitly.
 		}
@@ -86,12 +86,12 @@ func (tcb *ControlBlock) rcvFinWait1(seg Segment) (pending Flags, err error) {
 	case hasFin && hasAck && seg.ACK == tcb.snd.NXT:
 		// Special case: Server sent a FINACK response to our FIN so we enter TimeWait directly.
 		// We have to check ACK against send NXT to avoid simultaneous close sequence edge case.
-		tcb._state = StateTimeWait
+		tcb.newState(StateTimeWait)
 	case hasFin:
-		tcb._state = StateClosing
+		tcb.newState(StateClosing)
 	case hasAck && seg.ACK == tcb.snd.NXT:
 		// RFC 9293 §3.10.7.4 step 5: enter FIN-WAIT-2 only if the FIN is now acknowledged.
-		tcb._state = StateFinWait2
+		tcb.newState(StateFinWait2)
 	case hasAck:
 		// Partial ACK: acknowledges data but not the FIN. Stay in FIN-WAIT-1.
 	default:
@@ -108,7 +108,7 @@ func (tcb *ControlBlock) rcvFinWait1(seg Segment) (pending Flags, err error) {
 
 func (tcb *ControlBlock) rcvFinWait2(seg Segment) (pending Flags, err error) {
 	if seg.Flags.HasAny(FlagFIN) {
-		tcb._state = StateTimeWait
+		tcb.newState(StateTimeWait)
 		return FlagACK, nil
 	}
 	// Bare ACKs and data are valid in FIN-WAIT-2 per RFC 9293 §3.10.7.4.
