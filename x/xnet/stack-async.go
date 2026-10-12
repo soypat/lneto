@@ -13,6 +13,7 @@ import (
 	"github.com/soypat/lneto/arp"
 	"github.com/soypat/lneto/dhcp/dhcpv4"
 	"github.com/soypat/lneto/dns"
+	"github.com/soypat/lneto/dns/edns0"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/internet"
@@ -669,7 +670,7 @@ func (s *StackAsync) StartLookupIPType(host dns.Name, qtype dns.Type) error {
 	}
 	// EDNS0 buffer size: MTU minus overhead for IP+UDP headers and safety margin.
 	// 100 bytes covers IPv4 max header (60) + UDP (8) + 32 byte margin.
-	s.ednsopt.SetEDNS0(uint16(s.link.MTU())-100, 0, 0, nil)
+	edns0.SetResource(&s.ednsopt, uint16(s.link.MTU())-100, 0, 0, nil)
 	rand := s.prand32()
 	err := s.dns.StartResolve(uint16(rand>>1)+1024, uint16(rand), dns.ResolveConfig{
 		Questions: []dns.Question{
