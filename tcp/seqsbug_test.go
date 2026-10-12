@@ -162,6 +162,35 @@ func TestSYNOnEstablished_ChallengeACK(t *testing.T) {
 	}
 }
 
+// TestChallengeACK_CounterSaturates verifies the challenge ACK counter does not
+// overflow. Found by lfuzzo: past 127 consecutive challenges the int8 counter
+// wrapped to -128, which negation cannot make positive, so a challenge ACK
+// stayed pending and was emitted on every Send forever.
+func TestChallengeACK_CounterSaturates(t *testing.T) {
+	const (
+		issA   Value = 100
+		issB   Value = 300
+		window Size  = 1000
+	)
+	var tcb ControlBlock
+	tcb.HelperInitState(StateEstablished, issA, issA, window)
+	tcb.HelperInitRcv(issB, issB, window)
+	syn := Segment{SEQ: issB, Flags: FlagSYN, WND: window}
+	for i := range 300 {
+		tcb.Recv(syn) //nolint:errcheck // SYN is always rejected with a challenge.
+		ack, ok := tcb.PendingSegment(0)
+		if !ok || ack.Flags != FlagACK {
+			t.Fatalf("SYN %d: no challenge ACK pending", i)
+		}
+		if err := tcb.Send(ack); err != nil {
+			t.Fatalf("SYN %d: sending challenge ACK: %v", i, err)
+		}
+		if seg, ok := tcb.PendingSegment(0); ok {
+			t.Fatalf("SYN %d: segment %s still pending after challenge ACK sent", i, seg)
+		}
+	}
+}
+
 // TestSYNOnClosingStates verifies SYN rejection in other synchronized states
 // beyond ESTABLISHED (FIN-WAIT-1, FIN-WAIT-2, CLOSE-WAIT).
 func TestSYNOnClosingStates(t *testing.T) {
