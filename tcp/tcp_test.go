@@ -311,6 +311,27 @@ func TestExchangeTest_passiveSynRcvdRejectsSynAck(t *testing.T) {
 	test.RunB(t) // Only B, the passive opener: A is not a valid simultaneous-open peer here.
 }
 
+// Drop SYN|FIN in listen, just like linux. Admitting them both would cause rcvnxt desync. lfuzzo found.
+func TestExchangeTest_listenDropsSynFin(t *testing.T) {
+	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
+	test := tcp.ExchangeTest{
+		ISSA:       issA,
+		ISSB:       issB,
+		WindowA:    windowA,
+		WindowB:    windowB,
+		InitStateA: tcp.StateSynSent,
+		InitStateB: tcp.StateListen,
+		Steps: []tcp.SegmentStep{
+			0: { // B receives SYN,FIN from A: dropped, no reply, still listening.
+				Seg:    tcp.Segment{SEQ: issA, Flags: tcp.FlagSYN | tcp.FlagFIN, WND: windowA},
+				Action: tcp.StepASends,
+				BState: tcp.StateListen,
+			},
+		},
+	}
+	test.RunB(t) // Only B, the passive opener: the SYN,FIN models a mutated segment, not A's own send.
+}
+
 /*
 	 Recovery from Old Duplicate SYN
 		TCP Peer A                                           TCP Peer B

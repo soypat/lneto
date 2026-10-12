@@ -4,6 +4,8 @@ func (tcb *ControlBlock) rcvListen(seg Segment) (pending Flags, err error) {
 	switch {
 	case !seg.Flags.HasAll(FlagSYN):
 		err = errExpectedSYN
+	case seg.Flags.HasAny(FlagFIN):
+		err = errDropSegment // Linux discards SYN|FIN. We omit complexity of processing both which as of now would cause a desync.
 	}
 	if err != nil {
 		return 0, err
