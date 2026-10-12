@@ -36,6 +36,17 @@ func (netstack *Netstack) IPAddr4() [4]byte {
 	return netstack.stack.Addr4()
 }
 
+// StackAsync returns the underlying [StackAsync] for setup that Netstack does not
+// expose, such as registering a DHCP server or setting the gateway hardware address.
+func (netstack *Netstack) StackAsync() *StackAsync {
+	return &netstack.stack
+}
+
+// StackGo returns the [StackGo] built on the underlying stack during [Netstack.Reset].
+func (netstack *Netstack) StackGo() *StackGo {
+	return &netstack.gstack
+}
+
 // EnableICMP enables responding/sending ICMP echo frames.
 func (netstack *Netstack) EnableICMP(enabled bool) error {
 	return netstack.stack.EnableICMP(enabled)
