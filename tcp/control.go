@@ -379,9 +379,10 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 
 	// RFC 9293 §3.10.7.4: SYN on synchronized connection → challenge ACK.
 	if seg.Flags.HasAny(FlagSYN) && !(tcb._state == StateSynSent || tcb._state == StateListen) {
+		// SYN-RCVD needs special treatment since we already rcvd SYN and processing another one could permanently desync control block.
 		likelySimultaneous := tcb._state == StateSynRcvd && seg.SEQ == tcb.rcv.IRS && seg.DATALEN == 0 && seg.ACK == tcb.snd.NXT
 		if likelySimultaneous {
-			// Need extra check for simultaneous open connection, in which case we can omit challenge and treat SYNACK as ack.
+			// Need extra check for simultaneous open connection, in which case we can omit challenge and treat SYNACK as ack to prevent desync.
 			// See RFC 9293 Figure 7. This will advance StateSynRcvd->StateEstablished
 			seg.Flags = FlagACK
 		} else {
