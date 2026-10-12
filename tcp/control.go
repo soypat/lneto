@@ -61,8 +61,6 @@ type ControlBlock struct {
 	//	2 - sequence numbers allowed for new reception
 	//	3 - future sequence numbers which are not yet allowed
 	rcv recvSpace
-	// When FlagRST is set in pending flags rstPtr will contain the sequence number of the RST segment to make it "believable" (See RFC9293)
-	rstPtr Value
 	logger
 
 	// pending is the queue of pending flags to be sent in the next 2 segments.
@@ -82,6 +80,8 @@ type ControlBlock struct {
 	dupack uint8
 	// nRetransmit counts number of retransmits sent since last UNA update.
 	nRetransmit uint8
+	// When FlagRST is set in pending flags rstPtr will contain the sequence number of the RST segment to make it "believable" (See RFC9293)
+	rstPtr Value
 }
 
 // State returns the current state of the TCP connection. See [State].
