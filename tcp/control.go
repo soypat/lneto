@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 
 	"github.com/soypat/lneto/internal"
@@ -377,10 +378,17 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	}
 
 	// RFC 9293 §3.10.7.4: SYN on synchronized connection → challenge ACK.
-	if seg.Flags.HasAny(FlagSYN) && !tcb._state.IsPreestablished() {
-		tcb.triggerChallengeAckEmit()
-		tcb.pending[0] |= FlagACK
-		return errDropSegment
+	if seg.Flags.HasAny(FlagSYN) && !(tcb._state == StateSynSent || tcb._state == StateListen) {
+		likelySimultaneous := tcb._state == StateSynRcvd && seg.SEQ == tcb.rcv.IRS && seg.DATALEN == 0 && seg.ACK == tcb.snd.NXT
+		if likelySimultaneous {
+			// Need extra check for simultaneous open connection, in which case we can omit challenge and treat SYNACK as ack.
+			// See RFC 9293 Figure 7. This will advance StateSynRcvd->StateEstablished
+			seg.Flags = FlagACK
+		} else {
+			tcb.triggerChallengeAckEmit()
+			tcb.pending[0] |= FlagACK
+			return errDropSegment
+		}
 	}
 
 	prevNxt := tcb.snd.NXT
@@ -774,7 +782,9 @@ func (tcb *ControlBlock) triggerChallengeAckSatisfied() {
 func (tcb *ControlBlock) triggerChallengeAckEmit() {
 	if tcb.challengeAcks >= 0 {
 		// Only increment challenge ack counter if last challenge ack already sent.
-		tcb.challengeAcks = -tcb.challengeAcks - 1
+		// Saturate below MaxInt8: reaching -128 would make triggerChallengeAckSent's
+		// negation overflow back to -128, leaving a challenge ACK pending forever.
+		tcb.challengeAcks = -min(tcb.challengeAcks, math.MaxInt8-1) - 1
 	}
 }
 func (tcb *ControlBlock) triggerChallengeAckSent() {

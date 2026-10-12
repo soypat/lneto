@@ -245,6 +245,66 @@ func TestRcvSynRcvd_NoACKFlag_DoesNotCompleteHandshake(t *testing.T) {
 	}
 }
 
+// TestRcvSynRcvd_SYN verifies a SYN in SYN-RCVD never consumes sequence space a
+// second time. Found by lfuzzo: a SYN|ACK at rcv.NXT completed the handshake and
+// advanced rcv.NXT past the client's first data octet, desynchronizing both
+// ESTABLISHED ends permanently.
+func TestRcvSynRcvd_SYN(t *testing.T) {
+	t.Skip()
+	const (
+		iss       Value = 1000
+		remoteISS Value = 5000
+		window    Size  = 2048
+	)
+	newTCB := func() ControlBlock {
+		var tcb ControlBlock
+		tcb.HelperInitState(StateSynRcvd, iss, iss+1, window)
+		tcb.HelperInitRcv(remoteISS, remoteISS+1, window)
+		return tcb
+	}
+
+	t.Run("SYN past IRS", func(t *testing.T) {
+		tcb := newTCB()
+		synack := Segment{SEQ: remoteISS + 1, ACK: iss + 1, Flags: synack, WND: window}
+		if err := tcb.Recv(synack); err == nil {
+			t.Fatal("SYN|ACK past IRS accepted in SYN-RCVD")
+		}
+		if tcb.State() != StateSynRcvd {
+			t.Fatalf("state = %s; want SYN-RCVD", tcb.State())
+		}
+		if tcb.RecvNext() != remoteISS+1 {
+			t.Fatalf("rcv.NXT = %d; want %d", tcb.RecvNext(), remoteISS+1)
+		}
+		seg, ok := tcb.PendingSegment(0)
+		if !ok || seg.Flags != FlagACK || seg.ACK != remoteISS+1 {
+			t.Fatalf("pending = %v, %v; want challenge ACK of rcv.NXT=%d", seg, ok, remoteISS+1)
+		}
+		// The client's data must still complete the handshake and be accepted in order.
+		data := Segment{SEQ: remoteISS + 1, ACK: iss + 1, Flags: FlagPSH | FlagACK, WND: window, DATALEN: 21}
+		if err := tcb.Recv(data); err != nil {
+			t.Fatal("data after challenged SYN rejected:", err)
+		}
+		if tcb.State() != StateEstablished || tcb.RecvNext() != remoteISS+1+21 {
+			t.Fatalf("state = %s rcv.NXT = %d; want ESTABLISHED, %d", tcb.State(), tcb.RecvNext(), remoteISS+1+21)
+		}
+	})
+
+	t.Run("SYN|ACK at IRS", func(t *testing.T) {
+		// Simultaneous open: the peer's SYN|ACK repeats its SYN at IRS and acknowledges ours.
+		tcb := newTCB()
+		synack := Segment{SEQ: remoteISS, ACK: iss + 1, Flags: synack, WND: window}
+		if err := tcb.Recv(synack); err != nil {
+			t.Fatal("simultaneous open SYN|ACK rejected:", err)
+		}
+		if tcb.State() != StateEstablished {
+			t.Fatalf("state = %s; want ESTABLISHED", tcb.State())
+		}
+		if tcb.RecvNext() != remoteISS+1 {
+			t.Fatalf("rcv.NXT = %d; want %d: SYN consumed twice", tcb.RecvNext(), remoteISS+1)
+		}
+	})
+}
+
 // TestCloseWait_NoAutoFINBeforeUserClose verifies that entering CLOSE-WAIT after
 // a remote FIN does not auto-queue a local FIN until the user calls Close().
 func TestCloseWait_NoAutoFINBeforeUserClose(t *testing.T) {
