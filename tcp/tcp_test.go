@@ -332,6 +332,35 @@ func TestExchangeTest_listenDropsSynFin(t *testing.T) {
 	test.RunB(t) // Only B, the passive opener: the SYN,FIN models a mutated segment, not A's own send.
 }
 
+// TestExchangeTest_synSentResetsBadAck: a bad ACK in SYN-SENT must draw RST <SEQ=SEG.ACK> (RFC 9293 §3.10.7.3).
+// Previously SEG.SEQ was checked against the unset receive window, emitting a challenge ACK=0 at SEQ=ISS+1. Found by lfuzzo.
+func TestExchangeTest_synSentResetsBadAck(t *testing.T) {
+	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
+	const badAck = 12336 // Beyond A's SND.NXT.
+	test := tcp.ExchangeTest{
+		ISSA:       issA,
+		ISSB:       issB,
+		WindowA:    windowA,
+		WindowB:    windowB,
+		InitStateA: tcp.StateSynSent,
+		InitStateB: tcp.StateListen,
+		Steps: []tcp.SegmentStep{
+			0: { // A sends SYN.
+				Seg:    tcp.Segment{SEQ: issA, Flags: tcp.FlagSYN, WND: windowA},
+				Action: tcp.StepASends,
+				AState: tcp.StateSynSent,
+			},
+			1: { // A receives an ACK acknowledging unsent data: reset, still SYN-SENT.
+				Seg:      tcp.Segment{SEQ: badAck, ACK: badAck, Flags: tcp.FlagACK, WND: windowB},
+				Action:   tcp.StepBSends,
+				AState:   tcp.StateSynSent,
+				APending: &tcp.Segment{SEQ: badAck, Flags: tcp.FlagRST, WND: windowA},
+			},
+		},
+	}
+	test.RunA(t) // Only A, the active opener: the ACK models a mutated segment, not B's own send.
+}
+
 /*
 	 Recovery from Old Duplicate SYN
 		TCP Peer A                                           TCP Peer B
