@@ -11,13 +11,12 @@ import (
 var _ lneto.StackNode = (*Client)(nil) // Compile-time guarantee of interface implementation.
 
 // Client provides parallel DNS lookups via Lookup* methods. Currently only supports UDP.
+// TODO(soypat): add stream support multiplexing via other methods into same lookup slice.
 type Client struct {
 	connID uint64
-	// rawlookups holds lookup slots. Its length is fixed by [ClientConfig.MaxLookups] and
-	// slots never move so the *Message returned by [Client.LookupResponse] stays valid.
+	// rawlookups slots. length fixed by [ClientConfig.MaxLookups]. Slots never move to preserve [Message] pointer validity
 	rawlookups []lookup
-	// lidxs is a permutation of looksies indices: lidxs[:len] index active lookups
-	// and lidxs[len:len(looksies)] index free slots, which keep their buffers for reuse.
+	// lidxs permutation indices into rawlookups. lidxs[:len] active; lidxs[len:len(looksies)] are free slots.
 	lidxs []uint16
 	vld   lneto.Validator
 	lport uint16
