@@ -783,8 +783,7 @@ func (tcb *ControlBlock) triggerChallengeAckSatisfied() {
 func (tcb *ControlBlock) triggerChallengeAckEmit() {
 	if tcb.challengeAcks >= 0 {
 		// Only increment challenge ack counter if last challenge ack already sent.
-		// Saturate below MaxInt8: reaching -128 would make triggerChallengeAckSent's
-		// negation overflow back to -128, leaving a challenge ACK pending forever.
+		// Avoid reaching -128 as -(-128) overflows back to -128 causing permanent challenge ack pending state.
 		tcb.challengeAcks = -min(tcb.challengeAcks, math.MaxInt8-1) - 1
 	}
 }
