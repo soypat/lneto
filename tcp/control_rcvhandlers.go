@@ -26,9 +26,10 @@ func (tcb *ControlBlock) rcvSynSent(seg Segment) (pending Flags, err error) {
 	switch {
 	case !hasSyn:
 		err = errExpectedSYN
-
 	case hasAck && seg.ACK != tcb.snd.UNA+1:
 		err = errBadSegack
+	case seg.Flags.HasAny(FlagFIN):
+		err = errDropSegment // Same as rcvListen, discard SYN|FIN.
 	}
 	if err != nil {
 		return 0, err

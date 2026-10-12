@@ -273,12 +273,8 @@ func TestExchangeTest_rfc9293_figure7(t *testing.T) {
 	test.RunA(t) // Only A's perspective - B's is fundamentally different in sequential test.
 }
 
-// TestExchangeTest_passiveSynRcvdRejectsSynAck verifies a passive open does not
-// take the simultaneous open path of RFC 9293 Figure 7. Only an active open can
-// reach SYN-RECEIVED expecting the peer's SYN,ACK; on a passive open a SYN,ACK at
-// IRS is a duplicate SYN (§3.10.7.4 step 4) and must not complete the handshake.
-// Found by lfuzzo: a forged SYN,ACK established a server whose RCV.NXT disagreed
-// with the client's SND.NXT, so every data segment was rejected.
+// Passive SYN-RECEIVED must challenge a SYN,ACK at IRS as duplicate SYN (RFC 9293 §3.10.7.4).
+// Previously it took the Figure 7 simultaneous open path and established desynced. Found by lfuzzo.
 func TestExchangeTest_passiveSynRcvdRejectsSynAck(t *testing.T) {
 	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
 	test := tcp.ExchangeTest{
@@ -359,6 +355,38 @@ func TestExchangeTest_synSentResetsBadAck(t *testing.T) {
 		},
 	}
 	test.RunA(t) // Only A, the active opener: the ACK models a mutated segment, not B's own send.
+}
+
+// Drop SYN|FIN in SYN-SENT, as in LISTEN. Admitting it took the simultaneous open path with
+// RCV.NXT=IRS+2, so the SYN,ACK reply acknowledged an unprocessed FIN. lfuzzo found.
+func TestExchangeTest_synSentDropsSynFin(t *testing.T) {
+	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
+	test := tcp.ExchangeTest{
+		ISSA:       issA,
+		ISSB:       issB,
+		WindowA:    windowA,
+		WindowB:    windowB,
+		InitStateA: tcp.StateSynSent,
+		InitStateB: tcp.StateListen,
+		Steps: []tcp.SegmentStep{
+			0: { // A sends SYN.
+				Seg:    tcp.Segment{SEQ: issA, Flags: tcp.FlagSYN, WND: windowA},
+				Action: tcp.StepASends,
+				AState: tcp.StateSynSent,
+			},
+			1: { // A receives SYN,FIN: dropped, no reply, still SYN-SENT.
+				Seg:    tcp.Segment{SEQ: issB, Flags: tcp.FlagSYN | tcp.FlagFIN, WND: windowB},
+				Action: tcp.StepBSends,
+				AState: tcp.StateSynSent,
+			},
+			2: { // A receives SYN,ACK,FIN acknowledging its SYN: also dropped.
+				Seg:    tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: SYNACK | tcp.FlagFIN, WND: windowB},
+				Action: tcp.StepBSends,
+				AState: tcp.StateSynSent,
+			},
+		},
+	}
+	test.RunA(t) // Only A, the active opener: the SYN,FIN models a mutated segment, not B's own send.
 }
 
 /*
