@@ -335,7 +335,7 @@ func (s *StackAsync) Reset(cfg StackConfig) (err error) {
 		maxDNSLookups = 2
 	}
 	// port selected from stochastic source later on.
-	err = s.dns.Configure(dns.ClientConfig{LocalPort: dns.ClientPort, MaxLookups: int(maxDNSLookups)})
+	err = s.dns.Configure(dns.ClientConfig{LocalPort: dns.ClientPort, MaxLookups: maxDNSLookups})
 	if err != nil {
 		return err
 	}
@@ -667,12 +667,7 @@ var (
 
 // newDNSTxid returns a txid that is non-zero, unused by active lookups and unpredictable.
 func (s *StackAsync) newDNSTxid() uint16 {
-	for {
-		txid := s.dnsRand16()
-		if _, active := s.dns.LookupPeek(txid); txid != 0 && !active {
-			return txid
-		}
-	}
+	return s.dns.NextFreeTxid(s.dnsRand16())
 }
 
 // dnsRand16 returns secure keyed hash to prevent spoofing attacks via DNS port/txid.
@@ -713,7 +708,7 @@ func (s *StackAsync) lookupIPStart(host dns.Name, qtype dns.Type, nans uint16) (
 		if port == 0 {
 			return 0, lneto.ErrExhausted // This should be quite rare.
 		}
-		err = s.dns.Configure(dns.ClientConfig{LocalPort: port, MaxLookups: s.dns.MaxLookups()})
+		err = s.dns.Configure(dns.ClientConfig{LocalPort: port, MaxLookups: uint16(s.dns.MaxLookups())})
 		if err != nil {
 			return 0, err
 		}

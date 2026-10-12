@@ -36,7 +36,7 @@ type lookup struct {
 type ClientConfig struct {
 	LocalPort uint16
 	// MaxLookups is the maximum number of lookups that may be active at once.
-	MaxLookups int
+	MaxLookups uint16
 }
 
 type LookupConfig struct {
@@ -49,16 +49,16 @@ type LookupConfig struct {
 
 // Configure discards ongoing/pending/active lookups and configures client. Also increments connection ID.
 func (c *Client) Configure(cfg ClientConfig) error {
-	if cfg.MaxLookups <= 0 || cfg.MaxLookups > math.MaxUint16 {
+	if cfg.MaxLookups <= 0 {
 		return lneto.ErrInvalidConfig
 	} else if cfg.LocalPort == 0 {
 		return lneto.ErrZeroSource
 	}
 	c.connID++
 	c.lport = cfg.LocalPort
-	internal.SliceReuseCopy(&c.rawlookups, cfg.MaxLookups)
+	internal.SliceReuseCopy(&c.rawlookups, int(cfg.MaxLookups))
 	c.rawlookups = c.rawlookups[:cfg.MaxLookups]
-	internal.SliceReuse(&c.lidxs, cfg.MaxLookups)
+	internal.SliceReuse(&c.lidxs, int(cfg.MaxLookups))
 	for i := range cfg.MaxLookups {
 		c.lidxs = append(c.lidxs, uint16(i))
 	}
@@ -95,6 +95,18 @@ func (c *Client) LookupStart(txid uint16, cfg LookupConfig) error {
 	c.lidxs = c.lidxs[:len(c.lidxs)+1] // Claim first free slot.
 	c.lAt(len(c.lidxs)-1).reset(txid, cfg)
 	return nil
+}
+
+// NextFreeTxid returns first unused txid after guess, wrapping past 0xffff. Returns 0 only if all txids are in use.
+func (c *Client) NextFreeTxid(guess uint16) (freeTxid uint16) {
+	// At most len(lidxs) txids are active so the loop ends within len(lidxs)+2 iterations.
+	for i := 0; i <= math.MaxUint16; i++ {
+		txid := guess + uint16(i)
+		if txid != 0 && c.lidx(txid) < 0 {
+			return txid
+		}
+	}
+	return 0
 }
 
 // reset sets the lookup up as a pending lookup txid with cfg's sections. cfg must be validated.

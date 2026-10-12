@@ -11,7 +11,7 @@ import (
 func newTestClient(t testing.TB, maxLookups int) *Client {
 	t.Helper()
 	var client Client
-	err := client.Configure(ClientConfig{LocalPort: 54321, MaxLookups: maxLookups})
+	err := client.Configure(ClientConfig{LocalPort: 54321, MaxLookups: uint16(maxLookups)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,6 +136,27 @@ func TestClient_Exhausted(t *testing.T) {
 	// Remaining lookups are intact after the pop.
 	if _, ok := client.LookupPeek(2); !ok {
 		t.Fatal("lookup 2 lost after popping lookup 1")
+	}
+}
+
+func TestClient_NextFreeTxid(t *testing.T) {
+	client := newTestClient(t, 4)
+	if got := client.NextFreeTxid(5); got != 5 {
+		t.Fatalf("free guess: got %d, want 5", got)
+	}
+	if got := client.NextFreeTxid(0); got != 1 {
+		t.Fatalf("zero guess: got %d, want 1", got)
+	}
+	startTestLookup(t, client, 5, "a.com", 1)
+	startTestLookup(t, client, 6, "b.com", 1)
+	if got := client.NextFreeTxid(5); got != 7 {
+		t.Fatalf("taken guess: got %d, want 7", got)
+	}
+	// Wraps past 0xffff, skipping 0.
+	startTestLookup(t, client, 0xffff, "c.com", 1)
+	startTestLookup(t, client, 1, "d.com", 1)
+	if got := client.NextFreeTxid(0xffff); got != 2 {
+		t.Fatalf("wrap: got %d, want 2", got)
 	}
 }
 
