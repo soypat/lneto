@@ -41,7 +41,7 @@ func (h *handlers) nextFreePort(start, increment, numToCheck uint16) uint16 {
 	if increment == 0 {
 		panic("invalid use of nextFreePort")
 	}
-	for i := uint16(0); i < numToCheck; i++ {
+	for i := range numToCheck {
 		port := start + i*increment
 		if port != 0 && h.nodeByPort(port) == nil {
 			return port
