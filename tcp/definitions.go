@@ -12,18 +12,22 @@ import (
 
 //go:generate stringer -type=State,OptionKind -linecomment -output stringers.go .
 
-var (
-	errDropSegment    error = lneto.ErrPacketDrop
-	errWindowTooLarge       = errors.New("invalid window size > max scaled window")
+const (
+	errDropSegment    = lneto.ErrPacketDrop
+	errBufferTooSmall = lneto.ErrShortBuffer
+	errInvalidState   = lneto.ErrBadState
+)
 
-	errBufferTooSmall      error = lneto.ErrShortBuffer
-	errNeedClosedTCBToOpen       = errors.New("need closed TCB to call open")
-	errInvalidState              = errors.New("invalid state")
-	errConnNotExist              = errors.New("connection does not exist")
-	errConnectionClosing         = errors.New("connection closing")
-	errExpectedSYN               = errors.New("seqs:expected SYN")
-	errBadSegack                 = errors.New("seqs:bad segack")
-	errFinwaitExpectedACK        = errors.New("seqs:finwait1 expected ACK")
+var (
+	errWindowTooLarge = errors.New("invalid window size > max scaled window")
+
+	errNeedClosedTCBToOpen = errors.New("need closed TCB to call open")
+
+	errConnNotExist       = errors.New("connection does not exist")
+	errConnectionClosing  = errors.New("connection closing")
+	errExpectedSYN        = errors.New("seqs:expected SYN")
+	errBadSegack          = errors.New("seqs:bad segack")
+	errFinwaitExpectedACK = errors.New("seqs:finwait1 expected ACK")
 
 	errWindowOverflow    = newRejectErr("wnd > max scaled window")
 	errSeqNotInWindow    = newRejectErr("seq not in snd/rcv.wnd")
