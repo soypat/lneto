@@ -112,6 +112,7 @@ func (tcb *ControlBlock) HelperSteps(t *testing.T, steps []SegmentStep, isPeerA 
 		if nop {
 			continue
 		}
+		statePrev := tcb.State()
 		switch st.Action {
 		default:
 			panic("unknown action")
@@ -167,6 +168,8 @@ func (tcb *ControlBlock) HelperSteps(t *testing.T, steps []SegmentStep, isPeerA 
 		state := tcb.State()
 		if state != wantState {
 			t.Errorf(pfx+"[%d] unexpected state:\n got=%s\nwant=%s", i, state, wantState)
+		} else if state != statePrev && tcb.StatePrevious() != statePrev {
+			t.Errorf(pfx+"[%d] tcb.StatePrev unexpected\n got=%s\nwant=%s", i, tcb.StatePrevious(), statePrev)
 		}
 		pending, ok := tcb.PendingSegment(0)
 		if !ok && wantPending != nil {

@@ -70,6 +70,8 @@ type ControlBlock struct {
 	// The second position of the queue is used for FIN segments.
 	pending [2]Flags
 	_state  State // leading underscore so field not suggested on top of exported State method when developing.
+	// _statePrev is the state before the last transition; connection [tracks if] reached SYN-RECEIVED as result of a passive OPEN or active OPEN (MUST-11)
+	_statePrev State
 
 	// challengeAcks counts consecutive challenge acks queued on receiving out of window segment.
 	// challengeAcks signedness indicates whether the challengeAck is pending being sent.
@@ -84,6 +86,9 @@ type ControlBlock struct {
 
 // State returns the current state of the TCP connection. See [State].
 func (tcb *ControlBlock) State() State { return tcb._state }
+
+// StatePrevious returns the state before last transition.
+func (tcb *ControlBlock) StatePrevious() State { return tcb._statePrev }
 
 // RecvNext returns the next sequence number expected to be received from remote.
 // This implementation will reject segments that are not the next expected sequence.
@@ -249,7 +254,7 @@ func (tcb *ControlBlock) prepareToHandshake(iss Value, wnd Size, newState State)
 	tcb.reset()
 	tcb.resetRcv(wnd, 0)
 	tcb.resetSnd(iss, 1)
-	tcb._state = newState
+	tcb.newState(newState)
 }
 
 // HasPending returns true if there is a pending control segment to send. Calls to Send will advance the pending queue.
@@ -380,7 +385,9 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	// RFC 9293 §3.10.7.4: SYN on synchronized connection → challenge ACK.
 	if seg.Flags.HasAny(FlagSYN) && !(tcb._state == StateSynSent || tcb._state == StateListen) {
 		// SYN-RCVD needs special treatment since we already rcvd SYN and processing another one could permanently desync control block.
-		likelySimultaneous := tcb._state == StateSynRcvd && seg.SEQ == tcb.rcv.IRS && seg.DATALEN == 0 && seg.ACK == tcb.snd.NXT
+		// Only an active OPEN (came from SYN-SENT) can see the peer's SYN,ACK of Figure 7.
+		likelySimultaneous := tcb._state == StateSynRcvd && tcb._statePrev == StateSynSent &&
+			seg.SEQ == tcb.rcv.IRS && seg.DATALEN == 0 && seg.ACK == tcb.snd.NXT
 		if likelySimultaneous {
 			// Need extra check for simultaneous open connection, in which case we can omit challenge and treat SYNACK as ack to prevent desync.
 			// See RFC 9293 Figure 7. This will advance StateSynRcvd->StateEstablished
@@ -420,7 +427,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 		// RFC 9293 §3.10.7.4: enter TIME-WAIT only once our FIN is acknowledged
 		// (seg.ACK == snd.NXT), not on any ACK.
 		if seg.Flags.HasAny(FlagACK) && seg.ACK == tcb.snd.NXT {
-			tcb._state = StateTimeWait
+			tcb.newState(StateTimeWait)
 		}
 	case StateTimeWait:
 		// RFC 9293 §3.10.7.4: an acceptable segment here is dropped without
@@ -501,7 +508,7 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 		}
 	case StateSynRcvd, StateEstablished:
 		if hasFIN {
-			tcb._state = StateFinWait1 // RFC 9293: 3.10.4 CLOSE call.
+			tcb.newState(StateFinWait1) // RFC 9293: 3.10.4 CLOSE call.
 		}
 	case StateClosing:
 		// RFC 9293 §3.10.7.4: CLOSING leaves to TIME-WAIT only on receiving the
@@ -510,7 +517,7 @@ func (tcb *ControlBlock) Send(seg Segment) error {
 		// own FIN is acknowledged.
 	case StateCloseWait:
 		if hasFIN {
-			tcb._state = StateLastAck
+			tcb.newState(StateLastAck)
 		}
 		// No auto-queue of FIN on ACK: user must call Close() to initiate local FIN.
 	}
@@ -709,7 +716,7 @@ func (tcb *ControlBlock) handleRST(seq Value) error {
 	case StateSynRcvd:
 		// RFC 9293 §3.5.3: SYN-RCVD (passive open) returns to LISTEN on RST.
 		tcb.pending[0] = 0
-		tcb._state = StateListen
+		tcb.newState(StateListen)
 		tcb.resetSnd(tcb.snd.ISS+tcb.rstJump(), tcb.snd.WND)
 		tcb.resetRcv(tcb.rcv.WND, 3_14159_2653^tcb.rcv.IRS)
 		return errDropSegment
@@ -737,9 +744,18 @@ func (tcb *ControlBlock) Abort() {
 	tcb.debug("tcb:abort")
 }
 
+// newState transitions to s, keeping the previous state unless s is the current one.
+func (tcb *ControlBlock) newState(s State) {
+	if s != tcb._state {
+		tcb._statePrev = tcb._state
+		tcb._state = s
+	}
+}
+
 func (tcb *ControlBlock) reset() {
 	*tcb = ControlBlock{
-		logger: tcb.logger,
+		logger:     tcb.logger,
+		_statePrev: tcb._state, // Reset is a transition to CLOSED.
 	}
 }
 
@@ -753,7 +769,7 @@ func (tcb *ControlBlock) Close() (err error) {
 	case StateClosed:
 		err = errConnNotExist
 	case StateCloseWait:
-		tcb._state = StateLastAck
+		tcb.newState(StateLastAck)
 		tcb.pending = [2]Flags{FlagFIN | FlagACK, 0}
 	case StateListen, StateSynSent:
 		// In Listen State there is no established connection.

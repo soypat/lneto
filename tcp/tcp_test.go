@@ -273,6 +273,44 @@ func TestExchangeTest_rfc9293_figure7(t *testing.T) {
 	test.RunA(t) // Only A's perspective - B's is fundamentally different in sequential test.
 }
 
+// TestExchangeTest_passiveSynRcvdRejectsSynAck verifies a passive open does not
+// take the simultaneous open path of RFC 9293 Figure 7. Only an active open can
+// reach SYN-RECEIVED expecting the peer's SYN,ACK; on a passive open a SYN,ACK at
+// IRS is a duplicate SYN (§3.10.7.4 step 4) and must not complete the handshake.
+// Found by lfuzzo: a forged SYN,ACK established a server whose RCV.NXT disagreed
+// with the client's SND.NXT, so every data segment was rejected.
+func TestExchangeTest_passiveSynRcvdRejectsSynAck(t *testing.T) {
+	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
+	test := tcp.ExchangeTest{
+		ISSA:       issA,
+		ISSB:       issB,
+		WindowA:    windowA,
+		WindowB:    windowB,
+		InitStateA: tcp.StateSynSent,
+		InitStateB: tcp.StateListen,
+		Steps: []tcp.SegmentStep{
+			0: { // B receives SYN from A.
+				Seg:      tcp.Segment{SEQ: issA, Flags: tcp.FlagSYN, WND: windowA},
+				Action:   tcp.StepASends,
+				BState:   tcp.StateSynRcvd,
+				BPending: &tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: SYNACK, WND: windowB},
+			},
+			1: { // B sends SYN,ACK.
+				Seg:    tcp.Segment{SEQ: issB, ACK: issA + 1, Flags: SYNACK, WND: windowB},
+				Action: tcp.StepBSends,
+				BState: tcp.StateSynRcvd,
+			},
+			2: { // B receives SYN,ACK at IRS acknowledging its SYN: challenged, not established.
+				Seg:      tcp.Segment{SEQ: issA, ACK: issB + 1, Flags: SYNACK, WND: windowA},
+				Action:   tcp.StepASends,
+				BState:   tcp.StateSynRcvd,
+				BPending: &tcp.Segment{SEQ: issB + 1, ACK: issA + 1, Flags: tcp.FlagACK, WND: windowB},
+			},
+		},
+	}
+	test.RunB(t) // Only B, the passive opener: A is not a valid simultaneous-open peer here.
+}
+
 /*
 	 Recovery from Old Duplicate SYN
 		TCP Peer A                                           TCP Peer B
