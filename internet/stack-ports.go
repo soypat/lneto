@@ -22,6 +22,11 @@ type StackPorts struct {
 	rstQueue tcp.RSTQueue
 }
 
+// NextFreePort returns the next free port in range [start,start+numToCheck*increment). 0 returned if none found.
+func (ps *StackPorts) NextFreePort(start, increment, numToCheck uint16) uint16 {
+	return ps.handlers.nextFreePort(start, increment, numToCheck)
+}
+
 func (ps *StackPorts) ResetUDP(maxNodes uint16) error {
 	return ps.Reset(uint64(lneto.IPProtoUDP), 2, maxNodes)
 }
@@ -101,6 +106,11 @@ func (ps *StackPorts) Register(h lneto.StackNode) error {
 // If the address is set to nil no filtering occurs. MAC Address is set automatically on the ethernet frame by StackPortsMACFiltered when non-nil.
 type StackPortsMACFiltered struct {
 	sp StackPorts
+}
+
+// NextFreePort returns the next free port in range [start,start+numToCheck*increment). 0 returned if none found.
+func (mfsp *StackPortsMACFiltered) NextFreePort(start, increment, numToCheck uint16) uint16 {
+	return mfsp.sp.NextFreePort(start, increment, numToCheck)
 }
 
 func (mfsp *StackPortsMACFiltered) RegisterMACFiltered(h lneto.StackNode, macAddr []byte) error {

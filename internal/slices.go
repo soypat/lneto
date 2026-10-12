@@ -97,6 +97,17 @@ func SliceReuse[T any](buf *[]T, n int) {
 	}
 }
 
+// SliceReuseCopy is equivalent to [SliceReuse] but it also copies previous buffer contents on reallocation.
+func SliceReuseCopy[T any](buf *[]T, n int) {
+	if cap(*buf) < n {
+		new := make([]T, 0, n)
+		copy(new[:n], (*buf)[:cap(*buf)])
+		*buf = new
+	} else {
+		*buf = (*buf)[:0]
+	}
+}
+
 // SliceReclaim extends the slice length by one and returns a pointer to
 // the new last element. The returned element is not zeroed, so callers
 // can reuse any existing allocations it may hold from prior use.

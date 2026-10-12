@@ -334,8 +334,8 @@ func (s *StackAsync) Reset(cfg StackConfig) (err error) {
 	if maxDNSLookups == 0 {
 		maxDNSLookups = 2
 	}
-
-	err = s.dns.Configure(dns.ClientConfig{MaxLookups: int(maxDNSLookups)})
+	// port selected from stochastic source later on.
+	err = s.dns.Configure(dns.ClientConfig{LocalPort: dns.ClientPort, MaxLookups: int(maxDNSLookups)})
 	if err != nil {
 		return err
 	}
@@ -704,9 +704,15 @@ func (s *StackAsync) lookupIPStart(host dns.Name, qtype dns.Type, nans uint16) (
 		return 0, lneto.ErrExhausted
 	}
 	if s.dns.NumLookups() == 0 {
-		// Idle: pick a new unpredictable source port, which adds to the
-		// txid in protecting against spoofed responses (RFC 5452).
-		port := 1024 + s.dnsRand16()%(math.MaxUint16-1024)
+		// Client is idle, randomize port for spoof attack protection (RFC 5452).
+		const ports2check = 16 // O(n*m), keep small
+		const increment = 4    // sometimes ports occupied in consecutive batches.
+		const lim = math.MaxUint16 - 1024 - ports2check*increment
+		startport := 1024 + s.dnsRand16()%lim
+		port := s.udps.NextFreePort(startport, increment, ports2check)
+		if port == 0 {
+			return 0, lneto.ErrExhausted // This should be quite rare.
+		}
 		err = s.dns.Configure(dns.ClientConfig{LocalPort: port, MaxLookups: s.dns.MaxLookups()})
 		if err != nil {
 			return 0, err

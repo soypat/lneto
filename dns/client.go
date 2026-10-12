@@ -51,19 +51,15 @@ type LookupConfig struct {
 func (c *Client) Configure(cfg ClientConfig) error {
 	if cfg.MaxLookups <= 0 || cfg.MaxLookups > math.MaxUint16 {
 		return lneto.ErrInvalidConfig
+	} else if cfg.LocalPort == 0 {
+		return lneto.ErrZeroSource
 	}
 	c.connID++
 	c.lport = cfg.LocalPort
-	n := cfg.MaxLookups
-	if cap(c.rawlookups) < n {
-		grown := make([]lookup, n)
-		copy(grown, c.rawlookups[:cap(c.rawlookups)]) // Keep slot buffers.
-		c.rawlookups = grown
-	} else {
-		c.rawlookups = c.rawlookups[:n]
-	}
-	internal.SliceReuse(&c.lidxs, n)
-	for i := range n {
+	internal.SliceReuseCopy(&c.rawlookups, cfg.MaxLookups)
+	c.rawlookups = c.rawlookups[:cfg.MaxLookups]
+	internal.SliceReuse(&c.lidxs, cfg.MaxLookups)
+	for i := range cfg.MaxLookups {
 		c.lidxs = append(c.lidxs, uint16(i))
 	}
 	c.lidxs = c.lidxs[:0]
