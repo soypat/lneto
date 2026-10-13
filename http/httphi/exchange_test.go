@@ -1644,3 +1644,37 @@ func TestExchangeRequestParseFormSourcesNotMerged(t *testing.T) {
 		t.Errorf("want first=1|second=2, got %q", got)
 	}
 }
+
+// benchForm is package level so the Form's pair slice is reused across requests,
+// as a real handler holding one per goroutine would.
+var benchForm httpraw.Form
+
+// BenchmarkRequestParseForm measures reading and parsing a urlencoded body into
+// a buffer the caller owns. Nothing on the path may allocate.
+func BenchmarkRequestParseForm(b *testing.B) {
+	const request = "POST /f HTTP/1.1\r\nHost: tinygo.org\r\n" +
+		"Content-Type: application/x-www-form-urlencoded\r\nContent-Length: 27\r\n\r\n" +
+		"user=gopher&msg=hello+world"
+	// The form owns its memory now, so pre-size it and forbid growth: an
+	// allocation on this path is the failure the benchmark is watching for.
+	benchForm.Reset(make([]byte, 0, 64), 2)
+	benchForm.EnableBufferGrowth(false)
+	var mux MuxSlice
+	mux.Handle("POST /f", func(ex *Exchange) {
+		err := ex.RequestParseForm(&benchForm, false, false)
+		if err != nil || benchForm.Len() != 2 {
+			panic("invalid result")
+		}
+	})
+	conn := &benchConn{request: request}
+	exch := benchExchange(b, conn)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(request)))
+	b.ResetTimer()
+	for b.Loop() {
+		conn.rewind()
+		exch.Release()
+		exch.Acquire(conn)
+		Handle(exch, &mux, nopBackoff)
+	}
+}
