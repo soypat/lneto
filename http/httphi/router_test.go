@@ -26,7 +26,10 @@ type rwconn struct {
 	hangup   bool
 	failWr   int
 	onClose  chan struct{}
-	deadline time.Time
+	// idleReads counts down reads that find no data once expiring is set; at
+	// zero the conn's deadline has passed.
+	idleReads int
+	expiring  bool
 }
 
 // newConn returns a conn preloaded with request and whose Close is observable
@@ -100,6 +103,9 @@ func (r *rwconn) Read(b []byte) (int, error) {
 		if r.hangup {
 			return 0, io.EOF
 		}
+		if r.expiring {
+			r.idleReads--
+		}
 		return 0, nil // No data pending, handler backs off and retries.
 	}
 	return r.readable.Read(b)
@@ -118,7 +124,7 @@ func (r *rwconn) Write(b []byte) (int, error) {
 	return r.written.Write(b)
 }
 func (r *rwconn) deadlineExceeded() bool {
-	return !r.deadline.IsZero() && time.Since(r.deadline) > 0
+	return r.expiring && r.idleReads <= 0
 }
 func (r *rwconn) AddReadable(b []byte) {
 	r.mu.Lock()
@@ -126,12 +132,14 @@ func (r *rwconn) AddReadable(b []byte) {
 	r.readable.Write(b)
 }
 
-// SetDeadline makes reads and writes past t fail, as a conn with a read
-// deadline set would.
-func (r *rwconn) SetDeadline(t time.Time) {
+// ExpireAfterIdleReads makes reads and writes fail with
+// [context.DeadlineExceeded] once n reads have found no data, as a conn whose
+// deadline passes while its peer is idle would, without waiting for a clock.
+func (r *rwconn) ExpireAfterIdleReads(n int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.deadline = t
+	r.idleReads = n
+	r.expiring = true
 }
 
 // IsClosed reports whether the connection was closed by its handler.
@@ -436,7 +444,6 @@ func TestRouterTeardownReleasesQueuedConns(t *testing.T) {
 			if err = router.Configure(&sm, cfg); err == nil {
 				break
 			}
-			time.Sleep(time.Millisecond)
 		}
 		if err != nil {
 			t.Fatal("reconfigure after teardown:", err)
