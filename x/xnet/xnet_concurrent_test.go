@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -488,7 +489,10 @@ func TestStackGoFailedDialReleasesPort(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cl := newTestStack(t, "s1", randseed, ethernet.MaxMTU, maxPorts, 0)
+			// The clock moves only in the goroutine below, so dials to the silent
+			// peer time out without waiting for wall time.
+			var now atomic.Int64
+			cl := newTestStackClock(t, "s1", randseed, ethernet.MaxMTU, maxPorts, 0, now.Load)
 			sg := newTestStackGo(cl, 1, 5*time.Millisecond, 1)
 			raddr := netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, 0, 0, 2}), 80)
 			laddr := netip.AddrPortFrom(netip.AddrFrom4(cl.Addr4()), 0)
@@ -497,14 +501,17 @@ func TestStackGoFailedDialReleasesPort(t *testing.T) {
 			go func() {
 				defer close(drained)
 				var buf [ethernet.MaxMTU + ethernet.MaxOverheadSize]byte
-				for tt.drain {
+				for {
 					select {
 					case <-stop:
 						return
 					default:
 					}
-					cl.EgressEthernet(buf[:])
-					time.Sleep(time.Millisecond)
+					if tt.drain {
+						cl.EgressEthernet(buf[:])
+					}
+					now.Add(int64(time.Millisecond))
+					runtime.Gosched()
 				}
 			}()
 			for i := range maxPorts + 1 {
@@ -617,7 +624,7 @@ func TestStackGoDialRefusedNoRedial(t *testing.T) {
 		} else if n > 0 {
 			cl.IngressEthernet(buf[:n])
 		}
-		time.Sleep(time.Millisecond)
+		runtime.Gosched()
 	}
 }
 
