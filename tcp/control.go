@@ -473,7 +473,9 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	}
 
 	if seg.Flags.HasAny(FlagACK) && seg.ACK.LessThanEq(tcb.snd.NXT) {
-		if tcb.IncomingIsDupACK(seg.ACK) && seg.DATALEN == 0 && seg.WND <= prevWND && tcb.State().txQueuedDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < tcb.nRetransmit+retransmitMaxQueued+retransmitMaxQueued {
+		// dupack saturates with nRetransmit, else a retransmit stays pending forever.
+		maxDupack := min(tcb.nRetransmit+retransmitMaxQueued+retransmitMaxQueued, 255-retransmitMaxQueued-retransmitAfterDupacks)
+		if tcb.IncomingIsDupACK(seg.ACK) && seg.DATALEN == 0 && seg.WND <= prevWND && tcb.State().txQueuedDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < maxDupack {
 			// Duplicate ack. Don't advance dupack counter past scb.nRetransmit+retransmitAfterDupacks
 			tcb.dupack++
 		} else if tcb.snd.UNA.LessThan(seg.ACK) {
