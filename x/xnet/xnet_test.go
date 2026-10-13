@@ -2,280 +2,21 @@ package xnet
 
 import (
 	"bytes"
-	"context"
 	"errors"
-	"math/rand"
 	"net"
 	"net/netip"
-	"strconv"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/arp"
+	"github.com/soypat/lneto/dns"
 	"github.com/soypat/lneto/ethernet"
-	"github.com/soypat/lneto/internal"
-	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/internet/pcap"
 	"github.com/soypat/lneto/ipv4"
-	"github.com/soypat/lneto/ipv4/icmpv4"
 	"github.com/soypat/lneto/tcp"
-	"github.com/soypat/lneto/udp"
 )
-
-const (
-	logExchange = false
-
-	synack = tcp.FlagSYN | tcp.FlagACK
-	pshack = tcp.FlagPSH | tcp.FlagACK
-	finack = tcp.FlagFIN | tcp.FlagACK
-)
-
-func TestTCPConn_ReadBlocksUntilDataAvailable(t *testing.T) {
-	const seed = 5678
-	const MTU = ethernet.MaxMTU
-	const svPort = 8080
-	client, sv, clconn, svconn := newTCPStacks(t, seed, MTU)
-	tst := testerFrom(t, MTU)
-
-	// Drive svconn.Read from a single background goroutine whose backoff is
-	// controlled by the scheduler. This lets the test thread know deterministically
-	// when Read has parked waiting for data, instead of sleeping and hoping it blocked.
-	tsched := ltesto.NewSched(t)
-	tgoro := tsched.Goro()
-	err := svconn.Configure(tcp.ConnConfig{
-		RxBuf:             make([]byte, MTU),
-		TxBuf:             make([]byte, MTU),
-		TxPacketQueueSize: 4,
-		RWBackoff:         tgoro.Yield,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1337)
-
-	// Verify no data buffered initially.
-	if svconn.BufferedInput() != 0 {
-		t.Fatal("expected no buffered input on server conn")
-	}
-
-	sendData := []byte("blocking test data")
-	var readN int
-	var readBuf [64]byte
-
-	// Start a goroutine to read from svconn - this should block since no data available.
-	go func() {
-		n, err := svconn.Read(readBuf[:])
-		readN = n
-		tgoro.FinishWithErr(err)
-	}()
-
-	// AwaitGoroYield blocks until Read parks in backoff: deterministic proof that
-	// Read found no data available and is waiting.
-	tsched.AwaitGoroYield()
-	if readN != 0 {
-		t.Fatal("Read returned before data was available")
-	}
-
-	// Write data on client side.
-	_, err = clconn.Write(sendData)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Perform packet exchange to deliver data.
-	tst.bufmu.Lock()
-	buf := tst.buf[:cap(tst.buf)]
-	n, err := client.EgressEthernet(buf)
-	if err != nil {
-		tst.bufmu.Unlock()
-		t.Fatal(err)
-	}
-	if n == 0 {
-		tst.bufmu.Unlock()
-		t.Fatal("expected data packet from client")
-	}
-	err = sv.IngressEthernet(buf[:n])
-	tst.bufmu.Unlock()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Release Read; the data is now available so it returns instead of backing off again.
-	tsched.YieldToGoro()
-	readErr := <-tsched.Done()
-	if readErr != nil {
-		t.Fatalf("Read returned error: %v", readErr)
-	}
-	if readN != len(sendData) {
-		t.Fatalf("expected to read %d bytes, got %d", len(sendData), readN)
-	}
-	if !bytes.Equal(readBuf[:readN], sendData) {
-		t.Fatalf("read data mismatch: got %q, want %q", readBuf[:readN], sendData)
-	}
-}
-
-func TestStackGoTCPDialRetriesPendingControl(t *testing.T) {
-	const seed = 5678
-	const MTU = ethernet.MaxMTU
-	const tcptimeout = time.Second
-	const yield = 1 * time.Millisecond
-	// closure to simulate time.
-	var now time.Duration
-	nanotime := func() int64 { return int64(now) }
-	client, sv, _, _ := newTCPStacks(t, seed, MTU)
-	client.mono.Config(nanotime)
-
-	tsched := ltesto.NewSched(t)
-	tgoro := tsched.Goro()
-	sg := client.StackBlocking(tgoro.Yield).StackGo(StackGoConfig{
-		ListenerPoolConfig: TCPPoolConfig{
-			QueueSize: 4,
-			TxBufSize: MTU,
-			RxBufSize: MTU,
-			NewBackoff: func() lneto.BackoffStrategy {
-				return backoffYield
-			},
-		},
-		TCPDialTimeout: tcptimeout,
-		TCPDialRetries: 2,
-	})
-
-	t.Log("start")
-
-	laddr := netip.AddrPortFrom(netip.AddrFrom4(client.Addr4()), 1234)
-	raddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), 22)
-	go func() {
-		_, err := sg.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockSTREAM, laddr, raddr)
-		tgoro.FinishWithErr(err)
-	}()
-	npacket := 0
-	ntcppacket := 0
-	var buf [ethernet.MaxMTU + ethernet.MaxOverheadSize]byte
-	for !t.Failed() { // Tinygo does not implement failnow.
-		tsched.AwaitGoroYield()
-		n, err := client.EgressEthernet(buf[:])
-		now += tcptimeout / 100
-		if err != nil {
-			t.Fatal(err)
-		} else if n == 0 {
-			t.Fatal("expected packet from socketnetip", npacket, ntcppacket)
-		}
-		npacket++
-		frm, ok := getTCPFrame(buf[:])
-		if !ok {
-			tsched.YieldToGoro()
-			continue
-		}
-		ntcppacket++
-		_, flags := frm.OffsetAndFlags()
-		if flags != tcp.FlagSYN {
-			t.Fatal("expected SYN packet")
-		}
-		switch ntcppacket {
-		case 1:
-			now += 2 * tcptimeout
-			tsched.YieldToGoro()
-		case 2:
-			now += 2 * tcptimeout
-			tsched.YieldToGoro()
-			select {
-			case <-time.After(time.Second):
-				t.Fatal("SocketNetip hanging")
-			case err := <-tsched.Done():
-				if err != errDeadlineExceed {
-					t.Fatal("expected deadline exceeded", err)
-				}
-				return // Test success.
-			}
-		}
-	}
-}
-
-func TestStackAsyncTCP_multipacket(t *testing.T) {
-	const seed = 1234
-	const MTU = 512
-	const svPort = 8080
-	const maxPktLen = 30
-	client, sv, clconn, svconn := newTCPStacks(t, seed, MTU)
-	tst := testerFrom(t, MTU)
-	rng := rand.New(rand.NewSource(seed))
-	client2, sv2, clconn2, svconn2 := newTCPStacks(t, seed, MTU)
-
-	for _, clientCloses := range []bool{true, false} {
-		testClose := func() {
-			t.Helper()
-			if clientCloses {
-				tst.TestTCPClose(client, sv, clconn, svconn)
-			} else {
-				tst.TestTCPClose(sv, client, svconn, clconn)
-			}
-		}
-		tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1337)
-		testClose()
-		var buf [MTU]byte
-		for range 20 {
-			payloadSize := rng.Intn(maxPktLen) + 1
-			tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1337)
-			// npkt := rng.Intn(maxNPkt-1) + 2
-			a, _ := rng.Read(buf[:payloadSize])
-			tst.TestTCPEstablishedSingleData(sv, client, svconn, clconn, buf[:a])
-			a, _ = rng.Read(buf[:payloadSize])
-			tst.TestTCPEstablishedSingleData(sv, client, svconn, clconn, buf[:a])
-			// for ipkt := 0; ipkt < npkt; ipkt++ {
-			// 	a, _ := rng.Read(buf[:payloadSize])
-			// 	tst.TestTCPEstablishedSingleData(sv, client, svconn, clconn, buf[:a])
-			// }
-			testClose()
-			if t.Failed() {
-				t.Error("multi failed")
-				t.FailNow()
-			}
-		}
-	}
-	_, _, _, _ = client2, sv2, clconn2, svconn2
-
-}
-
-func TestStackAsyncTCP_singlepacket(t *testing.T) {
-	const seed = 1234
-	const MTU = ethernet.MaxMTU
-	const svPort = 80
-	client, sv, clconn, svconn := newTCPStacks(t, seed, MTU)
-	tst := testerFrom(t, MTU)
-
-	tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1337)
-	sendData := []byte("hello")
-	tst.TestTCPEstablishedSingleData(client, sv, clconn, svconn, sendData)
-	tst.TestTCPClose(client, sv, clconn, svconn)
-
-	// Switch handles around, now server will be client and they will be registered to
-	// a different stack.
-	svconn, clconn = clconn, svconn
-	tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1234)
-	sendData = []byte("olleh")
-	tst.TestTCPEstablishedSingleData(client, sv, clconn, svconn, sendData)
-	tst.TestTCPClose(client, sv, clconn, svconn)
-}
-
-func newTestStackGo(s *StackAsync, poolSize uint16, timeouts time.Duration, dialRetries int) StackGo {
-	return s.StackBlocking(backoffYield).StackGo(StackGoConfig{
-		ListenerPoolConfig: TCPPoolConfig{
-			PoolSize:           poolSize,
-			QueueSize:          4,
-			TxBufSize:          ethernet.MaxMTU,
-			RxBufSize:          ethernet.MaxMTU,
-			EstablishedTimeout: timeouts,
-			ClosingTimeout:     timeouts,
-			NewBackoff:         newBackoffYield,
-		},
-		TCPDialTimeout: timeouts,
-		TCPDialRetries: dialRetries,
-	})
-}
 
 func newTestStack(t testing.TB, hostname string, randSeed int64, mtu, tcpPorts, udpPorts uint16) (s1 *StackAsync) {
 	t.Helper()
@@ -351,12 +92,6 @@ type tester struct {
 	frmbuf []pcap.Frame
 	bufmu  sync.Mutex
 	buf    []byte
-}
-
-type tcpExpectExchange struct {
-	SourceIdx int
-	WantFlags tcp.Flags
-	WantData  []byte
 }
 
 func (tst *tester) ensureQuiesce(s1, s2 *StackAsync, lim int) {
@@ -880,306 +615,6 @@ func (tst *tester) getARPOperation() arp.Operation {
 	return arp.Operation(tst.getInt(protoARP, pcap.FieldClassOperation))
 }
 
-// TestTCPConn_BufferNotClearedOnPassiveClose tests that data remains readable after
-// the TCP connection is closed by the remote peer. This is a regression test
-// for a bug where the receive buffer was cleared when the connection transitioned
-// to CLOSED state, causing data loss.
-//
-// The sequence is:
-//  1. Server sends DATA then initiates close (FIN)
-//  2. Client receives data, enters CLOSE_WAIT
-//  3. Client sends ACK, then FIN+ACK (enters LAST_ACK)
-//  4. Server sends final ACK
-//  5. Client receives ACK in LAST_ACK -> state becomes CLOSED
-//  6. At this point, client.Read() should still return the buffered data
-//
-// The bug was that reset() cleared bufRx when state became CLOSED.
-func TestTCPConn_BufferNotClearedOnPassiveClose(t *testing.T) {
-	const seed = 9999
-	const MTU = ethernet.MaxMTU
-	const svPort = 8080
-	client, sv, clconn, svconn := newTCPStacks(t, seed, MTU)
-	tst := testerFrom(t, MTU)
-
-	tst.TestTCPSetupAndEstablish(sv, client, svconn, clconn, svPort, 1337)
-
-	// Server writes data to be sent.
-	sendData := []byte("this data should survive close handshake")
-	_, err := svconn.Write(sendData)
-	if err != nil {
-		t.Fatal("server write:", err)
-	}
-
-	// Server sends DATA packet to client.
-	tst.bufmu.Lock()
-	buf := tst.buf[:cap(tst.buf)]
-	n, err := sv.EgressEthernet(buf)
-	if err != nil {
-		tst.bufmu.Unlock()
-		t.Fatal("server encapsulate data:", err)
-	}
-	if n == 0 {
-		tst.bufmu.Unlock()
-		t.Fatal("expected data packet from server")
-	}
-	err = client.IngressEthernet(buf[:n])
-	tst.bufmu.Unlock()
-	if err != nil {
-		t.Fatal("client demux data:", err)
-	}
-
-	// Verify client buffered the data.
-	if clconn.BufferedInput() != len(sendData) {
-		t.Fatalf("client did not buffer data: got %d, want %d", clconn.BufferedInput(), len(sendData))
-	}
-
-	// Client sends ACK for data.
-	tst.bufmu.Lock()
-	buf = tst.buf[:cap(tst.buf)]
-	n, err = client.EgressEthernet(buf)
-	if err != nil {
-		tst.bufmu.Unlock()
-		t.Fatal("client encapsulate ACK:", err)
-	}
-	if n > 0 {
-		err = sv.IngressEthernet(buf[:n])
-		if err != nil {
-			tst.bufmu.Unlock()
-			t.Fatal("server demux ACK:", err)
-		}
-	}
-	tst.bufmu.Unlock()
-
-	// Server initiates close.
-	err = svconn.Close()
-	if err != nil {
-		t.Fatal("server close:", err)
-	}
-
-	// Server sends FIN (enters FIN_WAIT_1).
-	tst.bufmu.Lock()
-	buf = tst.buf[:cap(tst.buf)]
-	n, err = sv.EgressEthernet(buf)
-	if err != nil {
-		tst.bufmu.Unlock()
-		t.Fatal("server encapsulate FIN:", err)
-	}
-	if n == 0 {
-		tst.bufmu.Unlock()
-		t.Fatal("expected FIN packet from server")
-	}
-	err = client.IngressEthernet(buf[:n])
-	tst.bufmu.Unlock()
-	if err != nil {
-		t.Fatal("client demux FIN:", err)
-	}
-
-	if svconn.State() != tcp.StateFinWait1 {
-		t.Fatalf("expected server in FIN_WAIT_1, got %s", svconn.State())
-	}
-	if clconn.State() != tcp.StateCloseWait {
-		t.Fatalf("expected client in CLOSE_WAIT, got %s", clconn.State())
-	}
-
-	// Client sends ACK for FIN.
-	tst.bufmu.Lock()
-	buf = tst.buf[:cap(tst.buf)]
-	n, err = client.EgressEthernet(buf)
-	if err != nil {
-		tst.bufmu.Unlock()
-		t.Fatal("client encapsulate ACK:", err)
-	}
-	if n > 0 {
-		err = sv.IngressEthernet(buf[:n])
-		if err != nil {
-			tst.bufmu.Unlock()
-			t.Fatal("server demux ACK:", err)
-		}
-	}
-	tst.bufmu.Unlock()
-
-	if svconn.State() != tcp.StateFinWait2 {
-		t.Fatalf("expected server in FIN_WAIT_2, got %s", svconn.State())
-	}
-
-	// Client initiates its close.
-	err = clconn.Close()
-	if err != nil {
-		t.Fatal("client close:", err)
-	}
-
-	// Client sends FIN (enters LAST_ACK).
-	tst.bufmu.Lock()
-	buf = tst.buf[:cap(tst.buf)]
-	n, err = client.EgressEthernet(buf)
-	if err != nil {
-		tst.bufmu.Unlock()
-		t.Fatal("client encapsulate FIN:", err)
-	}
-	if n == 0 {
-		tst.bufmu.Unlock()
-		t.Fatal("expected FIN packet from client")
-	}
-	err = sv.IngressEthernet(buf[:n])
-	tst.bufmu.Unlock()
-	if err != nil {
-		t.Fatal("server demux client FIN:", err)
-	}
-
-	if clconn.State() != tcp.StateLastAck {
-		t.Fatalf("expected client in LAST_ACK, got %s", clconn.State())
-	}
-	if svconn.State() != tcp.StateTimeWait {
-		t.Fatalf("expected server in TIME_WAIT, got %s", svconn.State())
-	}
-
-	// Server sends final ACK.
-	tst.bufmu.Lock()
-	buf = tst.buf[:cap(tst.buf)]
-	n, err = sv.EgressEthernet(buf)
-	if err != nil {
-		tst.bufmu.Unlock()
-		t.Fatal("server encapsulate final ACK:", err)
-	}
-	if n == 0 {
-		tst.bufmu.Unlock()
-		t.Fatal("expected final ACK from server")
-	}
-	err = client.IngressEthernet(buf[:n])
-	tst.bufmu.Unlock()
-	if err != nil {
-		t.Fatal("client demux final ACK:", err)
-	}
-
-	// Client should now be CLOSED.
-	if clconn.State() != tcp.StateClosed {
-		t.Fatalf("expected client in CLOSED, got %s", clconn.State())
-	}
-
-	// THE BUG: At this point, the data should still be readable, but the
-	// buffer was cleared by reset() when state transitioned to CLOSED.
-	//
-	// This test will FAIL until the bug is fixed.
-	readBuf := make([]byte, MTU)
-	n, err = clconn.Read(readBuf)
-	if err != nil && n == 0 {
-		t.Fatalf("BUG: Could not read buffered data after connection closed: %v\n"+
-			"Expected to read %d bytes of data that was received before the connection closed.\n"+
-			"The receive buffer was incorrectly cleared when the connection transitioned to CLOSED state.",
-			err, len(sendData))
-	}
-	if n != len(sendData) {
-		t.Fatalf("read wrong amount: got %d, want %d", n, len(sendData))
-	}
-	if !bytes.Equal(readBuf[:n], sendData) {
-		t.Fatalf("read wrong data: got %q, want %q", readBuf[:n], sendData)
-	}
-}
-
-func TestStackAsync_ICMPEchoChecksum(t *testing.T) {
-	const MTU = ethernet.MaxMTU
-	const MaxFrameLength = MTU + ethernet.MaxOverheadSize // Ethernet header+FCS+VLAN.
-	stackAddr := [4]byte{192, 168, 1, 99}
-	stackMAC := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
-	routerAddr := [4]byte{192, 168, 1, 1}
-	routerMAC := [6]byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}
-	var rawbuf [MaxFrameLength]byte
-	stack := new(StackAsync)
-	err := stack.Reset(StackConfig{
-		Hostname:        "ICMPTest",
-		RandSeed:        42,
-		StaticAddress4:  stackAddr,
-		HardwareAddress: stackMAC,
-		MTU:             MTU,
-		ICMPQueueLimit:  2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = stack.EnableICMP(true)
-	if err != nil {
-		t.Error("enabling ICMP:", err)
-	}
-	gen := ltesto.PacketGen{
-		SrcMAC:  routerMAC,
-		DstMAC:  stackMAC,
-		SrcIPv4: routerAddr,
-		DstIPv4: stackAddr,
-	}
-	icmpPayload := []byte("abcdefghijklmnopqrstuvwxyz012345") // 32 bytes, typical ping payload.
-	const (
-		id  = 0x1234
-		seq = 1
-	)
-	// Test 1: Valid ICMP echo request should be accepted.
-	pkt := gen.AppendIPv4ICMPEcho(rawbuf[:0], ltesto.ICMPEchoConfig{
-		Identifier:     id,
-		SequenceNumber: seq,
-		Payload:        icmpPayload,
-	})
-	err = stack.IngressEthernet(pkt)
-	if err != nil {
-		t.Fatalf("valid ICMP echo rejected: %v", err)
-	}
-	n, err := stack.EgressEthernet(rawbuf[:])
-	if err != nil || n == 0 {
-		t.Error("expected ICMP response:", n, err)
-	}
-	ifrm, err := icmpv4.NewFrame(rawbuf[14+20 : n])
-	efrm := icmpv4.FrameEcho{Frame: ifrm}
-	if err != nil {
-		t.Fatal(err)
-	} else if efrm.Identifier() != id || efrm.SequenceNumber() != seq || !internal.BytesEqual(icmpPayload, efrm.Data()) {
-		t.Errorf("id want %d, got %d; seq want %d, got %d, payload want %q, got %q", id, efrm.Identifier(), seq, efrm.SequenceNumber(), icmpPayload, efrm.Data())
-	}
-	// Test 2: Valid ICMP with trailing FCS bytes (simulates real PIO hardware capture).
-	// This is a regression test for the bug where recvicmp checksummed ifrm.RawData()
-	// instead of ifrm.Payload(), causing the 4 trailing FCS bytes to corrupt the checksum.
-	pkt = gen.AppendIPv4ICMPEcho(rawbuf[:0], ltesto.ICMPEchoConfig{
-		Identifier:     0x1234,
-		SequenceNumber: 2,
-		Payload:        icmpPayload,
-	})
-	pkt = append(pkt, 0xDE, 0xAD, 0xBE, 0xEF) // Simulate Ethernet FCS.
-	err = stack.IngressEthernet(pkt)
-	if err != nil {
-		t.Fatalf("valid ICMP with trailing FCS rejected: %v", err)
-	}
-
-	// Test 3: Corrupted ICMP checksum should be rejected.
-	pkt = gen.AppendIPv4ICMPEcho(rawbuf[:0], ltesto.ICMPEchoConfig{
-		Identifier:     0x1234,
-		SequenceNumber: 3,
-		Payload:        icmpPayload,
-	})
-	pkt[len(pkt)-1] ^= 0xFF // Flip bits in last payload byte to corrupt ICMP checksum.
-	err = stack.IngressEthernet(pkt)
-	if err == nil {
-		t.Fatal("corrupted ICMP accepted, expected CRC error")
-	}
-
-	// Test 4: Corrupted ICMP with trailing FCS should also be rejected.
-	pkt = gen.AppendIPv4ICMPEcho(rawbuf[:0], ltesto.ICMPEchoConfig{
-		Identifier:     0x1234,
-		SequenceNumber: 4,
-		Payload:        icmpPayload,
-	})
-	pkt[len(pkt)-1] ^= 0xFF                   // Corrupt ICMP payload.
-	pkt = append(pkt, 0xDE, 0xAD, 0xBE, 0xEF) // Simulate Ethernet FCS.
-	err = stack.IngressEthernet(pkt)
-	if err == nil {
-		t.Fatal("corrupted ICMP with FCS accepted, expected CRC error")
-	}
-
-}
-
-const (
-	protoEthernet = "Ethernet"
-	protoARP      = "ARP"
-	protoIPv4     = "IPv4"
-	protoTCP      = "TCP"
-)
-
 func getTCPFrame(etherFrame []byte) (tcp.Frame, bool) {
 	efrm, err := ethernet.NewFrame(etherFrame)
 	if err != nil || efrm.EtherTypeOrSize() != ethernet.TypeIPv4 {
@@ -1195,332 +630,11 @@ func getTCPFrame(etherFrame []byte) (tcp.Frame, bool) {
 	}
 	return tfrm, true
 }
+
 func newBackoffYield() lneto.BackoffStrategy { return backoffYield }
+
 func backoffYield(consecutiveBackoffs uint) time.Duration {
 	return lneto.BackoffFlagGosched
-}
-
-// TestEgressIP_TCPMSSAdvertisesMTU guards against advertising a Maximum Segment Size
-// derived from the (oversized) egress buffer instead of the link MTU. See the
-// EgressIP clip in StackAsync: without it the SYN advertises ~65479 rather than
-// MTU-ipHdr-20.
-func TestEgressIP_TCPMSSAdvertisesMTU(t *testing.T) {
-	for _, mtu := range []int{1280, 9000} { // M29: IP-only (TUN) use is not bound by the 1500 byte Ethernet MTU.
-		t.Run(strconv.Itoa(mtu), func(t *testing.T) {
-			testEgressIPTCPMSS(t, mtu)
-		})
-	}
-}
-
-func testEgressIPTCPMSS(t *testing.T, mtu int) {
-	wantMSS := uint16(mtu - 20 - 20) // -IPv4 header -TCP header.
-	s1, s2, c1, _ := newTCPStacks(t, 4, mtu)
-
-	raddr := s2.Addr4()
-	err := s1.DialTCP4(c1, 12345, raddr, 80)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Emit the client SYN through the IP (TUN) egress path using a buffer far
-	// larger than the MTU. The advertised MSS must reflect the MTU, not len(buf).
-	buf := make([]byte, 65535)
-	n, err := s1.EgressIP(buf)
-	if err != nil {
-		t.Fatal(err)
-	} else if n == 0 {
-		t.Fatal("no SYN emitted")
-	} else if n > mtu {
-		t.Fatalf("emitted IP datagram %d exceeds MTU %d", n, mtu)
-	}
-
-	ifrm, err := ipv4.NewFrame(buf[:n])
-	if err != nil {
-		t.Fatal(err)
-	}
-	tfrm, err := tcp.NewFrame(ifrm.Payload())
-	if err != nil {
-		t.Fatal(err)
-	}
-	seg := tfrm.Segment(len(tfrm.Payload()))
-	if !seg.Flags.HasAny(tcp.FlagSYN) {
-		t.Fatalf("expected SYN, got flags %s", seg.Flags.String())
-	}
-
-	var op tcp.OptionCodec
-	gotMSS := uint16(0)
-	found := false
-	err = op.ForEachOption(tfrm.Options(), func(kind tcp.OptionKind, data []byte) error {
-		if kind == tcp.OptMaxSegmentSize && len(data) == 2 {
-			gotMSS = uint16(data[0])<<8 | uint16(data[1])
-			found = true
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !found {
-		t.Fatal("no MSS option in SYN")
-	}
-	if gotMSS != wantMSS {
-		t.Errorf("advertised MSS = %d, want %d (MTU %d - 40)", gotMSS, wantMSS, mtu)
-	}
-}
-
-// TestEphemeralPortSequence checks no ephemeral port is reused before the whole
-// 16384-port dynamic range has cycled, which is what keeps a redial off the
-// teardown state (TIME-WAIT, NAT flow entries) of the conversation before it.
-func TestEphemeralPortSequence(t *testing.T) {
-	s := new(StackAsync)
-	err := s.Reset(StackConfig{
-		Hostname:          "eph",
-		RandSeed:          42,
-		StaticAddress4:    [4]byte{10, 0, 0, 50},
-		MaxActiveTCPPorts: 1,
-		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 50},
-		MTU:               ethernet.MaxMTU,
-		ICMPQueueLimit:    2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	const cycle = 16384
-	var seen [cycle]bool
-	for i := range cycle {
-		port := s.ephemeralPort()
-		if port < 49152 {
-			t.Fatalf("port %d below dynamic range (RFC 6335)", port)
-		}
-		idx := port - 49152
-		if seen[idx] {
-			t.Fatalf("port %d reused after only %d allocations (want full %d cycle)", port, i, cycle)
-		}
-		seen[idx] = true
-	}
-	// The cycle is exhausted: the next allocation may legitimately reuse.
-	if got := s.ephemeralPort(); got < 49152 {
-		t.Fatalf("post-cycle port %d below dynamic range", got)
-	}
-}
-
-// TestStackGoTCPDialSurvivesManyWaitIterations checks the dial wait ends on its
-// deadline and not on an iteration count: the peer stays silent for several
-// times the former maxIter while simulated time advances by a fraction of the
-// timeout, and the dial must still establish once the handshake is serviced.
-func TestStackGoTCPDialSurvivesManyWaitIterations(t *testing.T) {
-	const seed = 91011
-	const MTU = ethernet.MaxMTU
-	const tcptimeout = time.Second
-	const quietIters = 4000 // well past the former iteration cap
-	// Simulated clock: the quiet phase below advances less than 5% of the dial
-	// timeout, so a timeout error there can only come from iteration counting.
-	var now time.Duration
-	nanotime := func() int64 { return int64(now) }
-	client, sv, _, svconn := newTCPStacks(t, seed, MTU)
-	client.mono.Config(nanotime)
-
-	err := sv.ListenTCP4(svconn, 22)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tsched := ltesto.NewSched(t)
-	tgoro := tsched.Goro()
-	sg := client.StackBlocking(tgoro.Yield).StackGo(StackGoConfig{
-		ListenerPoolConfig: TCPPoolConfig{
-			QueueSize: 4,
-			TxBufSize: MTU,
-			RxBufSize: MTU,
-			NewBackoff: func() lneto.BackoffStrategy {
-				return backoffYield
-			},
-		},
-		TCPDialTimeout: tcptimeout,
-		TCPDialRetries: 1,
-	})
-
-	laddr := netip.AddrPortFrom(netip.AddrFrom4(client.Addr4()), 1234)
-	raddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), 22)
-	go func() {
-		_, err := sg.SocketNetip(context.Background(), "tcp", syscall.AF_INET, sockSTREAM, laddr, raddr)
-		tgoro.FinishWithErr(err)
-	}()
-
-	// Quiet phase: no packets serviced, so the dialer only spins.
-	for i := range quietIters {
-		done, err := tsched.AwaitGoroYieldOrDone()
-		if done {
-			t.Fatalf("dial gave up during quiet phase after %d iterations: %v", i, err)
-		}
-		now += tcptimeout / 100000
-		tsched.YieldToGoro()
-	}
-
-	// Handshake phase: pump packets until the dial completes, bounded rounds so
-	// a broken handshake fails loudly.
-	var buf [ethernet.MaxMTU + ethernet.MaxOverheadSize]byte
-	for range 64 {
-		done, err := tsched.AwaitGoroYieldOrDone()
-		if done {
-			if err != nil {
-				t.Fatalf("dial failed after handshake serviced: %v", err)
-			}
-			return // Established under deadline: test success.
-		}
-		n, err := client.EgressEthernet(buf[:])
-		if err != nil {
-			t.Fatal(err)
-		}
-		if n > 0 {
-			if err := sv.IngressEthernet(buf[:n]); err != nil {
-				t.Fatal(err)
-			}
-		}
-		n, err = sv.EgressEthernet(buf[:])
-		if err != nil {
-			t.Fatal(err)
-		}
-		if n > 0 {
-			if err := client.IngressEthernet(buf[:n]); err != nil {
-				t.Fatal(err)
-			}
-		}
-		now += tcptimeout / 100000
-		tsched.YieldToGoro()
-	}
-	t.Fatal("dial did not establish within handshake rounds")
-}
-
-// regression test for a panic
-func TestEncapsIdxSurvivesReset(t *testing.T) {
-	s, _ := newICMPStacks(t, 42, 1500)
-	s.EnableICMP(true)
-	s.StartDHCPv4Request([4]byte{})
-	buf := make([]byte, 2048)
-	s.EgressEthernet(buf)
-	err := s.Reset(StackConfig{Hostname: "icmp-stack-1", RandSeed: 42, HardwareAddress: [6]byte{1}, MTU: 1500, ICMPQueueLimit: 4})
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.StartDHCPv4Request([4]byte{})
-	s.EgressEthernet(buf) // panic
-}
-
-// regression test for panic in subnetTable.reset.
-func TestPassivePeersGrowOnReset(t *testing.T) {
-	s, peer := newICMPStacks(t, 42, 1500) // PassivePeers=0 -> len(resolves4)=10
-	s.Reset(StackConfig{Hostname: "icmp-stack-1", RandSeed: 42, StaticAddress4: [4]byte{10, 0, 0, 42},
-		HardwareAddress: [6]byte{0xbe, 0xef, 0, 0, 0, 42}, MTU: 1500, ICMPQueueLimit: 4, PassivePeers: 16})
-	s.EnableICMP(true)
-	s.SetGatewayHardwareAddr(peer.HardwareAddr())
-	s.icmp.PingStart(peer.Addr4(), []byte("x"), 32)
-	s.EgressEthernet(make([]byte, 2048)) // index out of range [10] with length 10
-}
-
-// regression test for panic. [ethernet.Frame.ValidateSize] was not correctly
-// taking 14 byte header size into account for size validation.
-func TestEthernetLengthFieldPanic(t *testing.T) {
-	s, _ := newICMPStacks(t, 42, 1500)
-	efrm, _ := ethernet.NewFrame(make([]byte, 60))
-	*efrm.DestinationHardwareAddr() = [6]byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
-	efrm.SetEtherType(60)
-	s.IngressEthernet(efrm.RawData()) // slices frame[14:74]
-}
-
-func TestICMPMismatchedMTUPanic(t *testing.T) {
-	const mtu = 576
-	s := new(StackAsync)
-	err := s.Reset(StackConfig{
-		Hostname:        "icmp-oversized",
-		RandSeed:        16,
-		StaticAddress4:  [4]byte{10, 0, 0, 1},
-		HardwareAddress: [6]byte{0xbe, 0xef, 0, 0, 0, 1},
-		MTU:             mtu,
-		ICMPQueueLimit:  16, // Response ring 16*64=1024 bytes > MTU.
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.EnableICMP(true); err != nil {
-		t.Fatal(err)
-	}
-	gen := ltesto.PacketGen{
-		SrcMAC:  [6]byte{0xbe, 0xef, 0, 0, 0, 2},
-		DstMAC:  s.HardwareAddr(),
-		SrcIPv4: [4]byte{10, 0, 0, 2},
-		DstIPv4: s.Addr4(),
-	}
-	// Valid IPv4+ICMP echo request with 1000 data bytes, larger than MTU.
-	pkt := gen.AppendIPv4ICMPEcho(nil, ltesto.ICMPEchoConfig{
-		Identifier:     0x1234,
-		SequenceNumber: 1,
-		Payload:        make([]byte, 1000),
-	})
-	if err := s.IngressEthernet(pkt); err != nil {
-		t.Fatal("echo request rejected, test does not exercise oversized reply:", err)
-	}
-	var buf [mtu + 14]byte
-	n, _ := s.EgressEthernet(buf[:]) // Reply does not fit in MTU, must not panic.
-	if n > len(buf) {
-		t.Fatalf("egress wrote %d bytes, exceeding buffer of %d", n, len(buf))
-	}
-}
-
-// TestStackAsync_ResetMatchesFresh verifies a stack reset with a configuration
-// puts the same frames on the wire as a fresh stack with that configuration,
-// whatever configuration it had and traffic it carried before. State that
-// survives Reset shows up as a difference in the frames.
-func TestStackAsync_ResetMatchesFresh(t *testing.T) {
-	small := resetTestConfig(576, 1, 1, 0, 1)
-	big := resetTestConfig(ethernet.MaxMTU, 4, 4, 3, 4)
-	for _, tc := range []struct {
-		name          string
-		before, after StackConfig
-	}{
-		{name: "same-small", before: small, after: small},
-		{name: "same-big", before: big, after: big},
-		{name: "shrink", before: big, after: small},
-		{name: "grow", before: small, after: big},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var fresh StackAsync
-			if err := fresh.Reset(tc.after); err != nil {
-				t.Fatal(err)
-			}
-			want := resetTestTraffic(t, &fresh, true)
-
-			var reused StackAsync
-			if err := reused.Reset(tc.before); err != nil {
-				t.Fatal(err)
-			}
-			resetTestTraffic(t, &reused, false) // Leaves connections, a ping and an ARP query open.
-			if err := reused.Reset(tc.after); err != nil {
-				t.Fatal(err)
-			}
-			got := resetTestTraffic(t, &reused, true)
-			for _, frames := range [][][]byte{got, want} {
-				for _, frm := range frames {
-					ignoreEchoSeq(frm)
-				}
-			}
-			for i := range max(len(got), len(want)) {
-				if i >= len(got) || i >= len(want) || !bytes.Equal(got[i], want[i]) {
-					t.Fatalf("frame %d of %d differs from a fresh stack's (%d frames):\n got=%x\nwant=%x", i, len(got), len(want), at(got, i), at(want, i))
-				}
-			}
-		})
-	}
-}
-
-// ignoreEchoSeq zeroes the sequence number and checksum of an ICMP echo in an
-// Ethernet/IPv4 frame. The sequence keeps counting across Reset; replies are
-// matched by payload and address, so it carries no state that matters.
-func ignoreEchoSeq(frm []byte) {
-	const icmp = 14 + 20
-	if len(frm) >= icmp+8 && frm[12] == 0x08 && frm[13] == 0x00 && frm[14] == 0x45 && frm[23] == 1 {
-		frm[icmp+2], frm[icmp+3] = 0, 0 // Checksum.
-		frm[icmp+6], frm[icmp+7] = 0, 0 // Sequence number.
-	}
 }
 
 func at(frames [][]byte, i int) []byte {
@@ -1530,159 +644,98 @@ func at(frames [][]byte, i int) []byte {
 	return nil
 }
 
-func resetTestConfig(mtu, tcpPorts, udpPorts uint16, passivePeers, icmpQueue int) StackConfig {
-	return StackConfig{
-		Hostname:          "dut-1",
-		RandSeed:          1,
-		StaticAddress4:    [4]byte{10, 0, 0, 1},
-		HardwareAddress:   [6]byte{0xbe, 0xef, 0, 0, 0, 1},
-		MTU:               mtu,
-		MaxActiveTCPPorts: tcpPorts,
-		MaxActiveUDPPorts: udpPorts,
-		PassivePeers:      passivePeers,
-		ICMPQueueLimit:    icmpQueue,
-		Nanotime:          func() int64 { return 1 },
-	}
+// dnsRR is an answer record: a CNAME to cname when set, else an A record with addr.
+type dnsRR struct {
+	owner string
+	cname string
+	addr  netip.Addr
 }
 
-// resetTestTraffic resolves, pings, and exchanges TCP and UDP data between s
-// and a fresh peer at 10.0.0.2, returning every frame both sent in order.
-// With finish false it sets a subnet, leaves the connections open, a ping in
-// flight and an ARP query pending, and the peer uses another hardware address,
-// so entries that survive Reset send frames to the wrong one.
-func resetTestTraffic(t *testing.T, s *StackAsync, finish bool) (frames [][]byte) {
-	peer := newTestStackClock(t, "peer-2", 2, uint16(s.MTU()), 1, 1, func() int64 { return 1 })
-	if !finish {
-		if err := peer.SetHardwareAddr([6]byte{0xde, 0xad, 0, 0, 0, 2}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	buf := make([]byte, ethernet.MaxFrameLength)
-	pump := func() {
-		for range 64 {
-			moved := false
-			for _, dir := range [2][2]*StackAsync{{s, peer}, {peer, s}} {
-				n, err := dir[0].EgressEthernet(buf)
-				if err != nil {
-					t.Fatal("egress:", err)
-				} else if n == 0 {
-					continue
-				}
-				frames = append(frames, bytes.Clone(buf[:n]))
-				dir[1].IngressEthernet(buf[:n])
-				moved = true
-			}
-			if !moved {
-				return
-			}
-		}
-		t.Fatal("traffic did not settle")
-	}
-	peerAddr := netip.AddrFrom4(peer.Addr4())
-	if !finish {
-		s.SetSubnet4(s.Addr4(), 24) // As after DHCP; enables learning passive peers.
-	}
-	if err := s.StartResolveHardwareAddress6(peerAddr); err != nil {
-		t.Fatal(err)
-	}
-	pump()
-	if _, err := s.ResultResolveHardwareAddress6(peerAddr); err != nil {
-		t.Fatal("ARP:", err)
-	}
-	s.SetGatewayHardwareAddr(peer.HardwareAddr())
-	peer.SetGatewayHardwareAddr(s.HardwareAddr())
+func rrA(owner, addr string) dnsRR { return dnsRR{owner: owner, addr: netip.MustParseAddr(addr)} }
 
-	for _, st := range []*StackAsync{s, peer} {
-		if err := st.EnableICMP(true); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := s.icmp.PingStart(peer.Addr4(), []byte("pingdata"), 16); err != nil {
-		t.Fatal(err)
-	}
+func rrCNAME(owner, target string) dnsRR { return dnsRR{owner: owner, cname: target} }
 
-	var c1, c2 tcp.Conn
-	for _, c := range []*tcp.Conn{&c1, &c2} {
-		*c = *newTestTCPConn(t, 256, 4)
-	}
-	if err := peer.ListenTCP4(&c2, 80); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.DialTCP(&c1, 1337, netip.AddrPortFrom(peerAddr, 80)); err != nil {
-		t.Fatal(err)
-	}
-	pump()
-	if _, err := c1.Write([]byte("tcp payload")); err != nil {
-		t.Fatal(err)
-	}
-	pump()
-
-	var u1, u2 udp.Conn
-	for _, u := range []*udp.Conn{&u1, &u2} {
-		err := u.Configure(udp.ConnConfig{RxBuf: make([]byte, 256), TxBuf: make([]byte, 256), RxQueueSize: 2, TxQueueSize: 2, RWBackoff: backoffYield, MTU: uint16(s.MTU())})
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := s.DialUDP(&u1, 5000, netip.AddrPortFrom(peerAddr, 5001)); err != nil {
-		t.Fatal(err)
-	}
-	if err := peer.DialUDP(&u2, 5001, netip.AddrPortFrom(netip.AddrFrom4(s.Addr4()), 5000)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := u1.Write([]byte("udp payload")); err != nil {
-		t.Fatal(err)
-	}
-	pump()
-	if !finish {
-		// Best effort: a small configuration may have no room left for these.
-		s.icmp.PingStart(peer.Addr4(), []byte("pingdata"), 16)
-		s.StartResolveHardwareAddress6(netip.AddrFrom4([4]byte{10, 0, 0, 9}))
-		return frames
-	}
-	if err := c1.Close(); err != nil {
-		t.Fatal(err)
-	}
-	pump()
-	return frames
+// dnsTestServer answers the client's pending query from zone, echoing
+// the question back as a recursive resolver would.
+type dnsTestServer struct {
+	t       *testing.T
+	client  *StackAsync
+	zone    map[string][]dnsRR // Answer section keyed by queried name.
+	queries int
+	buf     [ethernet.MaxFrameLength]byte
 }
 
-// TestStackAsync_ResetClearsSubnet verifies Reset forgets a subnet set with
-// SetSubnet4: a destination in it is then sent to the gateway instead of being
-// resolved on the link.
-func TestStackAsync_ResetClearsSubnet(t *testing.T) {
-	cfg := resetTestConfig(576, 1, 1, 0, 1)
-	var s StackAsync
-	if err := s.Reset(cfg); err != nil {
-		t.Fatal(err)
+// respond answers one query and reports whether the client had one pending.
+// A query for a name not in the zone fails the test.
+func (s *dnsTestServer) respond() bool {
+	t := s.t
+	t.Helper()
+	n, err := s.client.EgressEthernet(s.buf[:])
+	if err != nil || n == 0 {
+		return false
 	}
-	s.SetSubnet4(s.Addr4(), 24)
-	if err := s.Reset(cfg); err != nil {
-		t.Fatal(err)
-	}
-	router := [6]byte{0x02, 0, 0, 0, 0, 0xfe}
-	s.SetGatewayHardwareAddr(router)
-	var u udp.Conn
-	err := u.Configure(udp.ConnConfig{RxBuf: make([]byte, 64), TxBuf: make([]byte, 64), RxQueueSize: 1, TxQueueSize: 1, RWBackoff: backoffYield, MTU: uint16(s.MTU())})
+	txid, port, err := extractDNSTxIDAndPort(s.buf[:n])
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("failed to extract DNS txid:", err)
 	}
-	if err := s.DialUDP(&u, 5000, netip.MustParseAddrPort("10.0.0.2:5001")); err != nil {
-		t.Fatal(err)
+	var q dns.Question
+	if _, err = q.Decode(extractDNSPayload(s.buf[:n]), dns.SizeHeader); err != nil {
+		t.Fatal("failed to decode question:", err)
 	}
-	if _, err := u.Write([]byte("x")); err != nil {
-		t.Fatal(err)
+	s.queries++
+	msg := dns.Message{Questions: []dns.Question{q}}
+	for owner, rrs := range s.zone {
+		if !q.Name.EqualString(owner) {
+			continue
+		}
+		for _, rr := range rrs {
+			msg.Answers = append(msg.Answers, rr.resource(t))
+		}
 	}
-	buf := make([]byte, ethernet.MaxFrameLength)
-	n, err := s.EgressEthernet(buf)
+	if len(msg.Answers) == 0 {
+		t.Fatalf("query #%d for %s not in zone", s.queries, q.Name.String())
+	}
+	pkt, err := buildDNSMsgResponsePacket(t, txid, port, msg,
+		dnsTestServerAddr, dnsTestServerMAC, dnsTestClientAddr, dnsTestClientMAC, s.buf[:])
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("failed to build response packet:", err)
 	}
-	efrm, err := ethernet.NewFrame(buf[:n])
+	if err = s.client.IngressEthernet(pkt); err != nil {
+		t.Fatal("client Demux failed:", err)
+	}
+	return true
+}
+
+func newDNSTestClient(t *testing.T) *StackAsync {
+	t.Helper()
+	client := new(StackAsync)
+	err := client.Reset(StackConfig{
+		Hostname:        "DNSClient",
+		RandSeed:        9876,
+		StaticAddress4:  dnsTestClientAddr.As4(),
+		DNSServer:       dnsTestServerAddr,
+		HardwareAddress: dnsTestClientMAC,
+		MTU:             uint16(ethernet.MaxMTU),
+	})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("client Reset failed:", err)
 	}
-	if efrm.EtherTypeOrSize() != ethernet.TypeIPv4 || *efrm.DestinationHardwareAddr() != router {
-		t.Fatalf("first frame %s to %x, want IPv4 to the gateway %x", efrm.EtherTypeOrSize(), *efrm.DestinationHardwareAddr(), router)
+	client.SetGatewayHardwareAddr(dnsTestServerMAC)
+	return client
+}
+
+// exchangeEthernetOnce sends one Ethernet frame from src to dst if available.
+func exchangeEthernetOnce(t *testing.T, src, dst *StackAsync, buf []byte) int {
+	t.Helper()
+	n, err := src.EgressEthernet(buf)
+	if err != nil {
+		t.Error(err)
 	}
+	if n == 0 {
+		return 0
+	}
+	if err := dst.IngressEthernet(buf[:n]); err != nil {
+		t.Error(err)
+	}
+	return n
 }
