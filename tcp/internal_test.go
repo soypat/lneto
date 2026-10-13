@@ -37,16 +37,14 @@ const (
 
 // SegmentStep defines a single segment exchange with resulting states for both peers.
 type SegmentStep struct {
-	Seg    Segment // The segment being exchanged.
-	Action StepAction
+	Seg    Segment    // The segment being exchanged.
+	Action StepAction // Action to perform.
 
 	// States after the segment is processed.
-	AState State
-	BState State
+	AState, BState State
 
 	// Pending segments after the step (nil if none expected).
-	APending *Segment
-	BPending *Segment
+	APending, BPending *Segment
 
 	// WantErr is the error the receiver must return for this step, matched with
 	// errors.Is. Nil requires a non-error receive (dropped errors are logged).

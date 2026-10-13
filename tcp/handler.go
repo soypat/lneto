@@ -210,7 +210,10 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 	}
 	payload := tfrm.Payload()
 	segIncoming := tfrm.Segment(len(payload))
-	if h.peerOfferedWS && !segIncoming.Flags.HasAny(FlagSYN) {
+	if segIncoming.Flags.HasAny(FlagSYN) {
+		// Disable TCP fast open, force peer to retransmit.
+		payload, segIncoming.DATALEN = nil, 0
+	} else if h.peerOfferedWS {
 		// Peer windows arrive scaled once both sides offered scaling, but never on
 		// SYN segments (RFC 7323 §2.2). Restore real octets before the
 		// ControlBlock sees them.
