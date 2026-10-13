@@ -33,9 +33,7 @@ type StackNode interface {
 	// ConnectionID returns the pointer to the connection context number or ConnectionID.
 	// Stacks should store the original value of ConnectionID (Load the pointer) on
 	// registering a [StackNode]. When the value changes this means the registered [StackNode]
-	// should be discarded since its lifetime has terminated. Only equality is meaningful: the value may wrap.
-	// Implementations must only modify the value atomically since stacks may read it concurrently;
-	// do not overwrite it via whole-struct assignment while a stack may be reading it.
+	// should be discarded since its lifetime has terminated.
 	ConnectionID() *atomic.Uint32
 	// TODO(pato,ddirect): Do we eventually want to trigger writes to buffers asynchronously?
 	// SetFlagPending(flagPending func(numPendingEncapsulations int))
