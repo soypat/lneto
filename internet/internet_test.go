@@ -17,29 +17,44 @@ import (
 )
 
 func TestBasicStack(t *testing.T) {
-	rng := rand.New(rand.NewSource(1))
-	var sbCl, sbSv StackIPv4
-	var connCl, connSv tcp.Conn
-	setupClientServer(t, rng, &sbCl, &sbSv, &connCl, &connSv)
-	var buf [2048]byte
-	nextToSend := &sbCl
-	nextToRecv := &sbSv
-	exchangeAndExpectStates := func(clState, svState tcp.State) {
-		t.Helper()
-		expectExchange(t, nextToSend, nextToRecv, buf[:])
-		gotCl := connCl.State()
-		gotSv := connSv.State()
-		if gotCl != clState {
-			t.Errorf("want client state %s, got %s", clState, gotCl)
-		}
-		if gotSv != svState {
-			t.Errorf("want server state %s, got %s", svState, gotSv)
-		}
-		nextToSend, nextToRecv = nextToRecv, nextToSend
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, rng *rand.Rand, connCl, connSv *tcp.Conn) (cl, sv lneto.StackNode)
+	}{
+		{name: "IPv4", setup: func(t *testing.T, rng *rand.Rand, connCl, connSv *tcp.Conn) (cl, sv lneto.StackNode) {
+			var sbCl, sbSv StackIPv4
+			setupClientServer(t, rng, &sbCl, &sbSv, connCl, connSv)
+			return &sbCl, &sbSv
+		}},
+		{name: "IPv6", setup: func(t *testing.T, rng *rand.Rand, connCl, connSv *tcp.Conn) (cl, sv lneto.StackNode) {
+			var sbCl, sbSv StackIPv6
+			setupClientServer6(t, rng, &sbCl, &sbSv, connCl, connSv)
+			return &sbCl, &sbSv
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rng := rand.New(rand.NewSource(1))
+			var connCl, connSv tcp.Conn
+			nextToSend, nextToRecv := tc.setup(t, rng, &connCl, &connSv)
+			var buf [2048]byte
+			exchangeAndExpectStates := func(clState, svState tcp.State) {
+				t.Helper()
+				expectExchange(t, nextToSend, nextToRecv, buf[:])
+				gotCl := connCl.State()
+				gotSv := connSv.State()
+				if gotCl != clState {
+					t.Errorf("want client state %s, got %s", clState, gotCl)
+				}
+				if gotSv != svState {
+					t.Errorf("want server state %s, got %s", svState, gotSv)
+				}
+				nextToSend, nextToRecv = nextToRecv, nextToSend
+			}
+			exchangeAndExpectStates(tcp.StateSynSent, tcp.StateSynRcvd)         // Client sends over first SYN and server receives it.
+			exchangeAndExpectStates(tcp.StateEstablished, tcp.StateSynRcvd)     // server sends back SYNACK, establishing connection on client side.
+			exchangeAndExpectStates(tcp.StateEstablished, tcp.StateEstablished) // Client sends ACK, establishing connection in full.
+		})
 	}
-	exchangeAndExpectStates(tcp.StateSynSent, tcp.StateSynRcvd)         // Client sends over first SYN and server receives it.
-	exchangeAndExpectStates(tcp.StateEstablished, tcp.StateSynRcvd)     // server sends back SYNACK, establishing connection on client side.
-	exchangeAndExpectStates(tcp.StateEstablished, tcp.StateEstablished) // Client sends ACK, establishing connection in full.
 }
 
 func TestBasicStack2(t *testing.T) {
@@ -96,32 +111,6 @@ func testClientServerEstablish(t *testing.T, client, server lneto.StackNode, con
 		t.Error("establishment failed")
 		t.FailNow()
 	}
-}
-
-func TestBasicStack6(t *testing.T) {
-	rng := rand.New(rand.NewSource(1))
-	var sbCl, sbSv StackIPv6
-	var connCl, connSv tcp.Conn
-	setupClientServer6(t, rng, &sbCl, &sbSv, &connCl, &connSv)
-	var buf [2048]byte
-	nextToSend := &sbCl
-	nextToRecv := &sbSv
-	exchangeAndExpectStates := func(clState, svState tcp.State) {
-		t.Helper()
-		expectExchange(t, nextToSend, nextToRecv, buf[:])
-		gotCl := connCl.State()
-		gotSv := connSv.State()
-		if gotCl != clState {
-			t.Errorf("want client state %s, got %s", clState, gotCl)
-		}
-		if gotSv != svState {
-			t.Errorf("want server state %s, got %s", svState, gotSv)
-		}
-		nextToSend, nextToRecv = nextToRecv, nextToSend
-	}
-	exchangeAndExpectStates(tcp.StateSynSent, tcp.StateSynRcvd)
-	exchangeAndExpectStates(tcp.StateEstablished, tcp.StateSynRcvd)
-	exchangeAndExpectStates(tcp.StateEstablished, tcp.StateEstablished)
 }
 
 func TestBasicStack6Established(t *testing.T) {
