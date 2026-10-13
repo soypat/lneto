@@ -16,8 +16,8 @@ const (
 	// retransmitMaxQueued sets maximum amount of retransmits to queue while receiving dupacks.
 	retransmitMaxQueued = 2
 	// maxChallengeRejects is the number of consecutive challenge ACKs sent without
-	// a successful Recv before aborting. Prevents infinite ACK ping-pong when both
-	// sides have diverged state (e.g. after packet mutation).
+	// a successful Recv before further rejects are dropped silently.
+	// Prevents infinite ACK ping-pong when both sides have diverged state (e.g. after packet mutation).
 	maxChallengeRejects = 8
 )
 
@@ -650,8 +650,9 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 		case errSeqNotInWindow, errLastNotInWindow, errRequireSequential:
 			if !flags.HasAny(FlagRST) {
 				if tcb.tooManyChallengeAcks() {
-					tcb.Abort()
-					return net.ErrClosed
+					// Throttle by suppressing challenge ack emission.
+					// A [tcp.Policy] can handle action in this case.
+					return err
 				}
 				tcb.triggerChallengeAckEmit()
 			}

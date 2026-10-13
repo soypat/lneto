@@ -11,6 +11,9 @@ const logExchange = false
 // ErrZeroWindow exposes the zero-window rejection to external tests.
 var ErrZeroWindow = errZeroWindow
 
+// ErrSeqNotInWindow exposes the out-of-window rejection to external tests.
+var ErrSeqNotInWindow = errSeqNotInWindow
+
 // Here we define internal testing helpers that may be used in any *_test.go file
 // but are not exported.
 

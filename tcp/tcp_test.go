@@ -350,6 +350,42 @@ func TestExchangeTest_listenDropsSynData(t *testing.T) {
 	test.RunB(t) // Only B, the passive opener: the SYN text models a mutated segment, not A's own send.
 }
 
+// Out-of-window segments past the challenge ACK limit are dropped silently, never aborting (RFC 5961 §7).
+// Previously the 10th aborted ESTABLISHED without RST, leaving the peer retransmitting forever. lfuzzo found.
+func TestExchangeTest_challengeAckFloodNoAbort(t *testing.T) {
+	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
+	test := tcp.ExchangeTest{
+		ISSA:       issA,
+		ISSB:       issB,
+		WindowA:    windowA,
+		WindowB:    windowB,
+		InitStateA: tcp.StateEstablished,
+		InitStateB: tcp.StateEstablished,
+	}
+	oow := tcp.Segment{SEQ: issA + 5000, ACK: issB, Flags: tcp.FlagACK, WND: windowA}
+	for i := range 12 {
+		if i >= 9 { // Past the challenge ACK limit: dropped silently, still ESTABLISHED.
+			test.Steps = append(test.Steps, tcp.SegmentStep{Seg: oow, Action: tcp.StepASends, BState: tcp.StateEstablished, WantErr: tcp.ErrSeqNotInWindow})
+			continue
+		}
+		test.Steps = append(test.Steps,
+			tcp.SegmentStep{ // B receives segment beyond its receive window: challenge ACK, still ESTABLISHED.
+				Seg:      oow,
+				Action:   tcp.StepASends,
+				BState:   tcp.StateEstablished,
+				BPending: &tcp.Segment{SEQ: issB, ACK: issA, Flags: tcp.FlagACK, WND: windowB},
+				WantErr:  tcp.ErrSeqNotInWindow,
+			},
+			tcp.SegmentStep{ // B sends challenge ACK.
+				Seg:    tcp.Segment{SEQ: issB, ACK: issA, Flags: tcp.FlagACK, WND: windowB},
+				Action: tcp.StepBSends,
+				BState: tcp.StateEstablished,
+			},
+		)
+	}
+	test.RunB(t) // Only B: the out-of-window segments model mutations, not A's own sends.
+}
+
 // TestExchangeTest_synSentResetsBadAck: a bad ACK in SYN-SENT must draw RST <SEQ=SEG.ACK> (RFC 9293 §3.10.7.3).
 // Previously SEG.SEQ was checked against the unset receive window, emitting a challenge ACK=0 at SEQ=ISS+1. Found by lfuzzo.
 func TestExchangeTest_synSentResetsBadAck(t *testing.T) {
