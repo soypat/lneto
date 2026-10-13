@@ -13,10 +13,8 @@ import (
 
 // node is a concrete StackNode as stored in Stacks. Methods are devirtualized for performance benefits, especially on TinyGo.
 type node struct {
-	// currConnID stores the stack node *connID value on registration.
-	currConnID uint64
 	// connID is StackNode.ConnectionID() return value.
-	connID *uint64
+	connID *atomic.Uint32
 	// cbnode has different definitions in tinygo and normal Go compiled programs
 	// for performance and heap control reasons.
 	callbacks cbnode
@@ -25,6 +23,9 @@ type node struct {
 	remoteAddr []byte
 	proto      uint16 // StackNode.Protocol()
 	lport      uint16 // StackNode.LocalPort()
+	// currConnID stores the stack node *connID value on registration.
+	// Placed after the uint16 fields so the three pack into a single 8 byte word.
+	currConnID uint32
 }
 
 type handlers struct {
@@ -210,7 +211,7 @@ var (
 )
 
 func (node *node) IsInvalid() bool {
-	return node.callbacks.IsZeroed() || (node.connID != nil && node.currConnID != atomic.LoadUint64(node.connID))
+	return node.callbacks.IsZeroed() || (node.connID != nil && node.currConnID != node.connID.Load())
 }
 
 func checkNodeErr(node *node, err error) (discard bool) {
@@ -221,10 +222,10 @@ func nodeFromStackNode(s lneto.StackNode, port uint16, protocol uint64, remoteAd
 	if protocol > math.MaxUint16 {
 		panic(">16bit protocol number unsupported")
 	}
-	var currConnID uint64
+	var currConnID uint32
 	connIDPtr := s.ConnectionID()
 	if connIDPtr != nil {
-		currConnID = atomic.LoadUint64(connIDPtr)
+		currConnID = connIDPtr.Load()
 	}
 	return node{
 		currConnID: currConnID,

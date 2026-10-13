@@ -2,6 +2,7 @@ package icmpv4
 
 import (
 	"slices"
+	"sync/atomic"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -16,7 +17,7 @@ const (
 )
 
 type Client struct {
-	connid uint64
+	connid atomic.Uint32
 	magic  uint32
 	_seq   uint16
 	id     uint16
@@ -56,7 +57,7 @@ func (client *Client) Configure(cfg ClientConfig) error {
 	if cfg.HashSeed == 0 || len(cfg.ResponseQueueBuffer) < 16 || cfg.ResponseQueueLimit <= 0 {
 		return lneto.ErrInvalidConfig
 	}
-	client.connid++
+	client.connid.Add(1)
 	internal.SliceReuse(&client.outgoingEcho, cfg.ResponseQueueLimit)
 	internal.SliceReuse(&client.incomingEcho, cfg.ResponseQueueLimit)
 	client.responseRing = internal.Ring{Buf: cfg.ResponseQueueBuffer}
@@ -69,11 +70,11 @@ func (client *Client) Protocol() uint64 { return uint64(lneto.IPProtoICMP) }
 
 func (client *Client) LocalPort() uint16 { return 0 }
 
-func (client *Client) ConnectionID() *uint64 { return &client.connid }
+func (client *Client) ConnectionID() *atomic.Uint32 { return &client.connid }
 
 func (client *Client) Abort() {
 	client.Reset()
-	client.connid++
+	client.connid.Add(1)
 }
 
 func (client *Client) Reset() {

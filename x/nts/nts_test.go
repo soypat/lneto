@@ -296,14 +296,14 @@ func TestClient_Reset_Validation(t *testing.T) {
 	if err := c.Reset(cfg); err != nil {
 		t.Fatalf("valid Reset: %v", err)
 	}
-	prevID := *c.ConnectionID()
+	prevID := c.ConnectionID().Load()
 
 	cfg2 := cfg
 	cfg2.C2S = nil
 	if err := c.Reset(cfg2); err == nil {
 		t.Error("nil C2S: expected error")
 	}
-	if *c.ConnectionID() != prevID {
+	if c.ConnectionID().Load() != prevID {
 		t.Error("connID should not increment on failed Reset")
 	}
 
@@ -476,11 +476,11 @@ func TestServer_Reset_Validation(t *testing.T) {
 	if err := s.Reset(ServerConfig{C2S: aead, S2C: aead, Stratum: ntp.StratumPrimary}); err != nil {
 		t.Fatalf("valid Reset: %v", err)
 	}
-	prevID := *s.ConnectionID()
+	prevID := s.ConnectionID().Load()
 	if err := s.Reset(ServerConfig{C2S: nil, S2C: aead}); err == nil {
 		t.Error("nil C2S: expected error")
 	}
-	if *s.ConnectionID() != prevID {
+	if s.ConnectionID().Load() != prevID {
 		t.Error("connID should not increment on failed Reset")
 	}
 }

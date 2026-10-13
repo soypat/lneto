@@ -3,6 +3,7 @@ package dns
 import (
 	"math"
 	"net/netip"
+	"sync/atomic"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -13,7 +14,7 @@ var _ lneto.StackNode = (*Client)(nil) // Compile-time guarantee of interface im
 // Client provides parallel DNS lookups via Lookup* methods. Currently only supports UDP.
 // TODO(soypat): add stream support multiplexing via other methods into same lookup slice.
 type Client struct {
-	connID uint64
+	connID atomic.Uint32
 	// rawlookups slots. length fixed by [ClientConfig.MaxLookups]. Slots never move to preserve [Message] pointer validity
 	rawlookups []lookup
 	// lidxs permutation indices into rawlookups. lidxs[:len] active; lidxs[len:len(looksies)] are free slots.
@@ -54,7 +55,7 @@ func (c *Client) Configure(cfg ClientConfig) error {
 	} else if cfg.LocalPort == 0 {
 		return lneto.ErrZeroSource
 	}
-	c.connID++
+	c.connID.Add(1)
 	c.lport = cfg.LocalPort
 	internal.SliceReuseCopy(&c.rawlookups, int(cfg.MaxLookups))
 	c.rawlookups = c.rawlookups[:cfg.MaxLookups]
@@ -70,7 +71,7 @@ func (c *Client) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
 
 func (c *Client) LocalPort() uint16 { return c.lport }
 
-func (c *Client) ConnectionID() *uint64 { return &c.connID }
+func (c *Client) ConnectionID() *atomic.Uint32 { return &c.connID }
 
 // NumLookups returns the number of active lookups, sent or not, completed or not.
 func (c *Client) NumLookups() int { return len(c.lidxs) }
@@ -228,7 +229,7 @@ func (c *Client) Reset() {
 // Abort removes all lookups and invalidates the client's registration on a stack.
 func (c *Client) Abort() {
 	c.Reset()
-	c.connID++
+	c.connID.Add(1)
 }
 
 // Encapsulate writes the query of the first lookup not yet sent. Returns 0 and nil error if there is none.

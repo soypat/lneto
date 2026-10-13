@@ -3,6 +3,7 @@ package mdns
 import (
 	"math"
 	"net"
+	"sync/atomic"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/dns"
@@ -38,7 +39,7 @@ const (
 // Clients are attached to MDNS ports and function until manual detachment
 // due to their dual design: they double as a querier and service discovery.
 type Client struct {
-	connID uint64
+	connID atomic.Uint32
 	closed bool
 	lport  uint16
 	ip     []byte
@@ -82,7 +83,7 @@ func (c *Client) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
 
 func (c *Client) LocalPort() uint16 { return c.lport }
 
-func (c *Client) ConnectionID() *uint64 { return &c.connID }
+func (c *Client) ConnectionID() *atomic.Uint32 { return &c.connID }
 
 type ResolveConfig struct {
 	Questions          []dns.Question
@@ -101,9 +102,9 @@ func (c *Client) StartResolve(cfg ResolveConfig) error {
 }
 
 func (c *Client) reset(localport uint16) {
+	connID := c.connID.Load()
 	*c = Client{
-		connID: c.connID + 1,
-		lport:  localport,
+		lport: localport,
 		// Ensure memory reused:
 		qqst:     c.qqst[:0],
 		qans:     c.qans[:0],
@@ -112,6 +113,7 @@ func (c *Client) reset(localport uint16) {
 		rqst:     dns.Question{Name: c.rqst.Name},
 		ip:       c.ip[:0],
 	}
+	c.connID.Store(connID + 1)
 }
 
 // qreset resets the current query state. It is only a partial reset of a Client.

@@ -1,6 +1,7 @@
 package linklocal4
 
 import (
+	"sync/atomic"
 	"time"
 
 	"github.com/soypat/lneto"
@@ -26,7 +27,7 @@ import (
 //
 // [RFC3927]: https://datatracker.ietf.org/doc/html/rfc3927
 type Handler struct {
-	connID uint64
+	connID atomic.Uint32
 	now    func() time.Time
 
 	// nextActionAt is the time at which the next probe/announcement is due.
@@ -83,14 +84,15 @@ func (h *Handler) Reset(cfg Config) error {
 	}
 	first := cfg.FirstCandidate
 	haveFirst := linkLocalNet.Contains(first) && first[2] >= 1 && first[2] <= 254
+	connID := h.connID.Load()
 	*h = Handler{
-		connID:         h.connID + 1,
 		now:            cfg.Now,
 		prng:           uint32(cfg.Seed) ^ uint32(cfg.Seed>>32),
 		hw:             cfg.HardwareAddr,
 		firstCandidate: first,
 		haveFirst:      haveFirst,
 	}
+	h.connID.Store(connID + 1)
 	if h.prng == 0 {
 		h.prng = 1 // Fold of a non-zero seed can still be zero; xorshift cannot escape the zero state.
 	}
@@ -105,7 +107,7 @@ func (h *Handler) LocalPort() uint16 { return 0 }
 func (h *Handler) Protocol() uint64 { return uint64(ethernet.TypeARP) }
 
 // ConnectionID implements [lneto.StackNode].
-func (h *Handler) ConnectionID() *uint64 { return &h.connID }
+func (h *Handler) ConnectionID() *atomic.Uint32 { return &h.connID }
 
 // State returns the current autoconfiguration state.
 func (h *Handler) State() State { return h.state }

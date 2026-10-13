@@ -2,6 +2,7 @@ package ntp
 
 import (
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/soypat/lneto"
@@ -22,7 +23,7 @@ const (
 const sysprecRecalcNeeded int8 = 127
 
 type Client struct {
-	connID uint64
+	connID atomic.Uint32
 	start  time.Time
 	_now   func() time.Time
 	logger logger
@@ -40,13 +41,14 @@ type Client struct {
 }
 
 func (c *Client) Reset(sysprec int8, now func() time.Time) {
+	connID := c.connID.Load()
 	*c = Client{
-		connID:  c.connID + 1,
 		_now:    now,
 		logger:  c.logger,
 		sysprec: sysprec,
 		state:   stateSend1,
 	}
+	c.connID.Store(connID + 1)
 }
 
 // SetLogger configures a structured logger for debug output.
@@ -55,7 +57,7 @@ func (c *Client) SetLogger(l *slog.Logger) { c.logger.log = l }
 
 func (c *Client) Protocol() uint64  { return 0 }
 func (c *Client) LocalPort() uint16 { return ClientPort }
-func (c *Client) ConnectionID() *uint64 {
+func (c *Client) ConnectionID() *atomic.Uint32 {
 	return &c.connID
 }
 

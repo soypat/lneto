@@ -1,6 +1,7 @@
 package ntp
 
 import (
+	"sync/atomic"
 	"time"
 
 	"github.com/soypat/lneto"
@@ -21,7 +22,7 @@ type ServerConfig struct {
 //
 // Server is not safe for concurrent use.
 type Server struct {
-	connID  uint64
+	connID  atomic.Uint32
 	_now    func() time.Time
 	stratum Stratum
 	prec    int8
@@ -45,19 +46,20 @@ func (h *Server) Reset(cfg ServerConfig) error {
 	if cap(pending) < cfg.MaxPending {
 		pending = make([]pendingRequest, 0, cfg.MaxPending)
 	}
+	connID := h.connID.Load()
 	*h = Server{
-		connID:  h.connID + 1,
 		_now:    cfg.Now,
 		stratum: cfg.Stratum,
 		prec:    cfg.Precision,
 		refID:   cfg.RefID,
 		pending: pending,
 	}
+	h.connID.Store(connID + 1)
 	return nil
 }
 
 // ConnectionID implements [lneto.StackNode].
-func (h *Server) ConnectionID() *uint64 { return &h.connID }
+func (h *Server) ConnectionID() *atomic.Uint32 { return &h.connID }
 
 // Protocol implements [lneto.StackNode].
 func (h *Server) Protocol() uint64 { return 0 }

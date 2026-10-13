@@ -1,13 +1,15 @@
 package arp
 
 import (
+	"sync/atomic"
+
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/internal"
 )
 
 type Handler struct {
-	connID       uint64
+	connID       atomic.Uint32
 	cache        cache
 	vld          lneto.Validator
 	ourProtoAddr []byte
@@ -31,7 +33,7 @@ func (h *Handler) LocalPort() uint16 { return 0 }
 
 func (h *Handler) Protocol() uint64 { return uint64(ethernet.TypeARP) }
 
-func (h *Handler) ConnectionID() *uint64 { return &h.connID }
+func (h *Handler) ConnectionID() *atomic.Uint32 { return &h.connID }
 
 func (h *Handler) UpdateProtoAddr(protoAddr []byte) error {
 	if len(protoAddr) != len(h.ourProtoAddr) {
@@ -55,14 +57,15 @@ func (h *Handler) Reset(cfg HandlerConfig) error {
 	if cfg.HardwareType != 1 || cfg.ProtocolType != ethernet.TypeIPv4 && cfg.ProtocolType != ethernet.TypeIPv6 {
 		return lneto.ErrUnsupported // We only support common for now.
 	}
+	connID := h.connID.Load()
 	*h = Handler{
-		connID:       h.connID + 1,
 		ourHWAddr:    h.ourHWAddr,
 		ourProtoAddr: h.ourProtoAddr[:0],
 		htype:        cfg.HardwareType,
 		protoType:    cfg.ProtocolType,
 		cache:        h.cache,
 	}
+	h.connID.Store(connID + 1)
 	h.cache.reset(cfg.MaxPending + cfg.MaxQueries)
 
 	h.ourHWAddr = [6]byte(cfg.HardwareAddr)

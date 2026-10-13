@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"sync/atomic"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
@@ -33,7 +34,7 @@ type StackEthernetConfig struct {
 }
 
 type StackEthernet struct {
-	connID          uint64
+	connID          atomic.Uint32
 	handlers        handlers
 	mac             [6]byte
 	gwmac           [6]byte
@@ -93,14 +94,15 @@ func (ls *StackEthernet) Configure(cfg StackEthernetConfig) error {
 		return lneto.ErrInvalidConfig
 	}
 	ls.handlers.reset("StackEthernet", cfg.MaxNodes)
+	connID := ls.connID.Load()
 	*ls = StackEthernet{
-		connID:          ls.connID + 1,
 		handlers:        ls.handlers,
 		mac:             cfg.MAC,
 		gwmac:           cfg.Gateway,
 		mtu:             uint16(cfg.MTU),
 		acceptMulticast: ls.acceptMulticast,
 	}
+	ls.connID.Store(connID + 1)
 	if cfg.AppendCRC32 {
 		ls.crcupdate = cfg.CRC32Update
 	}
@@ -122,7 +124,7 @@ func (ls *StackEthernet) MaxFrameLength() int {
 // Important to note that the actual ethernet frame size is MTU + Ethernet header (14) + CRC (4 if enabled), this is known as the Maximum Frame Length.
 func (ls *StackEthernet) MTU() int { return int(ls.mtu) }
 
-func (ls *StackEthernet) ConnectionID() *uint64 { return &ls.connID }
+func (ls *StackEthernet) ConnectionID() *atomic.Uint32 { return &ls.connID }
 
 func (ls *StackEthernet) LocalPort() uint16 { return 0 }
 

@@ -2014,7 +2014,7 @@ func TestConn_ReadEOFAfterCleanClose(t *testing.T) {
 			setupClientServer(t, rng, client, server)
 			var buf [mtu]byte
 			establish(t, client, server, buf[:])
-			stackID := *server.ConnectionID()
+			stackID := server.ConnectionID().Load()
 
 			closeServer := func() {
 				t.Helper()
@@ -2065,7 +2065,7 @@ func TestConn_ReadEOFAfterCleanClose(t *testing.T) {
 			}
 			if server.State() != tt.wantState {
 				t.Fatalf("server state %s, want %s", server.State(), tt.wantState)
-			} else if *server.ConnectionID() == stackID {
+			} else if server.ConnectionID().Load() == stackID {
 				t.Fatal("ConnectionID unchanged after close: stack keeps port registered")
 			}
 

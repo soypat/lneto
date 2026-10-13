@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -18,7 +19,7 @@ type pool interface {
 }
 
 type Listener struct {
-	connID uint64
+	connID atomic.Uint32
 	mu     sync.Mutex
 	// incoming stores connections that are potential candidates for acceptance.
 	incoming []ConnHandle
@@ -40,7 +41,7 @@ func (listener *Listener) reset(port uint16, tcppool pool) {
 		listener.incoming = listener.returnAll(listener.incoming)
 		listener.accepted = listener.returnAll(listener.accepted)
 	}
-	listener.connID++
+	listener.connID.Add(1)
 	listener.port = port
 	listener.poolGet = tcppool.GetTCP
 	listener.poolReturn = tcppool.PutTCP
@@ -61,7 +62,7 @@ func (listener *Listener) LocalPort() uint16 {
 }
 
 // ConnectionID implements [StackNode].
-func (listener *Listener) ConnectionID() *uint64 { return &listener.connID }
+func (listener *Listener) ConnectionID() *atomic.Uint32 { return &listener.connID }
 
 // Protocol implements [StackNode].
 func (listener *Listener) Protocol() uint64 { return uint64(lneto.IPProtoTCP) }
@@ -77,7 +78,7 @@ func (listener *Listener) Close() error {
 	listener.incoming = listener.returnAll(listener.incoming) // discard these pending conns, only keep already active(accepted).
 	listener.accepted = internal.DeleteZeroed(listener.accepted)
 	if len(listener.accepted) == 0 {
-		listener.connID++ // Can drop node immediately. Else we keep accepted active until closed.
+		listener.connID.Add(1) // Can drop node immediately. Else we keep accepted active until closed.
 	}
 	return nil
 }
@@ -90,7 +91,7 @@ func (listener *Listener) Abort() {
 	listener.incoming = listener.returnAll(listener.incoming)
 	listener.accepted = listener.returnAll(listener.accepted)
 	listener.port = 0
-	listener.connID++
+	listener.connID.Add(1)
 }
 
 func (listener *Listener) Reset(port uint16, pool pool) error {
@@ -112,7 +113,7 @@ func (listener *Listener) NumberOfActiveAccepted() (nActive int) {
 	defer listener.mu.Unlock()
 	for i := range listener.accepted {
 		h := &listener.accepted[i]
-		if h.c != nil && h.c.h.handle == h.handle {
+		if h.c != nil && h.c.h.handle.Load() == h.handle {
 			nActive++
 		}
 	}
@@ -184,7 +185,7 @@ func (listener *Listener) Encapsulate(carrierData []byte, offsetToIP, offsetToFr
 		conn := listener.accepted[i].c
 		if conn == nil {
 			continue
-		} else if conn.h.handle != listener.accepted[i].handle {
+		} else if conn.h.handle.Load() != listener.accepted[i].handle {
 			listener.returnAccepted(i)
 			continue
 		}

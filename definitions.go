@@ -1,5 +1,7 @@
 package lneto
 
+import "sync/atomic"
+
 // StackNode is an abstraction of a packet exchanging protocol controller. This is the building block for all protocols,
 // from Ethernet to IP to TCP, practically any protocol can be expressed as a StackNode and function completely.
 // Today protocols represented by StackNode also include NTP, DNS, DHCP, ARP, ICMP, UDP, mDNS.
@@ -29,10 +31,12 @@ type StackNode interface {
 	// Can be an [IPProto] among other types of protocols, i.e: ethernet.Protocol for a link layer [StackNode].
 	Protocol() uint64
 	// ConnectionID returns the pointer to the connection context number or ConnectionID.
-	// Stacks should store the original value of ConnectionID (dereference the pointer) on
+	// Stacks should store the original value of ConnectionID (Load the pointer) on
 	// registering a [StackNode]. When the value changes this means the registered [StackNode]
-	// should be discarded since its lifetime has terminated.
-	ConnectionID() *uint64
+	// should be discarded since its lifetime has terminated. Only equality is meaningful: the value may wrap.
+	// Implementations must only modify the value atomically since stacks may read it concurrently;
+	// do not overwrite it via whole-struct assignment while a stack may be reading it.
+	ConnectionID() *atomic.Uint32
 	// TODO(pato,ddirect): Do we eventually want to trigger writes to buffers asynchronously?
 	// SetFlagPending(flagPending func(numPendingEncapsulations int))
 }

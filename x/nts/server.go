@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"io"
+	"sync/atomic"
 	"time"
 
 	"github.com/soypat/lneto"
@@ -29,7 +30,7 @@ type ServerConfig struct {
 //
 // Server is NOT safe for concurrent use.
 type Server struct {
-	connID   uint64
+	connID   atomic.Uint32
 	cfg      ServerConfig
 	ntpState ntp.Server
 	nonce    [maxNonceLen]byte
@@ -57,11 +58,11 @@ func (s *Server) Reset(cfg ServerConfig) error {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	prevConnID := s.connID
+	prevConnID := s.connID.Load()
 	*s = Server{
-		connID: prevConnID,
-		cfg:    cfg,
+		cfg: cfg,
 	}
+	s.connID.Store(prevConnID)
 	if err := s.ntpState.Reset(ntp.ServerConfig{
 		Now:       cfg.Now,
 		Stratum:   cfg.Stratum,
@@ -70,12 +71,12 @@ func (s *Server) Reset(cfg ServerConfig) error {
 	}); err != nil {
 		return err
 	}
-	s.connID = prevConnID + 1
+	s.connID.Store(prevConnID + 1)
 	return nil
 }
 
 // ConnectionID implements [lneto.StackNode].
-func (s *Server) ConnectionID() *uint64 { return &s.connID }
+func (s *Server) ConnectionID() *atomic.Uint32 { return &s.connID }
 
 // Protocol implements [lneto.StackNode].
 func (s *Server) Protocol() uint64 { return uint64(ntp.ServerPort) }

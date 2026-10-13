@@ -368,7 +368,7 @@ func (conn *Conn) read(handle uint32, b []byte) (int, error) {
 	n := 0
 	for len(b) > 0 {
 		conn.mu.Lock()
-		if handle != conn.h.handle {
+		if handle != conn.h.handle.Load() {
 			conn.mu.Unlock()
 			return n, net.ErrClosed
 		}
@@ -408,7 +408,7 @@ func (conn *Conn) read(handle uint32, b []byte) (int, error) {
 // Methods taking a handle fail with [net.ErrClosed] once that connection ends.
 func (conn *Conn) currentHandle() uint32 {
 	conn.mu.Lock()
-	handle := conn.h.handle
+	handle := conn.h.handle.Load() // TODO: does locking help?
 	conn.mu.Unlock()
 	return handle
 }
@@ -442,7 +442,7 @@ func (conn *Conn) checkPipe(handle uint32, deadline *time.Time) (err error) {
 	defer conn.mu.Unlock()
 	if conn.abortErr != nil {
 		err = conn.abortErr
-	} else if handle != conn.h.handle || conn.h.State().IsClosed() {
+	} else if handle != conn.h.handle.Load() || conn.h.State().IsClosed() {
 		err = net.ErrClosed
 	} else if deadline != nil && !deadline.IsZero() && time.Since(*deadline) > 0 {
 		err = errDeadlineExceeded
@@ -456,7 +456,7 @@ func (conn *Conn) checkPipeOpen(handle uint32) error {
 		return conn.abortErr
 	}
 	state := conn.h.State()
-	if handle != conn.h.handle || state.IsClosed() {
+	if handle != conn.h.handle.Load() || state.IsClosed() {
 		return net.ErrClosed
 	}
 	return nil
@@ -539,7 +539,7 @@ func (conn *Conn) isRaddrSet() bool {
 func (conn *Conn) SetDeadline(t time.Time) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	return conn.setDeadline(conn.h.handle, t)
+	return conn.setDeadline(conn.h.handle.Load(), t)
 }
 
 // setDeadline must be called while holding [Conn.mu].
@@ -556,7 +556,7 @@ func (conn *Conn) setDeadline(handle uint32, t time.Time) error {
 func (conn *Conn) SetReadDeadline(t time.Time) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	return conn.setReadDeadline(conn.h.handle, t)
+	return conn.setReadDeadline(conn.h.handle.Load(), t)
 }
 
 // setReadDeadline must be called while holding [Conn.mu].
@@ -577,7 +577,7 @@ func (conn *Conn) setReadDeadline(handle uint32, t time.Time) error {
 func (conn *Conn) SetWriteDeadline(t time.Time) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	return conn.setWriteDeadline(conn.h.handle, t)
+	return conn.setWriteDeadline(conn.h.handle.Load(), t)
 }
 
 // setWriteDeadline must be called while holding [Conn.mu].
@@ -597,7 +597,7 @@ func (conn *Conn) deadlineExceeded(deadline *time.Time) bool {
 }
 
 // ConnectionID implements [lneto.StackNode].
-func (conn *Conn) ConnectionID() *uint64 {
+func (conn *Conn) ConnectionID() *atomic.Uint32 {
 	return conn.h.ConnectionID()
 }
 
@@ -667,7 +667,7 @@ func (p ConnHandle) SetWriteDeadline(t time.Time) error {
 func (p ConnHandle) State() State {
 	p.c.mu.Lock()
 	defer p.c.mu.Unlock()
-	if p.handle != p.c.h.handle {
+	if p.handle != p.c.h.handle.Load() {
 		return StateClosed
 	}
 	return p.c.h.State()
@@ -677,7 +677,7 @@ func (p ConnHandle) State() State {
 func (p ConnHandle) LocalPort() uint16 {
 	p.c.mu.Lock()
 	defer p.c.mu.Unlock()
-	if p.handle != p.c.h.handle {
+	if p.handle != p.c.h.handle.Load() {
 		return 0
 	}
 	return p.c.h.LocalPort()
@@ -688,7 +688,7 @@ func (p ConnHandle) LocalPort() uint16 {
 func (p ConnHandle) RemoteAddrPort() netip.AddrPort {
 	p.c.mu.Lock()
 	defer p.c.mu.Unlock()
-	if p.handle != p.c.h.handle {
+	if p.handle != p.c.h.handle.Load() {
 		return netip.AddrPort{}
 	}
 	addr, _ := netip.AddrFromSlice(p.c.remoteAddr)
