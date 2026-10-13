@@ -784,6 +784,29 @@ func TestIssue19(t *testing.T) {
 	}
 }
 
+// TestPendingSegment_fastRetransmitOutstanding: a fast retransmit resends only data already sent,
+// however much is asked for. Previously it took the payload length asked for, sending new data
+// past SND.NXT as a retransmission.
+func TestPendingSegment_fastRetransmitOutstanding(t *testing.T) {
+	const issA, issB, windowA, windowB, inFlight = 100, 300, 1000, 1000, 10
+	var tcb tcp.ControlBlock
+	tcb.HelperInitState(tcp.StateEstablished, issA, issA, windowA)
+	tcb.HelperInitRcv(issB, issB, windowB)
+	if err := tcb.Send(tcp.Segment{SEQ: issA, ACK: issB, Flags: tcp.FlagACK, WND: windowA, DATALEN: inFlight}); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if err := tcb.Recv(tcp.Segment{SEQ: issB, ACK: issA, Flags: tcp.FlagACK, WND: windowB}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seg, ok := tcb.PendingSegment(100)
+	want := tcp.Segment{SEQ: issA, ACK: issB, Flags: tcp.FlagACK, WND: windowA, DATALEN: inFlight}
+	if !ok || seg != want {
+		t.Fatalf("PendingSegment(100)=%+v, %v; want %+v", seg, ok, want)
+	}
+}
+
 // TestRcvFinWait2 tests rcvFinWait2 behavior per RFC 9293 §3.10.7.4.
 // In FIN-WAIT-2, the local side has sent FIN and received its ACK.
 // The remote side has NOT closed yet and may still send data or ACKs.
