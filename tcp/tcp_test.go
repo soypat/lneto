@@ -436,6 +436,43 @@ func TestExchangeTest_dupACKCarryingData(t *testing.T) {
 	test.RunA(t)
 }
 
+// TestExchangeTest_dupACKWindowUpdate: an ACK of SND.UNA opening the window is a window update, not a
+// duplicate ACK (RFC 5681 §2), while repeats of a smaller window still count. Previously three window
+// updates, as from a receiver draining its buffer, triggered a spurious fast retransmit.
+func TestExchangeTest_dupACKWindowUpdate(t *testing.T) {
+	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
+	steps := []tcp.SegmentStep{{ // A sends 10 octets.
+		Seg:    tcp.Segment{SEQ: issA, ACK: issB, Flags: tcp.FlagACK, WND: windowA, DATALEN: 10},
+		Action: tcp.StepASends,
+		AState: tcp.StateEstablished,
+	}}
+	for i := range tcp.Size(3) { // B opens its window three times: no retransmit.
+		steps = append(steps, tcp.SegmentStep{
+			Seg:    tcp.Segment{SEQ: issB, ACK: issA, Flags: tcp.FlagACK, WND: windowB + 1 + i},
+			Action: tcp.StepBSends,
+			AState: tcp.StateEstablished,
+		})
+	}
+	for i := range 3 { // B repeats a smaller window three times: fast retransmit.
+		var want *tcp.Segment
+		if i == 2 {
+			want = &tcp.Segment{SEQ: issA, ACK: issB, Flags: tcp.FlagACK, WND: windowA}
+		}
+		steps = append(steps, tcp.SegmentStep{
+			Seg:      tcp.Segment{SEQ: issB, ACK: issA, Flags: tcp.FlagACK, WND: 800},
+			Action:   tcp.StepBSends,
+			AState:   tcp.StateEstablished,
+			APending: want,
+		})
+	}
+	test := tcp.ExchangeTest{
+		ISSA: issA, ISSB: issB, WindowA: windowA, WindowB: windowB,
+		InitStateA: tcp.StateEstablished, InitStateB: tcp.StateEstablished,
+		Steps: steps,
+	}
+	test.RunA(t)
+}
+
 /*
 	 Recovery from Old Duplicate SYN
 		TCP Peer A                                           TCP Peer B
