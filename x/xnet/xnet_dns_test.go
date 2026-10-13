@@ -367,7 +367,13 @@ func TestDNS_LookupIPExhausted(t *testing.T) {
 
 func TestDNS_DoLookupIPFreesLookupOnTimeout(t *testing.T) {
 	client := newDNSTestClient(t)
-	silent := client.StackBlocking(func(uint) time.Duration { return lneto.BackoffFlagNop })
+	// Each poll of a lookup no server answers moves the clock forward.
+	var now int64
+	client.mono.Config(func() int64 { return now })
+	silent := client.StackBlocking(func(uint) time.Duration {
+		now += int64(time.Millisecond)
+		return lneto.BackoffFlagNop
+	})
 	// More timed out lookups than concurrent lookups allowed: each must free its slot.
 	var dst [4]netip.Addr
 	for i := range 3 {
