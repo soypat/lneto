@@ -354,8 +354,8 @@ func TestClient_DemuxBadTag(t *testing.T) {
 	carrier := make([]byte, 1500)
 	n, _ := c.Encapsulate(carrier, 0, 0)
 
-	resp := buildTestResponse(t, carrier[:n],
-		time.Now(), time.Now().Add(time.Millisecond), key)
+	recv := ntp.BaseTime()
+	resp := buildTestResponse(t, carrier[:n], recv, recv.Add(time.Millisecond), key)
 	// Tamper a byte in the NTP header (part of the AAD); this must cause
 	// the authentication tag to be rejected.
 	resp[ntp.SizeHeader-1] ^= 0xff
