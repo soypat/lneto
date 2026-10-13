@@ -386,6 +386,46 @@ func TestExchangeTest_challengeAckFloodNoAbort(t *testing.T) {
 	test.RunB(t) // Only B: the out-of-window segments model mutations, not A's own sends.
 }
 
+// Each fast retransmit owed for duplicate ACKs is cleared when sent; past counter saturation none are owed.
+// Previously nRetransmit saturated at 250 below dupack, leaving a retransmit pending forever after the ACKs stopped. lfuzzo found.
+func TestExchangeTest_dupackRetransmitSaturation(t *testing.T) {
+	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
+	const datalen = 10
+	test := tcp.ExchangeTest{
+		ISSA:       issA,
+		ISSB:       issB,
+		WindowA:    windowA,
+		WindowB:    windowB,
+		InitStateA: tcp.StateEstablished,
+		InitStateB: tcp.StateEstablished,
+		Steps: []tcp.SegmentStep{
+			0: { // B receives window update.
+				Seg:    tcp.Segment{SEQ: issA, ACK: issB, Flags: tcp.FlagACK, WND: windowA},
+				Action: tcp.StepASends,
+				BState: tcp.StateEstablished,
+			},
+			1: { // B sends data, never acknowledged.
+				Seg:    tcp.Segment{SEQ: issB, ACK: issA, Flags: tcp.FlagACK, WND: windowB, DATALEN: datalen},
+				Action: tcp.StepBSends,
+				BState: tcp.StateEstablished,
+			},
+		},
+	}
+	dupack := tcp.Segment{SEQ: issA, ACK: issB, Flags: tcp.FlagACK, WND: windowA}
+	rtx := tcp.Segment{SEQ: issB, ACK: issA, Flags: tcp.FlagACK, WND: windowB}
+	for i := range 300 {
+		if i < 2 || i >= 250 { // First two, and those past dupack saturation, owe no retransmit.
+			test.Steps = append(test.Steps, tcp.SegmentStep{Seg: dupack, Action: tcp.StepASends, BState: tcp.StateEstablished})
+			continue
+		}
+		test.Steps = append(test.Steps,
+			tcp.SegmentStep{Seg: dupack, Action: tcp.StepASends, BState: tcp.StateEstablished, BPending: &rtx},
+			tcp.SegmentStep{Seg: rtx, Action: tcp.StepBSends, BState: tcp.StateEstablished}, // Retransmit sent: nothing pending.
+		)
+	}
+	test.RunB(t) // Only B: the duplicate ACK run models mutated traffic, not A's own sends.
+}
+
 // TestExchangeTest_synSentResetsBadAck: a bad ACK in SYN-SENT must draw RST <SEQ=SEG.ACK> (RFC 9293 §3.10.7.3).
 // Previously SEG.SEQ was checked against the unset receive window, emitting a challenge ACK=0 at SEQ=ISS+1. Found by lfuzzo.
 func TestExchangeTest_synSentResetsBadAck(t *testing.T) {
