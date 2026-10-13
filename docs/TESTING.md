@@ -70,8 +70,8 @@ for _, tt := range tests {
 Protocols with a sequence of exchanges model each step as a row, as
 `tcp.ExchangeTest` does with `SegmentStep`: the segment sent, the states of
 both peers afterwards, the pending segment and the expected error.
-`TestExchangeTest_synSentDropsSynFin` is a typical regression test of this
-kind. Before adding a test function, check whether the case is a new row of
+The `synSentDropsSynFin` case of `TestExchangeTest` is a typical regression
+test of this kind. Before adding a test function, check whether the case is a new row of
 an existing table.
 
 ## Regression tests
