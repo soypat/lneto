@@ -650,8 +650,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 		case errSeqNotInWindow, errLastNotInWindow, errRequireSequential:
 			if !flags.HasAny(FlagRST) {
 				if tcb.tooManyChallengeAcks() {
-					tcb.Abort()
-					return net.ErrClosed
+					return err // RFC 5961 §7: throttle by dropping without challenge ACK; never abort.
 				}
 				tcb.triggerChallengeAckEmit()
 			}
