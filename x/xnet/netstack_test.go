@@ -11,18 +11,22 @@ import (
 func TestNetstackAccessors(t *testing.T) {
 	var ns Netstack
 	backoff := lneto.BackoffStrategy(func(uint) time.Duration { return time.Millisecond })
-	err := ns.Reset(StackConfig{
-		Hostname:        "ns",
-		RandSeed:        1,
-		StaticAddress4:  [4]byte{192, 168, 1, 1},
-		HardwareAddress: [6]byte{0xde, 0xad, 0xbe, 0xef, 0x00, 0x00},
-		MTU:             ethernet.MaxMTU,
-	}, backoff, TCPPoolConfig{
-		PoolSize:   1,
-		QueueSize:  1,
-		TxBufSize:  512,
-		RxBufSize:  512,
-		NewBackoff: func() lneto.BackoffStrategy { return backoff },
+	err := ns.Reset(NetstackConfig{
+		TCPPoolConfig: TCPPoolConfig{
+			PoolSize:   1,
+			QueueSize:  1,
+			TxBufSize:  512,
+			RxBufSize:  512,
+			NewBackoff: func() lneto.BackoffStrategy { return backoff },
+		},
+		BackoffStack: backoff,
+		StackConfig: StackConfig{
+			Hostname:        "ns",
+			RandSeed:        1,
+			StaticAddress4:  [4]byte{192, 168, 1, 1},
+			HardwareAddress: [6]byte{0xde, 0xad, 0xbe, 0xef, 0x00, 0x00},
+			MTU:             ethernet.MaxMTU,
+		},
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -19,21 +19,32 @@ type Netstack struct {
 
 var _ netdev.Stack = (*Netstack)(nil)
 
+// NetstackConfig used to configure [Netstack].
+type NetstackConfig struct {
+	StackConfig   StackConfig
+	BackoffStack  lneto.BackoffStrategy
+	TCPPoolConfig TCPPoolConfig
+}
+
 // Configure configures this Stack with the argument mac, ip and gateway addresses.
 // The Stack must resolve the gateway hardware address if set.
-func (netstack *Netstack) Reset(cfg StackConfig, stackBackoff lneto.BackoffStrategy, poolcfg TCPPoolConfig) error {
-	err := netstack.stack.Reset(cfg)
+func (netstack *Netstack) Reset(cfg NetstackConfig) error {
+	err := netstack.stack.Reset(cfg.StackConfig)
 	if err != nil {
 		return err
 	}
-	netstack.gstack = netstack.stack.StackGo(stackBackoff, StackGoConfig{
-		ListenerPoolConfig: poolcfg,
+	netstack.gstack = netstack.stack.StackGo(cfg.BackoffStack, StackGoConfig{
+		ListenerPoolConfig: cfg.TCPPoolConfig,
 	})
 	return nil
 }
 
 func (netstack *Netstack) IPAddr4() [4]byte {
 	return netstack.stack.Addr4()
+}
+
+func (netstack *Netstack) HardwareAddr() [6]byte {
+	return netstack.stack.HardwareAddr()
 }
 
 // StackAsync returns the underlying [StackAsync] for setup that Netstack does not
