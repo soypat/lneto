@@ -315,6 +315,7 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 		return tcb.MakeChallengeACK(), true
 	} else if !pending.HasAny(flagctl) && tcb.HasPendingRetransmit() {
 		// Optimist Strategy: retransmit oldest data once.
+		payloadLen = min(payloadLen, int(Sizeof(tcb.snd.UNA, tcb.snd.NXT)))
 		return Segment{SEQ: tcb.snd.UNA, DATALEN: Size(payloadLen), ACK: tcb.rcv.NXT, WND: tcb.rcv.WND, Flags: FlagACK}, true
 	}
 	canSendData := tcb._state.txQueuedDataOpen()
