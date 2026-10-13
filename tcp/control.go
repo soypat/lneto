@@ -457,6 +457,12 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	// (modular LessThan would otherwise return false for 0.LessThan(largeISS)).
 	// Within that, duplicate ACKs (non-advancing) may only open the window, never shrink it.
 	wlUnset := tcb.snd.WL1 == 0 && tcb.snd.WL2 == 0
+	// An ACK opening the window is a window update, not a duplicate ACK.
+	// TODO: RFC 5681 §2 requires a duplicate ACK to repeat the window of the
+	// last incoming ACK, which needs that window kept in a new field. Comparing
+	// against snd.WND, which only opens on such ACKs, also counts the first ACK
+	// shrinking the window.
+	prevWND := tcb.snd.WND
 	if wlUnset || tcb.snd.WL1.LessThan(seg.SEQ) || (tcb.snd.WL1 == seg.SEQ && tcb.snd.WL2.LessThanEq(seg.ACK)) {
 		if tcb.snd.UNA.LessThan(seg.ACK) || seg.WND > tcb.snd.WND {
 			tcb.snd.WND = seg.WND
@@ -466,7 +472,7 @@ func (tcb *ControlBlock) Recv(seg Segment) (err error) {
 	}
 
 	if seg.Flags.HasAny(FlagACK) && seg.ACK.LessThanEq(tcb.snd.NXT) {
-		if tcb.IncomingIsDupACK(seg.ACK) && seg.DATALEN == 0 && tcb.State().txQueuedDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < tcb.nRetransmit+retransmitMaxQueued+retransmitMaxQueued {
+		if tcb.IncomingIsDupACK(seg.ACK) && seg.DATALEN == 0 && seg.WND <= prevWND && tcb.State().txQueuedDataOpen() && !seg.Flags.HasAny(flagctl) && tcb.dupack < tcb.nRetransmit+retransmitMaxQueued+retransmitMaxQueued {
 			// Duplicate ack. Don't advance dupack counter past scb.nRetransmit+retransmitAfterDupacks
 			tcb.dupack++
 		} else if tcb.snd.UNA.LessThan(seg.ACK) {
