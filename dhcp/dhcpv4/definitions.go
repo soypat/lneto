@@ -57,7 +57,7 @@ func EncodeOption(dst []byte, opt OptNum, data ...byte) (int, error) {
 	} else if len(dst) < 2+len(data) {
 		return 0, lneto.ErrShortBuffer
 	}
-	_ = dst[2+len(data)]
+	_ = dst[1+len(data)]
 	dst[0] = byte(opt)
 	dst[1] = byte(len(data))
 	copy(dst[2:], data)

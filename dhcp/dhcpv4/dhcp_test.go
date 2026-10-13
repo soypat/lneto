@@ -213,6 +213,16 @@ func TestRequestedIPAddressOption(t *testing.T) {
 	}
 }
 
+// EncodeOption must fill a buffer of exactly the option's size.
+// Previously it checked one byte past the option and panicked. Found by lfuzzo.
+func TestEncodeOptionExactBuffer(t *testing.T) {
+	dst := make([]byte, 3)
+	n, err := EncodeOption(dst, OptMessageType, byte(MsgDiscover))
+	if err != nil || n != 3 || dst[0] != byte(OptMessageType) || dst[1] != 1 || dst[2] != byte(MsgDiscover) {
+		t.Fatalf("EncodeOption = %d, %v, % x; want 3, nil, %x 01 %x", n, err, dst, OptMessageType, MsgDiscover)
+	}
+}
+
 // TestForEachOptionBoundsCheck verifies that ForEachOption properly validates
 // buffer bounds and doesn't panic on malformed options with lengths that extend
 // past the buffer end.
