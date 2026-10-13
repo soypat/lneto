@@ -1,6 +1,8 @@
 package internal
 
-import "unsafe"
+import (
+	"unsafe"
+)
 
 // BytesEqual is heapless replacement of [bytes.Equal] since it allocates in tinygo.
 // https://github.com/tinygo-org/tinygo/issues/4045
@@ -95,6 +97,17 @@ func SliceReuse[T any](buf *[]T, n int) {
 	}
 }
 
+// SliceReuseCopy is equivalent to [SliceReuse] but it also copies previous buffer contents on reallocation.
+func SliceReuseCopy[T any](buf *[]T, n int) {
+	if cap(*buf) < n {
+		new := make([]T, 0, n)
+		copy(new[:n], (*buf)[:cap(*buf)])
+		*buf = new
+	} else {
+		*buf = (*buf)[:0]
+	}
+}
+
 // SliceReclaim extends the slice length by one and returns a pointer to
 // the new last element. The returned element is not zeroed, so callers
 // can reuse any existing allocations it may hold from prior use.
@@ -129,4 +142,18 @@ func SliceDequeueFront[T any](a *[]T) T {
 	n := copy(s, s[1:])
 	*a = s[:n]
 	return v
+}
+
+// SliceCopyFrom reslices dst to src's length, growing buffer if necessary
+// and calls dst[i].CopyFrom(src[i]) on first len(src) elements.
+func SliceCopyFrom[T any, PT interface {
+	*T
+	CopyFrom(T)
+}](dst *[]T, src []T) {
+	SliceReuse(dst, len(src))
+	d := (*dst)[:len(src)]
+	for i := range d {
+		PT(&d[i]).CopyFrom(src[i])
+	}
+	*dst = d
 }

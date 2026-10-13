@@ -36,6 +36,20 @@ type handlers struct {
 	logger
 }
 
+// nextFreePort returns the first port in [start, start+numToCheck*inc) wrapping past 65535. 0 returned if none found.
+func (h *handlers) nextFreePort(start, increment, numToCheck uint16) uint16 {
+	if increment == 0 {
+		panic("invalid use of nextFreePort")
+	}
+	for i := range numToCheck {
+		port := start + i*increment
+		if port != 0 && h.nodeByPort(port) == nil {
+			return port
+		}
+	}
+	return 0
+}
+
 func (h *handlers) reset(context string, maxNodes int) {
 	h.nodes = slices.Grow(h.nodes[:0], maxNodes)
 	h.context = context

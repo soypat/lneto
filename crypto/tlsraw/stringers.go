@@ -108,11 +108,11 @@ const _AlertLevel_name = "warningfatal"
 var _AlertLevel_index = [...]uint8{0, 7, 12}
 
 func (i AlertLevel) String() string {
-	i -= 1
-	if i >= AlertLevel(len(_AlertLevel_index)-1) {
-		return "AlertLevel(" + strconv.FormatInt(int64(i+1), 10) + ")"
+	idx := int(i) - 1
+	if i < 1 || idx >= len(_AlertLevel_index)-1 {
+		return "AlertLevel(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _AlertLevel_name[_AlertLevel_index[i]:_AlertLevel_index[i+1]]
+	return _AlertLevel_name[_AlertLevel_index[idx]:_AlertLevel_index[idx+1]]
 }
 func _() {
 	// An "invalid array index" compiler error signifies that the constant values have changed.
@@ -234,9 +234,9 @@ const _CipherSuite_name = "TLS_AES_128_GCM_SHA256TLS_AES_256_GCM_SHA384TLS_CHACH
 var _CipherSuite_index = [...]uint8{0, 22, 44, 72, 94, 118}
 
 func (i CipherSuite) String() string {
-	i -= 4865
-	if i >= CipherSuite(len(_CipherSuite_index)-1) {
-		return "CipherSuite(" + strconv.FormatInt(int64(i+4865), 10) + ")"
+	idx := int(i) - 4865
+	if i < 4865 || idx >= len(_CipherSuite_index)-1 {
+		return "CipherSuite(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _CipherSuite_name[_CipherSuite_index[i]:_CipherSuite_index[i+1]]
+	return _CipherSuite_name[_CipherSuite_index[idx]:_CipherSuite_index[idx+1]]
 }

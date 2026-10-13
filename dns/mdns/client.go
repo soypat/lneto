@@ -96,11 +96,7 @@ func (c *Client) StartResolve(cfg ResolveConfig) error {
 	}
 	c.qreset(querierSendQuery)
 	internal.SliceReuse(&c.qans, int(cfg.MaxResponseAnswers))
-	internal.SliceReuse(&c.qqst, nq)
-	c.qqst = c.qqst[:nq]
-	for i := range c.qqst {
-		c.qqst[i].CopyFrom(cfg.Questions[i])
-	}
+	internal.SliceCopyFrom(&c.qqst, cfg.Questions)
 	return nil
 }
 
