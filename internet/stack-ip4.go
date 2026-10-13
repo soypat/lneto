@@ -158,11 +158,13 @@ func (si4 *stackip4) demux4(carrierData []byte, offset int) error {
 			si4.handlers.error("ip:demux.udpvalidatesize")
 			return err
 		}
-		frameLen := ufrm.Length()
-		ifrm.CRCWriteUDPPseudo(&crc, frameLen)
-		if crc.PayloadSum16(ufrm.RawData()[:frameLen]) != 0 {
-			si4.handlers.error("ip:demux.udpcrc")
-			return lneto.ErrBadCRC
+		if ufrm.CRC() != 0 {
+			frameLen := ufrm.Length()
+			ifrm.CRCWriteUDPPseudo(&crc, frameLen)
+			if crc.PayloadSum16(ufrm.RawData()[:frameLen]) != 0 {
+				si4.handlers.error("ip:demux.udpcrc")
+				return lneto.ErrBadCRC
+			}
 		}
 	}
 	totalLen := ifrm.TotalLength()
