@@ -328,6 +328,28 @@ func TestExchangeTest_listenDropsSynFin(t *testing.T) {
 	test.RunB(t) // Only B, the passive opener: the SYN,FIN models a mutated segment, not A's own send.
 }
 
+// SYN with text in LISTEN is dropped: text may not be acknowledged before ESTABLISHED (RFC 9293 §3.10.7.2).
+// Previously RCV.NXT advanced past the text, so the SYN,ACK acknowledged unqueued data. lfuzzo found.
+func TestExchangeTest_listenDropsSynData(t *testing.T) {
+	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
+	test := tcp.ExchangeTest{
+		ISSA:       issA,
+		ISSB:       issB,
+		WindowA:    windowA,
+		WindowB:    windowB,
+		InitStateA: tcp.StateSynSent,
+		InitStateB: tcp.StateListen,
+		Steps: []tcp.SegmentStep{
+			0: { // B receives SYN carrying 21 octets of text: dropped, no reply, still listening.
+				Seg:    tcp.Segment{SEQ: issA, Flags: tcp.FlagSYN | tcp.FlagPSH, WND: windowA, DATALEN: 21},
+				Action: tcp.StepASends,
+				BState: tcp.StateListen,
+			},
+		},
+	}
+	test.RunB(t) // Only B, the passive opener: the SYN text models a mutated segment, not A's own send.
+}
+
 // TestExchangeTest_synSentResetsBadAck: a bad ACK in SYN-SENT must draw RST <SEQ=SEG.ACK> (RFC 9293 §3.10.7.3).
 // Previously SEG.SEQ was checked against the unset receive window, emitting a challenge ACK=0 at SEQ=ISS+1. Found by lfuzzo.
 func TestExchangeTest_synSentResetsBadAck(t *testing.T) {
