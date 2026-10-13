@@ -524,7 +524,7 @@ func TestHandleIdlePeerEndsOnConnDeadline(t *testing.T) {
 	var sm MuxSlice
 	sm.Handle("/", func(ex *Exchange) { t.Error("handler must not run on partial request") })
 	conn := newConn("GET / HTTP") // Peer stalls mid request line, never hangs up.
-	conn.SetDeadline(time.Now().Add(10 * time.Millisecond))
+	conn.ExpireAfterIdleReads(100)
 	exch := newExchange(t, conn, ExchangeConfig{RawBuf: make([]byte, 2*1024), RequestBufferLim: 1024})
 
 	done := make(chan error, 1)
