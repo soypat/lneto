@@ -34,7 +34,7 @@ func TestHeaderParseRequest(t *testing.T) {
 	wantCookie.MaxAge = 360000
 	wantCookie.Name = "key"
 	wantCookie.Value = "value"
-	wantCookie.Expires = time.Now().Add(time.Hour)
+	wantCookie.Expires = time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)
 	wantCookie.Domain = "DOM"
 	wantCookie.HttpOnly = true
 	wantCookie.Secure = true
@@ -47,13 +47,10 @@ func TestHeaderParseRequest(t *testing.T) {
 	var hdr HeaderV1
 	msg := buf.Bytes()
 
-	start := time.Now()
 	err = hdr.ParseBytes(asRequest, msg)
-	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fmt.Printf("%s\nparsed in %s\n\n", msg, elapsed.String())
 	if string(hdr.Method()) != wantMethod {
 		t.Errorf("want method %s, got %q", wantMethod, hdr.Method())
 	}
