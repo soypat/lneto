@@ -441,38 +441,27 @@ func TestRunBackoffEscalates(t *testing.T) {
 	dev := &mockDev{}
 	iface := newIface(t, dev)
 	stack := &mockStack{}
-	var mu sync.Mutex
-	var recorded []uint
+	// Run stops at the first escalated backoff.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	backoff := func(consecutive uint) time.Duration {
-		mu.Lock()
-		recorded = append(recorded, consecutive)
-		mu.Unlock()
-		if consecutive == 0 {
-			return lneto.BackoffFlagGosched
+		if consecutive > 0 {
+			cancel()
 		}
-		return time.Millisecond
+		return lneto.BackoffFlagGosched
 	}
 	r := newRunner(t, iface, 2, netdev.RunnerInterfaceAsync|netdev.RunnerAsyncWakeOnRx, backoff)
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	err := r.Run(ctx, iface, stack)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatal(err)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(recorded) == 0 {
-		t.Fatal("backoff never called")
-	}
-	escalated := false
-	for _, c := range recorded {
-		if c > 0 {
-			escalated = true
-			break
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx, iface, stack) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal(err)
 		}
-	}
-	if !escalated {
-		t.Fatalf("backoff counter pinned at 0 across %d idle iterations", len(recorded))
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("backoff counter pinned at 0 across idle iterations")
 	}
 }
 
@@ -504,7 +493,15 @@ func TestRunAsyncStress(t *testing.T) {
 			runtime.Gosched()
 		}
 	}
-	time.Sleep(10 * time.Millisecond) // let the runner drain pending frames.
+	// Each delivered frame is either ingressed or dropped for want of a buffer.
+	var stats netdev.RunnerStatistics
+	for {
+		r.ReadStatistics(&stats)
+		if uint64(stack.numIngress())+stats.RxPacketsDropped >= nframes {
+			break
+		}
+		runtime.Gosched()
+	}
 	cancel()
 	err := <-runDone
 	if !errors.Is(err, context.Canceled) {
@@ -619,7 +616,11 @@ func TestRunResetsStatistics(t *testing.T) {
 	dev := &mockDev{}
 	iface := newIface(t, dev)
 	stack := &mockStack{}
-	r := newRunner(t, iface, 2, netdev.RunnerInterfacePoll, nil)
+	// Run stops when it first goes idle.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	backoff := func(uint) time.Duration { cancel(); return lneto.BackoffFlagNop }
+	r := newRunner(t, iface, 2, netdev.RunnerInterfacePoll, backoff)
 	dev.pollErr = errors.New("boom")
 	if _, _, err := r.RunOnce(iface, stack); err != nil {
 		t.Fatal(err)
@@ -632,9 +633,7 @@ func TestRunResetsStatistics(t *testing.T) {
 	dev.mu.Lock()
 	dev.pollErr = nil
 	dev.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if err := r.Run(ctx, iface, stack); !errors.Is(err, context.DeadlineExceeded) {
+	if err := r.Run(ctx, iface, stack); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
 	r.ReadStatistics(&stats)
