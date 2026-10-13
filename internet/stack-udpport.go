@@ -3,6 +3,7 @@ package internet
 import (
 	"log/slog"
 	"net"
+	"sync/atomic"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -26,7 +27,7 @@ func (sudp *StackUDPPort) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
 
 func (sudp *StackUDPPort) LocalPort() uint16 { return sudp.h.lport }
 
-func (sudp *StackUDPPort) ConnectionID() *uint64 { return sudp.h.connID }
+func (sudp *StackUDPPort) ConnectionID() *atomic.Uint32 { return sudp.h.connID }
 
 func (sudp *StackUDPPort) Demux(carrierData []byte, frameOffset int) error {
 	if sudp.h.IsInvalid() {

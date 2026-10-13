@@ -2,6 +2,7 @@ package udp
 
 import (
 	"net"
+	"sync/atomic"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -11,7 +12,7 @@ import (
 // rx/tx ring buffers and datagram queues without locking or deadlines.
 // [Conn] wraps Handler to provide a goroutine-safe socket API.
 type Handler struct {
-	connid   uint64
+	connid   atomic.Uint32
 	rxRing   internal.Ring
 	rxDgrams []struct {
 		length uint16
@@ -28,6 +29,8 @@ type Handler struct {
 	// maxPayload is the largest datagram payload that fits in mtu after IP and UDP headers.
 	// Conservatively assumes IPv6 until [Conn.Open] sets the IP family.
 	maxPayload uint16
+
+	// RESETTABLE STATE MUST BE ZEROED IN [Handler.Abort]
 }
 
 const (
@@ -44,7 +47,7 @@ func (h *Handler) Configure(cfg ConnConfig) error {
 	}
 	h.mtu = cfg.MTU
 	h.setMaxPayload(sizeIPv6Header)
-	h.connid++
+	h.connid.Add(1)
 	h.rxRing = internal.Ring{Buf: cfg.RxBuf}
 	h.txRing = internal.Ring{Buf: cfg.TxBuf}
 	internal.SliceReuse(&h.rxDgrams, cfg.RxQueueSize)
@@ -199,14 +202,12 @@ func (h *Handler) Close() {
 // Abort resets the handler, discarding all buffered data and incrementing the
 // connection ID. Buffers are retained for reuse.
 func (h *Handler) Abort() {
-	*h = Handler{
-		connid:   h.connid + 1,
-		rxRing:   h.rxRing,
-		rxDgrams: h.rxDgrams[:0],
-		txRing:   h.txRing,
-		txDgrams: h.txDgrams[:0],
-		mtu:      h.mtu,
-	}
+	h.connid.Add(1)
+	h.rxDgrams = h.rxDgrams[:0]
+	h.txDgrams = h.txDgrams[:0]
+	h.closeCalled = false
+	h.lport = 0
+	h.rport = 0
 	h.setMaxPayload(sizeIPv6Header)
 	h.txRing.Reset()
 	h.rxRing.Reset()

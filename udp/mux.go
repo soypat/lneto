@@ -4,6 +4,7 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"sync/atomic"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -74,7 +75,7 @@ type MuxConfig struct {
 
 // muxHandler
 type muxHandler struct {
-	connid uint64
+	connid atomic.Uint32
 	// filterLPorts stores rx port ranges over which Handler can receive data.
 	// If not set will not filter UDP data.
 	filterLPorts []struct {
@@ -100,6 +101,8 @@ type muxHandler struct {
 		raddr  netip.Addr
 	}
 	closeCalled bool
+
+	// RESETTABLE STATE MUST BE ZEROED IN [muxHandler.Abort]
 }
 
 // Configure initializes the handler with the given buffer and queue configuration.
@@ -126,7 +129,7 @@ func (mh *muxHandler) Configure(cfg MuxConfig) error {
 func (mh *muxHandler) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
 
 // ConnectionID implements [lneto.StackNode].
-func (mh *muxHandler) ConnectionID() *uint64 { return &mh.connid }
+func (mh *muxHandler) ConnectionID() *atomic.Uint32 { return &mh.connid }
 
 // LocalPort implements [lneto.StackNode] but not applicable to mux. Mux is a multi Rx/Tx port abstraction.
 func (mh *muxHandler) LocalPort() uint16 { return 0 }
@@ -346,14 +349,11 @@ func (mh *muxHandler) Close() {
 }
 
 func (mh *muxHandler) Abort() {
-	*mh = muxHandler{
-		connid:       mh.connid + 1,
-		filterLPorts: mh.filterLPorts[:0],
-		rxRing:       mh.rxRing,
-		rxDgrams:     mh.rxDgrams[:0],
-		txRing:       mh.txRing,
-		txDgrams:     mh.txDgrams[:0],
-	}
+	mh.connid.Add(1)
+	mh.filterLPorts = mh.filterLPorts[:0]
+	mh.rxDgrams = mh.rxDgrams[:0]
+	mh.txDgrams = mh.txDgrams[:0]
+	mh.closeCalled = false
 	mh.rxRing.Reset()
 	mh.txRing.Reset()
 }

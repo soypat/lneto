@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"io"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/soypat/lneto"
@@ -41,7 +42,7 @@ type ClientConfig struct {
 //
 // Client is not safe for concurrent use.
 type Client struct {
-	connID     uint64
+	connID     atomic.Uint32
 	cfg        ClientConfig
 	ntpState   ntp.Client
 	uniqueID   [32]byte
@@ -73,20 +74,21 @@ func (c *Client) Reset(cfg ClientConfig) error {
 	if cfg.ChosenAlg == 0 {
 		cfg.ChosenAlg = AlgAESSIVCMAC256
 	}
+	connID := c.connID.Load()
 	*c = Client{
-		connID:     c.connID + 1,
 		cfg:        cfg,
 		cookies:    cfg.Cookies,
 		cookieLens: cfg.CookieLens,
 		numCookies: cfg.NumCookies,
 	}
+	c.connID.Store(connID + 1)
 	c.ntpState.Reset(cfg.Sysprec, cfg.Now)
 	c.ntpState.SetLogger(cfg.Log)
 	return nil
 }
 
 // ConnectionID implements [lneto.StackNode].
-func (c *Client) ConnectionID() *uint64 { return &c.connID }
+func (c *Client) ConnectionID() *atomic.Uint32 { return &c.connID }
 
 // Protocol implements [lneto.StackNode].
 func (c *Client) Protocol() uint64 { return uint64(ntp.ServerPort) }

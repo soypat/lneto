@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"net"
 	"net/netip"
+	"sync/atomic"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/dns"
@@ -88,7 +89,7 @@ type DelegatedPrefix struct {
 //	cl.BeginRequest(xid, RequestConfig{ClientHardwareAddr: mac})
 //	// drive Encapsulate / Demux calls via the network stack
 type Client struct {
-	connID uint64
+	connID atomic.Uint32
 	state  ClientState
 	xid    uint32 // lower 24 bits used
 
@@ -202,8 +203,8 @@ func (c *Client) Reset() { c.reset() }
 // reset clears exchange state while preserving slice backing arrays and the
 // connection ID is incremented to invalidate any existing stack registrations.
 func (c *Client) reset() {
+	connID := c.connID.Load()
 	*c = Client{
-		connID:            c.connID + 1,
 		xid:               c.xid,
 		clientMAC:         c.clientMAC,
 		iaid:              c.iaid,
@@ -217,6 +218,7 @@ func (c *Client) reset() {
 		ntpNames:          c.ntpNames[:0],
 		delegatedPrefixes: c.delegatedPrefixes[:0],
 	}
+	c.connID.Store(connID + 1)
 }
 
 // Encapsulate writes the next outgoing DHCPv6 message into carrierData[offsetToFrame:].
@@ -614,7 +616,7 @@ func (c *Client) NumNTPServerNames() int { return len(c.ntpNames) }
 // ConnectionID returns a pointer to the client's connection ID.
 // The value increments on each reset; callers should discard registrations when it changes.
 // Implements [lneto.StackNode].
-func (c *Client) ConnectionID() *uint64 { return &c.connID }
+func (c *Client) ConnectionID() *atomic.Uint32 { return &c.connID }
 
 // LocalPort returns the DHCPv6 client port (546).
 // Implements [lneto.StackNode].

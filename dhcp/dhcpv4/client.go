@@ -8,6 +8,7 @@ import (
 	"math/bits"
 	"net"
 	"net/netip"
+	"sync/atomic"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -15,7 +16,7 @@ import (
 )
 
 type Client struct {
-	connID      uint64
+	connID      atomic.Uint32
 	reqHostname string
 	clientID    []byte
 	hostname    []byte
@@ -100,9 +101,9 @@ func (c *Client) BeginRequest(xid uint32, cfg RequestConfig) error {
 	return nil
 }
 
-func (c *Client) Protocol() uint64      { return uint64(lneto.IPProtoUDP) }
-func (c *Client) LocalPort() uint16     { return DefaultClientPort }
-func (c *Client) ConnectionID() *uint64 { return &c.connID }
+func (c *Client) Protocol() uint64             { return uint64(lneto.IPProtoUDP) }
+func (c *Client) LocalPort() uint16            { return DefaultClientPort }
+func (c *Client) ConnectionID() *atomic.Uint32 { return &c.connID }
 
 func (c *Client) setIP(carrierFrame []byte, offsetToIP int) {
 	if offsetToIP < 0 {
@@ -333,8 +334,8 @@ func (c *Client) setHeader(frm Frame) {
 }
 
 func (c *Client) reset(xid uint32) {
+	connID := c.connID.Load()
 	*c = Client{
-		connID:      c.connID + 1,
 		reqHostname: c.reqHostname,
 		currentXID:  xid,
 		reqIP:       c.reqIP,
@@ -344,6 +345,7 @@ func (c *Client) reset(xid uint32) {
 		ntps:        c.ntps[:0],
 		hostname:    c.hostname[:0],
 	}
+	c.connID.Store(connID + 1)
 }
 
 func (d *Client) State() ClientState { return d.state }

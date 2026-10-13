@@ -391,9 +391,9 @@ func TestClient_AbortAndIdle(t *testing.T) {
 	}
 	startTestLookup(t, client, 1, "a.com", 1)
 	startTestLookup(t, client, 2, "b.com", 1)
-	connID := *client.ConnectionID()
+	connID := client.ConnectionID().Load()
 	client.Abort()
-	if *client.ConnectionID() == connID {
+	if client.ConnectionID().Load() == connID {
 		t.Fatal("connection ID unchanged after Abort")
 	}
 	if client.NumLookups() != 0 {

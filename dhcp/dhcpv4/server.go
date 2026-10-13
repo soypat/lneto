@@ -3,6 +3,7 @@ package dhcpv4
 import (
 	"encoding/binary"
 	"errors"
+	"sync/atomic"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -19,7 +20,7 @@ var (
 )
 
 type Server struct {
-	connID       uint64
+	connID       atomic.Uint32
 	nextAddr     [4]byte
 	subnet       ipv4.Prefix
 	hosts        map[[36]byte]serverEntry
@@ -90,8 +91,8 @@ func (sv *Server) Configure(cfg ServerConfig) error {
 			delete(hosts, k)
 		}
 	}
+	connID := sv.connID.Load()
 	*sv = Server{
-		connID:       sv.connID + 1,
 		siaddr:       cfg.ServerAddr,
 		gwaddr:       cfg.Gateway,
 		dns:          cfg.DNS,
@@ -101,12 +102,13 @@ func (sv *Server) Configure(cfg ServerConfig) error {
 		nextAddr:     cfg.Subnet.Next(cfg.ServerAddr),
 		hosts:        hosts,
 	}
+	sv.connID.Store(connID + 1)
 	return nil
 }
 
-func (sv *Server) ConnectionID() *uint64 { return &sv.connID }
-func (sv *Server) Protocol() uint64      { return uint64(lneto.IPProtoUDP) }
-func (sv *Server) LocalPort() uint16     { return sv.port }
+func (sv *Server) ConnectionID() *atomic.Uint32 { return &sv.connID }
+func (sv *Server) Protocol() uint64             { return uint64(lneto.IPProtoUDP) }
+func (sv *Server) LocalPort() uint16            { return sv.port }
 
 func (sv *Server) Demux(carrierData []byte, frameOffset int) error {
 	isIPLayer := frameOffset >= 28

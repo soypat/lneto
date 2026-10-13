@@ -2,6 +2,7 @@ package internet
 
 import (
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
@@ -15,17 +16,17 @@ import (
 // It is meant to be embedded within StackNodes.
 // var _ lneto.StackNode = (*stackip6)(nil)
 type StackIPv6 struct {
-	connID uint64
+	connID atomic.Uint32
 	stackip6
 }
 
 func (stackip6 *StackIPv6) Reset(vld *lneto.Validator, maxNodes int) error {
-	stackip6.connID++
+	stackip6.connID.Add(1)
 	stackip6.reset6(vld, maxNodes)
 	return nil
 }
 
-func (stackip6 *StackIPv6) ConnectionID() *uint64 {
+func (stackip6 *StackIPv6) ConnectionID() *atomic.Uint32 {
 	return &stackip6.connID
 }
 

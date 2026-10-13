@@ -155,11 +155,11 @@ func TestClient_Reset(t *testing.T) {
 	if c.Protocol() != 0 {
 		t.Fatalf("expected protocol 0, got %d", c.Protocol())
 	}
-	id1 := *c.ConnectionID()
+	id1 := c.ConnectionID().Load()
 
 	c.Reset(-18, time.Now)
-	id2 := *c.ConnectionID()
-	if id2 <= id1 {
+	id2 := c.ConnectionID().Load()
+	if id2 == id1 {
 		t.Fatal("ConnectionID should increment on Reset")
 	}
 }

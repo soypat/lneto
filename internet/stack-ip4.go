@@ -3,6 +3,7 @@ package internet
 import (
 	"io"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
@@ -17,17 +18,17 @@ import (
 // var _ lneto.StackNode = (*stackip4)(nil)
 
 type StackIPv4 struct {
-	connID uint64
+	connID atomic.Uint32
 	stackip4
 }
 
 func (stackip4 *StackIPv4) Reset(vld *lneto.Validator, maxNodes int) error {
-	stackip4.connID++
+	stackip4.connID.Add(1)
 	stackip4.reset4(vld, maxNodes)
 	return nil
 }
 
-func (stackip4 *StackIPv4) ConnectionID() *uint64 {
+func (stackip4 *StackIPv4) ConnectionID() *atomic.Uint32 {
 	return &stackip4.connID
 }
 

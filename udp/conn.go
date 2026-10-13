@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/soypat/lneto"
@@ -131,7 +132,7 @@ func (conn *Conn) Protocol() uint64 { return uint64(lneto.IPProtoUDP) }
 // ConnectionID returns a pointer to the connection ID. The value changes on
 // each [Conn.Configure] or [Conn.Abort] call, signaling to the stack that the
 // previous registration is no longer valid.
-func (conn *Conn) ConnectionID() *uint64 { return &conn.h.connid }
+func (conn *Conn) ConnectionID() *atomic.Uint32 { return &conn.h.connid }
 
 // Write enqueues a single datagram to be sent. The entire payload is queued atomically.
 func (conn *Conn) Write(b []byte) (int, error) {
@@ -145,7 +146,7 @@ func (conn *Conn) Write(b []byte) (int, error) {
 	var backoffs uint
 	for {
 		conn.mu.Lock()
-		if conn.h.closeCalled || connID != conn.h.connid {
+		if conn.h.closeCalled || connID != conn.h.connid.Load() {
 			conn.mu.Unlock()
 			return 0, net.ErrClosed
 		}
@@ -172,7 +173,7 @@ func (conn *Conn) Read(b []byte) (int, error) {
 	var backoffs uint
 	for {
 		conn.mu.Lock()
-		if conn.h.closeCalled && conn.h.BufferedInput() == 0 || connID != conn.h.connid {
+		if conn.h.closeCalled && conn.h.BufferedInput() == 0 || connID != conn.h.connid.Load() {
 			conn.mu.Unlock()
 			return 0, net.ErrClosed
 		}
@@ -317,11 +318,11 @@ func (conn *Conn) backoff(consecutiveBackoffs uint) {
 	conn._backoff.Do(consecutiveBackoffs)
 }
 
-func (conn *Conn) lockPipeConnID() (uint64, error) {
+func (conn *Conn) lockPipeConnID() (uint32, error) {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	if conn.h.closeCalled && len(conn.h.rxDgrams) == 0 {
 		return 0, net.ErrClosed
 	}
-	return conn.h.connid, nil
+	return conn.h.connid.Load(), nil
 }
