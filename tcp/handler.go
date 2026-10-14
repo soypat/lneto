@@ -433,8 +433,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 		if o, _ := tfrm.OffsetAndFlags(); o > offset && int(o)*4 < len(b) {
 			offset = o
 		}
-	}
-	if !rtx && h.earlyRetransmitDue() {
+	} else if h.noPolicyRetransmit() {
 		rtxAt, rtx = h.bufTx.retransmitBoundary(h.scb.snd.UNA)
 	}
 	awaitingSyn := h.AwaitingSynSend()
@@ -552,14 +551,14 @@ func (h *Handler) Send(b []byte) (int, error) {
 	return datalen, nil
 }
 
-// earlyRetransmitDue reports whether every segment sent after the oldest drew a
-// duplicate ACK while too few are in flight to reach fast retransmit's 3 and no
-// new segment can be sent to draw more (RFC 5827).
-func (h *Handler) earlyRetransmitDue() bool {
+// noPolicyRetransmit provides basic retransmit opportunity detection.
+func (h *Handler) noPolicyRetransmit() bool {
 	inflight := len(h.bufTx.slist.pkts)
 	canSendNew := h.bufTx.BufferedUnsent() > 0 && h.bufTx.slist.Free() > 0 && h.scb.MaxInFlightData() > 0
-	return inflight <= retransmitAfterDupacks && h.scb.nRetransmit == 0 && !canSendNew && inflight > 1 &&
-		int(h.scb.dupack) >= inflight-1
+	// stallCheck1: every segment sent after oldest drew dupack while too few in flight to reach fast retransmit 3 and no new ones can be sent.
+	stallCheck1 := h.scb.nRetransmit == 0 && inflight <= retransmitAfterDupacks &&
+		!canSendNew && inflight > 1 && int(h.scb.dupack) >= inflight-1
+	return stallCheck1
 }
 
 // NextSegmentSYN returns syn=true if next outgoing segment is a handshake SYN.
