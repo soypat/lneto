@@ -34,7 +34,8 @@ func _() {
 
 type TCPPoolConfig struct {
 	// PoolSize determines the maximum number of active incoming TCP connections to the pool.
-	PoolSize  uint16
+	PoolSize uint16
+	// QueueSize sets [tcp.ConnConfig.TxPacketQueueSize]. At least 4 recommended.
 	QueueSize int
 	TxBufSize int
 	RxBufSize int

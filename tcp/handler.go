@@ -434,6 +434,9 @@ func (h *Handler) Send(b []byte) (int, error) {
 			offset = o
 		}
 	}
+	if !rtx && h.earlyRetransmitDue() {
+		rtxAt, rtx = h.bufTx.retransmitBoundary(h.scb.snd.UNA)
+	}
 	awaitingSyn := h.AwaitingSynSend()
 	requeueControl := h.requeueControl
 	buffered := h.bufTx.BufferedUnsent()
@@ -547,6 +550,16 @@ func (h *Handler) Send(b []byte) (int, error) {
 		h.connid.Add(1)
 	}
 	return datalen, nil
+}
+
+// earlyRetransmitDue reports whether every segment sent after the oldest drew a
+// duplicate ACK while too few are in flight to reach fast retransmit's 3 and no
+// new segment can be sent to draw more (RFC 5827).
+func (h *Handler) earlyRetransmitDue() bool {
+	inflight := len(h.bufTx.slist.pkts)
+	canSendNew := h.bufTx.BufferedUnsent() > 0 && h.bufTx.slist.Free() > 0 && h.scb.MaxInFlightData() > 0
+	return inflight <= retransmitAfterDupacks && h.scb.nRetransmit == 0 && !canSendNew && inflight > 1 &&
+		int(h.scb.dupack) >= inflight-1
 }
 
 // NextSegmentSYN returns syn=true if next outgoing segment is a handshake SYN.

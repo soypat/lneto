@@ -69,6 +69,7 @@ type ConnConfig struct {
 	// sequence range of one outgoing segment and is released when the peer ACKs it;
 	// once the queue is full no further segments are emitted until an ACK frees a slot.
 	// Must be greater than zero and no larger than len(TxBuf).
+	// At least 4 recommended so a lost segment can draw 3 duplicate ACKs and fast retransmit.
 	TxPacketQueueSize int
 	// RWBackoff sets the backoff policy for backoff when data unavailable on Read or buffer full on Write.
 	// If not set a default backoff strategy will be used. See [internal.BackoffConnRW].

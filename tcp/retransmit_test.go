@@ -1,6 +1,7 @@
 package tcp
 
 import (
+	"bytes"
 	"math/rand"
 	"testing"
 
@@ -251,6 +252,100 @@ func TestHandlerRetransmitIgnoresTxLimit(t *testing.T) {
 	}
 	if n > sizeHeaderTCP {
 		t.Errorf("sent %d payload octets of new data with txLimit=0", n-sizeHeaderTCP)
+	}
+}
+
+// TestHandler_EarlyRetransmit verifies a lost oldest segment is resent once every
+// later segment in flight draws a duplicate ACK and a full transmit buffer blocks
+// new data (RFC 5827). Below 4 segments in flight fast retransmit's 3 duplicate
+// ACKs cannot arrive and without a Policy timer the connection stalls.
+func TestHandler_EarlyRetransmit(t *testing.T) {
+	const mss = 1460
+	tests := []struct {
+		name   string
+		txSegs int // Transmit buffer size in MSS segments; caps the flight.
+	}{
+		{name: "2 segments", txSegs: 2},
+		{name: "3 segments", txSegs: 3},
+		{name: "4 segments fast retransmit", txSegs: 4},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var pkt [sizeHeaderTCP + mss]byte
+			server, client := new(Handler), new(Handler)
+			if err := server.SetBuffers(make([]byte, tc.txSegs*mss), make([]byte, 3*mss), 10); err != nil {
+				t.Fatal(err)
+			}
+			// Linux-like peer: large, scaled receive window.
+			if err := client.SetBuffers(make([]byte, mss), make([]byte, 1<<20), 10); err != nil {
+				t.Fatal(err)
+			}
+			if err := server.OpenListen(80, 1000); err != nil {
+				t.Fatal(err)
+			}
+			if err := client.OpenActive(39876, 80, 5000); err != nil {
+				t.Fatal(err)
+			}
+			establish(t, client, server, pkt[:])
+
+			data := make([]byte, tc.txSegs*mss)
+			for i := range data {
+				data[i] = byte(i)
+			}
+			if n, err := server.Write(data); err != nil || n != len(data) {
+				t.Fatalf("server write: n=%d err=%v", n, err)
+			}
+			segs := make([][]byte, tc.txSegs)
+			for i := range segs {
+				clear(pkt[:])
+				n, err := server.Send(pkt[:])
+				if err != nil {
+					t.Fatalf("server send segment %d: %v", i, err)
+				} else if n != len(pkt) {
+					t.Fatalf("server sent %d bytes for segment %d, want full MSS segment of %d", n, i, len(pkt))
+				}
+				segs[i] = append([]byte(nil), pkt[:n]...)
+			}
+			lostSEQ := mustSegment(t, segs[0], mss).SEQ
+
+			// Lose the oldest segment; each later one draws a duplicate ACK.
+			for i, seg := range segs[1:] {
+				if err := client.Recv(seg); err != nil {
+					t.Fatalf("client recv segment %d: %v", i+1, err)
+				}
+				clear(pkt[:])
+				n, err := client.Send(pkt[:])
+				if err != nil || n == 0 {
+					t.Fatalf("client duplicate ACK %d: n=%d err=%v", i+1, n, err)
+				} else if ack := mustSegment(t, pkt[:n], 0).ACK; ack != lostSEQ {
+					t.Fatalf("client ACK %d = %d, want duplicate ACK of lost segment %d", i+1, ack, lostSEQ)
+				}
+				if err := server.Recv(pkt[:n]); err != nil {
+					t.Fatalf("server recv duplicate ACK %d: %v", i+1, err)
+				}
+			}
+
+			// Transmit buffer is all in flight: no new data can draw more duplicate ACKs.
+			clear(pkt[:])
+			n, err := server.Send(pkt[:])
+			if err != nil {
+				t.Fatal("server send:", err)
+			} else if n == 0 {
+				t.Fatalf("server stalled: lost segment %d not resent after %d duplicate ACKs", lostSEQ, tc.txSegs-1)
+			}
+			if rtx := mustSegment(t, pkt[:n], n-sizeHeaderTCP); rtx.SEQ != lostSEQ {
+				t.Fatalf("server sent seq %d, want resend of lost segment %d", rtx.SEQ, lostSEQ)
+			}
+			// Resend fills the hole; client delivers all data.
+			if err := client.Recv(pkt[:n]); err != nil {
+				t.Fatal("client recv resend:", err)
+			}
+			got := make([]byte, len(data)+1)
+			n, err = client.Read(got)
+			if err != nil || !bytes.Equal(got[:n], data) {
+				t.Fatalf("client read %d bytes err=%v, want the %d sent", n, err, len(data))
+			}
+		})
 	}
 }
 
