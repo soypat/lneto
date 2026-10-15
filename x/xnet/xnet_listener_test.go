@@ -234,6 +234,10 @@ func TestStackAsyncListener_MultiSequentialConn(t *testing.T) {
 			tst.TestTCPEstablishedSingleData(&client, sv, &clConn, svconn, data)
 		}
 		tst.TestTCPClose(&client, sv, &clConn, svconn)
+		// Release accepted conn so its pool slot can serve later clients.
+		if err := pinned.CloseRead(); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	for range 1000 {
@@ -936,6 +940,86 @@ func TestListener_ResetReleasesPoolConns(t *testing.T) {
 			if _, err = listener.TryAccept(); err != nil {
 				t.Errorf("TryAccept of new client after Reset: %v (pool slot leaked)", err)
 			}
+		})
+	}
+}
+
+// Issue #234: an accepted conn whose connection ended cleanly must stay readable
+// until its user releases it: buffered data then io.EOF, not net.ErrClosed.
+// CloseRead then releases the pool slot for the next client.
+func TestListener_CleanCloseKeepsAcceptedReadable(t *testing.T) {
+	const svPort = 80
+	const mtu = ethernet.MaxMTU
+	const lim = 8
+	const msg = "upload"
+	tests := []struct {
+		name     string
+		svCloses bool // Server closes first and ends in TIME-WAIT, else server ends CLOSED via LAST-ACK.
+	}{
+		{name: "client closes first"},
+		{name: "server closes first", svCloses: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tst := testerFrom(t, mtu)
+			sv := newTestStack(t, "sv1", 1, mtu, 1, 0)
+			listener := newTestListener(t, sv, svPort, TCPPoolConfig{PoolSize: 1})
+			connect := func(cl *StackAsync) (*tcp.Conn, tcp.ConnHandle) {
+				t.Helper()
+				sv.SetGatewayHardwareAddr(cl.HardwareAddr())
+				cl.SetGatewayHardwareAddr(sv.HardwareAddr())
+				clconn := newTestTCPConn(t, mtu, 4)
+				err := cl.DialTCP(clconn, 1337, netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort))
+				if err != nil {
+					t.Fatal(err)
+				}
+				tst.ensureQuiesce(cl, sv, lim)
+				accepted, err := listener.TryAccept()
+				if err != nil {
+					t.Fatalf("TryAccept of client %v: %v", cl.Addr4(), err)
+				}
+				return clconn, accepted
+			}
+
+			cl := newTestStack(t, "cl2", 2, mtu, 1, 0)
+			clconn, accepted := connect(cl)
+			if _, err := clconn.Write([]byte(msg)); err != nil {
+				t.Fatal(err)
+			}
+			tst.ensureQuiesce(cl, sv, lim)
+			// Close sequence completes while msg sits unread in server's buffer.
+			first, second := clconn.Close, accepted.Close
+			if tt.svCloses {
+				first, second = second, first
+			}
+			if err := first(); err != nil {
+				t.Fatal("first close:", err)
+			}
+			tst.ensureQuiesce(cl, sv, lim)
+			if err := second(); err != nil {
+				t.Fatal("second close:", err)
+			}
+			tst.ensureQuiesce(cl, sv, lim)
+			if st := clconn.State(); !st.IsClosed() {
+				t.Fatalf("client state %s, want closed", st)
+			}
+
+			var buf [32]byte
+			n, err := accepted.Read(buf[:])
+			if err != nil {
+				t.Fatal("read buffered data after clean close:", err)
+			} else if string(buf[:n]) != msg {
+				t.Errorf("read %q, want %q", buf[:n], msg)
+			}
+			if _, err = accepted.Read(buf[:]); err != io.EOF {
+				t.Errorf("read after drained clean-closed conn: got %v, want io.EOF", err)
+			}
+			if err = accepted.CloseRead(); err != nil {
+				t.Fatal("CloseRead after clean close:", err)
+			}
+			tst.ensureQuiesce(cl, sv, lim)
+			// Pool holds a single conn: next client is only served if CloseRead released it.
+			connect(newTestStack(t, "cl3", 3, mtu, 1, 0))
 		})
 	}
 }

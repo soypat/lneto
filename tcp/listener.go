@@ -194,8 +194,7 @@ func (listener *Listener) Encapsulate(carrierData []byte, offsetToIP, offsetToFr
 			listener.debug("listener:encaps", slog.Uint64("port", uint64(listener.port)), slog.Int("plen", n), slog.String("list", "accepted"))
 			break
 		} else if err == net.ErrClosed {
-			listener.returnAccepted(i)
-			err = nil
+			err = listener.maintainConn(listener.accepted, i, err) // Should return nil unless catastrophic failure.
 		}
 	}
 	// Drain one RST entry if no connection data was sent. Lower priority than connection traffic.
@@ -332,8 +331,11 @@ func getConn(conns []ConnHandle, remotePort uint16, remoteAddr []byte) int {
 
 func (listener *Listener) maintainConn(conns []ConnHandle, idx int, err error) error {
 	if err == net.ErrClosed {
-		listener.poolReturn(conns[idx].c)
-		conns[idx] = ConnHandle{}
+		if conns[idx].c.h.isReleased() {
+			// Hold cleanly ended conns until user is done reading so handle stays valid.
+			listener.poolReturn(conns[idx].c)
+			conns[idx] = ConnHandle{}
+		}
 		return nil // avoid closing listener entirely.
 	}
 	return err

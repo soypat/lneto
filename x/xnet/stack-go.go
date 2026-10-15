@@ -326,6 +326,16 @@ func (c tcpconn) LnetoConn() *tcp.Conn {
 
 func (c tcpconn) CloseWrite() error { return c.ConnHandle.Close() }
 
+// Close shuts down both directions as [net.Conn] requires, so the pooled
+// connection is released once it ends instead of awaiting the pool's timeout.
+func (c tcpconn) Close() error {
+	if err := c.ConnHandle.CloseRead(); err != nil {
+		return err // Connection already released.
+	}
+	c.ConnHandle.Close() // Fails only if write side already closed, e.g. by CloseWrite.
+	return nil
+}
+
 func (c tcpconn) LocalAddr() net.Addr {
 	return c.localAddr
 }
