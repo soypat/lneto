@@ -617,6 +617,9 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	// LISTEN and SYN-SENT have no receive window context; RFC 9293 §3.10.7.1 step 1: "no checking in LISTEN state."
 	checkSEQ := (!flags.HasAny(FlagSYN) || !preestablished) && tcb._state != StateListen && tcb._state != StateSynSent
 	established := tcb._state == StateEstablished
+	// Linux probes a zero window with an empty ACK at RCV.NXT-1 (tcp_xmit_probe_skb)
+	// instead of the one octet at RCV.NXT that RFC 9293 §3.8.6.1 describes.
+	linuxZeroWindowProbe := tcb.rcv.WND == 0 && seg.SEQ == tcb.rcv.NXT-1 && flags == FlagACK && seg.DATALEN == 0
 	acksOld := hasAck && !tcb.snd.UNA.LessThan(seg.ACK)
 	acksUnsentData := hasAck && !seg.ACK.LessThanEq(tcb.snd.NXT)
 	ctlOrDataSegment := established && (seg.DATALEN > 0 || flags.HasAny(FlagFIN|FlagRST))
@@ -630,6 +633,11 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 		err = io.ErrClosedPipe
 
 	case checkSEQ && tcb.rcv.WND == 0 && seg.DATALEN > 0 && seg.SEQ == tcb.rcv.NXT && !flags.HasAny(FlagRST):
+		err = errZeroWindow
+
+	case checkSEQ && linuxZeroWindowProbe:
+		// Out of window it would draw challenge ACKs, which stop after maxChallengeRejects,
+		// and Linux aborts on unanswered probes. Refuse and ACK it like an RFC probe.
 		err = errZeroWindow
 
 	case checkSEQ && !seg.SEQ.InWindow(tcb.rcv.NXT, tcb.rcv.WND) && !zeroWindowOK:
