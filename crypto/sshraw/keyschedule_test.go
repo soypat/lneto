@@ -41,6 +41,62 @@ func TestInstallKeysState(t *testing.T) {
 	}
 }
 
+// TestInstallKeysRekeySeq checks rekeying through installers keeps seq unless strict, RFC 4253 6.4.
+func TestInstallKeysRekeySeq(t *testing.T) {
+	for _, tc := range []struct {
+		mode    string
+		install func(ks *KeySchedule, hc *HalfConn, strict bool) error
+	}{
+		{"aead", func(ks *KeySchedule, hc *HalfConn, strict bool) error {
+			return ks.InstallCipherAEADKeys(hc, rfc8448.NewAES128GCM(), 16, true, strict)
+		}},
+		{"frame", func(ks *KeySchedule, hc *HalfConn, strict bool) error {
+			return ks.InstallCipherFrameKeys(hc, new(ctrHMAC), 64, true, strict)
+		}},
+	} {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/strict=%v", tc.mode, strict), func(t *testing.T) {
+				var hc HalfConn
+				for range 2 { // Initial key exchange, then a rekey.
+					mustSeal(t, &hc, byte(MsgIgnore))
+					mustSeal(t, &hc, byte(MsgNewKeys))
+					before := hc.Seq()
+					hc.WipeKeys()
+					if err := tc.install(newExchangedSchedule(t), &hc, strict); err != nil {
+						t.Fatal(err)
+					}
+					if want := before * uint32(b2i(!strict)); hc.Seq() != want {
+						t.Fatalf("seq=%d after installing keys, want %d", hc.Seq(), want)
+					}
+				}
+				mustSeal(t, &hc, byte(MsgIgnore))
+			})
+		}
+	}
+}
+
+// TestInstallKeysFailClosed checks a failed install blocks Seal/Open instead of falling back to plaintext.
+func TestInstallKeysFailClosed(t *testing.T) {
+	ks := newExchangedSchedule(t)
+	var hc HalfConn
+	// canInstall accepts a 32 byte key but ctrHMAC.Rekey wants 64.
+	if err := ks.InstallCipherFrameKeys(&hc, new(ctrHMAC), 32, true, false); err == nil {
+		t.Fatal("install succeeded with bad key length")
+	}
+	checkFailClosed(t, &hc)
+}
+
+// checkFailClosed checks hc refuses to Seal and Open.
+func checkFailClosed(t *testing.T, hc *HalfConn) {
+	t.Helper()
+	if _, err := hc.Seal(newPacket(t, []byte{byte(MsgIgnore)}, hc.Overhead(), hc.BlockSize())); !errors.Is(err, lneto.ErrBadState) {
+		t.Errorf("Seal err=%v, want %v", err, lneto.ErrBadState)
+	}
+	if _, err := hc.Open(newPacket(t, []byte{byte(MsgIgnore)}, hc.Overhead(), hc.BlockSize())); !errors.Is(err, lneto.ErrBadState) {
+		t.Errorf("Open err=%v, want %v", err, lneto.ErrBadState)
+	}
+}
+
 // TestInstallKeysDirection checks installers key hc with the letters of the
 // direction given, as deriving and rekeying by hand does, RFC 4253 7.2.
 func TestInstallKeysDirection(t *testing.T) {

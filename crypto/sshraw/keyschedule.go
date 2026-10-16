@@ -61,7 +61,8 @@ type KeySchedule struct {
 //   - clientToServer is hc's direction: true for client to server, false for server to client
 //   - strict is true when strict key exchange was agreed, see [HalfConn.Seq]
 //
-// On error hc is left untouched or Zeroize'd. InstallCipherAEADKeys is equivalent to (client to server shown)
+// hc must have no keys installed, see [HalfConn.WipeKeys] to preserve seq.
+// InstallCipherAEADKeys is equivalent to (client to server shown)
 //
 //	var key [keyLen]byte
 //	var iv [12]byte
@@ -71,7 +72,7 @@ type KeySchedule struct {
 //	hc.SetCipherAEAD(aead, &iv, strict)
 //	clear(key[:])
 func (ks *KeySchedule) InstallCipherAEADKeys(hc *HalfConn, aead lcrypto.AEADCipher, keyLen int, clientToServer, strict bool) error {
-	if !hc.isZeroized() {
+	if hc.HasKeys() {
 		return lneto.ErrBadState
 	}
 	if err := ks.canInstall(keyLen); err != nil {
@@ -94,7 +95,8 @@ func (ks *KeySchedule) InstallCipherAEADKeys(hc *HalfConn, aead lcrypto.AEADCiph
 //   - clientToServer is hc's direction: true for client to server, false for server to client
 //   - strict is true when strict key exchange was agreed, see [HalfConn.Seq]
 //
-// On error hc is left untouched or Zeroize'd. InstallCipherFrameKeys is equivalent to (client to server shown)
+// hc must have no keys installed, see [HalfConn.WipeKeys] to preserve seq.
+// InstallCipherFrameKeys is equivalent to (client to server shown)
 //
 //	var key [keyLen]byte
 //	ks.Derive(key[:], KeyClientToServer)
@@ -102,7 +104,7 @@ func (ks *KeySchedule) InstallCipherAEADKeys(hc *HalfConn, aead lcrypto.AEADCiph
 //	hc.SetCipherFrame(pc, strict)
 //	clear(key[:])
 func (ks *KeySchedule) InstallCipherFrameKeys(hc *HalfConn, pc CipherFrame, keyLen int, clientToServer, strict bool) error {
-	if !hc.isZeroized() {
+	if hc.HasKeys() {
 		return lneto.ErrBadState
 	}
 	if err := ks.canInstall(keyLen); err != nil {
@@ -239,14 +241,14 @@ func (ks *KeySchedule) canInstall(keyLen int) error {
 }
 
 // rekey derives the key of letter into scratch, rekeys c with it and clears it.
-// On error hc, which c was installed on, is Zeroize'd.
+// On error hc, which c was installed on, is wiped.
 func (ks *KeySchedule) rekey(hc *HalfConn, c interface{ Rekey([]byte) error }, keyLen int, letter KeyLetter) error {
 	key := ks.scratch[:keyLen]
 	ks.Derive(key, letter)
 	err := c.Rekey(key)
 	clear(key)
 	if err != nil {
-		hc.Zeroize() // Prevent halfconn/keysched half-state.
+		hc.WipeKeys() // Prevent halfconn/keysched half-state.
 	}
 	return err
 }

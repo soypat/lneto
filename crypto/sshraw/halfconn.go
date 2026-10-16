@@ -41,7 +41,7 @@ type CipherFrame interface { // TODO: rename lcrypto.CipherAEAD.
 
 // HalfConn protects binary packets in one direction after SetAEAD or SetFrameCipher is called, usually after [MsgNewKeys].
 // HalfConn expects packets input via Seal and Open to be of their [Frame.WireLength].
-// SetCipher* methods do not zero current ciphers- it is the responsibility of the user to call [HalfConn.Zeroize] responsibly.
+// SetCipher* methods fail if keys are installed: call [HalfConn.WipeKeys] first when rekeying.
 type HalfConn struct {
 	used     uint64 // Packets protected with the current key.
 	cipherA  lcrypto.AEADCipher
@@ -54,8 +54,11 @@ type HalfConn struct {
 }
 
 // SetCipherAEAD installs aead, keyed with the derived key, and the matching IV. strict
-// restarts sequence numbers, see [HalfConn.Seq]. HalfConn is zeroed excepting sequence number on failure.
+// restarts sequence numbers, see [HalfConn.Seq]. HalfConn is left untouched on failure.
 func (hc *HalfConn) SetCipherAEAD(aead lcrypto.AEADCipher, iv *[12]byte, strict bool) error {
+	if hc.HasKeys() {
+		return lneto.ErrBadState
+	}
 	overhead := aead.Overhead()
 	if aead.NonceSize() != len(iv) || overhead != 16 { // All AEADs are 16.
 		return lneto.ErrInvalidConfig
@@ -73,8 +76,11 @@ func (hc *HalfConn) SetCipherAEAD(aead lcrypto.AEADCipher, iv *[12]byte, strict 
 //
 // Without strict key exchange a FrameCipher is open to the Terrapin attack
 // (CVE-2023-48795); callers may want to refuse it then.
-// HalfConn is zeroed excepting sequence number on failure.
+// HalfConn is left untouched on failure.
 func (hc *HalfConn) SetCipherFrame(cf CipherFrame, strict bool) error {
+	if hc.HasKeys() {
+		return lneto.ErrBadState
+	}
 	overhead := cf.Overhead()
 	if cf.BlockSize() != minBlockSize || overhead != 16 { // 16: omit support for encrypt->MAC.
 		return lneto.ErrInvalidConfig
@@ -98,37 +104,44 @@ func (hc *HalfConn) newKey(strict bool) {
 // It begins counting at 0 and is reset to 0 on strict key exchange (KEX). See HalfConn Set* method `strict` parameter.
 func (hc *HalfConn) Seq() uint32 { return hc.seq }
 
-// HasKeys reports whether SetAEAD or SetFrameCipher installed keys since the last Zeroize.
+// HasKeys reports whether SetAEAD or SetFrameCipher installed keys since the last Zeroize or WipeKeys.
 func (hc *HalfConn) HasKeys() bool { return hc.aead && hc.cipherA != nil || hc.cipherF != nil }
 
 // useAEAD reports whether keys were installed by SetAEAD.
 func (hc *HalfConn) useAEAD() bool    { return hc.aead }
 func (hc *HalfConn) useFCipher() bool { return hc.cipherF != nil }
 
+// wiped reports whether WipeKeys was called and no keys were installed since.
+func (hc *HalfConn) wiped() bool { return hc.overhead != 0 && !hc.HasKeys() }
+
+// WipeKeys is Zeroize keeping the sequence number for rekeying. Seal and Open fail until keys are installed.
+func (hc *HalfConn) WipeKeys() {
+	hc.zeroizeCipher()
+	*hc = HalfConn{seq: hc.seq, overhead: hc.overhead}
+}
+
 // Zeroize calls Zeroize method on ciphers and zeroes all other internal state and drops reference to cipher.
 func (hc *HalfConn) Zeroize() {
-	hc.zeroize(0)
+	hc.zeroizeCipher()
+	*hc = HalfConn{}
 }
 
-// isZeroized returns true if HalfConn is in zeroized state with no installed cipher..
-func (hc *HalfConn) isZeroized() bool {
-	return !(hc.useAEAD() || hc.useFCipher())
-}
-
-// zeroize zeros struct and ciphers and sets seq.
-func (hc *HalfConn) zeroize(seq uint32) {
+// zeroizeCipher calls Zeroize method on installed cipher.
+func (hc *HalfConn) zeroizeCipher() {
 	if hc.useAEAD() {
 		hc.cipherA.Zeroize()
 	} else if hc.useFCipher() {
 		hc.cipherF.Zeroize()
 	}
-	*hc = HalfConn{seq: seq}
 }
 
 // Seal encrypts in-place a plaintext frame already checked with [Frame.ValidateSize] and returns its wire length.
 // The frame must be exactly [Frame.WireLength] bytes long: when HalfConn is keyed
 // the last [HalfConn.Overhead] bytes are space for the tag.
 func (hc *HalfConn) Seal(pf Frame) (int, error) {
+	if hc.wiped() {
+		return 0, lneto.ErrBadState
+	}
 	pkt := pf.RawData()
 	wl := pf.WireLength(hc.overhead)
 	if wl != len(pkt) {
@@ -189,6 +202,9 @@ func (hc *HalfConn) ValidateLength(vld *lneto.Validator, pf Frame) {
 // and returns its wire length. After Open the frame is plaintext and should be checked with
 // [Frame.ValidateSize] before reading payload. The tag is left in place after the packet.
 func (hc *HalfConn) Open(pf Frame) (n int, err error) {
+	if hc.wiped() {
+		return 0, lneto.ErrBadState
+	}
 	n = int(4 + hc.LenPacket(pf) + hc.overhead)
 	if n > len(pf.RawData()) {
 		return 0, lneto.ErrTruncatedFrame // Do not read past len into capacity.

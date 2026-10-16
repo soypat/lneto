@@ -195,8 +195,14 @@ func newKeyedPair(t *testing.T, mode string) (seal, open HalfConn) {
 // strict restarts sequence numbers as strict key exchange does.
 func installKeys(t *testing.T, hc *HalfConn, mode string, strict bool) {
 	t.Helper()
+	if err := setKeys(hc, mode, strict); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// setKeys is installKeys returning the error of the SetCipher* method.
+func setKeys(hc *HalfConn, mode string, strict bool) (err error) {
 	iv := [12]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
-	var err error
 	switch mode {
 	case "gcm":
 		aead := rfc8448.NewAES128GCM()
@@ -209,10 +215,48 @@ func installKeys(t *testing.T, hc *HalfConn, mode string, strict bool) {
 			err = hc.SetCipherFrame(pc, strict)
 		}
 	default:
-		t.Fatal("unknown mode", mode)
+		panic("unknown mode " + mode)
 	}
-	if err != nil {
+	return err
+}
+
+// mustSeal seals a packet of payload on hc.
+func mustSeal(t *testing.T, hc *HalfConn, payload ...byte) {
+	t.Helper()
+	if _, err := hc.Seal(newPacket(t, payload, hc.Overhead(), hc.BlockSize())); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestHalfConnWipeKeys checks WipeKeys keeps seq and blocks Seal/Open until rekeyed.
+func TestHalfConnWipeKeys(t *testing.T) {
+	for _, mode := range keyedModes {
+		t.Run(mode, func(t *testing.T) {
+			var hc HalfConn
+			hc.WipeKeys() // No effect when unkeyed.
+			mustSeal(t, &hc, byte(MsgIgnore))
+			installKeys(t, &hc, mode, false)
+			if err := setKeys(&hc, mode, false); !errors.Is(err, lneto.ErrBadState) {
+				t.Fatalf("set over keys err=%v, want %v", err, lneto.ErrBadState)
+			}
+			mustSeal(t, &hc, byte(MsgIgnore))
+			before := hc.Seq()
+			for range 2 { // Idempotent.
+				hc.WipeKeys()
+				if hc.HasKeys() {
+					t.Fatal("HasKeys after WipeKeys")
+				}
+				checkFailClosed(t, &hc)
+				if hc.Seq() != before {
+					t.Fatalf("seq=%d after WipeKeys, want %d", hc.Seq(), before)
+				}
+			}
+			hc.Zeroize()
+			if hc.Seq() != 0 {
+				t.Fatalf("seq=%d after Zeroize, want 0", hc.Seq())
+			}
+			mustSeal(t, &hc, byte(MsgIgnore))
+		})
 	}
 }
 
@@ -231,6 +275,7 @@ func TestHalfConnStrictSeq(t *testing.T) {
 						t.Fatal(err)
 					}
 					before := hc.Seq()
+					hc.WipeKeys()
 					installKeys(t, &hc, mode, strict)
 					if want := before * uint32(b2i(!strict)); hc.Seq() != want {
 						t.Fatalf("seq=%d after installing keys, want %d", hc.Seq(), want)
@@ -432,6 +477,7 @@ func TestHalfConnPacketCipherOpenFails(t *testing.T) {
 				if _, err := opener.Open(f); err != nil {
 					t.Fatal(err)
 				}
+				sealer.WipeKeys()
 				installKeys(t, &sealer, "packet", true) // Same key, so only the sequence numbers disagree.
 				f = seal()                              // Sealed as packet 0, opened as packet 1.
 			} else {
