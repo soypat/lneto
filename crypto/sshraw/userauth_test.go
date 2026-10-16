@@ -77,12 +77,12 @@ func TestParsePublicKeyAuth(t *testing.T) {
 	if err != nil || signed || string(alg) != "ssh-ed25519" || string(key) != "key" || sig != nil {
 		t.Fatalf("unsigned: got %v %q %q %q err=%v", signed, alg, key, sig, err)
 	}
-	checkMethodDataErrs(t, unsigned, func(p []byte) error { _, _, _, _, err := ParsePublicKeyAuth(p); return err })
+	checkDataErrs(t, unsigned, func(p []byte) error { _, _, _, _, err := ParsePublicKeyAuth(p); return err })
 	withSig := encode(t, func(e *Encoder) { e.Bool(true); e.Str("ssh-ed25519"); e.Str("key"); e.Str("sig") })
 	if signed, _, _, sig, err = ParsePublicKeyAuth(withSig); err != nil || !signed || string(sig) != "sig" {
 		t.Fatalf("signed: got %v %q err=%v", signed, sig, err)
 	}
-	checkMethodDataErrs(t, withSig, func(p []byte) error { _, _, _, _, err := ParsePublicKeyAuth(p); return err })
+	checkDataErrs(t, withSig, func(p []byte) error { _, _, _, _, err := ParsePublicKeyAuth(p); return err })
 	if _, _, _, _, err = ParsePublicKeyAuth(withSig[:len(withSig)-7]); err == nil {
 		t.Fatal("signed without signature: no error")
 	}
@@ -98,12 +98,12 @@ func TestParsePasswordAuth(t *testing.T) {
 	if err != nil || change || string(pw) != "pw" || newPw != nil {
 		t.Fatalf("got %v %q %q err=%v", change, pw, newPw, err)
 	}
-	checkMethodDataErrs(t, plain, func(p []byte) error { _, _, _, err := ParsePasswordAuth(p); return err })
+	checkDataErrs(t, plain, func(p []byte) error { _, _, _, err := ParsePasswordAuth(p); return err })
 	changing := encode(t, func(e *Encoder) { e.Bool(true); e.Str("old"); e.Str("new") })
 	if change, pw, newPw, err = ParsePasswordAuth(changing); err != nil || !change || string(pw) != "old" || string(newPw) != "new" {
 		t.Fatalf("change: got %v %q %q err=%v", change, pw, newPw, err)
 	}
-	checkMethodDataErrs(t, changing, func(p []byte) error { _, _, _, err := ParsePasswordAuth(p); return err })
+	checkDataErrs(t, changing, func(p []byte) error { _, _, _, err := ParsePasswordAuth(p); return err })
 }
 
 func TestParseKeyboardInteractiveAuth(t *testing.T) {
@@ -112,7 +112,7 @@ func TestParseKeyboardInteractiveAuth(t *testing.T) {
 	if err != nil || len(lang) != 0 || string(submethods) != "pam" {
 		t.Fatalf("got %q %q err=%v", lang, submethods, err)
 	}
-	checkMethodDataErrs(t, data, func(p []byte) error { _, _, err := ParseKeyboardInteractiveAuth(p); return err })
+	checkDataErrs(t, data, func(p []byte) error { _, _, err := ParseKeyboardInteractiveAuth(p); return err })
 }
 
 func TestParseUserauthFailure(t *testing.T) {
@@ -242,8 +242,9 @@ func TestUserauthInfoResponse(t *testing.T) {
 	}
 }
 
-// checkMethodDataErrs checks parse rejects method data truncated or with a trailing byte.
-func checkMethodDataErrs(t *testing.T, data []byte, parse func([]byte) error) {
+// checkDataErrs checks parse rejects message data, such as method or request data,
+// empty, truncated or with a trailing byte.
+func checkDataErrs(t *testing.T, data []byte, parse func([]byte) error) {
 	t.Helper()
 	if err := parse(data[:len(data)-1]); err == nil {
 		t.Error("truncated: no error")

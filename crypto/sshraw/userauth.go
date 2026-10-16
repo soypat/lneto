@@ -38,12 +38,7 @@ func ParseUserauthRequest(payload []byte) (user, service, method, methodData []b
 	dec.msgType(MsgUserauthRequest)
 	user = dec.String()
 	service = dec.String()
-	method = dec.String()
-	if !dec.IsFailed() {
-		if err := validateName(method); err != nil {
-			dec.Fail(err)
-		}
-	}
+	method = dec.name()
 	if dec.IsFailed() {
 		return nil, nil, nil, nil, dec.Err()
 	}
@@ -56,17 +51,12 @@ func ParsePublicKeyAuth(methodData []byte) (signed bool, alg, pubKey, sig []byte
 	var dec decoder
 	dec.Reset(methodData)
 	signed = dec.Bool()
-	alg = dec.String()
+	alg = dec.name()
 	pubKey = dec.String()
 	if signed {
 		sig = dec.String()
 	}
 	dec.end()
-	if !dec.IsFailed() {
-		if err := validateName(alg); err != nil {
-			dec.Fail(err)
-		}
-	}
 	if dec.IsFailed() {
 		return false, nil, nil, nil, dec.Err()
 	}

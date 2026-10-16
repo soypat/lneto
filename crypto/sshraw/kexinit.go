@@ -181,6 +181,18 @@ func (dec *decoder) NameList() []byte {
 	return list
 }
 
+// name decodes a string and validates it as a single name, such as a method or request name.
+func (dec *decoder) name() []byte {
+	name := dec.String()
+	if name == nil {
+		return nil
+	} else if err := validateName(name); err != nil {
+		dec.Fail(err)
+		return nil
+	}
+	return name
+}
+
 // MPInt decodes a non-negative mpint, RFC 4251 5, and returns its unsigned big
 // endian magnitude without the leading zero byte. Negative values and needless
 // leading bytes are rejected. Zero is returned as an empty slice.
