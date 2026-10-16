@@ -202,6 +202,13 @@ func (dec *decoder) MPInt() []byte {
 	return v
 }
 
+// alg decodes a string and requires it to be the algorithm name want.
+func (dec *decoder) alg(want string) {
+	if name := dec.String(); !dec.IsFailed() && string(name) != want {
+		dec.Fail(lneto.ErrInvalidField)
+	}
+}
+
 // msgType decodes the message type byte and requires it to be want.
 func (dec *decoder) msgType(want MsgType) {
 	if MsgType(dec.Uint8()) != want {
