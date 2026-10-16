@@ -2,7 +2,6 @@ package sshraw
 
 import (
 	"bytes"
-	"errors"
 	"testing"
 
 	"github.com/soypat/lneto"
@@ -29,16 +28,16 @@ func TestEncoderTypes(t *testing.T) {
 		0, 0, 0, 2, 0, 0x80,
 		0, 0, 0, 0,
 	}
-	if e.Err() != nil {
-		t.Fatal(e.Err())
+	if e.IsFailed() {
+		t.Fatal("encode failed")
 	} else if got := buf[:e.Len()]; !bytes.Equal(got, want) {
 		t.Fatalf("encoded %x, want %x", got, want)
 	} else if len(e.Rest()) != len(buf)-len(want) {
 		t.Fatalf("Rest len=%d, want %d", len(e.Rest()), len(buf)-len(want))
 	}
 	e.NameList("bad name")
-	if !errors.Is(e.Err(), lneto.ErrInvalidField) {
-		t.Fatalf("invalid name err=%v, want %v", e.Err(), lneto.ErrInvalidField)
+	if !e.IsFailed() {
+		t.Fatal("invalid name did not fail")
 	}
 }
 
@@ -55,8 +54,8 @@ func TestEncoderPacket(t *testing.T) {
 		start := e.StartPacket(MsgIgnore)
 		e.Str("k")
 		pkt := e.EndPacket(start, tc.block, tc.aad, bytes.NewReader(bytes.Repeat([]byte{0xaa}, 64)))
-		if e.Err() != nil {
-			t.Fatal(e.Err())
+		if e.IsFailed() {
+			t.Fatal("encode failed")
 		}
 		pf, err := NewFrame(pkt)
 		if err != nil {
@@ -82,7 +81,7 @@ func TestEncoderPacket(t *testing.T) {
 	e.Reset(make([]byte, 12), 0)
 	start := e.StartPacket(MsgIgnore)
 	e.EndPacket(start, 16, false, bytes.NewReader(make([]byte, 64)))
-	if !errors.Is(e.Err(), lneto.ErrShortBuffer) {
-		t.Fatalf("short buffer err=%v, want %v", e.Err(), lneto.ErrShortBuffer)
+	if !e.IsFailed() {
+		t.Fatal("short buffer did not fail")
 	}
 }
