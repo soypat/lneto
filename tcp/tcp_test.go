@@ -2,6 +2,7 @@ package tcp_test
 
 import (
 	"math/rand"
+	"net"
 	"testing"
 
 	"github.com/soypat/lneto"
@@ -1096,8 +1097,6 @@ func TestClose_PartialACKDoesNotAdvance(t *testing.T) {
 func TestExchangeTest_ZeroWindowProbesDoNotAbort(t *testing.T) {
 	const issA, issB, windowB = 100, 300, 1000
 	probe := tcp.Segment{SEQ: issB, ACK: issA, Flags: tcp.FlagACK, WND: windowB, DATALEN: 1}
-	probeRST := probe
-	probeRST.Flags |= tcp.FlagRST
 	ack := tcp.Segment{SEQ: issA, ACK: issB, Flags: tcp.FlagACK}
 	var steps []tcp.SegmentStep
 	for range 20 {
@@ -1106,7 +1105,6 @@ func TestExchangeTest_ZeroWindowProbesDoNotAbort(t *testing.T) {
 			tcp.SegmentStep{Seg: ack, Action: tcp.StepASends, AState: tcp.StateEstablished},
 		)
 	}
-	steps = append(steps, tcp.SegmentStep{Seg: probeRST, Action: tcp.StepBSends, AState: tcp.StateEstablished, WantErr: tcp.ErrZeroWindow})
 	test := tcp.ExchangeTest{
 		ISSA:       issA,
 		ISSB:       issB,
@@ -1115,6 +1113,25 @@ func TestExchangeTest_ZeroWindowProbesDoNotAbort(t *testing.T) {
 		InitStateA: tcp.StateEstablished,
 		InitStateB: tcp.StateEstablished,
 		Steps:      steps,
+	}
+	test.RunA(t)
+}
+
+// An RST at RCV.NXT resets the connection despite a zero receive window (RFC 9293 §3.10.7.4, MUST-66).
+// It was refused with ErrZeroWindow and the connection stayed open.
+func TestExchangeTest_ZeroWindowRSTResets(t *testing.T) {
+	const issA, issB, windowB = 100, 300, 1000
+	rst := tcp.Segment{SEQ: issB, ACK: issA, Flags: tcp.FlagRST | tcp.FlagACK, WND: windowB, DATALEN: 1}
+	test := tcp.ExchangeTest{
+		ISSA:       issA,
+		ISSB:       issB,
+		WindowA:    0,
+		WindowB:    windowB,
+		InitStateA: tcp.StateEstablished,
+		InitStateB: tcp.StateEstablished,
+		Steps: []tcp.SegmentStep{
+			{Seg: rst, Action: tcp.StepBSends, AState: tcp.StateClosed, WantErr: net.ErrClosed},
+		},
 	}
 	test.RunA(t)
 }
