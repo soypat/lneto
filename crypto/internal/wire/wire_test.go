@@ -146,6 +146,36 @@ func TestDecoderErr(t *testing.T) {
 	}
 }
 
+// TestFirstErrSticks checks a later Fail does not replace the error of an earlier failure.
+func TestFirstErrSticks(t *testing.T) {
+	var d DecoderErr
+	d.Reset([]byte{1})
+	d.Fail(lneto.ErrInvalidField)
+	d.Fail(lneto.ErrInvalidLengthField)
+	if d.Err() != lneto.ErrInvalidField {
+		t.Errorf("decoder err=%v, want first %v", d.Err(), lneto.ErrInvalidField)
+	}
+	d.Reset([]byte{1})
+	d.Uint16()
+	d.Fail(lneto.ErrInvalidField)
+	if d.Err() != lneto.ErrTruncatedFrame {
+		t.Errorf("decoder err after short read=%v, want %v", d.Err(), lneto.ErrTruncatedFrame)
+	}
+	var e EncoderErr
+	e.Reset(make([]byte, 1), 0)
+	e.Fail(lneto.ErrInvalidField)
+	e.Fail(lneto.ErrInvalidLengthField)
+	if e.Err() != lneto.ErrInvalidField {
+		t.Errorf("encoder err=%v, want first %v", e.Err(), lneto.ErrInvalidField)
+	}
+	e.Reset(make([]byte, 1), 0)
+	e.Uint16(1)
+	e.Fail(lneto.ErrInvalidField)
+	if e.Err() != lneto.ErrShortBuffer {
+		t.Errorf("encoder err after short write=%v, want %v", e.Err(), lneto.ErrShortBuffer)
+	}
+}
+
 func TestDecoderFail(t *testing.T) {
 	var d Decoder
 	d.Reset([]byte{1, 2})

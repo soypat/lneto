@@ -23,10 +23,12 @@ type EncoderErr struct {
 // Reset makes e write to buf starting at off, keeping buf[:off], and clears its error.
 func (e *EncoderErr) Reset(buf []byte, off int) { *e = EncoderErr{}; e.encoder.Reset(buf, off) }
 
-// Fail fails the encoder with err.
+// Fail fails the encoder with err unless it already failed, keeping the first error.
 func (e *EncoderErr) Fail(err error) {
-	e._err = err
-	e.encoder.Fail()
+	if !e.IsFailed() {
+		e._err = err
+		e.encoder.Fail()
+	}
 }
 
 // Err returns the error passed to Fail, or [lneto.ErrShortBuffer] if a write did not fit.
@@ -48,10 +50,12 @@ type DecoderErr struct {
 // Reset makes d read buf from its start and clears its error.
 func (d *DecoderErr) Reset(buf []byte) { *d = DecoderErr{}; d.decoder.Reset(buf) }
 
-// Fail fails the decoder with err.
+// Fail fails the decoder with err unless it already failed, keeping the first error.
 func (d *DecoderErr) Fail(err error) {
-	d._err = err
-	d.decoder.Fail()
+	if !d.IsFailed() {
+		d._err = err
+		d.decoder.Fail()
+	}
 }
 
 // Err returns the error passed to Fail, or [lneto.ErrTruncatedFrame] if a read ran past the end.

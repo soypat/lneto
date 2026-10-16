@@ -84,6 +84,10 @@ const (
 	MsgUserauthSuccess MsgType = 52 // USERAUTH_SUCCESS
 	MsgUserauthBanner  MsgType = 53 // USERAUTH_BANNER
 	MsgUserauthPKOK    MsgType = 60 // USERAUTH_PK_OK
+	// Numbers 60 to 79 are reused by each method: their meaning depends on the method in progress.
+	MsgUserauthPasswdChangeReq MsgType = 60 // USERAUTH_PASSWD_CHANGEREQ
+	MsgUserauthInfoRequest     MsgType = 60 // USERAUTH_INFO_REQUEST
+	MsgUserauthInfoResponse    MsgType = 61 // USERAUTH_INFO_RESPONSE
 
 	// ...
 
