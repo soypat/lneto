@@ -2218,3 +2218,18 @@ func TestConn_ReadEOFAfterCleanClose(t *testing.T) {
 		})
 	}
 }
+
+// TestHandler_ISS verifies ISS reports the initial send sequence number an
+// open was given, before any segment is sent.
+func TestHandler_ISS(t *testing.T) {
+	client, server := newHandler(t, 1500, 4), newHandler(t, 1500, 4)
+	if err := server.OpenListen(80, 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.OpenActive(1234, 80, 300); err != nil {
+		t.Fatal(err)
+	}
+	if client.ISS() != 300 || server.ISS() != 100 {
+		t.Fatalf("ISS client=%d server=%d, want 300 and 100", client.ISS(), server.ISS())
+	}
+}
