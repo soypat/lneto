@@ -167,6 +167,16 @@ func (tcb *ControlBlock) QueueRST(seq Value) {
 	tcb.rstPtr = seq
 }
 
+// QueueACK queues an ACK of the current receive state for the next send, for
+// a Policy that drops a segment the peer must still be answered for, such as
+// one failing PAWS (RFC 7323 §5.3). It does nothing before the connection is
+// synchronized.
+func (tcb *ControlBlock) QueueACK() {
+	if tcb._state.IsSynchronized() {
+		tcb.pending[0] |= FlagACK
+	}
+}
+
 // MakeDupACK returns a duplicate ACK segment suitable for fast-retransmit
 // recovery signaling, without advancing the sender ACK boundary. Useful for:
 //   - constructing an explicit duplicate ACK from local state (e.g. test harness),

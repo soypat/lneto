@@ -1162,6 +1162,31 @@ func TestExchangeTest_ZeroWindowRSTResets(t *testing.T) {
 	test.RunA(t)
 }
 
+// TestQueueACK verifies QueueACK makes an ACK of the current receive state
+// pending in a synchronized state and does nothing before one.
+func TestQueueACK(t *testing.T) {
+	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
+	for _, tc := range []struct {
+		state tcp.State
+		want  bool
+	}{
+		{state: tcp.StateEstablished, want: true},
+		{state: tcp.StateCloseWait, want: true},
+		{state: tcp.StateSynSent},
+	} {
+		t.Run(tc.state.String(), func(t *testing.T) {
+			var tcb tcp.ControlBlock
+			tcb.HelperInitState(tc.state, issA, issA, windowA)
+			tcb.HelperInitRcv(issB, issB, windowB)
+			tcb.QueueACK()
+			seg, ok := tcb.PendingSegment(0)
+			if want := (tcp.Segment{SEQ: issA, ACK: issB, WND: windowA, Flags: tcp.FlagACK}); ok != tc.want || (ok && seg != want) {
+				t.Fatalf("pending %v (%v), want ACK %v", seg, ok, tc.want)
+			}
+		})
+	}
+}
+
 // TestZeroWindowProbe verifies a one-octet probe is offered only when the peer's
 // window is zero, nothing is outstanding and new data may be sent, that Send
 // accepts it while rejecting more than one octet, and that it is offered once.
