@@ -1,6 +1,7 @@
 package timestamps
 
 import (
+	"math"
 	"math/rand"
 	"testing"
 	"time"
@@ -313,6 +314,56 @@ func TestWithSACK(t *testing.T) {
 func TestLessThanWraps(t *testing.T) {
 	if !lessThan(0xffff_fff0, 0x10) || lessThan(0x10, 0xffff_fff0) || lessThan(5, 5) {
 		t.Fatal("timestamp comparison does not wrap modulo 2^32")
+	}
+}
+
+// TestRTTEveryACK verifies every ACK of new data yields a sample (RFC 7323
+// §4.1), fed to the timer with the gains scaled by the samples expected per
+// flight, ceil(FlightSize / (2*SMSS)) (Appendix G).
+func TestRTTEveryACK(t *testing.T) {
+	var now int64
+	client, server := newHandler(t), newHandler(t)
+	var timer rto.Timer
+	if err := timer.Configure(func() int64 { return now }); err != nil {
+		t.Fatal(err)
+	}
+	cp := newPolicy(t, &now, false, &timer)
+	client.SetPolicy(tcp.Policies{&timer, cp})
+	server.SetPolicy(newPolicy(t, &now, false, nil))
+	establish(t, client, server)
+
+	const segSize = 100
+	var flight [4][]byte
+	for i := range flight {
+		flight[i] = sendData(t, client, make([]byte, segSize))
+	}
+	// Expected samples per flight of 400, 300, 200 and 100 octets in flight.
+	perFlight := []float64{2, 2, 1, 1}
+	var srtt, rttvar float64
+	start := now
+	for i, pkt := range flight {
+		rtt := time.Duration(i+1) * 10 * time.Millisecond
+		now = start + int64(rtt)
+		if err := server.Recv(pkt); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.Recv(send(t, server)); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := cp.LastRTT(); got != rtt {
+			t.Fatalf("ACK %d: LastRTT = %v, want %v", i, got, rtt)
+		}
+		r := float64(rtt)
+		if i == 0 {
+			srtt, rttvar = r, r/2
+		} else {
+			alpha, beta := 1.0/8/perFlight[i], 1.0/4/perFlight[i]
+			rttvar = (1-beta)*rttvar + beta*math.Abs(srtt-r)
+			srtt = (1-alpha)*srtt + alpha*r
+		}
+	}
+	if got := float64(timer.SmoothedRTT()); math.Abs(got-srtt) > float64(time.Microsecond) {
+		t.Fatalf("timer SRTT = %v, want %v", timer.SmoothedRTT(), time.Duration(srtt))
 	}
 }
 

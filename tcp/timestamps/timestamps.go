@@ -1,8 +1,8 @@
 // Package timestamps implements the TCP Timestamps option (RFC 7323) as a
 // [tcp.Policy]: it negotiates the option, stamps and echoes timestamps,
 // rejects old duplicates with PAWS and measures the round-trip time from the
-// echo, which it can feed to an [rto.Timer] running beside it in
-// [tcp.Policies].
+// echo of every acknowledgment of new data, which it can feed to an
+// [rto.Timer] running beside it in [tcp.Policies].
 package timestamps
 
 import (
@@ -22,6 +22,8 @@ const (
 	// pawsIdle is how long TS.Recent stays valid without being updated (RFC
 	// 7323 §5.5).
 	pawsIdle = 24 * 24 * time.Hour
+	// defaultSMSS is assumed until a data segment has been sent (RFC 9293 §3.7.1).
+	defaultSMSS = 536
 )
 
 // Config configures a [Policy].
@@ -32,9 +34,9 @@ type Config struct {
 	// PAWS rejects segments whose timestamp is older than TS.Recent (RFC 7323
 	// §5).
 	PAWS bool
-	// Timer, if set, receives a round-trip sample from the echoed timestamp
-	// once per flight of data. The Timer is not driven by this Policy and must
-	// be installed beside it.
+	// Timer, if set, receives the round-trip samples and then takes none of its
+	// own. The Timer is not driven by this Policy and must be installed beside
+	// it.
 	Timer *rto.Timer
 }
 
@@ -65,11 +67,10 @@ type Policy struct {
 	lastACK     tcp.Value // Last.ACK.sent (RFC 7323 §4.3).
 	haveLastACK bool
 
-	una            tcp.Value // SND.UNA before the segment being received.
-	sampleNext     tcp.Value // Next sample waits for an ACK at or above it.
-	haveSampleNext bool
-	lastRTT        time.Duration
-	haveRTT        bool
+	una     tcp.Value // SND.UNA before the segment being received.
+	smss    tcp.Size  // Largest payload sent.
+	lastRTT time.Duration
+	haveRTT bool
 }
 
 var _ tcp.Policy = (*Policy)(nil)
@@ -122,7 +123,8 @@ func (p *Policy) PreRx(h *tcp.Handler, incoming tcp.Frame) bool {
 
 // PostRx records the option on the peer's SYN accepted during the handshake,
 // updates TS.Recent from an accepted segment (RFC 7323 §4.3) and takes a
-// round-trip sample when it acknowledges new data. It implements [tcp.Policy].
+// round-trip sample when it acknowledges new data (§4.1). It implements
+// [tcp.Policy].
 func (p *Policy) PostRx(h *tcp.Handler, prevState tcp.State, accepted tcp.Frame) {
 	seg := accepted.Segment(len(accepted.Payload()))
 	tsval, tsecr, present := p.parse(accepted.Options())
@@ -146,9 +148,7 @@ func (p *Policy) PostRx(h *tcp.Handler, prevState tcp.State, accepted tcp.Frame)
 		p.setRecent(tsval)
 	}
 	una := h.ControlBlock().SendUNA()
-	// At most one sample is taken per flight, from an ACK at or past the data
-	// sent at the previous sample.
-	if !seg.Flags.HasAny(tcp.FlagACK) || !p.una.LessThan(una) || (p.haveSampleNext && una.LessThan(p.sampleNext)) {
+	if !seg.Flags.HasAny(tcp.FlagACK) || !p.una.LessThan(una) {
 		return
 	}
 	elapsed := int32(p.tsval() - tsecr)
@@ -157,9 +157,14 @@ func (p *Policy) PostRx(h *tcp.Handler, prevState tcp.State, accepted tcp.Frame)
 	}
 	rtt := time.Duration(elapsed) * tick
 	p.lastRTT, p.haveRTT = rtt, true
-	p.sampleNext, p.haveSampleNext = h.ControlBlock().SendNext(), true
 	if p.timer != nil {
-		p.timer.ObserveRTT(rtt)
+		// RFC 7323 Appendix G: ExpectedSamples = ceil(FlightSize / (2*SMSS)).
+		smss := p.smss
+		if smss == 0 {
+			smss = defaultSMSS
+		}
+		flight := tcp.Sizeof(p.una, h.ControlBlock().SendNext())
+		p.timer.ObserveRTTPerFlight(rtt, int((flight+2*smss-1)/(2*smss)))
 	}
 }
 
@@ -184,8 +189,8 @@ func (p *Policy) PreTx(h *tcp.Handler, outgoingOpts tcp.Frame) (tcp.Size, tcp.Va
 	return tcp.TransmitUnlimited, 0, false
 }
 
-// PostTx commits the handshake offer once sent and records Last.ACK.sent. It
-// implements [tcp.Policy].
+// PostTx commits the handshake offer once sent and records Last.ACK.sent and
+// the largest payload sent. It implements [tcp.Policy].
 func (p *Policy) PostTx(h *tcp.Handler, outgoing tcp.Frame) {
 	seg := outgoing.Segment(len(outgoing.Payload()))
 	if p.wrote && seg.Flags.HasAny(tcp.FlagSYN) {
@@ -198,6 +203,7 @@ func (p *Policy) PostTx(h *tcp.Handler, outgoing tcp.Frame) {
 	if seg.Flags.HasAny(tcp.FlagACK) {
 		p.lastACK, p.haveLastACK = seg.ACK, true
 	}
+	p.smss = max(p.smss, seg.DATALEN)
 }
 
 func (p *Policy) setRecent(tsval uint32) {
