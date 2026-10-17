@@ -622,6 +622,30 @@ func TestHandler_KeepaliveACKed(t *testing.T) {
 	}
 }
 
+// A keepalive-shaped segment before synchronization must go through segment validation.
+// In SYN-RECEIVED it was taken for a keepalive: Recv accepted it and queued a plain ACK.
+func TestHandler_KeepaliveOnlySynchronized(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	client, server := newHandler(t, mtu, 4), newHandler(t, mtu, 4)
+	setupClientServer(t, rand.New(rand.NewSource(1)), client, server)
+	var buf [mtu]byte
+	n, _ := client.Send(buf[:])
+	if err := server.Recv(buf[:n]); err != nil {
+		t.Fatal(err)
+	} else if _, err = server.Send(buf[:]); err != nil || server.State() != StateSynRcvd {
+		t.Fatalf("SYN-ACK: %v, state %s", err, server.State())
+	}
+	scb := server.ControlBlock()
+	keepalive := make([]byte, sizeHeaderTCP)
+	frame, _ := NewFrame(keepalive)
+	frame.SetSourcePort(client.LocalPort())
+	frame.SetDestinationPort(server.LocalPort())
+	frame.SetSegment(Segment{SEQ: scb.RecvNext() - 1, ACK: scb.SendNext(), WND: mtu, Flags: FlagACK}, 5)
+	if err := server.Recv(keepalive); err == nil {
+		t.Fatal("keepalive-shaped segment accepted in SYN-RECEIVED")
+	}
+}
+
 // TestHandler_ZeroWindowProbeACKed verifies a probe arriving after a zero window
 // was advertised for a full receive buffer is refused and acknowledged with the
 // current window instead of being silently dropped, while an RST at RCV.NXT
