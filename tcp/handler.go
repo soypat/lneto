@@ -126,6 +126,11 @@ func (h *Handler) ControlBlock() *ControlBlock { return &h.scb }
 // The view shares the Handler's lifetime and concurrency requirements.
 func (h *Handler) Reassembly() ReassemblyView { return ReassemblyView{r: &h.reasm} }
 
+// ISS returns the initial send sequence number of the connection, as given to
+// [Handler.OpenActive] or [Handler.OpenListen]. Unlike [ControlBlock.ISS] it is
+// known before the SYN is sent.
+func (h *Handler) ISS() Value { return h.bufTx.iss }
+
 // LocalPort returns the local port of the connection. Returns 0 if the connection is closed and uninitialized.
 func (h *Handler) LocalPort() uint16 {
 	return h.localPort
