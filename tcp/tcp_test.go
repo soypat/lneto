@@ -1092,6 +1092,31 @@ func TestClose_PartialACKDoesNotAdvance(t *testing.T) {
 	})
 }
 
+// Linux probes a zero window with an empty ACK at RCV.NXT-1 (tcp_xmit_probe_skb). Each probe must be
+// refused and acknowledged like an RFC probe; they drew challenge ACKs, which stop after maxChallengeRejects.
+func TestExchangeTest_LinuxZeroWindowProbe(t *testing.T) {
+	const issA, issB, windowB = 100, 300, 1000
+	probe := tcp.Segment{SEQ: issB - 1, ACK: issA, Flags: tcp.FlagACK, WND: windowB}
+	ack := tcp.Segment{SEQ: issA, ACK: issB, Flags: tcp.FlagACK}
+	var steps []tcp.SegmentStep
+	for range 20 {
+		steps = append(steps,
+			tcp.SegmentStep{Seg: probe, Action: tcp.StepBSends, AState: tcp.StateEstablished, APending: &ack, WantErr: tcp.ErrZeroWindow},
+			tcp.SegmentStep{Seg: ack, Action: tcp.StepASends, AState: tcp.StateEstablished},
+		)
+	}
+	test := tcp.ExchangeTest{
+		ISSA:       issA,
+		ISSB:       issB,
+		WindowA:    0,
+		WindowB:    windowB,
+		InitStateA: tcp.StateEstablished,
+		InitStateB: tcp.StateEstablished,
+		Steps:      steps,
+	}
+	test.RunA(t)
+}
+
 // TestExchangeTest_ZeroWindowProbesDoNotAbort verifies that data at RCV.NXT
 // against a zero receive window is refused and acknowledged without counting
 // toward the challenge-ACK abort (RFC 9293 §3.10.7.4, RFC 1122 §4.2.2.17).
