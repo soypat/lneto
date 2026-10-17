@@ -24,6 +24,7 @@ type NetstackConfig struct {
 	StackConfig   StackConfig
 	BackoffStack  lneto.BackoffStrategy
 	TCPPoolConfig TCPPoolConfig
+	UDPConfig     UDPConfig
 }
 
 // Configure configures this Stack with the argument mac, ip and gateway addresses.
@@ -35,6 +36,7 @@ func (netstack *Netstack) Reset(cfg NetstackConfig) error {
 	}
 	netstack.gstack = netstack.stack.StackGo(cfg.BackoffStack, StackGoConfig{
 		ListenerPoolConfig: cfg.TCPPoolConfig,
+		UDPConfig:          cfg.UDPConfig,
 	})
 	return nil
 }
