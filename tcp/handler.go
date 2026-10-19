@@ -394,10 +394,10 @@ func (h *Handler) ShutdownRead() {
 // The connection may still receive data to read after Close called.
 func (h *Handler) Close() error {
 	h.trace("tcp.Handler.Close")
-	if h.closing {
-		return errConnectionClosing
-	} else if h.State().IsClosed() {
+	if h.State().IsClosed() {
 		return net.ErrClosed
+	} else if h.closing {
+		return errConnectionClosing
 	}
 	h.closing = true
 	return nil
@@ -430,6 +430,10 @@ func (h *Handler) Send(b []byte) (int, error) {
 		}
 		if doRtx {
 			rtxAt, rtx = h.bufTx.retransmitBoundary(rtxFrom)
+			if !rtx && rtxFrom == h.scb.snd.NXT-1 {
+				// A FIN sent alone has no queued packet; PendingRetransmit resends it.
+				rtxAt, rtx = rtxFrom, true
+			}
 		}
 		if o, _ := tfrm.OffsetAndFlags(); o > offset && int(o)*4 < len(b) {
 			offset = o
@@ -439,15 +443,18 @@ func (h *Handler) Send(b []byte) (int, error) {
 	requeueControl := h.requeueControl
 	buffered := h.bufTx.BufferedUnsent()
 	hasPending := rtx || h.scb.HasPending() // A directed resend is pending work even with nothing queued.
-	if !awaitingSyn && !requeueControl && buffered == 0 && !h.closing && !hasPending {
+	// Close was called and the TCB still accepts CLOSE: it queues the FIN, or
+	// aborts a connection not yet established. closing stays set until reset.
+	state := h.scb.State()
+	closeDue := h.closing && (state.IsPreestablished() || state.TxDataOpen())
+	if !awaitingSyn && !requeueControl && buffered == 0 && !closeDue && !hasPending {
 		// Early nop short circuit.
 		return 0, nil
 	}
-	if buffered == 0 && h.closing && (h.scb.State() != StateCloseWait || !hasPending) {
+	if buffered == 0 && closeDue && (state != StateCloseWait || !hasPending) {
 		// If Close called and no more data to be sent, terminate connection.
 		// In CLOSE-WAIT: wait until the pending ACK is sent first, since scb.Close()
 		// overwrites pending with [FIN|ACK] (unlike ESTABLISHED which merges via bitmask).
-		h.closing = false
 		err := h.scb.Close()
 		if err != nil {
 			h.logerr("tcp.Handler.Close", slog.String("err", errstr(err)), slog.String("state", h.State().String()))
@@ -487,6 +494,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 			// Resends are not new data, so txLimit does not apply.
 			segment, ok = h.scb.PendingRetransmit(rtxAt, maxPayload)
 		}
+		resend := ok
 		if !ok {
 			if txLimit < Size(maxPayload) {
 				// Policy clamped new data.
@@ -509,6 +517,9 @@ func (h *Handler) Send(b []byte) (int, error) {
 			n, err := h.bufTx.MakePacket(b[optHead:optHead+int(segment.DATALEN)], segment.SEQ)
 			if err != nil {
 				return 0, err
+			}
+			if resend && Size(n) < segment.DATALEN {
+				segment.Flags &^= FlagFIN // The FIN follows the data left out.
 			}
 			segment.DATALEN = Size(n)
 			if n > 0 {
@@ -567,10 +578,10 @@ func (h *Handler) NextSegmentSYN() (syn, ack bool) {
 // [Handler.Send] call that can send data to remote peer. Use [Handler.Free] to know the maximum length the argument slice can be before erroring.
 func (h *Handler) Write(b []byte) (int, error) {
 	state := h.State()
-	if h.closing {
-		return 0, errConnectionClosing
-	} else if !state.TxDataOpen() { // Reject write call if data cannot be sent.
+	if !state.TxDataOpen() { // Reject write call if data cannot be sent.
 		return 0, net.ErrClosed
+	} else if h.closing {
+		return 0, errConnectionClosing
 	}
 	return h.bufTx.Write(b)
 }

@@ -1,7 +1,9 @@
 package rto
 
 import (
+	"io"
 	"math/rand"
+	"strings"
 	"testing"
 	"time"
 
@@ -121,6 +123,71 @@ func TestRTO_HandlerRetransmitsAfterCloseWithUnackedData(t *testing.T) {
 	nr, err := server.Read(got)
 	if err != nil || string(got[:nr]) != string(data) {
 		t.Fatalf("server read %q (%v), want %q", got[:nr], err, data)
+	}
+}
+
+// TestRTO_LostFINRetransmitted verifies a lost FIN is resent on timeout like
+// data (RFC 9293 §3.8.1), alone or behind lost data, so the close completes.
+func TestRTO_LostFINRetransmitted(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	for _, tc := range []struct {
+		name string
+		data []string // Each is written and sent as its own packet.
+	}{
+		{name: "fin-only"},
+		{name: "data-and-fin", data: []string{"last response bytes"}},
+		// The first resend carries only the first packet, so it must not carry the FIN.
+		{name: "packets-and-fin", data: []string{"first packet,", " second packet"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, server := newHandler(t, mtu, 4), newHandler(t, mtu, 4)
+			var now int64
+			client.SetPolicy(newTimer(t, func() int64 { return now }))
+			setupClientServer(t, rand.New(rand.NewSource(11)), client, server)
+			var buf [mtu]byte
+			establish(t, client, server, buf[:])
+			want := strings.Join(tc.data, "")
+			for _, d := range tc.data {
+				if _, err := client.Write([]byte(d)); err != nil {
+					t.Fatal(err)
+				}
+				if n, err := client.Send(buf[:]); err != nil || n == 0 { // Lost.
+					t.Fatal("send:", n, err)
+				}
+			}
+			if err := client.Close(); err != nil {
+				t.Fatal(err)
+			}
+			for { // Everything sent before the timeout is lost.
+				n, err := client.Send(buf[:])
+				if err != nil {
+					t.Fatal(err)
+				} else if n == 0 {
+					break
+				}
+			}
+			for range 6 { // Each timeout resends the oldest unacknowledged packet.
+				now += int64(time.Minute)
+				for _, dir := range [2][2]*tcp.Handler{{client, server}, {server, client}} {
+					if n, err := dir[0].Send(buf[:]); err != nil {
+						t.Fatal(err)
+					} else if n > 0 {
+						dir[1].Recv(buf[:n])
+					}
+				}
+			}
+			if client.State() != tcp.StateFinWait2 || server.State() != tcp.StateCloseWait {
+				t.Fatalf("client %s, server %s; want FIN-WAIT-2 and CLOSE-WAIT", client.State(), server.State())
+			}
+			got := make([]byte, 64)
+			n, err := server.Read(got)
+			if string(got[:n]) != want || want != "" && err != nil {
+				t.Fatalf("server read %q, %v; want %q", got[:n], err, want)
+			}
+			if n, err := server.Read(got); n != 0 || err != io.EOF {
+				t.Fatalf("read after the FIN = %d, %v; want EOF", n, err)
+			}
+		})
 	}
 }
 
