@@ -33,6 +33,12 @@ jobs:
       - name: go vet (tinygo tags)
         run: go vet -tags=tinygo ./...
 
+      # Platforms that broke before: darwin, and 32-bit int and pointer size.
+      - name: go vet (darwin, 32-bit)
+        run: |
+          GOOS=darwin GOARCH=arm64 go vet ./...
+          GOOS=linux GOARCH=386 go vet ./...
+
       - name: go fix
         run: |
           diff=$(go fix -diff ./... 2>&1) || true
