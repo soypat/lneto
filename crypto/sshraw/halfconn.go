@@ -205,10 +205,13 @@ func (hc *HalfConn) Open(pf Frame) (n int, err error) {
 	if hc.wiped() {
 		return 0, lneto.ErrBadState
 	}
-	n = int(4 + hc.LenPacket(pf) + hc.overhead)
-	if n > len(pf.RawData()) {
+	// Sum in 64 bits: packet_length is untrusted and the uint32 sum, or its int
+	// conversion on 32-bit targets, could wrap past the bounds check.
+	wirelen := 4 + uint64(hc.LenPacket(pf)) + uint64(hc.overhead)
+	if wirelen > uint64(len(pf.RawData())) {
 		return 0, lneto.ErrTruncatedFrame // Do not read past len into capacity.
 	}
+	n = int(wirelen)
 	if hc.useAEAD() {
 		if hc.used == math.MaxUint64 {
 			return 0, lneto.ErrExhausted
