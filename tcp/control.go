@@ -107,6 +107,10 @@ func (tcb *ControlBlock) SendUNA() Value { return tcb.snd.UNA }
 // SendNext returns snd.NXT, one past the highest sequence number sent.
 func (tcb *ControlBlock) SendNext() Value { return tcb.snd.NXT }
 
+// SendMSS returns the maximum segment size the remote advertised, which bounds
+// the payload of each segment sent. It returns 0 if the remote advertised none.
+func (tcb *ControlBlock) SendMSS() Size { return tcb.snd.MSS }
+
 // MaxInFlightData returns the maximum size of a segment that can be sent by taking into account
 // the send window size and the unacked data. Returns 0 before StateSynRcvd.
 func (tcb *ControlBlock) MaxInFlightData() Size {
