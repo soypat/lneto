@@ -21,7 +21,10 @@ import (
 // TestNoCryptoImports guards against linking Go's crypto packages, as tlsraw
 // does: their init functions carry FIPS self-tests TinyGo cannot eliminate.
 func TestNoCryptoImports(t *testing.T) {
-	pkg, err := build.ImportDir(".", 0)
+	// Name the gc compiler: go/build rejects tinygo, and only the imports are read.
+	ctxt := build.Default
+	ctxt.Compiler = "gc"
+	pkg, err := ctxt.ImportDir(".", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
