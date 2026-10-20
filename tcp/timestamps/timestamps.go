@@ -22,7 +22,7 @@ const (
 	// pawsIdle is how long TS.Recent stays valid without being updated (RFC
 	// 7323 §5.5).
 	pawsIdle = 24 * 24 * time.Hour
-	// defaultSMSS is assumed until a data segment has been sent (RFC 9293 §3.7.1).
+	// defaultSMSS is assumed if the remote advertised no MSS (RFC 9293 §3.7.1).
 	defaultSMSS = 536
 )
 
@@ -55,8 +55,7 @@ type Policy struct {
 	wrote       bool // Written in PreTx, committed in PostTx once sent.
 	enabled     bool
 
-	epoch     int64  // Clock value TSval counts from.
-	offset    uint32 // TSval at epoch: the ISS, random per connection.
+	epoch     int64 // Clock value TSval counts from.
 	haveEpoch bool
 
 	// TS.Recent, the peer's timestamp to echo, and when it was last updated.
@@ -68,7 +67,6 @@ type Policy struct {
 	haveLastACK bool
 
 	una     tcp.Value // SND.UNA before the segment being received.
-	smss    tcp.Size  // Largest payload sent.
 	lastRTT time.Duration
 	haveRTT bool
 }
@@ -151,15 +149,17 @@ func (p *Policy) PostRx(h *tcp.Handler, prevState tcp.State, accepted tcp.Frame)
 	if !seg.Flags.HasAny(tcp.FlagACK) || !p.una.LessThan(una) {
 		return
 	}
-	elapsed := int32(p.tsval() - tsecr)
-	if elapsed < 0 || lessThan(tsecr, p.offset) {
+	elapsed := int32(p.tsval(h) - tsecr)
+	if elapsed < 0 || lessThan(tsecr, uint32(h.ISS())) {
 		return // Echo of a timestamp not sent on this connection.
 	}
 	rtt := time.Duration(elapsed) * tick
 	p.lastRTT, p.haveRTT = rtt, true
 	if p.timer != nil {
 		// RFC 7323 Appendix G: ExpectedSamples = ceil(FlightSize / (2*SMSS)).
-		smss := p.smss
+		// The MSS the remote advertised approximates SMSS, which is smaller by
+		// the option octets and any local MTU limit.
+		smss := h.ControlBlock().SendMSS()
 		if smss == 0 {
 			smss = defaultSMSS
 		}
@@ -178,10 +178,10 @@ func (p *Policy) PreTx(h *tcp.Handler, outgoingOpts tcp.Frame) (tcp.Size, tcp.Va
 		return tcp.TransmitUnlimited, 0, false
 	}
 	if !p.haveEpoch {
-		p.epoch, p.offset, p.haveEpoch = p.nanotime(), uint32(h.ISS()), true
+		p.epoch, p.haveEpoch = p.nanotime(), true
 	}
 	var data [optDataLen]byte
-	put32(data[:4], p.tsval())
+	put32(data[:4], p.tsval(h))
 	if p.haveRecent {
 		put32(data[4:], p.recent) // TSecr is zero on our SYN (RFC 7323 §3.2).
 	}
@@ -189,8 +189,8 @@ func (p *Policy) PreTx(h *tcp.Handler, outgoingOpts tcp.Frame) (tcp.Size, tcp.Va
 	return tcp.TransmitUnlimited, 0, false
 }
 
-// PostTx commits the handshake offer once sent and records Last.ACK.sent and
-// the largest payload sent. It implements [tcp.Policy].
+// PostTx commits the handshake offer once sent and records Last.ACK.sent. It
+// implements [tcp.Policy].
 func (p *Policy) PostTx(h *tcp.Handler, outgoing tcp.Frame) {
 	seg := outgoing.Segment(len(outgoing.Payload()))
 	if p.wrote && seg.Flags.HasAny(tcp.FlagSYN) {
@@ -203,7 +203,6 @@ func (p *Policy) PostTx(h *tcp.Handler, outgoing tcp.Frame) {
 	if seg.Flags.HasAny(tcp.FlagACK) {
 		p.lastACK, p.haveLastACK = seg.ACK, true
 	}
-	p.smss = max(p.smss, seg.DATALEN)
 }
 
 func (p *Policy) setRecent(tsval uint32) {
@@ -218,8 +217,8 @@ func (p *Policy) recentValid() bool {
 
 // tsval returns the current timestamp clock value. It starts at the ISS, so
 // it does not reveal the host's uptime (RFC 7323 §7.1).
-func (p *Policy) tsval() uint32 {
-	return p.offset + uint32((p.nanotime()-p.epoch)/int64(tick))
+func (p *Policy) tsval(h *tcp.Handler) uint32 {
+	return uint32(h.ISS()) + uint32((p.nanotime()-p.epoch)/int64(tick))
 }
 
 // writeOption appends two no-operation octets and the option after the

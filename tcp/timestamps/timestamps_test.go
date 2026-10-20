@@ -319,10 +319,19 @@ func TestLessThanWraps(t *testing.T) {
 
 // TestRTTEveryACK verifies every ACK of new data yields a sample (RFC 7323
 // §4.1), fed to the timer with the gains scaled by the samples expected per
-// flight, ceil(FlightSize / (2*SMSS)) (Appendix G).
+// flight, ceil(FlightSize / (2*SMSS)) with SMSS approximated by the MSS the
+// server advertised (Appendix G).
 func TestRTTEveryACK(t *testing.T) {
 	var now int64
-	client, server := newHandler(t), newHandler(t)
+	// Room for four full segments in flight.
+	newBigHandler := func() *tcp.Handler {
+		h := new(tcp.Handler)
+		if err := h.SetBuffers(make([]byte, 4*mtu), make([]byte, 4*mtu), 8); err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	client, server := newBigHandler(), newBigHandler()
 	var timer rto.Timer
 	if err := timer.Configure(func() int64 { return now }); err != nil {
 		t.Fatal(err)
@@ -332,12 +341,13 @@ func TestRTTEveryACK(t *testing.T) {
 	server.SetPolicy(newPolicy(t, &now, false, nil))
 	establish(t, client, server)
 
-	const segSize = 100
+	// The largest payload a frame holds besides the 12 octets of the option.
+	segSize := int(client.ControlBlock().SendMSS()) - 12
 	var flight [4][]byte
 	for i := range flight {
 		flight[i] = sendData(t, client, make([]byte, segSize))
 	}
-	// Expected samples per flight of 400, 300, 200 and 100 octets in flight.
+	// Expected samples per flight of 4, 3, 2 and 1 segments in flight.
 	perFlight := []float64{2, 2, 1, 1}
 	var srtt, rttvar float64
 	start := now
