@@ -325,7 +325,7 @@ func TestRTO_Clamped(t *testing.T) {
 // SRTT/RTTVAR (RFC 6298 §2.2).
 func TestRTO_UpdateRTTFirstSample(t *testing.T) {
 	r := newRTO()
-	r.updateRTT(100 * time.Millisecond)
+	r.updateRTT(100*time.Millisecond, 1)
 	if r.srtt != 100*time.Millisecond {
 		t.Errorf("srtt=%v, want 100ms", r.srtt)
 	}
@@ -336,6 +336,69 @@ func TestRTO_UpdateRTTFirstSample(t *testing.T) {
 	if r.rto != 300*time.Millisecond {
 		t.Errorf("rto=%v, want 300ms", r.rto)
 	}
+}
+
+// TestRTO_ObserveRTTPerFlight verifies external samples scale the RFC 6298
+// gains by the samples expected per flight (RFC 7323 Appendix G), collapse the
+// backoff, and replace the Timer's own sampling, which would apply Karn's
+// algorithm where the external source has no ambiguity.
+func TestRTO_ObserveRTTPerFlight(t *testing.T) {
+	const ms = time.Millisecond
+	for _, tc := range []struct {
+		name       string
+		perFlight  int
+		second     time.Duration
+		wantSRTT   time.Duration
+		wantRTTVAR time.Duration
+	}{
+		// After a first sample of 100ms (SRTT 100ms, RTTVAR 50ms), a second one.
+		{name: "one-per-flight", perFlight: 1, second: 200 * ms, wantSRTT: 100*ms + 100*ms/8, wantRTTVAR: 50*ms + 50*ms/4},
+		{name: "four-per-flight", perFlight: 4, second: 200 * ms, wantSRTT: 100*ms + 100*ms/32, wantRTTVAR: 50*ms + 50*ms/16},
+		// A zero sample, shorter than the source's tick, counts.
+		{name: "zero-sample", perFlight: 1, second: 0, wantSRTT: 100*ms - 100*ms/8, wantRTTVAR: 50*ms + 50*ms/4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRTO()
+			r.ObserveRTTPerFlight(100*ms, tc.perFlight)
+			r.ObserveRTTPerFlight(tc.second, tc.perFlight)
+			if r.srtt != tc.wantSRTT || r.rttvar != tc.wantRTTVAR {
+				t.Errorf("srtt=%v rttvar=%v, want %v %v", r.srtt, r.rttvar, tc.wantSRTT, tc.wantRTTVAR)
+			}
+		})
+	}
+	t.Run("replaces-own-sampling", func(t *testing.T) {
+		r := newRTO()
+		const iss = uint32(1000)
+		r.postTx(dataSeg(iss, 100), 0)
+		r.preTx(int64(rtoInitial), tcp.Value(iss)) // Timeout: backoff=1.
+		r.ObserveRTTPerFlight(100*ms, 1)
+		if r.backoff != 0 {
+			t.Errorf("backoff=%d, want 0 after an external sample", r.backoff)
+		}
+		r.postTx(dataSeg(iss+100, 100), int64(rtoInitial))
+		r.postRx(ackSeg(iss+200), int64(rtoInitial)+int64(500*ms))
+		if r.SmoothedRTT() != 100*ms {
+			t.Errorf("srtt=%v, want only the external 100ms sample", r.SmoothedRTT())
+		}
+		r.Reset()
+		r.postTx(dataSeg(iss, 100), 0)
+		r.postRx(ackSeg(iss+100), 40*rtoMs)
+		if r.SmoothedRTT() != 40*ms {
+			t.Errorf("srtt=%v after Reset, want the Timer's own 40ms sample", r.SmoothedRTT())
+		}
+	})
+	t.Run("first-replaces-own-estimate", func(t *testing.T) {
+		// The Timer samples the round trip before the external source reports
+		// the same one: it must count once.
+		r := newRTO()
+		const iss = uint32(1000)
+		r.postTx(dataSeg(iss, 100), 0)
+		r.postRx(ackSeg(iss+100), 400*rtoMs)
+		r.ObserveRTTPerFlight(400*ms, 1)
+		if r.srtt != 400*ms || r.rttvar != 200*ms || r.CurrentRTO() != 1200*ms {
+			t.Errorf("srtt=%v rttvar=%v rto=%v, want 400ms 200ms 1.2s", r.srtt, r.rttvar, r.CurrentRTO())
+		}
+	})
 }
 
 // TestRTO_PolicyHooksDeriveFromFrame exercises Timer through the [tcp.Policy]

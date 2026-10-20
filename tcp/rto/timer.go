@@ -51,7 +51,8 @@ const (
 // timer (RFC 6298 §5.2/§5.3) without reaching into the tcp state machine, and it
 // is also how retransmissions are distinguished for Karn's algorithm — a segment
 // whose sequence space is not beyond the shadow snd.NXT is a retransmission and
-// is never RTT-sampled.
+// is never RTT-sampled. Once a source such as RFC 7323 timestamps supplies
+// samples through [Timer.ObserveRTTPerFlight], the Timer takes none itself.
 type Timer struct {
 	// nanotime is the monotonic time source in nanoseconds. Preserved by Reset.
 	nanotime func() int64
@@ -67,10 +68,14 @@ type Timer struct {
 	sndNXT  tcp.Value // one past the highest sequence number sent.
 
 	// RTT sampling state (Karn's algorithm, RFC 6298 §3): at most one segment is
-	// timed at a time and retransmitted segments are never sampled.
+	// timed at a time and retransmitted segments are never sampled. Unused once
+	// external is set.
 	timing   bool
 	timedSeq tcp.Value // ACK at or beyond this value completes the sample.
 	timedAt  int64     // send time (monotonic ns) of the timed segment.
+	// external is set once ObserveRTTPerFlight supplied a sample. The Timer then
+	// times no segments itself until Reset.
+	external bool
 
 	// Retransmission timer state.
 	running  bool
@@ -167,7 +172,7 @@ func (r *Timer) postRx(incoming tcp.Segment, now int64) {
 	if r.timing && !ack.LessThan(r.timedSeq) {
 		// ACK covers the timed segment: take the RTT sample (§4). A valid
 		// measurement collapses the backoff (§5.7).
-		r.updateRTT(time.Duration(now - r.timedAt))
+		r.updateRTT(time.Duration(now-r.timedAt), 1)
 		r.timing = false
 		r.backoff = 0
 	}
@@ -254,7 +259,7 @@ func (r *Timer) postTx(outgoing tcp.Segment, now int64) {
 		return
 	}
 	r.sndNXT = segEnd
-	if !r.timing {
+	if !r.timing && !r.external {
 		r.timing = true
 		r.timedSeq = segEnd
 		r.timedAt = now
@@ -270,16 +275,37 @@ func (r *Timer) postTx(outgoing tcp.Segment, now int64) {
 // more accurately than acknowledgement timing allows. The RFC 7323 timestamp echo
 // is the case this exists for.
 //
-// Unlike the timer's own sampling this does not apply Karn's algorithm, because a
+// It is ObserveRTTPerFlight for a source taking one sample per flight.
+func (r *Timer) ObserveRTT(rtt time.Duration) { r.ObserveRTTPerFlight(rtt, 1) }
+
+// ObserveRTTPerFlight folds in a sample from a source taking samplesPerFlight
+// samples per flight of data, dividing the RFC 6298 gains by it so the estimate
+// keeps the history of one sample per round trip (RFC 7323 Appendix G).
+//
+// Unlike the Timer's own sampling this does not apply Karn's algorithm, because a
 // sample derived from an echoed timestamp is unambiguous even when the segment
-// carrying it was a retransmission (RFC 7323 §4.1). Non-positive samples are
-// ignored.
-func (r *Timer) ObserveRTT(rtt time.Duration) { r.updateRTT(rtt) }
+// carrying it was a retransmission (RFC 7323 §4.1). A sample therefore collapses
+// the backoff, and from the first one the Timer stops sampling by itself until
+// Reset, so every round trip is counted once. The first sample also replaces
+// an estimate the Timer made itself, which may count the same round trip. A sample of zero, a round trip
+// shorter than the source's clock tick, counts; negative samples are ignored.
+func (r *Timer) ObserveRTTPerFlight(rtt time.Duration, samplesPerFlight int) {
+	if rtt < 0 {
+		return
+	}
+	if !r.external {
+		r.haveRTT = false // Start the estimate from this sample (RFC 6298 §2.2).
+	}
+	r.external, r.timing = true, false
+	r.backoff = 0
+	r.updateRTT(rtt, max(samplesPerFlight, 1))
+}
 
 // updateRTT folds a round-trip measurement into SRTT/RTTVAR/RTO using the
-// integer-shift form of RFC 6298 §2.2/§2.3.
-func (r *Timer) updateRTT(sample time.Duration) {
-	if sample <= 0 {
+// integer-shift form of RFC 6298 §2.2/§2.3, with the gains divided by
+// samplesPerFlight.
+func (r *Timer) updateRTT(sample time.Duration, samplesPerFlight int) {
+	if sample < 0 {
 		return
 	}
 	if !r.haveRTT {
@@ -295,8 +321,9 @@ func (r *Timer) updateRTT(sample time.Duration) {
 		if diff < 0 {
 			diff = -diff
 		}
-		r.rttvar += (diff - r.rttvar) >> rttvarGainShift
-		r.srtt += (sample - r.srtt) >> rttGainShift
+		n := time.Duration(samplesPerFlight)
+		r.rttvar += ((diff - r.rttvar) >> rttvarGainShift) / n
+		r.srtt += ((sample - r.srtt) >> rttGainShift) / n
 	}
 	r.rto = r.srtt + rttvarK*r.rttvar
 }

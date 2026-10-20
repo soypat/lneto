@@ -1,8 +1,8 @@
 // Package timestamps implements the TCP Timestamps option (RFC 7323) as a
 // [tcp.Policy]: it negotiates the option, stamps and echoes timestamps,
 // rejects old duplicates with PAWS and measures the round-trip time from the
-// echo, which it can feed to an [rto.Timer] running beside it in
-// [tcp.Policies].
+// echo of every acknowledgment of new data, which it can feed to an
+// [rto.Timer] running beside it in [tcp.Policies].
 package timestamps
 
 import (
@@ -22,6 +22,8 @@ const (
 	// pawsIdle is how long TS.Recent stays valid without being updated (RFC
 	// 7323 §5.5).
 	pawsIdle = 24 * 24 * time.Hour
+	// defaultSMSS is assumed if the remote advertised no MSS (RFC 9293 §3.7.1).
+	defaultSMSS = 536
 )
 
 // Config configures a [Policy].
@@ -32,9 +34,9 @@ type Config struct {
 	// PAWS rejects segments whose timestamp is older than TS.Recent (RFC 7323
 	// §5).
 	PAWS bool
-	// Timer, if set, receives a round-trip sample from the echoed timestamp
-	// once per flight of data. The Timer is not driven by this Policy and must
-	// be installed beside it.
+	// Timer, if set, receives the round-trip samples and then takes none of its
+	// own. The Timer is not driven by this Policy and must be installed beside
+	// it.
 	Timer *rto.Timer
 }
 
@@ -53,8 +55,7 @@ type Policy struct {
 	wrote       bool // Written in PreTx, committed in PostTx once sent.
 	enabled     bool
 
-	epoch     int64  // Clock value TSval counts from.
-	offset    uint32 // TSval at epoch: the ISS, random per connection.
+	epoch     int64 // Clock value TSval counts from.
 	haveEpoch bool
 
 	// TS.Recent, the peer's timestamp to echo, and when it was last updated.
@@ -65,11 +66,9 @@ type Policy struct {
 	lastACK     tcp.Value // Last.ACK.sent (RFC 7323 §4.3).
 	haveLastACK bool
 
-	una            tcp.Value // SND.UNA before the segment being received.
-	sampleNext     tcp.Value // Next sample waits for an ACK at or above it.
-	haveSampleNext bool
-	lastRTT        time.Duration
-	haveRTT        bool
+	una     tcp.Value // SND.UNA before the segment being received.
+	lastRTT time.Duration
+	haveRTT bool
 }
 
 var _ tcp.Policy = (*Policy)(nil)
@@ -122,7 +121,8 @@ func (p *Policy) PreRx(h *tcp.Handler, incoming tcp.Frame) bool {
 
 // PostRx records the option on the peer's SYN accepted during the handshake,
 // updates TS.Recent from an accepted segment (RFC 7323 §4.3) and takes a
-// round-trip sample when it acknowledges new data. It implements [tcp.Policy].
+// round-trip sample when it acknowledges new data (§4.1). It implements
+// [tcp.Policy].
 func (p *Policy) PostRx(h *tcp.Handler, prevState tcp.State, accepted tcp.Frame) {
 	seg := accepted.Segment(len(accepted.Payload()))
 	tsval, tsecr, present := p.parse(accepted.Options())
@@ -146,20 +146,25 @@ func (p *Policy) PostRx(h *tcp.Handler, prevState tcp.State, accepted tcp.Frame)
 		p.setRecent(tsval)
 	}
 	una := h.ControlBlock().SendUNA()
-	// At most one sample is taken per flight, from an ACK at or past the data
-	// sent at the previous sample.
-	if !seg.Flags.HasAny(tcp.FlagACK) || !p.una.LessThan(una) || (p.haveSampleNext && una.LessThan(p.sampleNext)) {
+	if !seg.Flags.HasAny(tcp.FlagACK) || !p.una.LessThan(una) {
 		return
 	}
-	elapsed := int32(p.tsval() - tsecr)
-	if elapsed < 0 || lessThan(tsecr, p.offset) {
+	elapsed := int32(p.tsval(h) - tsecr)
+	if elapsed < 0 || lessThan(tsecr, uint32(h.ISS())) {
 		return // Echo of a timestamp not sent on this connection.
 	}
 	rtt := time.Duration(elapsed) * tick
 	p.lastRTT, p.haveRTT = rtt, true
-	p.sampleNext, p.haveSampleNext = h.ControlBlock().SendNext(), true
 	if p.timer != nil {
-		p.timer.ObserveRTT(rtt)
+		// RFC 7323 Appendix G: ExpectedSamples = ceil(FlightSize / (2*SMSS)).
+		// The MSS the remote advertised approximates SMSS, which is smaller by
+		// the option octets and any local MTU limit.
+		smss := h.ControlBlock().SendMSS()
+		if smss == 0 {
+			smss = defaultSMSS
+		}
+		flight := tcp.Sizeof(p.una, h.ControlBlock().SendNext())
+		p.timer.ObserveRTTPerFlight(rtt, int((flight+2*smss-1)/(2*smss)))
 	}
 }
 
@@ -173,10 +178,10 @@ func (p *Policy) PreTx(h *tcp.Handler, outgoingOpts tcp.Frame) (tcp.Size, tcp.Va
 		return tcp.TransmitUnlimited, 0, false
 	}
 	if !p.haveEpoch {
-		p.epoch, p.offset, p.haveEpoch = p.nanotime(), uint32(h.ISS()), true
+		p.epoch, p.haveEpoch = p.nanotime(), true
 	}
 	var data [optDataLen]byte
-	put32(data[:4], p.tsval())
+	put32(data[:4], p.tsval(h))
 	if p.haveRecent {
 		put32(data[4:], p.recent) // TSecr is zero on our SYN (RFC 7323 §3.2).
 	}
@@ -212,8 +217,8 @@ func (p *Policy) recentValid() bool {
 
 // tsval returns the current timestamp clock value. It starts at the ISS, so
 // it does not reveal the host's uptime (RFC 7323 §7.1).
-func (p *Policy) tsval() uint32 {
-	return p.offset + uint32((p.nanotime()-p.epoch)/int64(tick))
+func (p *Policy) tsval(h *tcp.Handler) uint32 {
+	return uint32(h.ISS()) + uint32((p.nanotime()-p.epoch)/int64(tick))
 }
 
 // writeOption appends two no-operation octets and the option after the
