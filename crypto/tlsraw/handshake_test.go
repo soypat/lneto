@@ -248,7 +248,10 @@ func newGCM(t *testing.T, key []byte) lcrypto.AEADCipher {
 // runs the FIPS 140 self-test registrations in their init functions, which
 // TinyGo is unable to eliminate: tens of kB of SHA-3, AES and GCM.
 func TestNoCryptoImports(t *testing.T) {
-	pkg, err := build.ImportDir(".", 0)
+	// Name the gc compiler: go/build rejects tinygo, and only the imports are read.
+	ctxt := build.Default
+	ctxt.Compiler = "gc"
+	pkg, err := ctxt.ImportDir(".", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
