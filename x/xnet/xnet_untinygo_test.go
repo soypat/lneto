@@ -1,7 +1,6 @@
 //go:build !tinygo
 
-// Exclude tinygo compiler from build since exec package and t.Skip() are unimplemented.
-// Also: wouldn't including tinygo cause a recursive call to tinygo test?
+// Excluded from TinyGo builds, where TestTinyGoTest would run tinygo test on itself.
 package xnet
 
 import (
@@ -13,6 +12,8 @@ import (
 	"testing"
 )
 
+// TestTinyGoTest runs tinygo test on the whole module, which must pass. It
+// takes minutes, so it is skipped with -short or when tinygo is not installed.
 func TestTinyGoTest(t *testing.T) {
 	if testing.Short() {
 		t.Skip("`tinygo test` skipped on short test")
@@ -20,11 +21,13 @@ func TestTinyGoTest(t *testing.T) {
 	if exec.Command("tinygo", "version").Run() != nil {
 		t.Skip("tinygo not installed")
 	}
-	// This takes a long time. Consider running only important
-	// tests with -run=TestXxx flag: `go test ./... -run=TestXxx`
-	out, err := exec.Command("tinygo", "test", ".").CombinedOutput()
+	cmd := exec.Command("tinygo", "test", "./...")
+	cmd.Dir = "../.."
+	// Test for the host even when this test runs cross-compiled, as with GOARCH=386.
+	cmd.Env = append(os.Environ(), "GOOS=", "GOARCH=")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatal("tinygo failed to test:", err, "\n", string(out))
+		t.Fatalf("tinygo test ./...: %v\n%s", err, out)
 	}
 }
 
