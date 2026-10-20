@@ -3,8 +3,10 @@ package xnet
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
 	"net/netip"
+	"os"
 	"syscall"
 	"testing"
 	"time"
@@ -385,5 +387,70 @@ func TestStackGoUDPReadFromAddrNotAliased(t *testing.T) {
 		if from.String() != want[i] {
 			t.Errorf("ReadFrom #%d address is now %s, want %s", i, from, want[i])
 		}
+	}
+}
+
+// UDP sockets from StackGo are sized by UDPConfig (zero→MTU), never by the TCP pool config.
+func TestStackGoUDPBufferSizes(t *testing.T) {
+	const tcpBufSize = 64 * 1024
+	tests := []struct {
+		name           string
+		cfg            UDPConfig
+		wantTx, wantRx int // zero means stack MTU.
+	}{
+		{name: "default", cfg: UDPConfig{}},
+		{name: "explicit", cfg: UDPConfig{TxBufSize: 512, RxBufSize: 256, QueueSize: 2}, wantTx: 512, wantRx: 256},
+	}
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sv, cl := newUDPTestPair(t, int64(i)+1)
+			if tc.wantTx == 0 {
+				tc.wantTx = sv.MTU()
+			}
+			if tc.wantRx == 0 {
+				tc.wantRx = sv.MTU()
+			}
+			sg := sv.StackBlocking(backoffYield).StackGo(StackGoConfig{
+				ListenerPoolConfig: TCPPoolConfig{
+					QueueSize:  4,
+					TxBufSize:  tcpBufSize,
+					RxBufSize:  tcpBufSize,
+					NewBackoff: newBackoffYield,
+				},
+				UDPConfig: tc.cfg,
+			})
+			raddr := netip.AddrPortFrom(netip.AddrFrom4(cl.Addr4()), 9100)
+
+			// Dial path: connected udp.Conn.
+			sock, err := sg.SocketNetip(context.Background(), "udp", syscall.AF_INET, sockDGRAM, netip.AddrPort{}, raddr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			conn := sock.(interface{ LnetoConn() *udp.Conn }).LnetoConn()
+			defer conn.Close()
+			if got := conn.SizeOutput(); got != tc.wantTx {
+				t.Errorf("dial tx size: got %d, want %d", got, tc.wantTx)
+			}
+			if got := conn.SizeInput(); got != tc.wantRx {
+				t.Errorf("dial rx size: got %d, want %d", got, tc.wantRx)
+			}
+
+			// Listen path: udp.PacketConn. Expired deadline: write fits tx buffer now or fails.
+			laddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), 9101)
+			sock, err = sg.SocketNetip(context.Background(), "udp", syscall.AF_INET, sockDGRAM, laddr, netip.AddrPort{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pc := sock.(net.PacketConn)
+			defer pc.Close()
+			pc.SetWriteDeadline(time.Now().Add(-time.Second))
+			to := net.UDPAddrFromAddrPort(raddr)
+			if _, err := pc.WriteTo(make([]byte, tc.wantTx+1), to); !errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Errorf("listen write tx+1 bytes: got err %v, want %v", err, os.ErrDeadlineExceeded)
+			}
+			if _, err := pc.WriteTo(make([]byte, tc.wantTx), to); err != nil {
+				t.Errorf("listen write tx bytes: %v", err)
+			}
+		})
 	}
 }

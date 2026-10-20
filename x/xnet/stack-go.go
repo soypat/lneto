@@ -21,10 +21,20 @@ const (
 
 	defaultTCPDialTimeout = 2 * time.Second
 	defaultTCPDialRetries = 1
+	defaultUDPQueueSize   = 4
 )
+
+// UDPConfig sizes buffers of UDP sockets created by [StackGo].
+// Zero buffer sizes default to the stack MTU, zero QueueSize to a small default.
+type UDPConfig struct {
+	TxBufSize int
+	RxBufSize int
+	QueueSize int
+}
 
 type StackGoConfig struct {
 	ListenerPoolConfig TCPPoolConfig
+	UDPConfig          UDPConfig
 	TCPDialTimeout     time.Duration
 	TCPDialRetries     int
 }
@@ -43,10 +53,21 @@ func (s StackBlocking) StackGo(cfg StackGoConfig) StackGo {
 	if cfg.TCPDialTimeout <= 0 {
 		cfg.TCPDialTimeout = defaultTCPDialTimeout
 	}
+	// A datagram never exceeds MTU so one MTU per direction fits any datagram.
+	if cfg.UDPConfig.TxBufSize <= 0 {
+		cfg.UDPConfig.TxBufSize = s.async.MTU()
+	}
+	if cfg.UDPConfig.RxBufSize <= 0 {
+		cfg.UDPConfig.RxBufSize = s.async.MTU()
+	}
+	if cfg.UDPConfig.QueueSize <= 0 {
+		cfg.UDPConfig.QueueSize = defaultUDPQueueSize
+	}
 
 	sg := StackGo{
 		blk:            s,
 		plcfg:          cfg.ListenerPoolConfig,
+		udpcfg:         cfg.UDPConfig,
 		tcpDialTimeout: cfg.TCPDialTimeout,
 		tcpDialRetries: cfg.TCPDialRetries,
 	}
@@ -56,6 +77,7 @@ func (s StackBlocking) StackGo(cfg StackGoConfig) StackGo {
 type StackGo struct {
 	blk            StackBlocking
 	plcfg          TCPPoolConfig
+	udpcfg         UDPConfig
 	tcpDialTimeout time.Duration
 	tcpDialRetries int
 }
@@ -123,10 +145,10 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			// LISTEN UDP: no fixed remote → PacketConn.
 			var pc udppktconn
 			err = pc.c.Configure(udp.PacketConnConfig{
-				TxBuf:       make([]byte, s.plcfg.TxBufSize),
-				RxBuf:       make([]byte, s.plcfg.RxBufSize),
-				TxQueueSize: s.plcfg.QueueSize,
-				RxQueueSize: s.plcfg.QueueSize,
+				TxBuf:       make([]byte, s.udpcfg.TxBufSize),
+				RxBuf:       make([]byte, s.udpcfg.RxBufSize),
+				TxQueueSize: s.udpcfg.QueueSize,
+				RxQueueSize: s.udpcfg.QueueSize,
 				RWBackoff:   s.plcfg.NewBackoff(),
 			})
 			if err != nil {
@@ -149,10 +171,10 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 		}
 		var conn udp.Conn
 		err = conn.Configure(udp.ConnConfig{
-			TxBuf:       make([]byte, s.plcfg.TxBufSize),
-			RxBuf:       make([]byte, s.plcfg.RxBufSize),
-			TxQueueSize: s.plcfg.QueueSize,
-			RxQueueSize: s.plcfg.QueueSize,
+			TxBuf:       make([]byte, s.udpcfg.TxBufSize),
+			RxBuf:       make([]byte, s.udpcfg.RxBufSize),
+			TxQueueSize: s.udpcfg.QueueSize,
+			RxQueueSize: s.udpcfg.QueueSize,
 			RWBackoff:   s.plcfg.NewBackoff(),
 			MTU:         uint16(s.blk.async.MTU()),
 		})
@@ -178,7 +200,6 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			var conn tcp.Conn
 			// DIAL TCP: active connection a.k.a TCP Client branch.
 			conncfg := tcp.ConnConfig{
-				// TODO(pato): Eventually add UDP configuration. we use TCP for now for simplicity's sake.
 				TxBuf:             make([]byte, s.plcfg.TxBufSize),
 				RxBuf:             make([]byte, s.plcfg.RxBufSize),
 				TxPacketQueueSize: s.plcfg.QueueSize,
