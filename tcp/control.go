@@ -283,6 +283,12 @@ func (tcb *ControlBlock) HasPendingRetransmit() bool {
 	return tcb._state.txQueuedDataOpen() && tcb.dupack >= retransmitAfterDupacks && tcb.nRetransmit <= tcb.dupack-retransmitAfterDupacks
 }
 
+// fastRetransmitDue reports whether PendingSegment returns the fast retransmit:
+// one is owed and no control segment or challenge ACK takes priority.
+func (tcb *ControlBlock) fastRetransmitDue() bool {
+	return !tcb.pendingChallengeAck() && !tcb.pending[0].HasAny(flagctl) && tcb.HasPendingRetransmit()
+}
+
 // ZeroWindowProbe returns a segment carrying the next octet of new data, to send
 // when the peer's window is zero and nothing is outstanding (RFC 9293 §3.8.6.1).
 // The peer must acknowledge the octet, reporting its current window, so a lost
@@ -342,7 +348,7 @@ func (tcb *ControlBlock) PendingSegment(payloadLen int) (_ Segment, ok bool) {
 		// Do not clear challengeAck here: PendingSegment is documented as read-only.
 		// The flag is consumed in Send when the ACK segment is actually transmitted.
 		return tcb.MakeChallengeACK(), true
-	} else if !pending.HasAny(flagctl) && tcb.HasPendingRetransmit() {
+	} else if tcb.fastRetransmitDue() {
 		// Optimist Strategy: retransmit oldest data once.
 		payloadLen = min(payloadLen, int(Sizeof(tcb.snd.UNA, tcb.snd.NXT)))
 		return Segment{SEQ: tcb.snd.UNA, DATALEN: Size(payloadLen), ACK: tcb.rcv.NXT, WND: tcb.rcv.WND, Flags: FlagACK}, true

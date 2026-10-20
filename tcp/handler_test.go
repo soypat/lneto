@@ -1458,86 +1458,155 @@ func TestChallengeACKWithBufferedData(t *testing.T) {
 	}
 }
 
+// TestHandler_RetransmitAfter3DupACKs verifies three duplicate ACKs resend the
+// oldest unacknowledged data, also when a Policy holds new data back, which
+// stays held: a resend is not new data.
 func TestHandler_RetransmitAfter3DupACKs(t *testing.T) {
-	const (
-		mtu        = 1500
-		maxpackets = 3
-	)
-	rng := rand.New(rand.NewSource(42))
+	for _, tc := range []struct {
+		name   string
+		policy *recordingPolicy
+	}{
+		{name: "no-policy"},
+		{name: "new-data-held", policy: newRecordingPolicy()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const (
+				mtu        = 1500
+				maxpackets = 3
+			)
+			rng := rand.New(rand.NewSource(42))
 
-	client := newHandler(t, mtu, maxpackets)
-	server := newHandler(t, mtu, maxpackets)
-	setupClientServer(t, rng, client, server)
+			client := newHandler(t, mtu, maxpackets)
+			server := newHandler(t, mtu, maxpackets)
+			if tc.policy != nil {
+				client.SetPolicy(tc.policy)
+			}
+			setupClientServer(t, rng, client, server)
+			var pkt [mtu]byte
+			establish(t, client, server, pkt[:])
+
+			// Client sends some data in flight.
+			payload := []byte("0123456789")
+
+			written, err := client.Write(payload)
+			if err != nil || written != len(payload) {
+				t.Fatalf("client.Write failed: %v len=%d", err, written)
+			}
+
+			n, err := client.Send(pkt[:])
+			if err != nil {
+				t.Fatalf("client.Send initial data: %v", err)
+			}
+			if n <= sizeHeaderTCP {
+				t.Fatalf("expected non-empty data packet; got %d", n)
+			}
+			// Server does NOT receive the intended packet, but rather the retransmission later on.
+			// no server.Recv(pkt[:n]) -> Packet loss.
+			if tc.policy != nil {
+				tc.policy.txLimit = 0
+				if _, err := client.Write([]byte("held")); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			// Simulate 3 duplicate ACKs (ACK == UNA, no progress).
+			dup := server.scb.MakeDupACK()
+			if !client.scb.IncomingIsDupACK(dup.ACK) {
+				t.Fatal("MakeRetransmitDupACK return should be considered a duplicate ACK by remote")
+			}
+			for i := range 3 {
+				fb, _ := NewFrame(pkt[:])
+				fb.SetSourcePort(server.LocalPort())
+				fb.SetDestinationPort(client.LocalPort())
+				fb.SetSegment(dup, 5)
+
+				if err := client.Recv(pkt[:sizeHeaderTCP]); err != nil {
+					t.Fatalf("client.Recv dupACK #%d failed: %v", i+1, err)
+				}
+			}
+
+			if client.scb.dupack != 3 {
+				t.Fatalf("expected dupack=3; got %d", client.scb.dupack)
+			}
+			if !client.scb.HasPendingRetransmit() {
+				t.Fatal("expected HasPendingRetransmit() true after 3 dupACKs")
+			}
+
+			oldUNA := client.scb.snd.UNA
+			n, err = client.Send(pkt[:])
+			if err != nil {
+				t.Fatalf("client.Send retransmit failed: %v", err)
+			}
+			if n != sizeHeaderTCP+len(payload) {
+				t.Fatalf("expected retransmit segment of %d bytes; got %d", sizeHeaderTCP+len(payload), n)
+			} else if client.scb.HasPendingRetransmit() {
+				t.Fatal("expected client to satisfy pending retransmit after single Send call")
+			}
+
+			retransmitFrame, _ := NewFrame(pkt[:n])
+			rtSeg := retransmitFrame.Segment(0)
+			if rtSeg.SEQ != oldUNA {
+				t.Fatalf("retransmit SEQ = %d; expected UNA=%d", rtSeg.SEQ, oldUNA)
+			}
+			if !bytes.Equal(retransmitFrame.Payload(), payload) {
+				t.Fatalf("retransmit payload %q, want %q", retransmitFrame.Payload(), payload)
+			}
+			if !rtSeg.Flags.HasAny(FlagACK) {
+				t.Fatalf("retransmit missing ACK flag: %#v", rtSeg.Flags)
+			}
+			if client.scb.nRetransmit != 1 {
+				t.Fatalf("expected scb.nRetransmit = 1; got %d", client.scb.nRetransmit)
+			}
+
+			// Ensure remote side can receive the retransmit frame.
+			if err := server.Recv(pkt[:n]); err != nil {
+				t.Fatalf("server.Recv retransmit packet failed: %v", err)
+			}
+			if tc.policy != nil {
+				if n, err := client.Send(pkt[:]); n != 0 || err != nil {
+					t.Fatalf("sent %d bytes (%v) of new data the Policy holds", n, err)
+				}
+			}
+		})
+	}
+}
+
+// TestHandler_RSTWithFastRetransmitOwed verifies a RST queued while a fast
+// retransmit is owed carries no payload when the Policy's limit is 0.
+func TestHandler_RSTWithFastRetransmitOwed(t *testing.T) {
+	const mtu = 1500
+	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
+	policy := newRecordingPolicy()
+	client.SetPolicy(policy)
+	setupClientServer(t, rand.New(rand.NewSource(42)), client, server)
 	var pkt [mtu]byte
 	establish(t, client, server, pkt[:])
-
-	// Client sends some data in flight.
-	payload := []byte("0123456789")
-
-	written, err := client.Write(payload)
-	if err != nil || written != len(payload) {
-		t.Fatalf("client.Write failed: %v len=%d", err, written)
+	if _, err := client.Write([]byte("0123456789")); err != nil {
+		t.Fatal(err)
 	}
-
-	n, err := client.Send(pkt[:])
-	if err != nil {
-		t.Fatalf("client.Send initial data: %v", err)
+	client.Send(pkt[:]) // Lost.
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
 	}
-	if n <= sizeHeaderTCP {
-		t.Fatalf("expected non-empty data packet; got %d", n)
-	}
-	// Server does NOT receive the intended packet, but rather the retransmission later on.
-	// no server.Recv(pkt[:n]) -> Packet loss.
-
-	// Simulate 3 duplicate ACKs (ACK == UNA, no progress).
+	client.ShutdownRead()
+	client.Send(pkt[:]) // FIN, lost.
+	policy.txLimit = 0
 	dup := server.scb.MakeDupACK()
-	if !client.scb.IncomingIsDupACK(dup.ACK) {
-		t.Fatal("MakeRetransmitDupACK return should be considered a duplicate ACK by remote")
-	}
-	for i := range 3 {
-		fb, _ := NewFrame(pkt[:])
-		fb.SetSourcePort(server.LocalPort())
-		fb.SetDestinationPort(client.LocalPort())
-		fb.SetSegment(dup, 5)
-
-		if err := client.Recv(pkt[:sizeHeaderTCP]); err != nil {
-			t.Fatalf("client.Recv dupACK #%d failed: %v", i+1, err)
+	for _, datalen := range []Size{0, 0, 0, 4} { // Three duplicate ACKs, then data the closed read side answers with RST.
+		seg := dup
+		seg.DATALEN = datalen
+		frm, _ := NewFrame(pkt[:])
+		frm.SetSourcePort(server.LocalPort())
+		frm.SetDestinationPort(client.LocalPort())
+		frm.SetSegment(seg, 5)
+		if err := client.Recv(pkt[:sizeHeaderTCP+int(datalen)]); err != nil {
+			t.Fatal(err)
 		}
 	}
-
-	if client.scb.dupack != 3 {
-		t.Fatalf("expected dupack=3; got %d", client.scb.dupack)
-	}
-	if !client.scb.HasPendingRetransmit() {
-		t.Fatal("expected HasPendingRetransmit() true after 3 dupACKs")
-	}
-
-	oldUNA := client.scb.snd.UNA
-	n, err = client.Send(pkt[:])
-	if err != nil {
-		t.Fatalf("client.Send retransmit failed: %v", err)
-	}
-	if n <= sizeHeaderTCP {
-		t.Fatalf("expected retransmit segment (>=20 bytes); got %d", n)
-	} else if client.scb.HasPendingRetransmit() {
-		t.Fatal("expected client to satisfy pending retransmit after single Send call")
-	}
-
-	retransmitFrame, _ := NewFrame(pkt[:n])
-	rtSeg := retransmitFrame.Segment(0)
-	if rtSeg.SEQ != oldUNA {
-		t.Fatalf("retransmit SEQ = %d; expected UNA=%d", rtSeg.SEQ, oldUNA)
-	}
-	if !rtSeg.Flags.HasAny(FlagACK) {
-		t.Fatalf("retransmit missing ACK flag: %#v", rtSeg.Flags)
-	}
-	if client.scb.nRetransmit != 1 {
-		t.Fatalf("expected scb.nRetransmit = 1; got %d", client.scb.nRetransmit)
-	}
-
-	// Ensure remote side can receive the retransmit frame.
-	if err := server.Recv(pkt[:n]); err != nil {
-		t.Fatalf("server.Recv retransmit packet failed: %v", err)
+	n, err := client.Send(pkt[:])
+	frm, _ := NewFrame(pkt[:n])
+	if seg := frm.Segment(len(frm.Payload())); err != nil || !seg.Flags.HasAny(FlagRST) || seg.DATALEN != 0 {
+		t.Fatalf("sent %v (%v), want a RST without data", seg, err)
 	}
 }
 
