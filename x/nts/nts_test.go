@@ -11,6 +11,7 @@ import (
 	"encoding/binary"
 	"math/big"
 	"net"
+	"runtime"
 	"testing"
 	"time"
 
@@ -143,6 +144,9 @@ func runMockKEServer(t *testing.T, conn net.Conn, tlsCfg *tls.Config, cookie []b
 }
 
 func TestPerformKE_E2E(t *testing.T) {
+	if runtime.Compiler == "tinygo" {
+		t.Skip("TinyGo's crypto/tls performs no handshake, which NTS-KE requires")
+	}
 	cert := generateSelfSignedCert(t)
 	pool := x509.NewCertPool()
 	leaf, _ := x509.ParseCertificate(cert.Certificate[0])
@@ -612,6 +616,9 @@ func TestClientServer_TamperedAADRejected(t *testing.T) {
 */
 
 func TestHandleKE_E2E(t *testing.T) {
+	if runtime.Compiler == "tinygo" {
+		t.Skip("TinyGo's crypto/tls performs no handshake, which NTS-KE requires")
+	}
 	cert := generateSelfSignedCert(t)
 	pool := x509.NewCertPool()
 	leaf, _ := x509.ParseCertificate(cert.Certificate[0])
