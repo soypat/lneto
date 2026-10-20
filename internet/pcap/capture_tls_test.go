@@ -4,6 +4,7 @@ import (
 	stdtls "crypto/tls"
 	"encoding/binary"
 	"net"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +50,9 @@ func captureClientHelloRecord(t testing.TB, serverName string, protos []string) 
 // TestCaptureTLSClientHello breaks down a real ClientHello record and checks
 // that the SNI hostname is recovered.
 func TestCaptureTLSClientHello(t *testing.T) {
+	if runtime.Compiler == "tinygo" {
+		t.Skip("TinyGo's crypto/tls client sends no ClientHello to capture")
+	}
 	const serverName = "example.com"
 	pkt := captureClientHelloRecord(t, serverName, []string{"h2", "http/1.1"})
 

@@ -2,6 +2,7 @@ package ethernet
 
 import (
 	"net"
+	"runtime"
 	"testing"
 )
 
@@ -29,6 +30,9 @@ func TestString(t *testing.T) {
 }
 
 func TestString_singleAlloc(t *testing.T) {
+	if runtime.Compiler == "tinygo" {
+		t.Skip("TinyGo's testing.AllocsPerRun does not count allocations")
+	}
 	addr := [6]byte{0xde, 0xad, 0xbe, 0xef, 0x00, 0x01}
 	var sink string
 	allocs := testing.AllocsPerRun(100, func() {
