@@ -231,7 +231,8 @@ func readKEResponse(r io.Reader, scratch []byte) (KESecrets, error) {
 //	S2C context: [0x00, 0x00, algID_hi, algID_lo, 0x01]
 //
 // This is called automatically by [PerformKE]; expose it for callers
-// that manage the TLS handshake themselves.
+// that manage the TLS handshake themselves. Under TinyGo, whose crypto/tls
+// exports no keying material, it returns [lneto.ErrUnsupported].
 func DeriveKeys(conn *tls.Conn, secrets *KESecrets) error {
 	cs := conn.ConnectionState()
 	const label = "EXPORTER-network-time-security"
@@ -240,7 +241,7 @@ func DeriveKeys(conn *tls.Conn, secrets *KESecrets) error {
 
 	// C2S key: context byte 4 = 0x00.
 	ctx[4] = 0x00
-	c2s, err := cs.ExportKeyingMaterial(label, ctx[:], 32)
+	c2s, err := exportKeyingMaterial(&cs, label, ctx[:], 32)
 	if err != nil {
 		return err
 	}
@@ -248,7 +249,7 @@ func DeriveKeys(conn *tls.Conn, secrets *KESecrets) error {
 
 	// S2C key: context byte 4 = 0x01.
 	ctx[4] = 0x01
-	s2c, err := cs.ExportKeyingMaterial(label, ctx[:], 32)
+	s2c, err := exportKeyingMaterial(&cs, label, ctx[:], 32)
 	if err != nil {
 		return err
 	}
