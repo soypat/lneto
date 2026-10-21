@@ -3,6 +3,7 @@ package tcp
 import (
 	"io"
 	"net"
+	"slices"
 	"sync/atomic"
 
 	"log/slog"
@@ -113,8 +114,23 @@ func (h *Handler) SetBuffers(txbuf, rxbuf []byte, packets int) error {
 
 // SetPolicy installs the transmit-steering algorithm. nil disables it.
 // It should be set before the connection is opened. See [Policy].
+//
+// With a retransmission timer, a Policy with a NextDeadline method such as
+// rto.Timer, alone or in [Policies], duplicate ACKs resend SND.UNA once (RFC
+// 5681 §3.2) and the timer repairs a lost resend. Without one they resend it
+// on every duplicate ACK from the third.
 func (h *Handler) SetPolicy(policy Policy) {
 	h.policy = policy
+	h.scb.fastRetransmitOnce = hasTimer(policy)
+}
+
+// hasTimer reports whether p or a member of it has a NextDeadline method.
+func hasTimer(p Policy) bool {
+	if ps, ok := p.(Policies); ok {
+		return slices.ContainsFunc(ps, hasTimer)
+	}
+	_, ok := p.(interface{ NextDeadline() int64 })
+	return ok
 }
 func (h *Handler) policyEnabled() bool { return h.policy != nil }
 

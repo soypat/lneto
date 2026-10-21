@@ -1541,6 +1541,60 @@ func TestHandler_RetransmitAfter3DupACKs(t *testing.T) {
 	}
 }
 
+// TestHandler_FastRetransmitsPerDupACK verifies that with a retransmission
+// timer, which repairs a lost resend, duplicate ACKs resend SND.UNA once (RFC
+// 5681 §3.2), and without one on every duplicate ACK from the third.
+func TestHandler_FastRetransmitsPerDupACK(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		policy      Policy
+		wantResends int
+	}{
+		{name: "no-policy", wantResends: 3},
+		{name: "policy-without-timer", policy: newRecordingPolicy(), wantResends: 3},
+		{name: "timer", policy: deadlinePolicy{recordingPolicy: newRecordingPolicy()}, wantResends: 1},
+		{name: "policies-without-timer", policy: Policies{newRecordingPolicy()}, wantResends: 3},
+		{name: "timer-in-policies", policy: Policies{newRecordingPolicy(), deadlinePolicy{recordingPolicy: newRecordingPolicy()}}, wantResends: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const mtu = 1500
+			client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
+			client.SetPolicy(tc.policy)
+			setupClientServer(t, rand.New(rand.NewSource(42)), client, server)
+			var pkt [mtu]byte
+			establish(t, client, server, pkt[:])
+			if _, err := client.Write([]byte("0123456789")); err != nil {
+				t.Fatal(err)
+			}
+			client.Send(pkt[:]) // Lost.
+			una, dup := client.scb.snd.UNA, server.scb.MakeDupACK()
+			resends := 0
+			for range 5 {
+				frm, _ := NewFrame(pkt[:])
+				frm.SetSourcePort(server.LocalPort())
+				frm.SetDestinationPort(client.LocalPort())
+				frm.SetSegment(dup, 5)
+				if err := client.Recv(pkt[:sizeHeaderTCP]); err != nil {
+					t.Fatal(err)
+				}
+				n, err := client.Send(pkt[:])
+				if err != nil {
+					t.Fatal(err)
+				} else if n == 0 {
+					continue
+				}
+				frm, _ = NewFrame(pkt[:n])
+				if seg := frm.Segment(len(frm.Payload())); seg.SEQ == una && seg.DATALEN > 0 {
+					resends++
+				}
+			}
+			if resends != tc.wantResends {
+				t.Errorf("%d resends after 5 duplicate ACKs, want %d", resends, tc.wantResends)
+			}
+		})
+	}
+}
+
 func TestHandler_RetransmitAfterMultipleLossesBothDirections(t *testing.T) {
 	const (
 		mtu        = 1500

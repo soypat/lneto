@@ -80,6 +80,10 @@ type ControlBlock struct {
 	dupack uint8
 	// nRetransmit counts number of retransmits sent since last UNA update.
 	nRetransmit uint8
+	// fastRetransmitOnce owes one fast retransmit per SND.UNA instead of one
+	// per duplicate ACK from the third, for a sender with a retransmission
+	// timer to repair a lost one. Kept across reset.
+	fastRetransmitOnce bool
 	// When FlagRST is set in pending flags rstPtr will contain the sequence number of the RST segment to make it "believable" (See RFC9293)
 	rstPtr Value
 }
@@ -280,7 +284,11 @@ func (tcb *ControlBlock) HasPending() bool {
 // retransmit strategy.
 func (tcb *ControlBlock) HasPendingRetransmit() bool {
 	// Force retransmit after 3 consecutive acks of UNA.
-	return tcb._state.txQueuedDataOpen() && tcb.dupack >= retransmitAfterDupacks && tcb.nRetransmit <= tcb.dupack-retransmitAfterDupacks
+	owed := tcb.nRetransmit <= tcb.dupack-retransmitAfterDupacks
+	if tcb.fastRetransmitOnce {
+		owed = tcb.nRetransmit == 0
+	}
+	return tcb._state.txQueuedDataOpen() && tcb.dupack >= retransmitAfterDupacks && owed
 }
 
 // ZeroWindowProbe returns a segment carrying the next octet of new data, to send
@@ -805,8 +813,9 @@ func (tcb *ControlBlock) newState(s State) {
 
 func (tcb *ControlBlock) reset() {
 	*tcb = ControlBlock{
-		logger:     tcb.logger,
-		_statePrev: tcb._state, // Reset is a transition to CLOSED.
+		logger:             tcb.logger,
+		_statePrev:         tcb._state, // Reset is a transition to CLOSED.
+		fastRetransmitOnce: tcb.fastRetransmitOnce,
 	}
 }
 
