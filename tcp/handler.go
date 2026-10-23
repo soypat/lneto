@@ -501,8 +501,8 @@ func (h *Handler) Send(b []byte) (int, error) {
 		}
 		resend := ok
 		if !ok {
-			if txLimit < Size(maxPayload) {
-				// Policy clamped new data.
+			if txLimit < Size(maxPayload) && !h.scb.fastRetransmitDue() {
+				// Policy clamped new data. A fast retransmit is not new data.
 				maxPayload = int(txLimit)
 			}
 			segment, ok = h.scb.PendingSegment(maxPayload)
