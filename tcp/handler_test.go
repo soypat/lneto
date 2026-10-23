@@ -8,6 +8,8 @@ import (
 	"net"
 	"testing"
 
+	"strconv"
+
 	"github.com/soypat/lneto/ethernet"
 )
 
@@ -2300,5 +2302,485 @@ func TestHandler_ISS(t *testing.T) {
 	}
 	if client.ISS() != 300 || server.ISS() != 100 {
 		t.Fatalf("ISS client=%d server=%d, want 300 and 100", client.ISS(), server.ISS())
+	}
+}
+
+// rtxSetup establishes a client with a recordingPolicy and returns it.
+func rtxSetup(t *testing.T, seed int64, buf []byte) (client *Handler, pol *recordingPolicy) {
+	t.Helper()
+	client, server := newHandler(t, ethernet.MaxMTU, 4), newHandler(t, ethernet.MaxMTU, 4)
+	pol = newRecordingPolicy()
+	client.SetPolicy(pol)
+	setupClientServer(t, rand.New(rand.NewSource(seed)), client, server)
+	establish(t, client, server, buf)
+	return client, pol
+}
+
+// rtxSendData writes data and emits it as one segment, returning its SEQ.
+func rtxSendData(t *testing.T, h *Handler, buf []byte, data string) Value {
+	t.Helper()
+	if _, err := h.Write([]byte(data)); err != nil {
+		t.Fatal("write:", err)
+	}
+	seq := h.ControlBlock().SendNext()
+	clear(buf)
+	n, err := h.Send(buf)
+	if err != nil {
+		t.Fatal("send:", err)
+	} else if n != sizeHeaderTCP+len(data) {
+		t.Fatalf("sent %d bytes, want %d", n, sizeHeaderTCP+len(data))
+	}
+	return seq
+}
+
+// rtxSend emits one segment and returns it with its payload.
+func rtxSend(t *testing.T, h *Handler, buf []byte) (Segment, string) {
+	t.Helper()
+	clear(buf)
+	n, err := h.Send(buf)
+	if err != nil {
+		t.Fatal("send:", err)
+	} else if n == 0 {
+		t.Fatal("no segment emitted")
+	}
+	return mustSegment(t, buf[:n], n-sizeHeaderTCP), string(buf[sizeHeaderTCP:n])
+}
+
+// TestHandlerRetransmitAtPacketStart verifies a directed resend inside a queued
+// packet emits that whole packet from its start, leaves snd.NXT alone, and the
+// following Send continues with new data from snd.NXT.
+func TestHandlerRetransmitAtPacketStart(t *testing.T) {
+	var buf [ethernet.MaxMTU]byte
+	client, pol := rtxSetup(t, 21, buf[:])
+	seqA := rtxSendData(t, client, buf[:], "alpha")
+	rtxSendData(t, client, buf[:], "bravo")
+	nxt := client.ControlBlock().SendNext()
+	if _, err := client.Write([]byte("charlie")); err != nil {
+		t.Fatal(err)
+	}
+
+	pol.rtxFrom, pol.retransmit = seqA+2, true
+	seg, payload := rtxSend(t, client, buf[:])
+	if seg.SEQ != seqA || payload != "alpha" {
+		t.Fatalf("resend = seq %d %q, want seq %d %q", seg.SEQ, payload, seqA, "alpha")
+	}
+	if got := client.ControlBlock().SendNext(); got != nxt {
+		t.Fatalf("snd.NXT = %d after resend, want %d", got, nxt)
+	}
+
+	pol.retransmit = false
+	seg, payload = rtxSend(t, client, buf[:])
+	if seg.SEQ != nxt || payload != "charlie" {
+		t.Fatalf("next segment = seq %d %q, want new data seq %d %q", seg.SEQ, payload, nxt, "charlie")
+	}
+}
+
+// TestHandlerRetransmitNothingQueued verifies a directive with no unsent data
+// still emits the resend, as an RTO with nothing new to send requires.
+func TestHandlerRetransmitNothingQueued(t *testing.T) {
+	var buf [ethernet.MaxMTU]byte
+	client, pol := rtxSetup(t, 22, buf[:])
+	seqA := rtxSendData(t, client, buf[:], "alpha")
+	if client.bufTx.BufferedUnsent() != 0 {
+		t.Fatal("test requires no unsent data")
+	}
+	pol.rtxFrom, pol.retransmit = seqA, true
+	seg, payload := rtxSend(t, client, buf[:])
+	if seg.SEQ != seqA || payload != "alpha" {
+		t.Fatalf("resend = seq %d %q, want seq %d %q", seg.SEQ, payload, seqA, "alpha")
+	}
+}
+
+// TestHandlerRetransmitIgnoresTxLimit verifies a resend is not held back by the
+// Policy's new-data limit, while new data still is.
+func TestHandlerRetransmitIgnoresTxLimit(t *testing.T) {
+	var buf [ethernet.MaxMTU]byte
+	client, pol := rtxSetup(t, 23, buf[:])
+	seqA := rtxSendData(t, client, buf[:], "alpha")
+	if _, err := client.Write([]byte("bravo")); err != nil {
+		t.Fatal(err)
+	}
+	pol.txLimit = 0
+	pol.rtxFrom, pol.retransmit = seqA, true
+	seg, payload := rtxSend(t, client, buf[:])
+	if seg.SEQ != seqA || payload != "alpha" {
+		t.Fatalf("resend = seq %d %q, want seq %d %q", seg.SEQ, payload, seqA, "alpha")
+	}
+	pol.retransmit = false
+	clear(buf[:])
+	n, err := client.Send(buf[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n > sizeHeaderTCP {
+		t.Errorf("sent %d payload octets of new data with txLimit=0", n-sizeHeaderTCP)
+	}
+}
+
+// TestHandlerRetransmitPartialPacket documents a known limitation: when the
+// offered payload is smaller than the queued packet only its head is resent,
+// and a later request for the tail snaps back to the head.
+func TestHandlerRetransmitPartialPacket(t *testing.T) {
+	var buf [ethernet.MaxMTU]byte
+	client, pol := rtxSetup(t, 24, buf[:])
+	seqA := rtxSendData(t, client, buf[:], "0123456789")
+	nxt := client.ControlBlock().SendNext()
+	small := buf[:sizeHeaderTCP+4]
+
+	pol.rtxFrom, pol.retransmit = seqA, true
+	seg, payload := rtxSend(t, client, small)
+	if seg.SEQ != seqA || payload != "0123" {
+		t.Fatalf("resend = seq %d %q, want seq %d %q", seg.SEQ, payload, seqA, "0123")
+	}
+	pol.rtxFrom = seqA + 4
+	seg, payload = rtxSend(t, client, small)
+	if seg.SEQ != seqA || payload != "0123" {
+		t.Fatalf("tail resend = seq %d %q, want head seq %d %q", seg.SEQ, payload, seqA, "0123")
+	}
+	if got := client.ControlBlock().SendNext(); got != nxt {
+		t.Fatalf("snd.NXT = %d, want %d", got, nxt)
+	}
+}
+
+// TestHandlerStreamIntegrityUnderReorder asserts byte identity of a reassembled
+// stream whose segments arrive out of order: arrival order is randomised within
+// each block of shuffleWindow segments, and nothing is lost or retransmitted, so
+// several segments sit staged in the receive ring at once. Reordering may cost
+// throughput; it may not change the bytes.
+func TestHandlerStreamIntegrityUnderReorder(t *testing.T) {
+	const (
+		mtu           = ethernet.MaxMTU
+		maxpackets    = 8
+		segSize       = 100
+		nsegs         = 8  // per round; 800 bytes through a 1500-byte ring
+		rounds        = 40 // enough for the ring to wrap many times
+		shuffleWindow = 4  // segments that may arrive in any order among themselves
+	)
+	rng := rand.New(rand.NewSource(3))
+	client, server := newHandler(t, mtu, maxpackets), newHandler(t, mtu, maxpackets)
+	setupClientServer(t, rng, client, server)
+	var rawbuf [mtu]byte
+	establish(t, client, server, rawbuf[:])
+
+	var want, got []byte
+	rb := make([]byte, mtu)
+	letter := byte('A')
+	for round := range rounds {
+		// Capture this round's segments on the wire, one segment per write.
+		segs := make([][]byte, 0, nsegs)
+		for range nsegs {
+			payload := make([]byte, segSize)
+			for j := range payload {
+				payload[j] = letter
+			}
+			letter++
+			if letter > 'Z' {
+				letter = 'A'
+			}
+			if n, err := client.Write(payload); err != nil || n != segSize {
+				t.Fatalf("round %d: client write: %d %v", round, n, err)
+			}
+			clear(rawbuf[:])
+			n, err := client.Send(rawbuf[:])
+			if err != nil {
+				t.Fatalf("round %d: client send: %v", round, err)
+			}
+			segs = append(segs, append([]byte(nil), rawbuf[:n]...))
+			want = append(want, payload...)
+		}
+
+		order := make([]int, 0, nsegs)
+		for i := 0; i < nsegs; i += shuffleWindow {
+			block := make([]int, 0, shuffleWindow)
+			for j := i; j < min(i+shuffleWindow, nsegs); j++ {
+				block = append(block, j)
+			}
+			rng.Shuffle(len(block), func(a, b int) { block[a], block[b] = block[b], block[a] })
+			order = append(order, block...)
+		}
+
+		for _, idx := range order {
+			if err := server.Recv(append([]byte(nil), segs[idx]...)); err != nil {
+				t.Logf("round %d segment %d refused: %v", round, idx, err)
+			}
+			// Drain as an application would, keeping the ring from filling.
+			for {
+				n, err := server.Read(rb)
+				if n > 0 {
+					got = append(got, rb[:n]...)
+				}
+				if n == 0 || err != nil {
+					break
+				}
+			}
+			// Feed ACKs back so the sender's window keeps opening; without this
+			// the test stalls on flow control instead of exercising reassembly.
+			clear(rawbuf[:])
+			if n, err := server.Send(rawbuf[:]); err == nil && n > 0 {
+				client.Recv(rawbuf[:n])
+			}
+		}
+
+		if string(got) != string(want) {
+			// Report the first divergence; later rounds only add noise.
+			i := 0
+			for i < len(got) && i < len(want) && got[i] == want[i] {
+				i++
+			}
+			t.Errorf("stream diverges in round %d at byte %d of %d; arrival order %v",
+				round, i, len(want), order)
+			lo := max(0, i-200)
+			t.Errorf("got  %s", summarizeRuns(got[lo:min(len(got), i+200)]))
+			t.Errorf("want %s", summarizeRuns(want[lo:min(len(want), i+200)]))
+			t.FailNow()
+		}
+	}
+	t.Logf("%d bytes intact across %d rounds of reordering (window %d)", len(got), rounds, shuffleWindow)
+}
+
+// summarizeRuns renders a byte stream as run-length pairs ("A*100 B*100") so a
+// duplicated or missing segment is visible at a glance.
+func summarizeRuns(b []byte) string {
+	out := make([]byte, 0, 64)
+	for i := 0; i < len(b); {
+		j := i
+		for j < len(b) && b[j] == b[i] {
+			j++
+		}
+		out = append(out, b[i], '*')
+		out = append(out, strconv.Itoa(j-i)...)
+		out = append(out, ' ')
+		i = j
+	}
+	return string(out)
+}
+
+// synOptions parses the option block of a raw TCP frame and returns the MSS
+// and window-scale values found, with ok flags for presence.
+func synOptions(t *testing.T, frame []byte) (mss uint16, mssOK bool, shift uint8, shiftOK bool) {
+	t.Helper()
+	tfrm, err := NewFrame(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oc OptionCodec
+	err = oc.ForEachOption(tfrm.Options(), func(kind OptionKind, data []byte) error {
+		switch {
+		case kind == OptMaxSegmentSize && len(data) == 2:
+			mss = uint16(data[0])<<8 | uint16(data[1])
+			mssOK = true
+		case kind == OptWindowScale && len(data) == 1:
+			shift = data[0]
+			shiftOK = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mss, mssOK, shift, shiftOK
+}
+
+// TestWindowScaleNegotiation walks the three-way handshake with asymmetric
+// buffer sizes and verifies RFC 7323 §2 end to end on the wire: the SYN and
+// SYN-ACK carry the shift derived from each side's receive buffer, SYN
+// windows are never scaled (and saturate rather than wrap the 16-bit field),
+// and the first post-handshake segment advertises the scaled window.
+func TestWindowScaleNegotiation(t *testing.T) {
+	const clientBuf = 256 << 10 // shift 3: 256KiB>>3 = 32Ki fits, >>2 does not.
+	const serverBuf = 1 << 20   // shift 5: 1MiB>>5 = 32Ki fits, >>4 does not.
+	rng := rand.New(rand.NewSource(1))
+	client, server := new(Handler), new(Handler)
+	err := client.SetBuffers(make([]byte, 2048), make([]byte, clientBuf), 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = server.SetBuffers(make([]byte, 2048), make([]byte, serverBuf), 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setupClientServer(t, rng, client, server)
+
+	packetBuf := make([]byte, 2048)
+
+	// Client SYN: window-scale offer present, window field unscaled+saturated.
+	n, err := client.Send(packetBuf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, mssOK, shift, shiftOK := synOptions(t, packetBuf[:n])
+	if !mssOK {
+		t.Fatal("client SYN lacks MSS option")
+	}
+	if !shiftOK {
+		t.Fatal("client SYN lacks window-scale option")
+	}
+	if shift != 3 {
+		t.Errorf("client SYN shift = %d, want 3 (buffer %d)", shift, clientBuf)
+	}
+	tfrm, _ := NewFrame(packetBuf[:n])
+	if got := tfrm.WindowSize(); got != 0xFFFF {
+		t.Errorf("client SYN wire window = %d, want 65535 (saturated, never scaled)", got)
+	}
+	if err = server.Recv(packetBuf[:n]); err != nil {
+		t.Fatal(err)
+	}
+
+	// Server SYN-ACK: echoes its own shift because the SYN offered scaling.
+	clear(packetBuf)
+	n, err = server.Send(packetBuf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, shift, shiftOK = synOptions(t, packetBuf[:n])
+	if !shiftOK {
+		t.Fatal("server SYN-ACK lacks window-scale option")
+	}
+	if shift != 5 {
+		t.Errorf("server SYN-ACK shift = %d, want 5 (buffer %d)", shift, serverBuf)
+	}
+	tfrm, _ = NewFrame(packetBuf[:n])
+	if got := tfrm.WindowSize(); got != 0xFFFF {
+		t.Errorf("server SYN-ACK wire window = %d, want 65535 (saturated, never scaled)", got)
+	}
+	if err = client.Recv(packetBuf[:n]); err != nil {
+		t.Fatal(err)
+	}
+
+	// Client handshake ACK: the first scaled window on the wire. The client
+	// advertises its whole free buffer, which only fits the field when
+	// right-shifted by its offered shift.
+	clear(packetBuf)
+	n, err = client.Send(packetBuf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tfrm, _ = NewFrame(packetBuf[:n])
+	wantWire := uint16(clientBuf >> 3)
+	if got := tfrm.WindowSize(); got != wantWire {
+		t.Errorf("client ACK wire window = %d, want %d (%d >> 3)", got, wantWire, clientBuf)
+	}
+	if err = server.Recv(packetBuf[:n]); err != nil {
+		t.Fatal(err)
+	}
+	// The server must have scaled the advertisement back up to real octets.
+	if got := server.scb.snd.WND; got != Size(clientBuf) {
+		t.Errorf("server snd.WND = %d, want %d (scaled back up)", got, clientBuf)
+	}
+}
+
+// TestWindowScaleBigTransfer proves the negotiated scale carries real data
+// past the unscaled 64KiB ceiling: with 256KiB buffers on both sides the
+// server streams segments without receiving a single ACK, and must be able
+// to put more than 64KiB in flight before stalling on the send window. The
+// client then receives everything intact.
+func TestWindowScaleBigTransfer(t *testing.T) {
+	const bufSize = 256 << 10
+	const payload = 200 << 10
+	const mtu = 2048
+	rng := rand.New(rand.NewSource(2))
+	client, server := new(Handler), new(Handler)
+	err := client.SetBuffers(make([]byte, mtu), make([]byte, bufSize), 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = server.SetBuffers(make([]byte, bufSize), make([]byte, bufSize), 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setupClientServer(t, rng, client, server)
+	packetBuf := make([]byte, mtu)
+	establish(t, client, server, packetBuf)
+
+	data := make([]byte, payload)
+	rng.Read(data)
+	nw, err := server.Write(data)
+	if err != nil {
+		t.Fatal(err)
+	} else if nw != payload {
+		t.Fatalf("server buffered %d of %d", nw, payload)
+	}
+
+	// Stream server→client WITHOUT delivering anything back: no ACKs, so
+	// everything sent stays in flight. Past 64KiB in flight is the proof
+	// that the scaled window governs the sender.
+	inFlight := 0
+	frames := make([][]byte, 0, payload/1024)
+	for {
+		clear(packetBuf)
+		n, err := server.Send(packetBuf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n <= sizeHeaderTCP {
+			break // window exhausted (or nothing left to send).
+		}
+		tfrm, _ := NewFrame(packetBuf[:n])
+		inFlight += len(tfrm.Payload())
+		frames = append(frames, append([]byte(nil), packetBuf[:n]...))
+		if inFlight >= payload {
+			break
+		}
+	}
+	if inFlight <= 0xFFFF {
+		t.Fatalf("server stalled at %d bytes in flight; scaled window should allow more than 65535", inFlight)
+	}
+
+	// Deliver the flight; the client must reassemble the stream intact.
+	for _, frm := range frames {
+		if err := client.Recv(frm); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := make([]byte, inFlight)
+	nr, err := client.Read(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nr != inFlight {
+		t.Fatalf("client read %d of %d in-flight bytes", nr, inFlight)
+	}
+	if !bytes.Equal(got[:nr], data[:nr]) {
+		t.Fatal("received data differs from sent data")
+	}
+}
+
+// TestWindowScaleWireSafety covers the wire-conversion corners without a
+// peer: no echo of the offer when the peer never gave one, and saturation
+// (not wrap-around) of oversized windows for both SYN and non-SYN segments
+// when scaling is off. Before window scaling existed a 128KiB receive buffer
+// wrapped to a near-zero wire window on the SYN; that regression stays pinned
+// here.
+func TestWindowScaleWireSafety(t *testing.T) {
+	h := new(Handler)
+	err := h.SetBuffers(make([]byte, 2048), make([]byte, 128<<10), 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.wndShiftLocal != 2 {
+		// 128KiB>>1 = 65536 still overflows the field; >>2 = 32768 fits.
+		t.Errorf("wndShiftLocal = %d, want 2 for 128KiB buffer", h.wndShiftLocal)
+	}
+
+	var b [16]byte
+	if words := h.putSynOptions(b[:], 1460, true); words != 1 {
+		t.Errorf("SYN-ACK echoed window scale without a peer offer (words=%d)", words)
+	}
+	if words := h.putSynOptions(b[:], 1460, false); words != 2 {
+		t.Errorf("active SYN did not offer window scale (words=%d)", words)
+	}
+
+	// Scaling off: oversized windows saturate the 16-bit field.
+	if got := h.wireWnd(Segment{WND: 128 << 10, Flags: FlagACK}); got != 0xFFFF {
+		t.Errorf("unscaled oversized window = %d, want 65535", got)
+	}
+	// SYN never scales, even with a negotiated peer shift.
+	h.peerOfferedWS = true
+	if got := h.wireWnd(Segment{WND: 128 << 10, Flags: FlagSYN}); got != 0xFFFF {
+		t.Errorf("SYN window = %d, want 65535 (saturated, unscaled)", got)
+	}
+	// Established segment with negotiated scaling: shifted representation.
+	if got := h.wireWnd(Segment{WND: 128 << 10, Flags: FlagACK}); got != (128<<10)>>2 {
+		t.Errorf("scaled window = %d, want %d", got, (128<<10)>>2)
 	}
 }
