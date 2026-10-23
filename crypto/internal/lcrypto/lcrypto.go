@@ -118,7 +118,6 @@ type Verifier interface {
 	//  - expectName is expected DNS name or IP literal (i.e:"10.0.0.1") configured before connection when peerIsServer=true.
 	//	- msg is RFC 8446 4.4.3 content: [64B pfx, context string, 0x00, handshake transcript hash]
 	//  - sig is remote peer's [Credential.Sign]. Treat as adversarial.
-	// Do not retain or modify slices.
 	VerifyPeer(chainView CertChain, scheme uint16, peerIsServer bool, expectName, msg, sig []byte) error
 }
 
