@@ -8,4 +8,7 @@
 // nothing sits between a Read and the syscall. A server written against these
 // interfaces runs unchanged over the net package, over this package and over
 // TinyGo's netdev.
+//
+// [XDP] sends and receives Ethernet frames over an AF_XDP socket, so the
+// kernel network stack never sees them. It is a netdev.DevEthernet.
 package rawsock

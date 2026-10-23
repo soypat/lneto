@@ -29,6 +29,7 @@ import (
 	"github.com/soypat/lneto/internet/pcap"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/tcp"
+	"github.com/soypat/lneto/x/rawsock"
 	"github.com/soypat/lneto/x/xnet"
 )
 
@@ -65,7 +66,7 @@ func run() (err error) {
 		flagNoPcap    = false
 		flagPort      = 80
 	)
-	flag.StringVar(&flagInterface, "i", flagInterface, "Interface to use. Either tap* or the name of an existing interface to bridge to.")
+	flag.StringVar(&flagInterface, "i", flagInterface, "Interface to use. Either tap*, xdp:<nic> to take over a NIC with AF_XDP, or the name of an existing interface to bridge to.")
 	flag.BoolVar(&flagUseHTTP, "ihttp", flagUseHTTP, "Use HTTP tap interface.")
 	flag.BoolVar(&flagNoPcap, "nopcap", flagNoPcap, "Disable pcap logging.")
 	flag.IntVar(&flagPort, "port", flagPort, "Port to listen on.")
@@ -79,7 +80,15 @@ func run() (err error) {
 	if flagUseHTTP {
 		iface = ltesto.NewHTTPTapClient("http://127.0.0.1:7070")
 	} else {
-		if strings.HasPrefix(flagInterface, "tap") {
+		if nic, ok := strings.CutPrefix(flagInterface, "xdp:"); ok {
+			xdp := new(rawsock.XDP)
+			err := xdp.Open(rawsock.XDPConfig{Interface: nic})
+			if err != nil {
+				return err
+			}
+			fmt.Println("XDP mode:", xdp.Mode())
+			iface = xdp
+		} else if strings.HasPrefix(flagInterface, "tap") {
 			tap, err := internal.NewTap(flagInterface, netip.MustParsePrefix("192.168.1.1/24"))
 			if err != nil {
 				return err
