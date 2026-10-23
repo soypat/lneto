@@ -36,7 +36,7 @@ func NextIdentLine(buf []byte) (line []byte, n int, err error) {
 // proto and software are non-empty printable US-ASCII without spaces; software may contain '-'
 // as some implementations send it. comments is returned as is, only checked to not contain null.
 // rejectNon2Version rejects with [lneto.ErrUnsupported] protocol versions other than "2.0" and
-// "1.99", the latter being a server that also speaks 2.0, RFC 4253 5.1.
+// "1.99", the latter being a server in "compatibility mode" that also speaks 2.0, RFC 4253 5.1.
 func ParseIdent(line []byte, rejectNon2Version bool) (proto, software, comments []byte, err error) {
 	if !bytes.HasPrefix(line, []byte(IdentPrefix)) {
 		return nil, nil, nil, lneto.ErrInvalidField

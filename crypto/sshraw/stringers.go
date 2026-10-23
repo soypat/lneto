@@ -25,6 +25,9 @@ func _() {
 	_ = x[MsgUserauthSuccess-52]
 	_ = x[MsgUserauthBanner-53]
 	_ = x[MsgUserauthPKOK-60]
+	_ = x[MsgUserauthPasswdChangeReq-60]
+	_ = x[MsgUserauthInfoRequest-60]
+	_ = x[MsgUserauthInfoResponse-61]
 	_ = x[MsgGlobalRequest-80]
 	_ = x[MsgRequestSuccess-81]
 	_ = x[MsgRequestFailure-82]
@@ -46,7 +49,7 @@ const (
 	_MsgType_name_1 = "KEXINITNEWKEYS"
 	_MsgType_name_2 = "KEX_ECDH_INITKEX_ECDH_REPLY"
 	_MsgType_name_3 = "USERAUTH_REQUESTUSERAUTH_FAILUREUSERAUTH_SUCCESSUSERAUTH_BANNER"
-	_MsgType_name_4 = "USERAUTH_PK_OK"
+	_MsgType_name_4 = "USERAUTH_PK_OKUSERAUTH_INFO_RESPONSE"
 	_MsgType_name_5 = "GLOBAL_REQUESTREQUEST_SUCCESSREQUEST_FAILURE"
 	_MsgType_name_6 = "CHANNEL_OPENCHANNEL_OPEN_CONFIRMATIONCHANNEL_OPEN_FAILURECHANNEL_WINDOW_ADJUSTCHANNEL_DATACHANNEL_EXTENDED_DATACHANNEL_EOFCHANNEL_CLOSECHANNEL_REQUESTCHANNEL_SUCCESSCHANNEL_FAILURE"
 )
@@ -56,6 +59,7 @@ var (
 	_MsgType_index_1 = [...]uint8{0, 7, 14}
 	_MsgType_index_2 = [...]uint8{0, 13, 27}
 	_MsgType_index_3 = [...]uint8{0, 16, 32, 48, 63}
+	_MsgType_index_4 = [...]uint8{0, 14, 36}
 	_MsgType_index_5 = [...]uint8{0, 14, 29, 44}
 	_MsgType_index_6 = [...]uint8{0, 12, 37, 57, 78, 90, 111, 122, 135, 150, 165, 180}
 )
@@ -73,8 +77,9 @@ func (i MsgType) String() string {
 	case 50 <= i && i <= 53:
 		i -= 50
 		return _MsgType_name_3[_MsgType_index_3[i]:_MsgType_index_3[i+1]]
-	case i == 60:
-		return _MsgType_name_4
+	case 60 <= i && i <= 61:
+		i -= 60
+		return _MsgType_name_4[_MsgType_index_4[i]:_MsgType_index_4[i+1]]
 	case 80 <= i && i <= 82:
 		i -= 80
 		return _MsgType_name_5[_MsgType_index_5[i]:_MsgType_index_5[i+1]]
