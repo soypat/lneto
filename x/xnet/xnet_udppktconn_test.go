@@ -325,6 +325,109 @@ func TestStackAsyncRegisterListenerUDP_MultiSource(t *testing.T) {
 	}
 }
 
+// A PacketConn opened on a port range receives on and replies from every port of the
+// range, and owns the range so ports outside it are dropped and ports inside can't be taken.
+func TestStackAsyncRegisterListenerUDP_PortRange(t *testing.T) {
+	const (
+		svStart  = 9000
+		svNPorts = 4
+	)
+	sv, cl := newUDPTestPair(t, 4321)
+	buf := make([]byte, ethernet.MaxMTU+ethernet.MaxOverheadSize)
+
+	var pc udp.PacketConn
+	if err := pc.Configure(udp.PacketConnConfig{
+		RxBuf: make([]byte, testUDPBufSize), TxBuf: make([]byte, testUDPBufSize),
+		RxQueueSize: testUDPQueueSize, TxQueueSize: testUDPQueueSize,
+		RWBackoff: backoffYield,
+	}); err != nil {
+		t.Fatal("pc Configure:", err)
+	}
+	if err := pc.OpenPortRange(netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svStart), svNPorts); err != nil {
+		t.Fatal("pc.OpenPortRange:", err)
+	}
+	if err := sv.RegisterListenerUDP(&pc); err != nil {
+		t.Fatal("RegisterListenerUDP:", err)
+	}
+	var taken udp.Conn
+	if err := taken.Configure(udp.ConnConfig{
+		RxBuf: make([]byte, testUDPBufSize), TxBuf: make([]byte, testUDPBufSize),
+		RxQueueSize: testUDPQueueSize, TxQueueSize: testUDPQueueSize,
+		RWBackoff: backoffYield,
+		MTU:       uint16(sv.MTU()),
+	}); err != nil {
+		t.Fatal("conn Configure:", err)
+	}
+	if err := sv.DialUDP4(&taken, svStart+1, cl.Addr4(), 9100); err == nil {
+		t.Error("DialUDP4 from a port inside the listener's range succeeded")
+	}
+
+	tests := []struct {
+		svPort, clPort uint16
+		wantRecv       bool
+	}{
+		{svPort: svStart, clPort: 9100, wantRecv: true},
+		{svPort: svStart + svNPorts - 1, clPort: 9101, wantRecv: true},
+		{svPort: svStart + svNPorts, clPort: 9102},
+	}
+	for _, tc := range tests {
+		var conn udp.Conn
+		if err := conn.Configure(udp.ConnConfig{
+			RxBuf: make([]byte, testUDPBufSize), TxBuf: make([]byte, testUDPBufSize),
+			RxQueueSize: testUDPQueueSize, TxQueueSize: testUDPQueueSize,
+			RWBackoff: backoffYield,
+			MTU:       uint16(sv.MTU()),
+		}); err != nil {
+			t.Fatal("conn Configure:", err)
+		}
+		if err := cl.DialUDP4(&conn, tc.clPort, sv.Addr4(), tc.svPort); err != nil {
+			t.Fatal("DialUDP4:", err)
+		}
+		msg := []byte("to range")
+		if _, err := conn.Write(msg); err != nil {
+			t.Fatal("Write:", err)
+		}
+		n, _ := cl.EgressEthernet(buf)
+		if n == 0 {
+			t.Fatal("no packet sent by client")
+		}
+		sv.IngressEthernet(buf[:n]) // Error on drop is not under test.
+
+		var rbuf [testUDPBufSize]byte
+		if !tc.wantRecv {
+			pc.SetReadDeadline(time.Now().Add(-time.Second))
+			if n, lport, _, err := pc.ReadFromLocal(rbuf[:]); !errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Errorf("port %d outside range: got n=%d lport=%d err=%v, want %v", tc.svPort, n, lport, err, os.ErrDeadlineExceeded)
+			}
+			continue
+		}
+		pc.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		n, lport, from, err := pc.ReadFromLocal(rbuf[:])
+		if err != nil {
+			t.Fatalf("port %d ReadFromLocal: %v", tc.svPort, err)
+		}
+		if !bytes.Equal(rbuf[:n], msg) || lport != tc.svPort {
+			t.Errorf("got %q on port %d, want %q on port %d", rbuf[:n], lport, msg, tc.svPort)
+		}
+
+		reply := []byte("from range")
+		pc.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
+		if _, err := pc.WriteToLocal(reply, lport, from); err != nil {
+			t.Fatal("WriteToLocal:", err)
+		}
+		if exchangeEthernetOnce(t, sv, cl, buf) == 0 {
+			t.Fatal("no reply packet from server")
+		}
+		n, err = conn.Read(rbuf[:])
+		if err != nil {
+			t.Fatalf("port %d reply Read: %v", tc.svPort, err)
+		}
+		if !bytes.Equal(rbuf[:n], reply) {
+			t.Errorf("reply: got %q, want %q", rbuf[:n], reply)
+		}
+	}
+}
+
 // M3: the address returned by ReadFrom must not change when a later datagram arrives
 // from another sender, else replies to the first sender go to the second.
 func TestStackGoUDPReadFromAddrNotAliased(t *testing.T) {

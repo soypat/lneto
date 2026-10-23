@@ -637,10 +637,13 @@ func (s *StackAsync) RegisterUDP4(node lneto.StackNode, remoteAddr [4]byte, remo
 	return s.udps.RegisterMACFiltered(&s.userUDPs[idx], nil)
 }
 
-func (s *StackAsync) RegisterListenerUDP(pktconn *udp.PacketConn) (err error) {
+// RegisterListenerUDP4 registers pktconn to receive datagrams on every port of its [udp.PacketConn.LocalPortRange].
+// The range may not overlap other registered ports and is skipped when the stack picks ports, i.e: for DNS lookups.
+func (s *StackAsync) RegisterListenerUDP4(pktconn *udp.PacketConn) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.udps.RegisterMACFiltered(pktconn, nil)
+	start, nports := pktconn.LocalPortRange()
+	return s.udps.RegisterPortRange(pktconn, start, nports)
 }
 
 func (s *StackAsync) RegisterListenerTCP6(listener *tcp.Listener) (err error) {
