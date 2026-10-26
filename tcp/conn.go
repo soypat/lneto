@@ -242,12 +242,20 @@ func (conn *Conn) CloseRead() error { return conn.closeRead(conn.currentHandle()
 func (conn *Conn) closeRead(handle uint32) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
-	err := conn.checkPipeOpen(handle)
-	if err != nil {
-		return err
+	if conn.abortErr != nil {
+		return conn.abortErr
+	} else if handle != conn.h.handle.Load() {
+		return net.ErrClosed // Ended connections keep handle until released: allow CloseRead.
 	}
 	conn.h.ShutdownRead()
 	return nil
+}
+
+// isRecyclable reports whether user released conn and it is done transmitting, so its pool slot may be reused.
+func (conn *Conn) isRecyclable() bool {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return conn.h.isReleased() && conn.h.IsTxOver()
 }
 
 // Close will initiate TCP close sequence. After Close is called future [Conn.Write] calls will fail with [net.ErrClosed].

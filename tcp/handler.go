@@ -189,6 +189,9 @@ func (h *Handler) Abort() {
 // remotePort, and clean closes never reset: zero remotePort means aborted or never connected.
 func (h *Handler) isAborted() bool { return h.remotePort == 0 }
 
+// isReleased checks if data can no longer observe buffered data: aborted or read size shut down, so may be recycled.
+func (h *Handler) isReleased() bool { return h.isAborted() || h.shutdownRx }
+
 // Recv receives an incoming TCP packet frame with the first byte being the first octet of the TCP frame.
 // The [Handler]'s internal state is updated if the packet is admitted successfully.
 func (h *Handler) Recv(incomingPacket []byte) error {

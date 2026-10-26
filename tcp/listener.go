@@ -14,18 +14,22 @@ import (
 type pool interface {
 	GetTCP(laddr, raddr []byte, lport, rport uint16) (*Conn, any, Value)
 	PutTCP(*Conn)
-	// CheckTimeouts aborts acquired connections past their deadline; called by the listener while idle.
+	// CheckTimeouts aborts acquired connections past their deadline; called during listener maintenance.
 	CheckTimeouts()
 }
 
 type Listener struct {
+	// connID changes on Reset, Abort and Close without accepted conns; stack drops node on change.
 	connID atomic.Uint32
 	mu     sync.Mutex
 	// incoming stores connections that are potential candidates for acceptance.
 	incoming []ConnHandle
-	// accepted stores all connections that have been accepted and are open.
-	accepted   []ConnHandle
-	port       uint16
+	// accepted stores conns handed out by TryAccept until released by user (CloseRead) or aborted. Survives listener Close.
+	accepted []ConnHandle
+	// local port. port!=0 means Listener can receive packets. Set only in [Listener.reset]. Cannot encode port==0=>closed since we still need to filter rx packets.
+	port uint16
+	// open==true after Reset. Set to false after Close/Abort. See [Listener.isClosed] for full close state.
+	open       bool
 	poolGet    func(laddr, raddr []byte, lport, rport uint16) (*Conn, any, Value)
 	poolReturn func(*Conn)
 	poolCheck  func()
@@ -43,9 +47,12 @@ func (listener *Listener) reset(port uint16, tcppool pool) {
 	}
 	listener.connID.Add(1)
 	listener.port = port
-	listener.poolGet = tcppool.GetTCP
-	listener.poolReturn = tcppool.PutTCP
-	listener.poolCheck = tcppool.CheckTimeouts
+	listener.open = port != 0
+	if tcppool != nil {
+		listener.poolGet = tcppool.GetTCP
+		listener.poolReturn = tcppool.PutTCP
+		listener.poolCheck = tcppool.CheckTimeouts
+	} // else: cannot nil pool funcs since active accepted may not have all been returned.
 }
 
 func (listener *Listener) SetLogger(logger *slog.Logger) {
@@ -70,16 +77,20 @@ func (listener *Listener) Protocol() uint64 { return uint64(lneto.IPProtoTCP) }
 func (listener *Listener) Close() error {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
-	if listener.isClosed() {
+	listenerClosed, _ := listener.isClosed()
+	if listenerClosed {
 		return net.ErrClosed
 	}
 	listener.debug("listener:close", slog.Uint64("port", uint64(listener.port)))
-	listener.port = 0                                         // Stops accepting; node lives until accepted conns are returned.
-	listener.incoming = listener.returnAll(listener.incoming) // discard these pending conns, only keep already active(accepted).
+	// See if no more accepted conns present:
 	listener.accepted = internal.DeleteZeroed(listener.accepted)
 	if len(listener.accepted) == 0 {
-		listener.connID.Add(1) // Can drop node immediately. Else we keep accepted active until closed.
+		listener.reset(0, nil) // Fully closed when no accepted conns remain, equivalent to Abort.
+		return nil
 	}
+	// Accepted conns still live: stop accepting, keep port so their packets still demux.
+	listener.open = false
+	listener.incoming = listener.returnAll(listener.incoming)
 	return nil
 }
 
@@ -88,10 +99,7 @@ func (listener *Listener) Abort() {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
 	listener.debug("listener:abort", slog.Uint64("port", uint64(listener.port)))
-	listener.incoming = listener.returnAll(listener.incoming)
-	listener.accepted = listener.returnAll(listener.accepted)
-	listener.port = 0
-	listener.connID.Add(1)
+	listener.reset(0, nil)
 }
 
 func (listener *Listener) Reset(port uint16, pool pool) error {
@@ -124,7 +132,8 @@ func (listener *Listener) NumberOfActiveAccepted() (nActive int) {
 func (listener *Listener) NumberOfReadyToAccept() (nready int) {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
-	if listener.isClosed() {
+	listenerClosed, _ := listener.isClosed()
+	if listenerClosed {
 		return 0
 	}
 	for i := range listener.incoming {
@@ -142,11 +151,12 @@ func (listener *Listener) NumberOfReadyToAccept() (nready int) {
 func (listener *Listener) TryAccept() (ConnHandle, error) {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
-	if listener.isClosed() {
-		return ConnHandle{}, net.ErrClosed
+	listenerClosed, _ := listener.isClosed()
+	if listenerClosed {
+		return ConnHandle{}, net.ErrClosed // After listener closed no more accepts.
 	}
-	listener.debug("listener:tryaccept", slog.Uint64("port", uint64(listener.port)))
 	listener.maintainConns()
+	listener.debug("listener:tryaccept", slog.Uint64("port", uint64(listener.port)))
 	for i := range listener.incoming {
 		pinned := listener.incoming[i]
 		if pinned.c == nil || !pinned.c.State().TxDataOpen() { // Established or CloseWait: handshake done, awaiting Accept.
@@ -163,6 +173,10 @@ func (listener *Listener) TryAccept() (ConnHandle, error) {
 func (listener *Listener) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (n int, err error) {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
+	listenerClosed, fullyClosed := listener.isClosed()
+	if fullyClosed {
+		return 0, net.ErrClosed
+	}
 	// First try incoming connections (for handshake SYN-ACK).
 	for i := range listener.incoming {
 		conn := listener.incoming[i].c
@@ -194,8 +208,7 @@ func (listener *Listener) Encapsulate(carrierData []byte, offsetToIP, offsetToFr
 			listener.debug("listener:encaps", slog.Uint64("port", uint64(listener.port)), slog.Int("plen", n), slog.String("list", "accepted"))
 			break
 		} else if err == net.ErrClosed {
-			listener.returnAccepted(i)
-			err = nil
+			err = listener.maintainConn(listener.accepted, i, err) // Should return nil unless catastrophic failure.
 		}
 	}
 	// Drain one RST entry if no connection data was sent. Lower priority than connection traffic.
@@ -204,7 +217,7 @@ func (listener *Listener) Encapsulate(carrierData []byte, offsetToIP, offsetToFr
 	}
 	if n == 0 {
 		listener.maintainConns()
-		if listener.isClosed() && len(listener.accepted) == 0 {
+		if listenerClosed && len(listener.accepted) == 0 {
 			return 0, net.ErrClosed // Last accepted conn returned: stack drops node.
 		}
 	}
@@ -215,6 +228,10 @@ func (listener *Listener) Encapsulate(carrierData []byte, offsetToIP, offsetToFr
 func (listener *Listener) Demux(carrierData []byte, tcpFrameOffset int) error {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
+	listenerClosed, fullyClosed := listener.isClosed()
+	if fullyClosed {
+		return net.ErrClosed
+	}
 	tfrm, err := NewFrame(carrierData[tcpFrameOffset:])
 	if err != nil {
 		return err
@@ -225,26 +242,22 @@ func (listener *Listener) Demux(carrierData []byte, tcpFrameOffset int) error {
 	}
 	dst := tfrm.DestinationPort()
 	src := tfrm.SourcePort()
-	if listener.isClosed() {
-		// Closed: serve accepted conns only. Stack answers dropped SYNs with RST.
-		if demuxed, err := listener.tryDemux(listener.accepted, src, srcaddr, carrierData, tcpFrameOffset); demuxed {
-			return err
-		}
-		return lneto.ErrPacketDrop
-	} else if dst != listener.port {
+	if dst != listener.port {
 		return lneto.ErrMismatch
 	}
 
 	// Try to demux in accepted:
 	accepted := true
 	demuxed, err := listener.tryDemux(listener.accepted, src, srcaddr, carrierData, tcpFrameOffset)
-	if !demuxed {
+	if !demuxed && !listenerClosed {
 		accepted = false
 		demuxed, err = listener.tryDemux(listener.incoming, src, srcaddr, carrierData, tcpFrameOffset)
 	}
 	if demuxed {
 		listener.debug("tcplistener:demux", slog.Uint64("lport", uint64(listener.port)), slog.Uint64("rport", uint64(src)), slog.Bool("accepted", accepted))
 		return err
+	} else if listenerClosed {
+		return lneto.ErrPacketDrop // If listener closed we only care about getting packets in/out of accepted, not starting incoming conns.
 	}
 
 	// Connection not in ready nor accepted.
@@ -256,6 +269,7 @@ func (listener *Listener) Demux(carrierData []byte, tcpFrameOffset int) error {
 		}
 		return lneto.ErrPacketDrop
 	}
+	listener.maintainConns()
 	conn, userData, iss := listener.poolGet(dstaddr, srcaddr, dst, src)
 	if conn == nil {
 		listener.logerr("tcpListener:no-free-conn")
@@ -292,12 +306,22 @@ func (listener *Listener) tryDemux(conns []ConnHandle, remotePort uint16, remote
 	return false, nil
 }
 
-func (listener *Listener) isClosed() bool {
-	return listener.port == 0
+// isClosed checks for two closed states. May change during maintain*,reset* method calls.
+//   - listenerClosed: true when the listener is closed and cannot accept new connections.
+//   - fullyClosed: true when listener is closed and when there are no remaining active connections held by listener.
+func (listener *Listener) isClosed() (listenerClosed, fullyClosed bool) {
+	listenerClosed = !listener.open
+	fullyClosed = !listener.open && len(listener.accepted) == 0
+	return listenerClosed, fullyClosed
 }
 
 func (listener *Listener) maintainConns() {
 	listener.poolCheck() // Timed out conns are aborted and returned below.
+	for i := range listener.accepted {
+		if conn := listener.accepted[i].c; conn != nil && conn.isRecyclable() {
+			listener.returnAccepted(i) // Released and ended: free slot without awaiting egress poll.
+		}
+	}
 	listener.accepted = internal.DeleteZeroed(listener.accepted)
 	for i := range listener.incoming {
 		conn := listener.incoming[i].c
@@ -332,8 +356,11 @@ func getConn(conns []ConnHandle, remotePort uint16, remoteAddr []byte) int {
 
 func (listener *Listener) maintainConn(conns []ConnHandle, idx int, err error) error {
 	if err == net.ErrClosed {
-		listener.poolReturn(conns[idx].c)
-		conns[idx] = ConnHandle{}
+		if conns[idx].c.isRecyclable() {
+			// Hold cleanly ended conns until user is done reading so handle stays valid.
+			listener.poolReturn(conns[idx].c)
+			conns[idx] = ConnHandle{}
+		}
 		return nil // avoid closing listener entirely.
 	}
 	return err
