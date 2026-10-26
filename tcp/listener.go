@@ -28,8 +28,8 @@ type Listener struct {
 	accepted []ConnHandle
 	// local port. port!=0 means Listener can receive packets. Set only in [Listener.reset]. Cannot encode port==0=>closed since we still need to filter rx packets.
 	port uint16
-	// closed==true after Close called but accepted conns remain. See [Listener.isClosed] for full close state.
-	closed     bool
+	// open==true after Reset. Set to false after Close/Abort. See [Listener.isClosed] for full close state.
+	open       bool
 	poolGet    func(laddr, raddr []byte, lport, rport uint16) (*Conn, any, Value)
 	poolReturn func(*Conn)
 	poolCheck  func()
@@ -47,7 +47,7 @@ func (listener *Listener) reset(port uint16, tcppool pool) {
 	}
 	listener.connID.Add(1)
 	listener.port = port
-	listener.closed = port == 0
+	listener.open = port != 0
 	if tcppool != nil {
 		listener.poolGet = tcppool.GetTCP
 		listener.poolReturn = tcppool.PutTCP
@@ -88,8 +88,8 @@ func (listener *Listener) Close() error {
 		listener.reset(0, nil) // Fully closed when no accepted conns remain, equivalent to Abort.
 		return nil
 	}
-	// Still have conns pending clean close, close Listener with Port=0 and discard pending while keeping active(accepted).
-	listener.closed = true
+	// Accepted conns still live: stop accepting, keep port so their packets still demux.
+	listener.open = false
 	listener.incoming = listener.returnAll(listener.incoming)
 	return nil
 }
@@ -310,8 +310,8 @@ func (listener *Listener) tryDemux(conns []ConnHandle, remotePort uint16, remote
 //   - listenerClosed: true when the listener is closed and cannot accept new connections.
 //   - fullyClosed: true when listener is closed and when there are no remaining active connections held by listener.
 func (listener *Listener) isClosed() (listenerClosed, fullyClosed bool) {
-	listenerClosed = listener.closed
-	fullyClosed = listener.closed && len(listener.accepted) == 0
+	listenerClosed = !listener.open
+	fullyClosed = !listener.open && len(listener.accepted) == 0
 	return listenerClosed, fullyClosed
 }
 
