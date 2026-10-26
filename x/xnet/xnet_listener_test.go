@@ -1017,8 +1017,8 @@ func TestListener_CleanCloseKeepsAcceptedReadable(t *testing.T) {
 			if err = accepted.CloseRead(); err != nil {
 				t.Fatal("CloseRead after clean close:", err)
 			}
-			tst.ensureQuiesce(cl, sv, lim)
 			// Pool holds a single conn: next client is only served if CloseRead released it.
+			// No egress poll since CloseRead: listener must reclaim slot when SYN arrives.
 			connect(newTestStack(t, "cl3", 3, mtu, 1, 0))
 		})
 	}
