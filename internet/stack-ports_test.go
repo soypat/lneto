@@ -127,8 +127,9 @@ func TestStackPortsPortRangeReuseAfterClose(t *testing.T) {
 	if err := ps.RegisterPortRange(&old, 100, 10); err != nil {
 		t.Fatal(err)
 	}
-	if err := ps.RegisterPortRange(&cur, 105, 10); err != lneto.ErrExhausted {
-		t.Fatalf("register on full stack: got %v, want %v", err, lneto.ErrExhausted)
+	// Rejected as overlap or, when capacity is exactly one node, as exhausted.
+	if err := ps.RegisterPortRange(&cur, 105, 10); err == nil {
+		t.Fatal("registered over a live range")
 	}
 	old.ConnectionID().Add(1) // Closes old's registration.
 	if err := ps.RegisterPortRange(&cur, 105, 10); err != nil {

@@ -129,7 +129,7 @@ func (s *stack6) RegisterListenerTCP6(listener *tcp.Listener) error {
 }
 
 // RegisterListenerUDP6 registers a UDP packet connection on the IPv6 stack so it
-// receives inbound IPv6 datagrams. Mirrors StackAsync.RegisterListenerUDP for IPv4.
+// receives inbound IPv6 datagrams. Mirrors StackAsync.RegisterListenerUDP4 for IPv4.
 func (s *stack6) RegisterListenerUDP6(pktconn *udp.PacketConn) error {
 	start, nports := pktconn.LocalPortRange()
 	return s.udps6.RegisterPortRange(pktconn, start, nports)

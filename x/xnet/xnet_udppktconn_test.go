@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/udp"
 )
@@ -50,10 +51,10 @@ func newUDPTestPair(t testing.TB, seed int64) (s1, s2 *StackAsync) {
 	return s1, s2
 }
 
-// TestStackAsyncRegisterListenerUDP_ReceiveData registers a udp.PacketConn as
+// TestStackAsyncRegisterListenerUDP4_ReceiveData registers a udp.PacketConn as
 // a listener and verifies that a datagram from a dialed client is delivered
 // with the correct payload and sender address.
-func TestStackAsyncRegisterListenerUDP_ReceiveData(t *testing.T) {
+func TestStackAsyncRegisterListenerUDP4_ReceiveData(t *testing.T) {
 	const (
 		svPort = 9000
 		clPort = 9001
@@ -72,8 +73,8 @@ func TestStackAsyncRegisterListenerUDP_ReceiveData(t *testing.T) {
 	if err := pc.Open(netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort)); err != nil {
 		t.Fatal("pc.Open:", err)
 	}
-	if err := sv.RegisterListenerUDP(&pc); err != nil {
-		t.Fatal("RegisterListenerUDP:", err)
+	if err := sv.RegisterListenerUDP4(&pc); err != nil {
+		t.Fatal("RegisterListenerUDP4:", err)
 	}
 
 	var conn udp.Conn
@@ -112,10 +113,10 @@ func TestStackAsyncRegisterListenerUDP_ReceiveData(t *testing.T) {
 	}
 }
 
-// TestStackAsyncRegisterListenerUDP_ReplyToClient registers a PacketConn, receives
+// TestStackAsyncRegisterListenerUDP4_ReplyToClient registers a PacketConn, receives
 // a datagram, then calls WriteTo to send a reply back to the sender and verifies
 // the client's udp.Conn reads it.
-func TestStackAsyncRegisterListenerUDP_ReplyToClient(t *testing.T) {
+func TestStackAsyncRegisterListenerUDP4_ReplyToClient(t *testing.T) {
 	const (
 		svPort = 9002
 		clPort = 9003
@@ -134,8 +135,8 @@ func TestStackAsyncRegisterListenerUDP_ReplyToClient(t *testing.T) {
 	if err := pc.Open(netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort)); err != nil {
 		t.Fatal("pc.Open:", err)
 	}
-	if err := sv.RegisterListenerUDP(&pc); err != nil {
-		t.Fatal("RegisterListenerUDP:", err)
+	if err := sv.RegisterListenerUDP4(&pc); err != nil {
+		t.Fatal("RegisterListenerUDP4:", err)
 	}
 
 	var conn udp.Conn
@@ -184,10 +185,10 @@ func TestStackAsyncRegisterListenerUDP_ReplyToClient(t *testing.T) {
 	}
 }
 
-// TestStackAsyncRegisterListenerUDP_MultiSource verifies that a single PacketConn
-// registered via RegisterListenerUDP (no MAC filter) receives datagrams from two
+// TestStackAsyncRegisterListenerUDP4_MultiSource verifies that a single PacketConn
+// registered via RegisterListenerUDP4 (no MAC filter) receives datagrams from two
 // distinct clients and ReadFrom returns the correct sender address for each.
-func TestStackAsyncRegisterListenerUDP_MultiSource(t *testing.T) {
+func TestStackAsyncRegisterListenerUDP4_MultiSource(t *testing.T) {
 	const (
 		svPort = 9004
 		clPort = 9005
@@ -246,8 +247,8 @@ func TestStackAsyncRegisterListenerUDP_MultiSource(t *testing.T) {
 	if err := pc.Open(netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort)); err != nil {
 		t.Fatal("pc.Open:", err)
 	}
-	if err := sv.RegisterListenerUDP(&pc); err != nil {
-		t.Fatal("RegisterListenerUDP:", err)
+	if err := sv.RegisterListenerUDP4(&pc); err != nil {
+		t.Fatal("RegisterListenerUDP4:", err)
 	}
 
 	// Client 1 dials and sends.
@@ -327,7 +328,7 @@ func TestStackAsyncRegisterListenerUDP_MultiSource(t *testing.T) {
 
 // A PacketConn opened on a port range receives on and replies from every port of the
 // range, and owns the range so ports outside it are dropped and ports inside can't be taken.
-func TestStackAsyncRegisterListenerUDP_PortRange(t *testing.T) {
+func TestStackAsyncRegisterListenerUDP4_PortRange(t *testing.T) {
 	const (
 		svStart  = 9000
 		svNPorts = 4
@@ -346,8 +347,8 @@ func TestStackAsyncRegisterListenerUDP_PortRange(t *testing.T) {
 	if err := pc.OpenPortRange(netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svStart), svNPorts); err != nil {
 		t.Fatal("pc.OpenPortRange:", err)
 	}
-	if err := sv.RegisterListenerUDP(&pc); err != nil {
-		t.Fatal("RegisterListenerUDP:", err)
+	if err := sv.RegisterListenerUDP4(&pc); err != nil {
+		t.Fatal("RegisterListenerUDP4:", err)
 	}
 	var taken udp.Conn
 	if err := taken.Configure(udp.ConnConfig{
@@ -358,8 +359,8 @@ func TestStackAsyncRegisterListenerUDP_PortRange(t *testing.T) {
 	}); err != nil {
 		t.Fatal("conn Configure:", err)
 	}
-	if err := sv.DialUDP4(&taken, svStart+1, cl.Addr4(), 9100); err == nil {
-		t.Error("DialUDP4 from a port inside the listener's range succeeded")
+	if err := sv.DialUDP4(&taken, svStart+1, cl.Addr4(), 9100); !errors.Is(err, lneto.ErrAlreadyRegistered) {
+		t.Errorf("DialUDP4 from a port inside the listener's range: got err %v, want %v", err, lneto.ErrAlreadyRegistered)
 	}
 
 	tests := []struct {
