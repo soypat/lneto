@@ -781,6 +781,10 @@ func TestListener_CloseKeepsAcceptedConns(t *testing.T) {
 	if err = listener.Close(); err != nil {
 		t.Fatal(err)
 	}
+	// Live accepted conns must not keep Accept loops polling a closed listener.
+	if _, err = listener.TryAccept(); err != net.ErrClosed {
+		t.Errorf("TryAccept on closed listener with live accepted conn: got %v, want net.ErrClosed", err)
+	}
 
 	// Inbound: client data reaches accepted conn.
 	if _, err = clconn.Write([]byte("in")); err != nil {
@@ -808,6 +812,63 @@ func TestListener_CloseKeepsAcceptedConns(t *testing.T) {
 	}
 	if _, err = accepted.Write([]byte("x")); err == nil {
 		t.Error("accepted write succeeded after listener Abort")
+	}
+}
+
+// A closed listener must leave the stack once its last accepted conn is released, freeing its port.
+func TestListener_ClosedFreesPortAfterLastConn(t *testing.T) {
+	const svPort = 80
+	const mtu = ethernet.MaxMTU
+	const lim = 8
+	tst := testerFrom(t, mtu)
+	sv := newTestStack(t, "sv1", 1, mtu, 1, 0)
+	cl := newTestStack(t, "cl2", 2, mtu, 1, 0)
+	sv.SetGatewayHardwareAddr(cl.HardwareAddr())
+	cl.SetGatewayHardwareAddr(sv.HardwareAddr())
+	listener := newTestListener(t, sv, svPort, TCPPoolConfig{PoolSize: 1})
+
+	clconn := newTestTCPConn(t, mtu, 4)
+	if err := cl.DialTCP(clconn, 1337, netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), svPort)); err != nil {
+		t.Fatal(err)
+	}
+	tst.ensureQuiesce(cl, sv, lim)
+	accepted, err := listener.TryAccept()
+	if err != nil {
+		t.Fatal("TryAccept:", err)
+	}
+	if err = listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = clconn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	tst.ensureQuiesce(cl, sv, lim)
+	if err = accepted.Close(); err != nil {
+		t.Fatal(err)
+	}
+	tst.ensureQuiesce(cl, sv, lim)
+	if err = accepted.CloseRead(); err != nil {
+		t.Fatal("CloseRead:", err)
+	}
+	tst.ensureQuiesce(cl, sv, lim)
+
+	pool, err := sv.NewTCPPool(TCPPoolConfig{
+		PoolSize:           1,
+		QueueSize:          4,
+		TxBufSize:          mtu,
+		RxBufSize:          mtu,
+		EstablishedTimeout: 10 * time.Second,
+		ClosingTimeout:     10 * time.Second,
+		NewBackoff:         newBackoffYield,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var relisten tcp.Listener
+	if err = relisten.Reset(svPort, pool); err != nil {
+		t.Fatal(err)
+	} else if err = sv.RegisterListenerTCP(&relisten); err != nil {
+		t.Errorf("listen on port of closed listener after its last conn released: %v", err)
 	}
 }
 

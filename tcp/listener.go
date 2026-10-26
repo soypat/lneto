@@ -14,20 +14,22 @@ import (
 type pool interface {
 	GetTCP(laddr, raddr []byte, lport, rport uint16) (*Conn, any, Value)
 	PutTCP(*Conn)
-	// CheckTimeouts aborts acquired connections past their deadline; called by the listener while idle.
+	// CheckTimeouts aborts acquired connections past their deadline; called during listener maintenance.
 	CheckTimeouts()
 }
 
 type Listener struct {
-	// connID is incremented on Open
+	// connID changes on Reset, Abort and Close without accepted conns; stack drops node on change.
 	connID atomic.Uint32
 	mu     sync.Mutex
 	// incoming stores connections that are potential candidates for acceptance.
 	incoming []ConnHandle
-	// accepted stores all connections that have been accepted and are open. After listener closes may still have open conns.
+	// accepted stores conns handed out by TryAccept until released by user (CloseRead) or aborted. Survives listener Close.
 	accepted []ConnHandle
-	// port!=0 means Listener is open. port==0 means Listener dropped all incoming and has no incoming but may have yet open accepted conns.
-	port       uint16
+	// local port. port!=0 means Listener can receive packets. Set only in [Listener.reset]. Cannot encode port==0=>closed since we still need to filter rx packets.
+	port uint16
+	// closed==true after Close called but accepted conns remain. See [Listener.isClosed] for full close state.
+	closed     bool
 	poolGet    func(laddr, raddr []byte, lport, rport uint16) (*Conn, any, Value)
 	poolReturn func(*Conn)
 	poolCheck  func()
@@ -45,6 +47,7 @@ func (listener *Listener) reset(port uint16, tcppool pool) {
 	}
 	listener.connID.Add(1)
 	listener.port = port
+	listener.closed = port == 0
 	if tcppool != nil {
 		listener.poolGet = tcppool.GetTCP
 		listener.poolReturn = tcppool.PutTCP
@@ -86,7 +89,7 @@ func (listener *Listener) Close() error {
 		return nil
 	}
 	// Still have conns pending clean close, close Listener with Port=0 and discard pending while keeping active(accepted).
-	listener.port = 0
+	listener.closed = true
 	listener.incoming = listener.returnAll(listener.incoming)
 	return nil
 }
@@ -95,6 +98,7 @@ func (listener *Listener) Close() error {
 func (listener *Listener) Abort() {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
+	listener.debug("listener:abort", slog.Uint64("port", uint64(listener.port)))
 	listener.reset(0, nil)
 }
 
@@ -147,12 +151,11 @@ func (listener *Listener) NumberOfReadyToAccept() (nready int) {
 func (listener *Listener) TryAccept() (ConnHandle, error) {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
-	listenerClosed, fullyClosed := listener.isClosed()
-	if !fullyClosed {
-		listener.maintainConns()
-	} else if listenerClosed {
-		return ConnHandle{}, net.ErrClosed
+	listenerClosed, _ := listener.isClosed()
+	if listenerClosed {
+		return ConnHandle{}, net.ErrClosed // After listener closed no more accepts.
 	}
+	listener.maintainConns()
 	listener.debug("listener:tryaccept", slog.Uint64("port", uint64(listener.port)))
 	for i := range listener.incoming {
 		pinned := listener.incoming[i]
@@ -303,32 +306,26 @@ func (listener *Listener) tryDemux(conns []ConnHandle, remotePort uint16, remote
 	return false, nil
 }
 
-// isClosed checks for two closed states which do not change while mutex is held:
+// isClosed checks for two closed states. May change during maintain*,reset* method calls.
 //   - listenerClosed: true when the listener is closed and cannot accept new connections.
 //   - fullyClosed: true when listener is closed and when there are no remaining active connections held by listener.
 func (listener *Listener) isClosed() (listenerClosed, fullyClosed bool) {
-	listenerClosed = listener.port == 0
-	fullyClosed = listener.port == 0 && len(listener.accepted) == 0
+	listenerClosed = listener.closed
+	fullyClosed = listener.closed && len(listener.accepted) == 0
 	return listenerClosed, fullyClosed
 }
 
 func (listener *Listener) maintainConns() {
-	listener.poolCheck() // Timed out conns are aborted and pendingReturn below.
-	pendingReturn := false
+	listener.poolCheck() // Timed out conns are aborted and returned below.
 	for i := range listener.accepted {
 		if conn := listener.accepted[i].c; conn != nil && conn.isRecyclable() {
 			listener.returnAccepted(i) // Released and ended: free slot without awaiting egress poll.
-			pendingReturn = true
 		}
 	}
-	if pendingReturn {
-		listener.accepted = internal.DeleteZeroed(listener.accepted)
-	}
-	pendingReturn = false
+	listener.accepted = internal.DeleteZeroed(listener.accepted)
 	for i := range listener.incoming {
 		conn := listener.incoming[i].c
 		if conn == nil {
-			pendingReturn = true
 			continue
 		}
 		state := conn.State()
@@ -337,12 +334,9 @@ func (listener *Listener) maintainConns() {
 			// Otherwise something went wrong in handshake, pool aborted/closed the connection,
 			// or RST reverted the connection to LISTEN (RFC 9293 §3.5.3).
 			listener.returnIncoming(i)
-			pendingReturn = true
 		}
 	}
-	if pendingReturn {
-		listener.incoming = internal.DeleteZeroed(listener.incoming)
-	}
+	listener.incoming = internal.DeleteZeroed(listener.incoming)
 }
 
 func getConn(conns []ConnHandle, remotePort uint16, remoteAddr []byte) int {
