@@ -21,31 +21,47 @@ func TestSYNCookie_ResetValidation(t *testing.T) {
 	}
 }
 
+// TestSYNCookie_GenerateValidate checks a cookie validates with ACK = cookie + 1
+// for IPv4 and IPv6 addresses.
 func TestSYNCookie_GenerateValidate(t *testing.T) {
-	var sc SYNCookieJar
-	rng := rand.New(rand.NewSource(1))
-	err := sc.Reset(SYNCookieConfig{Rand: rng, MaxCounterDelta: 2})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	srcAddr := []byte{192, 168, 1, 100}
-	dstAddr := []byte{10, 0, 0, 1}
-	srcPort := uint16(54321)
-	dstPort := uint16(80)
-	clientISN := Value(0x12345678)
-
-	// Generate cookie
-	cookie := sc.MakeSYNCookie(srcAddr, dstAddr, srcPort, dstPort, clientISN)
-
-	// Validate with ACK = cookie + 1
-	ackNum := cookie + 1
-	validatedCookie, err := sc.ValidateSYNCookie(srcAddr, dstAddr, srcPort, dstPort, clientISN, ackNum)
-	if err != nil {
-		t.Errorf("expected valid cookie, got error: %v", err)
-	}
-	if validatedCookie != cookie {
-		t.Errorf("expected cookie %d, got %d", cookie, validatedCookie)
+	for _, tc := range []struct {
+		name             string
+		srcAddr, dstAddr []byte
+		srcPort, dstPort uint16
+		clientISN        Value
+	}{
+		{
+			name:      "IPv4",
+			srcAddr:   []byte{192, 168, 1, 100},
+			dstAddr:   []byte{10, 0, 0, 1},
+			srcPort:   54321,
+			dstPort:   80,
+			clientISN: 0x12345678,
+		},
+		{
+			name:      "IPv6",
+			srcAddr:   []byte{0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01},
+			dstAddr:   []byte{0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02},
+			srcPort:   54321,
+			dstPort:   443,
+			clientISN: 0xDEADBEEF,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var sc SYNCookieJar
+			err := sc.Reset(SYNCookieConfig{Rand: rand.New(rand.NewSource(1))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cookie := sc.MakeSYNCookie(tc.srcAddr, tc.dstAddr, tc.srcPort, tc.dstPort, tc.clientISN)
+			validatedCookie, err := sc.ValidateSYNCookie(tc.srcAddr, tc.dstAddr, tc.srcPort, tc.dstPort, tc.clientISN, cookie+1)
+			if err != nil {
+				t.Fatalf("expected valid cookie, got error: %v", err)
+			}
+			if validatedCookie != cookie {
+				t.Errorf("expected cookie %d, got %d", cookie, validatedCookie)
+			}
+		})
 	}
 }
 
@@ -128,34 +144,6 @@ func TestSYNCookie_DifferentTuples(t *testing.T) {
 	_, err = sc.ValidateSYNCookie(srcAddr, dstAddr, srcPort, dstPort, clientISN, ackNum)
 	if err != nil {
 		t.Errorf("expected success for correct tuple, got: %v", err)
-	}
-}
-
-func TestSYNCookie_IPv6(t *testing.T) {
-	var sc SYNCookieJar
-	rng := rand.New(rand.NewSource(1))
-
-	err := sc.Reset(SYNCookieConfig{Rand: rng})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// IPv6 addresses
-	srcAddr := []byte{0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}
-	dstAddr := []byte{0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02}
-	srcPort := uint16(54321)
-	dstPort := uint16(443)
-	clientISN := Value(0xDEADBEEF)
-
-	cookie := sc.MakeSYNCookie(srcAddr, dstAddr, srcPort, dstPort, clientISN)
-	ackNum := cookie + 1
-
-	validatedCookie, err := sc.ValidateSYNCookie(srcAddr, dstAddr, srcPort, dstPort, clientISN, ackNum)
-	if err != nil {
-		t.Errorf("expected valid IPv6 cookie, got error: %v", err)
-	}
-	if validatedCookie != cookie {
-		t.Errorf("expected cookie %d, got %d", cookie, validatedCookie)
 	}
 }
 

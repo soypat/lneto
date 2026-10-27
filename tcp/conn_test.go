@@ -24,27 +24,24 @@ func newConfiguredConn(t *testing.T) *Conn {
 	return &conn
 }
 
-func TestConn_SetDeadline_Closed(t *testing.T) {
-	conn := newConfiguredConn(t)
-	err := conn.SetDeadline(time.Now().Add(time.Second))
-	if err == nil {
-		t.Fatal("SetDeadline on closed conn should fail")
-	}
-}
-
-func TestConn_SetReadDeadline_Closed(t *testing.T) {
-	conn := newConfiguredConn(t)
-	err := conn.SetReadDeadline(time.Now().Add(time.Second))
-	if err == nil {
-		t.Fatal("SetReadDeadline on closed conn should fail")
-	}
-}
-
-func TestConn_SetWriteDeadline_Closed(t *testing.T) {
-	conn := newConfiguredConn(t)
-	err := conn.SetWriteDeadline(time.Now().Add(time.Second))
-	if err == nil {
-		t.Fatal("SetWriteDeadline on closed conn should fail")
+// TestConn_SetDeadlines_Closed checks each deadline setter fails on a conn that
+// is not open.
+func TestConn_SetDeadlines_Closed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(*Conn, time.Time) error
+	}{
+		{name: "SetDeadline", set: (*Conn).SetDeadline},
+		{name: "SetReadDeadline", set: (*Conn).SetReadDeadline},
+		{name: "SetWriteDeadline", set: (*Conn).SetWriteDeadline},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn := newConfiguredConn(t)
+			err := tc.set(conn, time.Now().Add(time.Second))
+			if err == nil {
+				t.Fatal(tc.name + " on closed conn should fail")
+			}
+		})
 	}
 }
 

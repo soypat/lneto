@@ -3,7 +3,10 @@ package tcp
 import (
 	"errors"
 	"fmt"
+	"math/rand"
 	"testing"
+
+	"github.com/soypat/lneto/ethernet"
 )
 
 const logExchange = false
@@ -368,4 +371,88 @@ func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
 			t.Fatalf(pfx+"[%d] pending:\n got=%+v\nwant=none", i, pending)
 		}
 	}
+}
+
+// cbSending returns a control block in ESTABLISHED with iss..iss+sent already
+// given to the network.
+func cbSending(t *testing.T, iss Value, sent Size) *ControlBlock {
+	t.Helper()
+	var tcb ControlBlock
+	tcb.prepareToHandshake(iss, 4096, StateEstablished)
+	tcb.snd.WND = 4096
+	tcb.snd.MSS = 500
+	tcb.rcv.NXT = 9000
+	tcb.rcv.WND = 4096
+	tcb.snd.NXT = iss + Value(sent)
+	tcb.snd.UNA = iss
+	return &tcb
+}
+
+// Handler helpers.
+
+// rtxSetup establishes a client with a recordingPolicy and returns it.
+func rtxSetup(t *testing.T, seed int64, buf []byte) (client *Handler, pol *recordingPolicy) {
+	t.Helper()
+	client, server := newHandler(t, ethernet.MaxMTU, 4), newHandler(t, ethernet.MaxMTU, 4)
+	pol = newRecordingPolicy()
+	client.SetPolicy(pol)
+	setupClientServer(t, rand.New(rand.NewSource(seed)), client, server)
+	establish(t, client, server, buf)
+	return client, pol
+}
+
+// rtxSendData writes data and emits it as one segment, returning its SEQ.
+func rtxSendData(t *testing.T, h *Handler, buf []byte, data string) Value {
+	t.Helper()
+	if _, err := h.Write([]byte(data)); err != nil {
+		t.Fatal("write:", err)
+	}
+	seq := h.ControlBlock().SendNext()
+	clear(buf)
+	n, err := h.Send(buf)
+	if err != nil {
+		t.Fatal("send:", err)
+	} else if n != sizeHeaderTCP+len(data) {
+		t.Fatalf("sent %d bytes, want %d", n, sizeHeaderTCP+len(data))
+	}
+	return seq
+}
+
+// rtxSend emits one segment and returns it with its payload.
+func rtxSend(t *testing.T, h *Handler, buf []byte) (Segment, string) {
+	t.Helper()
+	clear(buf)
+	n, err := h.Send(buf)
+	if err != nil {
+		t.Fatal("send:", err)
+	} else if n == 0 {
+		t.Fatal("no segment emitted")
+	}
+	return mustSegment(t, buf[:n], n-sizeHeaderTCP), string(buf[sizeHeaderTCP:n])
+}
+
+// synOptions parses the option block of a raw TCP frame and returns the MSS
+// and window-scale values found, with ok flags for presence.
+func synOptions(t *testing.T, frame []byte) (mss uint16, mssOK bool, shift uint8, shiftOK bool) {
+	t.Helper()
+	tfrm, err := NewFrame(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oc OptionCodec
+	err = oc.ForEachOption(tfrm.Options(), func(kind OptionKind, data []byte) error {
+		switch {
+		case kind == OptMaxSegmentSize && len(data) == 2:
+			mss = uint16(data[0])<<8 | uint16(data[1])
+			mssOK = true
+		case kind == OptWindowScale && len(data) == 1:
+			shift = data[0]
+			shiftOK = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mss, mssOK, shift, shiftOK
 }
