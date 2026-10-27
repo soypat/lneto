@@ -194,7 +194,14 @@ func (h *Handler) isReleased() bool { return h.isAborted() || h.shutdownRx }
 
 // Recv receives an incoming TCP packet frame with the first byte being the first octet of the TCP frame.
 // The [Handler]'s internal state is updated if the packet is admitted successfully.
+// It is [Handler.RecvECN] for a packet carrying no ECN codepoint.
 func (h *Handler) Recv(incomingPacket []byte) error {
+	return h.RecvECN(incomingPacket, internal.ECNNotECT)
+}
+
+// RecvECN is [Handler.Recv] for a frame whose IP packet carried the ECN codepoint ecn (RFC 3168 §5),
+// which an [ECNPolicy] gets together with the frame.
+func (h *Handler) RecvECN(incomingPacket []byte, ecn uint8) error {
 	if h.IsTxOver() {
 		return net.ErrClosed
 	}
@@ -233,8 +240,11 @@ func (h *Handler) Recv(incomingPacket []byte) error {
 		return nil
 	}
 
-	if h.policyEnabled() && !h.policy.PreRx(h, tfrm) {
-		return nil
+	if h.policyEnabled() {
+		preRxECN(h.policy, h, tfrm, ecn)
+		if !h.policy.PreRx(h, tfrm) {
+			return nil
+		}
 	}
 
 	// Out-of-order reassembly: buffer in-window data that arrived ahead of the
@@ -414,13 +424,22 @@ func (h *Handler) Close() error {
 // Send writes TCP frame to be sent over the network to the remote peer to `b`.
 // It does no IP interfacing or CRC calculation of packet, which is left to the caller to perform.
 // The returned integer is the length written to the argument buffer.
+// It is [Handler.SendECN] discarding the ECN codepoint.
 func (h *Handler) Send(b []byte) (int, error) {
+	n, _, err := h.SendECN(b)
+	return n, err
+}
+
+// SendECN is [Handler.Send] that also returns the ECN codepoint (RFC 3168 §5) an [ECNPolicy] chose for
+// the IP packet carrying the frame, Not-ECT without one. The caller writes it into the IP header before
+// computing the IPv4 header checksum.
+func (h *Handler) SendECN(b []byte) (n int, ecn uint8, err error) {
 	if h.IsTxOver() {
-		return 0, net.ErrClosed
+		return 0, 0, net.ErrClosed
 	}
 	tfrm, err := NewFrame(b)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	offset := uint8(5)
 	txLimit := TransmitUnlimited
@@ -457,7 +476,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 	closeDue := h.closing && (state.IsPreestablished() || state.TxDataOpen())
 	if !awaitingSyn && !requeueControl && buffered == 0 && !closeDue && !hasPending {
 		// Early nop short circuit.
-		return 0, nil
+		return 0, 0, nil
 	}
 	if buffered == 0 && closeDue && (state != StateCloseWait || !hasPending) {
 		// If Close called and no more data to be sent, terminate connection.
@@ -467,7 +486,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 		if err != nil {
 			h.logerr("tcp.Handler.Close", slog.String("err", errstr(err)), slog.String("state", h.State().String()))
 			h.Abort()
-			return 0, io.EOF
+			return 0, 0, io.EOF
 		}
 	}
 	// optHead is where the Handler's own options begin: after the fixed header
@@ -494,7 +513,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 		h.info("tcp.Handler:requeue-synack", slog.Uint64("port", uint64(h.localPort)), slog.Uint64("rport", uint64(h.remotePort)))
 	} else if requeueControl {
 		h.requeueControl = false
-		return 0, nil
+		return 0, 0, nil
 	} else {
 		var ok bool
 		maxPayload := len(b) - optHead
@@ -518,13 +537,13 @@ func (h *Handler) Send(b []byte) (int, error) {
 		segment.WND = h.recvWindow()
 		if !ok {
 			// No pending control segment or data to send. Yield.
-			return 0, nil
+			return 0, 0, nil
 		} else if segment.Flags == synack {
 			offset += h.putSynOptions(b[optHead:], mss, true)
 		} else if segment.DATALEN > 0 {
 			n, err := h.bufTx.MakePacket(b[optHead:optHead+int(segment.DATALEN)], segment.SEQ)
 			if err != nil {
-				return 0, err
+				return 0, 0, err
 			}
 			if resend && Size(n) < segment.DATALEN {
 				segment.Flags &^= FlagFIN // The FIN follows the data left out.
@@ -538,7 +557,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 	prevState := h.scb.State()
 	err = h.scb.Send(segment)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	} else if prevState != h.scb.State() && h.logenabled(slog.LevelInfo) {
 		h.info("tcp.Handler:tx-statechange", slog.Uint64("port", uint64(h.localPort)), slog.String("oldState", prevState.String()), slog.String("newState", h.scb.State().String()), slog.String("txflags", segment.Flags.String()))
 	}
@@ -555,6 +574,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 		// is the segment data and nothing more.
 		if sent, err := NewFrame(b[:datalen]); err == nil {
 			h.policy.PostTx(h, sent)
+			ecn, _ = postTxECN(h.policy, h, sent)
 		}
 	}
 	if segment.Flags.HasAny(FlagRST) {
@@ -566,7 +586,7 @@ func (h *Handler) Send(b []byte) (int, error) {
 		// handle so Read can still drain buffered data and report io.EOF.
 		h.connid.Add(1)
 	}
-	return datalen, nil
+	return datalen, ecn, nil
 }
 
 // NextSegmentSYN returns syn=true if next outgoing segment is a handshake SYN.

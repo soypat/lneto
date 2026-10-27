@@ -1092,29 +1092,34 @@ func TestClose_PartialACKDoesNotAdvance(t *testing.T) {
 	})
 }
 
-// Linux probes a zero window with an empty ACK at RCV.NXT-1 (tcp_xmit_probe_skb). Each probe must be
-// refused and acknowledged like an RFC probe; they drew challenge ACKs, which stop after maxChallengeRejects.
+// Linux probes a zero window with an empty ACK at RCV.NXT-1 (tcp_xmit_probe_skb), with ECE while it
+// echoes congestion (RFC 3168 §6.1.3). Each probe must be refused and acknowledged like an RFC probe;
+// they drew challenge ACKs, which stop after maxChallengeRejects.
 func TestExchangeTest_LinuxZeroWindowProbe(t *testing.T) {
-	const issA, issB, windowB = 100, 300, 1000
-	probe := tcp.Segment{SEQ: issB - 1, ACK: issA, Flags: tcp.FlagACK, WND: windowB}
-	ack := tcp.Segment{SEQ: issA, ACK: issB, Flags: tcp.FlagACK}
-	var steps []tcp.SegmentStep
-	for range 20 {
-		steps = append(steps,
-			tcp.SegmentStep{Seg: probe, Action: tcp.StepBSends, AState: tcp.StateEstablished, APending: &ack, WantErr: tcp.ErrZeroWindow},
-			tcp.SegmentStep{Seg: ack, Action: tcp.StepASends, AState: tcp.StateEstablished},
-		)
+	for _, flags := range []tcp.Flags{tcp.FlagACK, tcp.FlagACK | tcp.FlagECE} {
+		t.Run(flags.String(), func(t *testing.T) {
+			const issA, issB, windowB = 100, 300, 1000
+			probe := tcp.Segment{SEQ: issB - 1, ACK: issA, Flags: flags, WND: windowB}
+			ack := tcp.Segment{SEQ: issA, ACK: issB, Flags: tcp.FlagACK}
+			var steps []tcp.SegmentStep
+			for range 20 {
+				steps = append(steps,
+					tcp.SegmentStep{Seg: probe, Action: tcp.StepBSends, AState: tcp.StateEstablished, APending: &ack, WantErr: tcp.ErrZeroWindow},
+					tcp.SegmentStep{Seg: ack, Action: tcp.StepASends, AState: tcp.StateEstablished},
+				)
+			}
+			test := tcp.ExchangeTest{
+				ISSA:       issA,
+				ISSB:       issB,
+				WindowA:    0,
+				WindowB:    windowB,
+				InitStateA: tcp.StateEstablished,
+				InitStateB: tcp.StateEstablished,
+				Steps:      steps,
+			}
+			test.RunA(t)
+		})
 	}
-	test := tcp.ExchangeTest{
-		ISSA:       issA,
-		ISSB:       issB,
-		WindowA:    0,
-		WindowB:    windowB,
-		InitStateA: tcp.StateEstablished,
-		InitStateB: tcp.StateEstablished,
-		Steps:      steps,
-	}
-	test.RunA(t)
 }
 
 // TestExchangeTest_ZeroWindowProbesDoNotAbort verifies that data at RCV.NXT

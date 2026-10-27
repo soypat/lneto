@@ -3,9 +3,11 @@ package tcp
 import (
 	"bytes"
 	"math/rand"
+	"slices"
 	"testing"
 
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/internal"
 )
 
 // recordingPolicy records every hook invocation and lets the test steer what is
@@ -563,6 +565,103 @@ func TestPolicies_Merge(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// ecnPolicy records the segment and codepoint of every frame it is handed with
+// one, and how many frames PreRx or PostTx saw before.
+type ecnPolicy struct {
+	*recordingPolicy
+	recv []ecnRecord // By PreRxECN.
+	sent []ecnRecord // By PostTxECN.
+	send uint8       // PostTxECN result.
+}
+
+type ecnRecord struct {
+	seg   Segment
+	ecn   uint8
+	hooks int // Frames PreRx (on receive) or PostTx (on send) saw before.
+}
+
+func (p *ecnPolicy) PreRxECN(h *Handler, incoming Frame, ecn uint8) {
+	p.recv = append(p.recv, ecnRecord{seg: incoming.Segment(len(incoming.Payload())), ecn: ecn, hooks: len(p.preRx)})
+}
+
+func (p *ecnPolicy) PostTxECN(h *Handler, outgoing Frame) uint8 {
+	p.sent = append(p.sent, ecnRecord{seg: outgoing.Segment(len(outgoing.Payload())), ecn: p.send, hooks: len(p.postTx)})
+	return p.send
+}
+
+// TestPolicies_ECN verifies every ECN member, also of nested Policies, gets
+// the frame and codepoint, the codepoint of the first is sent also if Not-ECT,
+// and Policies is no ECNPolicy itself.
+func TestPolicies_ECN(t *testing.T) {
+	a := &ecnPolicy{recordingPolicy: newRecordingPolicy(), send: internal.ECNNotECT}
+	b := &ecnPolicy{recordingPolicy: newRecordingPolicy(), send: internal.ECNECT0}
+	ps := Policies{newRecordingPolicy(), Policies{a}, b}
+	if _, ok := Policy(ps).(ECNPolicy); ok {
+		t.Error("Policies is an ECNPolicy")
+	}
+	frm, _ := NewFrame(make([]byte, sizeHeaderTCP))
+	frm.SetSegment(Segment{SEQ: 1, ACK: 2, WND: 3, Flags: FlagACK}, 5)
+	want := []ecnRecord{{seg: frm.Segment(0), ecn: internal.ECNCE}}
+	preRxECN(ps, nil, frm, internal.ECNCE)
+	if !slices.Equal(a.recv, want) || !slices.Equal(b.recv, want) {
+		t.Errorf("members received %v and %v, want %v", a.recv, b.recv, want)
+	}
+	if ecn, ok := postTxECN(ps, nil, frm); !ok || ecn != internal.ECNNotECT || len(a.sent) != 1 || len(b.sent) != 1 {
+		t.Errorf("postTxECN = %02b, %v after asking members %d and %d times; want 00, true, 1, 1", ecn, ok, len(a.sent), len(b.sent))
+	}
+	if _, ok := postTxECN(Policies{newRecordingPolicy()}, nil, frm); ok {
+		t.Error("postTxECN found an ECN member in Policies without one")
+	}
+}
+
+// TestHandler_ECN verifies an ECNPolicy gets each frame reaching PreRx with
+// the codepoint of its own packet before PreRx, Not-ECT through Recv, and
+// nothing of a frame rejected before, and that SendECN returns the codepoint
+// it chose after PostTx for the frame just sent.
+func TestHandler_ECN(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	client, server := newHandler(t, mtu, 3), newHandler(t, mtu, 3)
+	cp := &ecnPolicy{recordingPolicy: newRecordingPolicy(), send: internal.ECNECT0}
+	sp := &ecnPolicy{recordingPolicy: newRecordingPolicy()}
+	client.SetPolicy(Policies{cp})
+	server.SetPolicy(sp)
+	setupClientServer(t, rand.New(rand.NewSource(1)), client, server)
+	var buf [mtu]byte
+	n, ecn, err := client.SendECN(buf[:])
+	if err != nil || n == 0 {
+		t.Fatalf("SendECN = %d, %v", n, err)
+	}
+	syn := mustSegment(t, buf[:n], 0)
+	if want := []ecnRecord{{seg: syn, ecn: internal.ECNECT0, hooks: 1}}; ecn != internal.ECNECT0 || !slices.Equal(cp.sent, want) {
+		t.Fatalf("SendECN codepoint %02b, PostTxECN saw %v; want 10, %v", ecn, cp.sent, want)
+	}
+	misdirected := slices.Clone(buf[:n])
+	frm, _ := NewFrame(misdirected)
+	frm.SetDestinationPort(server.LocalPort() + 1)
+	if err := server.RecvECN(misdirected, internal.ECNCE); err == nil {
+		t.Fatal("frame for another port accepted")
+	}
+	if err := server.RecvECN(buf[:n], internal.ECNECT1); err != nil {
+		t.Fatal(err)
+	}
+	if want := []ecnRecord{{seg: syn, ecn: internal.ECNECT1}}; !slices.Equal(sp.recv, want) {
+		t.Fatalf("server's PreRxECN saw %v, want %v", sp.recv, want)
+	}
+	n, ecn, err = server.SendECN(buf[:])
+	if err != nil || n == 0 {
+		t.Fatalf("SendECN = %d, %v", n, err)
+	} else if ecn != internal.ECNNotECT {
+		t.Fatalf("SendECN codepoint %02b, want the policy's 00", ecn)
+	}
+	synack := mustSegment(t, buf[:n], 0)
+	if err := client.Recv(buf[:n]); err != nil {
+		t.Fatal(err)
+	}
+	if want := []ecnRecord{{seg: synack, ecn: internal.ECNNotECT}}; !slices.Equal(cp.recv, want) {
+		t.Errorf("client's PreRxECN saw %v, want %v", cp.recv, want)
 	}
 }
 
