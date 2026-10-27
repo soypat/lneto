@@ -36,9 +36,10 @@ func (kv KeyLetter) IsValid() bool { return kv >= 'A' && kv <= 'F' }
 // RFC 5656 4, and derives keys from it, RFC 4253 7.2. It keeps the session
 // identifier, the H of the first key exchange, across rekeys.
 //
-// A key exchange runs [KeySchedule.SetSecret], [KeySchedule.StartExchange],
-// one [KeySchedule.HashString] per exchange hash field, [KeySchedule.FinishExchange],
-// then derives keys and ends with [KeySchedule.WipeExchange].
+// A key exchange runs [KeySchedule.SetSecret] (or [KeySchedule.SetServerSecret]
+// and [KeySchedule.SetClientSecret] with an Exchanger), [KeySchedule.StartExchange],
+// one [KeySchedule.HashString] per exchange hash field, [KeySchedule.FinishExchange]
+// (or all three with [KeySchedule.HashECDH]), then derives keys and ends with [KeySchedule.WipeExchange].
 type KeySchedule struct {
 	h    hash.Hash
 	size int // [hash.Hash.Size]
@@ -163,11 +164,38 @@ func (ks *KeySchedule) SetSecret(shared []byte, hashed bool) error {
 	} else {
 		e.MPInt(shared)
 	}
-	if e.Err() != nil {
-		return e.Err()
+	if err := e.Err(); err != nil {
+		return err
 	}
 	ks.klen = uint8(e.Len())
 	return nil
+}
+
+// SetServerSecret writes the server share for client share qc into dstQS and keeps the
+// shared secret as K, see [KeySchedule.SetSecret]. ex is zeroized on return.
+func (ks *KeySchedule) SetServerSecret(ex lcrypto.Exchanger, dstQS, qc []byte, hashed bool, rand io.Reader) (n int, err error) {
+	n, nShared, err := ex.ServerSharedRekey(dstQS, ks.scratch[:], qc, rand)
+	if err == nil {
+		err = ks.SetSecret(ks.scratch[:nShared], hashed)
+	}
+	clear(ks.scratch[:])
+	ex.Zeroize()
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// SetClientSecret mixes server share qs with ex's key and keeps the shared secret as K,
+// see [KeySchedule.SetSecret]. ex is zeroized on return.
+func (ks *KeySchedule) SetClientSecret(ex lcrypto.Exchanger, qs []byte, hashed bool) error {
+	n, err := ex.ClientShared(ks.scratch[:], qs)
+	if err == nil {
+		err = ks.SetSecret(ks.scratch[:n], hashed)
+	}
+	clear(ks.scratch[:])
+	ex.Zeroize()
+	return err
 }
 
 // StartExchange starts hashing a new exchange hash.
@@ -192,6 +220,24 @@ func (ks *KeySchedule) FinishExchange() {
 		ks.sid = ks.hsum
 		ks.sidlen = ks.hlen
 	}
+}
+
+// HashECDH computes H of an ECDH style exchange after its secret is set. vc and vs are ident lines
+// returned by [NextIdentLine], ic and is KEXINIT payloads, hostKey K_S of [ParseKexECDHReply].
+func (ks *KeySchedule) HashECDH(vc, vs, ic, is, hostKey, qc, qs []byte) error {
+	if ks.h == nil || ks.klen == 0 {
+		return lneto.ErrBadState // Without K, keys would be derived from public data alone.
+	}
+	ks.StartExchange()
+	ks.HashString(vc)
+	ks.HashString(vs)
+	ks.HashString(ic)
+	ks.HashString(is)
+	ks.HashString(hostKey)
+	ks.HashString(qc)
+	ks.HashString(qs)
+	ks.FinishExchange()
+	return nil
 }
 
 // ExchangeHash returns H, which the server signs. It is empty outside a key exchange.
@@ -273,12 +319,14 @@ func (ks *KeySchedule) Zeroize() {
 	ks.sidlen = 0
 }
 
-type encoder = wire.Encoder
+type encoderErr = wire.EncoderErr
 
 // Encoder writes SSH structures to a fixed buffer, the counterpart of [decoder].
-// A write past the end of buf sets err and all later writes are dropped, so
-// callers check err once after writing.
-type Encoder struct{ encoder }
+// A write past the end of buf fails the encoder and all later writes are dropped,
+// so callers check Err once after writing.
+type Encoder struct {
+	encoderErr
+}
 
 // Bool writes 1 for true and 0 for false, the only values RFC 4251 5 allows to be sent.
 func (e *Encoder) Bool(v bool) {
@@ -359,7 +407,7 @@ func (e *Encoder) EndPacket(start, blockSize int, aad bool, rand io.Reader) []by
 	if bs+minPadding-1 > 255 {
 		e.Fail(lneto.ErrInvalidConfig)
 	}
-	if e.Err() != nil {
+	if e.IsFailed() {
 		return nil
 	}
 	covered := e.Len() - start

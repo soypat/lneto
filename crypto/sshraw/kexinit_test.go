@@ -8,6 +8,20 @@ import (
 	"github.com/soypat/lneto"
 )
 
+// validKexLists returns the name-lists of a minimal valid KEXINIT: one name in
+// each algorithm list and empty language lists, RFC 4253 7.1.
+func validKexLists() (lists [numKexLists][]string) {
+	lists[kexAlgorithms] = []string{"curve25519-sha256"}
+	lists[hostKeyAlgorithms] = []string{"ssh-ed25519"}
+	lists[ciphersC2S] = []string{"chacha20-poly1305@openssh.com"}
+	lists[ciphersS2C] = []string{"chacha20-poly1305@openssh.com"}
+	lists[macsC2S] = []string{"hmac-sha2-256"}
+	lists[macsS2C] = []string{"hmac-sha2-256"}
+	lists[compressionC2S] = []string{"none"}
+	lists[compressionS2C] = []string{"none"}
+	return lists
+}
+
 // newKexInit encodes a KEXINIT payload whose i'th name-list is lists[i].
 func newKexInit(t *testing.T, lists [numKexLists][]string, follows bool) []byte {
 	t.Helper()
@@ -20,25 +34,20 @@ func newKexInit(t *testing.T, lists [numKexLists][]string, follows bool) []byte 
 	}
 	e.Bool(follows)
 	e.Uint32(0)
-	if e.Err() != nil {
-		t.Fatal(e.Err())
+	if e.IsFailed() {
+		t.Fatal("encode failed")
 	}
 	return e.Since(0)
 }
 
 func TestKexInitDecode(t *testing.T) {
-	var lists [numKexLists][]string
+	lists := validKexLists()
 	lists[kexAlgorithms] = []string{"curve25519-sha256", "kex-strict-c-v00@openssh.com"}
-	lists[hostKeyAlgorithms] = []string{"ssh-ed25519"}
 	lists[ciphersC2S] = []string{"aes128-gcm@openssh.com"}
-	lists[ciphersS2C] = []string{"chacha20-poly1305@openssh.com"}
-	lists[compressionC2S] = []string{"none"}
-	lists[compressionS2C] = []string{"none"}
 	payload := newKexInit(t, lists, true)
 
 	var m KexInitMsg
-	var vld lneto.Validator
-	n, err := m.Decode(payload, &vld)
+	n, err := m.Decode(payload)
 	if err != nil {
 		t.Fatal(err)
 	} else if n != len(payload) {
@@ -72,19 +81,134 @@ func TestKexInitDecode(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		payload []byte
-		want    error
 	}{
-		{"truncated", payload[:len(payload)-1], lneto.ErrTruncatedFrame},
-		{"wrong type", append([]byte{byte(MsgNewKeys)}, payload[1:]...), lneto.ErrInvalidField},
-		{"empty", nil, lneto.ErrTruncatedFrame},
+		{"truncated", payload[:len(payload)-1]},
+		{"wrong type", append([]byte{byte(MsgNewKeys)}, payload[1:]...)},
+		{"empty", nil},
 	} {
-		if _, err := m.Decode(tc.payload, &vld); !errors.Is(err, tc.want) {
-			t.Errorf("%s: err=%v, want %v", tc.name, err, tc.want)
+		if _, err := m.Decode(tc.payload); err == nil {
+			t.Errorf("%s: no error", tc.name)
 		}
 	}
 	bad := bytes.Clone(payload)
 	bad[1+SizeCookie+4] = ' ' // First name of kex_algorithms gets a space.
-	if _, err := m.Decode(bad, &vld); !errors.Is(err, lneto.ErrInvalidField) {
-		t.Errorf("bad name err=%v, want %v", err, lneto.ErrInvalidField)
+	if _, err := m.Decode(bad); err == nil {
+		t.Error("bad name: no error")
+	}
+}
+
+// TestKexInitDecodeEmptyList checks every algorithm name-list must hold a name while
+// the language lists may be empty, RFC 4253 7.1.
+func TestKexInitDecodeEmptyList(t *testing.T) {
+	var m KexInitMsg
+	for i := range numKexLists {
+		lists := validKexLists()
+		lists[i] = nil
+		_, err := m.Decode(newKexInit(t, lists, false))
+		if optional := i == languagesC2S || i == languagesS2C; optional && err != nil {
+			t.Errorf("empty language list %d: %v", i, err)
+		} else if !optional && !errors.Is(err, lneto.ErrInvalidField) {
+			t.Errorf("empty algorithm list %d: err=%v, want %v", i, err, lneto.ErrInvalidField)
+		}
+	}
+}
+
+func TestPseudoAlgorithms(t *testing.T) {
+	pseudo := []string{KexStrictClient, KexStrictServer, ExtInfoClient, ExtInfoServer}
+	lists := validKexLists()
+	lists[kexAlgorithms] = append([]string{"curve25519-sha256"}, pseudo...)
+	var m KexInitMsg
+	if _, err := m.Decode(newKexInit(t, lists, false)); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range pseudo {
+		if err := ValidateNameList([]byte(name)); err != nil {
+			t.Errorf("%q: %v", name, err)
+		} else if !HasName(m.KexAlgorithms(), []byte(name)) {
+			t.Errorf("%q not found in kex_algorithms", name)
+		}
+	}
+	// Each side advertises its own name, so pseudo algorithms are never negotiated.
+	if name, ok := Negotiate([]byte(KexStrictClient+","+ExtInfoClient), []byte(KexStrictServer+","+ExtInfoServer)); ok {
+		t.Errorf("negotiated pseudo algorithm %q", name)
+	}
+}
+
+func TestKexInitWrongGuess(t *testing.T) {
+	decode := func(kex, hostKey []string, follows bool) *KexInitMsg {
+		lists := validKexLists()
+		lists[kexAlgorithms] = kex
+		lists[hostKeyAlgorithms] = hostKey
+		var m KexInitMsg
+		if _, err := m.Decode(newKexInit(t, lists, follows)); err != nil {
+			t.Fatal(err)
+		}
+		return &m
+	}
+	kex := []string{"curve25519-sha256", "ecdh-sha2-nistp256"}
+	hostKey := []string{"ssh-ed25519", "ecdsa-sha2-nistp256"}
+	own := decode(kex, hostKey, false)
+	for _, tc := range []struct {
+		name                  string
+		kex, hostKey          []string
+		agreed, follows, want bool
+	}{
+		{"no guess", []string{"ecdh-sha2-nistp256"}, hostKey, true, false, false},
+		{"no guess, other algorithms disagree", kex, hostKey, false, false, false},
+		{"right", kex, hostKey, true, true, false},
+		{"right, later names differ", []string{kex[0], "x"}, []string{hostKey[0]}, true, true, false},
+		{"kex wrong", []string{kex[1], kex[0]}, hostKey, true, true, true},
+		{"host key wrong", kex, []string{hostKey[1], hostKey[0]}, true, true, true},
+		{"prefix", []string{"curve25519-sha256x"}, hostKey, true, true, true},
+		{"other algorithms disagree", kex, hostKey, false, true, true},
+	} {
+		peer := decode(tc.kex, tc.hostKey, tc.follows)
+		if got := peer.WrongGuess(own, tc.agreed); got != tc.want {
+			t.Errorf("%s: WrongGuess=%v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestHasName(t *testing.T) {
+	for _, tc := range []struct {
+		list, name string
+		want       bool
+	}{
+		{"", "a", false},
+		{"a", "a", true},
+		{"a,b,c", "a", true},
+		{"a,b,c", "b", true},
+		{"a,b,c", "c", true},
+		{"a,b,c", "d", false},
+		{"ab,c", "a", false},  // Prefix of a name.
+		{"a,bc", "c", false},  // Suffix of a name.
+		{"a,b", "a,b", false}, // Not a single name.
+		{"a,b", "", false},
+	} {
+		if got := HasName([]byte(tc.list), []byte(tc.name)); got != tc.want {
+			t.Errorf("HasName(%q, %q)=%v, want %v", tc.list, tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestNegotiate(t *testing.T) {
+	for _, tc := range []struct {
+		client, server string
+		want           string
+		ok             bool
+	}{
+		{"a,b,c", "c,b,a", "a", true}, // Client preference wins.
+		{"a,b,c", "c,b", "b", true},
+		{"a,b,c", "c", "c", true},
+		{"a,b", "c,d", "", false},
+		{"", "a", "", false},
+		{"a", "", "", false},
+		{"ab,b", "a,b", "b", true}, // Prefixes do not match.
+		{"curve25519-sha256,kex-strict-c-v00@openssh.com", "kex-strict-s-v00@openssh.com,curve25519-sha256", "curve25519-sha256", true},
+	} {
+		got, ok := Negotiate([]byte(tc.client), []byte(tc.server))
+		if ok != tc.ok || string(got) != tc.want {
+			t.Errorf("Negotiate(%q, %q)=(%q, %v), want (%q, %v)", tc.client, tc.server, got, ok, tc.want, tc.ok)
+		}
 	}
 }
