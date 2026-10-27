@@ -61,7 +61,7 @@ func loss(c *CUBIC, now int64) {
 
 func TestCUBIC_Configure(t *testing.T) {
 	c := newCUBIC(t, CUBICConfig{})
-	if c.WindowSegments() != 10 || !math.IsInf(c.SlowStartThresh(), 1) {
+	if c.WindowSegments() != 10 || !math.IsInf(float64(c.SlowStartThresh()), 1) {
 		t.Errorf("cwnd=%v ssthresh=%v, want 10 and +Inf", c.WindowSegments(), c.SlowStartThresh())
 	}
 	nanotime := func() int64 { return 0 }
@@ -100,11 +100,11 @@ func TestCUBIC_RefusedProbe(t *testing.T) {
 func TestCUBIC_SlowStart(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
-		ssthresh float64
+		ssthresh float32
 		acks     int
 		flight   tcp.Size // At the transmit before the ACKs.
 		queued   tcp.Size
-		want     float64
+		want     float32
 	}{
 		{name: "one-segment-per-ack", acks: 2, flight: 4 * testMSS, want: 6},
 		{name: "capped-at-ssthresh", ssthresh: 4.5, acks: 1, flight: 4 * testMSS, want: 4.5},
@@ -132,10 +132,10 @@ func TestCUBIC_SlowStart(t *testing.T) {
 func TestCUBIC_Loss(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
-		cwnd, wMax      float64
+		cwnd, wMax      float32
 		fastConvergence bool
-		wantCwnd        float64
-		wantWMax        float64
+		wantCwnd        float32
+		wantWMax        float32
 	}{
 		{name: "cut-by-beta", cwnd: 10, wantCwnd: 7, wantWMax: 10},
 		{name: "below-w-max", cwnd: 8, wMax: 10, wantCwnd: 5.6, wantWMax: 8},
@@ -147,7 +147,7 @@ func TestCUBIC_Loss(t *testing.T) {
 			c.cwnd, c.wMax = tc.cwnd, tc.wMax
 			una, nxt := c.una, c.una+tcp.Value(c.CongestionWindow())
 			loss(c, 1)
-			if math.Abs(c.cwnd-tc.wantCwnd) > 1e-9 || c.ssthresh != c.cwnd || math.Abs(c.wMax-tc.wantWMax) > 1e-9 {
+			if math.Abs(float64(c.cwnd-tc.wantCwnd)) > 1e-6 || c.ssthresh != c.cwnd || math.Abs(float64(c.wMax-tc.wantWMax)) > 1e-6 {
 				t.Errorf("cwnd=%v ssthresh=%v W_max=%v, want %v, %v, %v", c.cwnd, c.ssthresh, c.wMax, tc.wantCwnd, tc.wantCwnd, tc.wantWMax)
 			}
 			for range 2 {
@@ -173,7 +173,7 @@ func TestCUBIC_ResendIsLoss(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		probing bool
-		want    float64
+		want    float32
 	}{
 		{name: "resend", want: 7},
 		{name: "zero-window-probe", probing: true, want: 10},
@@ -322,14 +322,14 @@ func TestCUBIC_Timeout(t *testing.T) {
 		loss         bool // Fast retransmit before the timeouts.
 		timeouts     int
 		probing      bool
-		wantCwnd     float64
-		wantSsthresh float64
-		wantWMax     float64 // From 12 before.
+		wantCwnd     float32
+		wantSsthresh float32
+		wantWMax     float32 // From 12 before.
 	}{
 		{name: "first", timeouts: 1, wantCwnd: 1, wantSsthresh: 7},
 		{name: "repeated", timeouts: 2, wantCwnd: 1, wantSsthresh: 7},
 		{name: "in-recovery", loss: true, timeouts: 1, wantCwnd: 1, wantSsthresh: 7},
-		{name: "zero-window-probe", timeouts: 2, probing: true, wantCwnd: 10, wantSsthresh: math.Inf(1), wantWMax: 12},
+		{name: "zero-window-probe", timeouts: 2, probing: true, wantCwnd: 10, wantSsthresh: float32(math.Inf(1)), wantWMax: 12},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := newCUBIC(t, CUBICConfig{InitialCwnd: 10})
@@ -342,7 +342,7 @@ func TestCUBIC_Timeout(t *testing.T) {
 			for i := range tc.timeouts {
 				c.preTx(c.una, nxt, 0, uint32(i+1), tc.probing, 0)
 			}
-			if c.WindowSegments() != tc.wantCwnd || math.Abs(c.SlowStartThresh()-tc.wantSsthresh) > 1e-9 || c.wMax != tc.wantWMax {
+			if c.WindowSegments() != tc.wantCwnd || math.Abs(float64(c.SlowStartThresh()-tc.wantSsthresh)) > 1e-6 || c.wMax != tc.wantWMax {
 				t.Errorf("cwnd=%v ssthresh=%v W_max=%v, want %v, %v, %v", c.WindowSegments(), c.SlowStartThresh(), c.wMax, tc.wantCwnd, tc.wantSsthresh, tc.wantWMax)
 			}
 		})
@@ -370,7 +370,7 @@ func TestCUBIC_CongestionAvoidance(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := newCUBIC(t, CUBICConfig{})
 			c.Timer().ObserveRTT(tc.rtt)
-			c.cwnd, c.ssthresh, c.wMax, c.cwndPrior = tc.cwnd, tc.cwnd, tc.wMax, tc.cwndPrior
+			c.cwnd, c.ssthresh, c.wMax, c.cwndPrior = float32(tc.cwnd), float32(tc.cwnd), float32(tc.wMax), float32(tc.cwndPrior)
 			ack(c, testMSS, 0)
 
 			k, origin := 0.0, tc.cwnd
@@ -385,7 +385,7 @@ func TestCUBIC_CongestionAvoidance(t *testing.T) {
 				alpha = 1
 			}
 			want := max(cwnd, tc.cwnd+alpha/cwnd)
-			if got := c.WindowSegments(); math.Abs(got-want) > 1e-9 {
+			if got := c.WindowSegments(); math.Abs(float64(got)-want) > 1e-5 {
 				t.Errorf("cwnd=%v, want %v", got, want)
 			}
 		})
@@ -797,7 +797,7 @@ func TestCUBIC_Reset(t *testing.T) {
 	cubic.Reset()
 	cb := client.ControlBlock()
 	limit, _, rtx := cubic.preTx(cb.SendUNA(), cb.SendUNA(), 0, cubic.timer.Expirations(), false, 0)
-	if cubic.WindowSegments() != 6 || !math.IsInf(cubic.SlowStartThresh(), 1) || rtx || limit != 6*cubic.smss || cubic.timer.Expirations() != 0 {
+	if cubic.WindowSegments() != 6 || !math.IsInf(float64(cubic.SlowStartThresh()), 1) || rtx || limit != 6*cubic.smss || cubic.timer.Expirations() != 0 {
 		t.Errorf("cwnd %v, ssthresh %v, resend %v, limit %d, timeouts %d after Reset; want 6, +Inf, none, %d, 0",
 			cubic.WindowSegments(), cubic.SlowStartThresh(), rtx, limit, cubic.timer.Expirations(), 6*cubic.smss)
 	}
@@ -875,7 +875,7 @@ func TestCUBIC_ZeroWindowProbe(t *testing.T) {
 			if cb.SendUNA() != cb.SendNext() || client.BufferedUnsent() != 0 {
 				t.Fatalf("%d octets unacknowledged, %d unsent", tcp.Sizeof(cb.SendUNA(), cb.SendNext()), client.BufferedUnsent())
 			}
-			if cubic.WindowSegments() < cwnd || !math.IsInf(cubic.SlowStartThresh(), 1) {
+			if cubic.WindowSegments() < cwnd || !math.IsInf(float64(cubic.SlowStartThresh()), 1) {
 				t.Errorf("cwnd=%v ssthresh=%v, want at least %v and +Inf", cubic.WindowSegments(), cubic.SlowStartThresh(), cwnd)
 			}
 		})

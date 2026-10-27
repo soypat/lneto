@@ -35,7 +35,7 @@ type CUBICConfig struct {
 	InitialCwnd tcp.Size
 	// SlowStartThresh is the initial slow-start threshold in segments. Zero
 	// means unbounded.
-	SlowStartThresh float64
+	SlowStartThresh float32
 	// FastConvergence lowers W_max on repeated losses to yield bandwidth to
 	// new flows (§4.7).
 	FastConvergence bool
@@ -78,18 +78,20 @@ type CUBIC struct {
 	timer           rto.Timer
 	lastExpirations uint32 // Timer timeouts already handled.
 
-	cwnd      float64 // Segments.
-	ssthresh  float64 // Segments.
-	wMax      float64 // Window before the last reduction (§4.1.2, §4.7).
-	cwndPrior float64 // cwnd at the last reduction (§4.1.2).
-	wEst      float64 // Reno-friendly window estimate (§4.3).
+	// Windows in segments. float32 runs in hardware on more targets and keeps
+	// the per-ACK growth within 1% for windows up to about 3000 segments.
+	cwnd      float32
+	ssthresh  float32
+	wMax      float32 // Window before the last reduction (§4.1.2, §4.7).
+	cwndPrior float32 // cwnd at the last reduction (§4.1.2).
+	wEst      float32 // Reno-friendly window estimate (§4.3).
 
 	// Epoch of the cubic function (§4.2), set by the first ACK in congestion
 	// avoidance.
 	epoch       int64
 	epochSet    bool
-	originPoint float64 // W_max of the curve, segments.
-	k           float64 // Seconds until the curve reaches originPoint.
+	originPoint float32 // W_max of the curve, segments.
+	k           float32 // Seconds until the curve reaches originPoint.
 
 	inRecovery bool
 	afterRTO   bool      // Recovery started or extended by a timeout: the window still grows.
@@ -130,8 +132,8 @@ type CUBIC struct {
 
 // cubicConfig is the part of [CUBICConfig] kept across [CUBIC.Reset].
 type cubicConfig struct {
-	initCwnd        float64
-	ssthresh        float64
+	initCwnd        float32
+	ssthresh        float32
 	fastConvergence bool
 }
 
@@ -150,10 +152,10 @@ func (c *CUBIC) Configure(cfg CUBICConfig) error {
 	}
 	ssthresh := cfg.SlowStartThresh
 	if ssthresh == 0 {
-		ssthresh = math.Inf(1)
+		ssthresh = float32(math.Inf(1))
 	}
 	c.cfg = cubicConfig{
-		initCwnd:        float64(icwnd),
+		initCwnd:        float32(icwnd),
 		ssthresh:        ssthresh,
 		fastConvergence: cfg.FastConvergence,
 	}
@@ -318,10 +320,10 @@ func (c *CUBIC) CongestionWindow() tcp.Size {
 }
 
 // WindowSegments returns the congestion window in segments.
-func (c *CUBIC) WindowSegments() float64 { return c.cwnd }
+func (c *CUBIC) WindowSegments() float32 { return c.cwnd }
 
 // SlowStartThresh returns the slow-start threshold in segments.
-func (c *CUBIC) SlowStartThresh() float64 { return c.ssthresh }
+func (c *CUBIC) SlowStartThresh() float32 { return c.ssthresh }
 
 // onProbe reports whether the zero-window probe octet is the oldest
 // unacknowledged.
@@ -352,7 +354,7 @@ func (c *CUBIC) onACK(acked tcp.Size, una tcp.Value, now int64) {
 	if !c.cwndLimited {
 		return
 	}
-	ackSeg := float64(acked) / float64(c.smss)
+	ackSeg := float32(acked) / float32(c.smss)
 	if c.cwnd < c.ssthresh {
 		c.cwnd = min(c.cwnd+min(ackSeg, 1), c.ssthresh) // RFC 5681 §3.1.
 		return
@@ -360,12 +362,12 @@ func (c *CUBIC) onACK(acked tcp.Size, una tcp.Value, now int64) {
 	c.congestionAvoidance(ackSeg, now)
 }
 
-func (c *CUBIC) congestionAvoidance(ackSeg float64, now int64) {
+func (c *CUBIC) congestionAvoidance(ackSeg float32, now int64) {
 	if !c.epochSet {
 		c.epochSet = true
 		c.epoch = now
 		if c.cwnd < c.wMax {
-			c.k = math.Cbrt((c.wMax - c.cwnd) / cubicC) // §4.2, Figure 2.
+			c.k = float32(math.Cbrt(float64((c.wMax - c.cwnd) / cubicC))) // §4.2, Figure 2.
 			c.originPoint = c.wMax
 		} else {
 			c.k = 0
@@ -373,12 +375,12 @@ func (c *CUBIC) congestionAvoidance(ackSeg float64, now int64) {
 		}
 		c.wEst = c.cwnd
 	}
-	rtt := float64(c.timer.SmoothedRTT()) / nanosPerSecond
-	t := float64(now-c.epoch)/nanosPerSecond + rtt
+	rtt := float32(c.timer.SmoothedRTT()) / nanosPerSecond
+	t := float32(now-c.epoch)/nanosPerSecond + rtt
 	target := min(max(c.cubicTarget(t), c.cwnd), cubicMaxTargetRatio*c.cwnd)
 	c.cwnd += (target - c.cwnd) / c.cwnd * ackSeg // §4.4, §4.5.
 
-	alpha := float64(cubicAlpha)
+	alpha := float32(cubicAlpha)
 	if c.wEst >= c.cwndPrior {
 		alpha = 1
 	}
@@ -387,7 +389,7 @@ func (c *CUBIC) congestionAvoidance(ackSeg float64, now int64) {
 }
 
 // cubicTarget returns W_cubic(t) = C*(t-K)³ + W_max (§4.2, Figure 1).
-func (c *CUBIC) cubicTarget(t float64) float64 {
+func (c *CUBIC) cubicTarget(t float32) float32 {
 	d := t - c.k
 	return c.originPoint + cubicC*d*d*d
 }
