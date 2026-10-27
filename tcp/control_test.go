@@ -2,6 +2,8 @@ package tcp
 
 import (
 	"testing"
+
+	"github.com/soypat/lneto/internal"
 )
 
 // TestMaxInFlightData_Underflow verifies that MaxInFlightData never underflows
@@ -572,4 +574,133 @@ func TestISNGenerator_SequentialPortsUnpredictable(t *testing.T) {
 	if distinct < 60 {
 		t.Errorf("only %d of 63 ISN deltas between sequential ports differ", distinct)
 	}
+}
+
+// TestPendingRetransmitKeepsHighWaterMark verifies a resend goes out at the
+// requested sequence and sending it leaves snd.NXT where it was.
+func TestPendingRetransmitKeepsHighWaterMark(t *testing.T) {
+	const iss Value = 1000
+	tcb := cbSending(t, iss, 1500)
+	nxtBefore := tcb.snd.NXT
+
+	seg, ok := tcb.PendingRetransmit(iss+500, 500)
+	if !ok {
+		t.Fatal("PendingRetransmit refused a sequence inside [snd.UNA, snd.NXT)")
+	}
+	want := Segment{SEQ: iss + 500, DATALEN: 500, ACK: tcb.rcv.NXT, WND: tcb.rcv.WND, Flags: FlagACK}
+	if seg != want {
+		t.Fatalf("PendingRetransmit = %+v, want %+v", seg, want)
+	}
+	if tcb.snd.NXT != nxtBefore {
+		t.Fatalf("PendingRetransmit moved snd.NXT to %d, want %d", tcb.snd.NXT, nxtBefore)
+	}
+	nrtx := tcb.nRetransmit
+	if err := tcb.Send(seg); err != nil {
+		t.Fatal("send resend:", err)
+	}
+	if tcb.snd.NXT != nxtBefore {
+		t.Errorf("snd.NXT moved to %d by resending, want %d", tcb.snd.NXT, nxtBefore)
+	}
+	if tcb.nRetransmit != nrtx+1 {
+		t.Errorf("nRetransmit = %d, want %d", tcb.nRetransmit, nrtx+1)
+	}
+	// Only the requested range was resent: the next segment is new data.
+	seg, ok = tcb.PendingSegment(500)
+	if !ok {
+		t.Fatal("no segment offered after the resend")
+	}
+	if seg.SEQ != nxtBefore {
+		t.Errorf("next segment at %d, want new data at snd.NXT %d", seg.SEQ, nxtBefore)
+	}
+}
+
+func FuzzTCPControlBlock(f *testing.F) {
+	const (
+		mutopFlags = 1 << iota
+		mutopSeq
+		mutopAck
+		mutopMaxBit
+	)
+	const mutopBits = mutopMaxBit - 1
+	const (
+		mutPacketBits = 4
+
+		mutFlags = 1 << iota
+	)
+	const wnd = 1500
+	var seed uint64
+	editPkt := func(rngSeed, ops uint64, seg *Segment) {
+		ops &= mutopBits
+		if ops&mutopFlags != 0 {
+			seg.Flags ^= Flags(seed & uint64(FlagACK|FlagFIN|FlagRST|FlagSYN))
+		}
+		if ops&mutopSeq != 0 {
+			seg.SEQ = Value(int32(seg.SEQ) + int32(int8(uint8(rngSeed>>32))))
+		}
+		if ops&mutopAck != 0 {
+			seg.ACK = Value(int32(seg.ACK) + int32(int8(uint8(rngSeed>>48))))
+		}
+	}
+	f.Add(seed, uint64(mutopFlags))
+	f.Fuzz(func(t *testing.T, seed, op uint64) {
+		var tcb0, tcb1 ControlBlock
+		iss0 := Value(seed)
+		iss1 := Value(seed >> 32)
+		err := tcb0.Open(iss0, wnd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		synseg := ClientSynSegment(iss1, wnd)
+		err = tcb1.Send(synseg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = tcb0.Recv(synseg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sent := 0
+		const maxpkts = 30
+		pktEdits := internal.Prand64(seed)
+		nextOp := internal.Prand64(op)
+		for range maxpkts {
+			nextOp = internal.Prand64(nextOp)
+			seg0, ok := tcb0.PendingSegment(10)
+			if ok {
+				edit := pktEdits&1 != 0
+				pktEdits >>= 1
+				if edit {
+					editPkt(seed, nextOp, &seg0)
+				}
+				err = tcb0.Send(seg0)
+				if err == nil {
+					sent++
+					err = tcb1.Recv(seg0)
+					if err != nil {
+						t.Fatal("packet sent from TCB0 to TCB1 failed:\n", StringExchange(seg0, tcb0.State(), tcb1.State(), false))
+					}
+				}
+			}
+			nextOp = internal.Prand64(nextOp)
+			seg1, ok := tcb1.PendingSegment(10)
+			if ok {
+				edit := pktEdits&1 != 0
+				pktEdits >>= 1
+				if edit {
+					editPkt(seed, nextOp, &seg1)
+				}
+				err = tcb1.Send(seg1)
+				if err == nil {
+					sent++
+					err = tcb0.Recv(seg1)
+					if err != nil {
+						t.Fatal("packet sent from TCB1 to TCB0 failed:\n", StringExchange(seg1, tcb0.State(), tcb1.State(), true))
+					}
+				}
+			}
+		}
+		if sent == 0 {
+			t.Fatal("no packets sent")
+		}
+	})
 }

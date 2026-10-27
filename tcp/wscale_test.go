@@ -6,32 +6,6 @@ import (
 	"testing"
 )
 
-// synOptions parses the option block of a raw TCP frame and returns the MSS
-// and window-scale values found, with ok flags for presence.
-func synOptions(t *testing.T, frame []byte) (mss uint16, mssOK bool, shift uint8, shiftOK bool) {
-	t.Helper()
-	tfrm, err := NewFrame(frame)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var oc OptionCodec
-	err = oc.ForEachOption(tfrm.Options(), func(kind OptionKind, data []byte) error {
-		switch {
-		case kind == OptMaxSegmentSize && len(data) == 2:
-			mss = uint16(data[0])<<8 | uint16(data[1])
-			mssOK = true
-		case kind == OptWindowScale && len(data) == 1:
-			shift = data[0]
-			shiftOK = true
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return mss, mssOK, shift, shiftOK
-}
-
 // TestWindowScaleNegotiation walks the three-way handshake with asymmetric
 // buffer sizes and verifies RFC 7323 §2 end to end on the wire: the SYN and
 // SYN-ACK carry the shift derived from each side's receive buffer, SYN
