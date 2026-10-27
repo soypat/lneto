@@ -102,3 +102,40 @@ func SetMulticast(ethernetCarrier []byte, ipOff int, multicastAddr []byte) (err 
 	}
 	return nil
 }
+
+// ECN codepoints of RFC 3168 §5, in the low two bits of the IPv4 Type of
+// Service octet and of the IPv6 Traffic Class.
+const (
+	ECNNotECT uint8 = 0b00
+	ECNECT1   uint8 = 0b01
+	ECNECT0   uint8 = 0b10
+	ECNCE     uint8 = 0b11 // Congestion Experienced.
+)
+
+// GetIPECN returns the ECN codepoint of an IPv4 or IPv6 header.
+func GetIPECN(buf []byte) (ecn uint8, err error) {
+	switch buf[0] >> 4 {
+	case 4:
+		return buf[1] & 0b11, nil
+	case 6:
+		return buf[1] >> 4 & 0b11, nil // The Traffic Class starts 4 bits into the header.
+	}
+	return 0, lneto.ErrUnsupported
+}
+
+// SetIPECN sets the ECN codepoint of an IPv4 or IPv6 header. It does not update
+// the IPv4 header checksum.
+func SetIPECN(buf []byte, ecn uint8) error {
+	if ecn > 0b11 {
+		return lneto.ErrInvalidField
+	}
+	switch buf[0] >> 4 {
+	case 4:
+		buf[1] = buf[1]&^0b11 | ecn
+	case 6:
+		buf[1] = buf[1]&^(0b11<<4) | ecn<<4
+	default:
+		return lneto.ErrUnsupported
+	}
+	return nil
+}
