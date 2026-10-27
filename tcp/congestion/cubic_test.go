@@ -10,7 +10,6 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/tcp"
-	"github.com/soypat/lneto/tcp/rto"
 	"github.com/soypat/lneto/tcp/sack"
 	"github.com/soypat/lneto/tcp/timestamps"
 )
@@ -28,12 +27,6 @@ func newCUBIC(t *testing.T, cfg CUBICConfig) *CUBIC {
 	t.Helper()
 	if cfg.Nanotime == nil {
 		cfg.Nanotime = func() int64 { return 0 }
-	}
-	if cfg.Timer == nil {
-		cfg.Timer = new(rto.Timer)
-		if err := cfg.Timer.Configure(cfg.Nanotime); err != nil {
-			t.Fatal(err)
-		}
 	}
 	c := new(CUBIC)
 	if err := c.Configure(cfg); err != nil {
@@ -71,15 +64,13 @@ func TestCUBIC_Configure(t *testing.T) {
 	if c.WindowSegments() != 10 || !math.IsInf(c.SlowStartThresh(), 1) {
 		t.Errorf("cwnd=%v ssthresh=%v, want 10 and +Inf", c.WindowSegments(), c.SlowStartThresh())
 	}
-	var timer rto.Timer
 	nanotime := func() int64 { return 0 }
 	for _, tc := range []struct {
 		cfg  CUBICConfig
 		want error
 	}{
-		{cfg: CUBICConfig{Timer: &timer}, want: lneto.ErrMissingHALConfig},
-		{cfg: CUBICConfig{Nanotime: nanotime}, want: lneto.ErrInvalidConfig},
-		{cfg: CUBICConfig{Nanotime: nanotime, Timer: &timer, SlowStartThresh: -1}, want: lneto.ErrInvalidConfig},
+		{cfg: CUBICConfig{}, want: lneto.ErrMissingHALConfig},
+		{cfg: CUBICConfig{Nanotime: nanotime, SlowStartThresh: -1}, want: lneto.ErrInvalidConfig},
 	} {
 		if err := new(CUBIC).Configure(tc.cfg); !errors.Is(err, tc.want) {
 			t.Errorf("Configure(%+v) = %v, want %v", tc.cfg, err, tc.want)
@@ -377,12 +368,8 @@ func TestCUBIC_CongestionAvoidance(t *testing.T) {
 		{name: "after-loss-convergence", cwnd: 5, wMax: 7, cwndPrior: 7, rtt: s / 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var timer rto.Timer
-			if err := timer.Configure(func() int64 { return 0 }); err != nil {
-				t.Fatal(err)
-			}
-			timer.ObserveRTT(tc.rtt)
-			c := newCUBIC(t, CUBICConfig{Timer: &timer})
+			c := newCUBIC(t, CUBICConfig{})
+			c.Timer().ObserveRTT(tc.rtt)
 			c.cwnd, c.ssthresh, c.wMax, c.cwndPrior = tc.cwnd, tc.cwnd, tc.wMax, tc.cwndPrior
 			ack(c, testMSS, 0)
 
@@ -526,12 +513,8 @@ func connPair(t *testing.T, cfg pairConfig) (client, server *tcp.Handler, cubic 
 		*clock += int64(nanosPerSecond) / 1000
 		return *clock
 	}
-	timer := new(rto.Timer)
-	if err := timer.Configure(nanotime); err != nil {
-		t.Fatal(err)
-	}
 	cubic = new(CUBIC)
-	if err := cubic.Configure(CUBICConfig{Nanotime: nanotime, Timer: timer, InitialCwnd: cfg.cwnd}); err != nil {
+	if err := cubic.Configure(CUBICConfig{Nanotime: nanotime, InitialCwnd: cfg.cwnd}); err != nil {
 		t.Fatal(err)
 	}
 	client, server = new(tcp.Handler), new(tcp.Handler)
@@ -542,20 +525,20 @@ func connPair(t *testing.T, cfg pairConfig) (client, server *tcp.Handler, cubic 
 			t.Fatal(err)
 		}
 	}
-	client.SetPolicy(tcp.Policies{timer, cubic})
+	client.SetPolicy(cubic)
 	switch {
 	case cfg.sack:
-		client.SetPolicy(tcp.Policies{timer, new(sack.Policy), cubic})
+		client.SetPolicy(tcp.Policies{new(sack.Policy), cubic})
 		server.SetPolicy(new(sack.Policy))
 	case cfg.ts:
 		var cts, sts timestamps.Policy
-		if err := cts.Configure(timestamps.Config{Nanotime: nanotime}); err != nil {
+		if err := cts.Configure(timestamps.Config{Nanotime: nanotime, Timer: cubic.Timer()}); err != nil {
 			t.Fatal(err)
 		}
 		if err := sts.Configure(timestamps.Config{Nanotime: nanotime}); err != nil {
 			t.Fatal(err)
 		}
-		client.SetPolicy(tcp.Policies{timer, &cts, cubic})
+		client.SetPolicy(tcp.Policies{&cts, cubic})
 		server.SetPolicy(&sts)
 	}
 	if err := server.OpenListen(80, 0); err != nil {
@@ -780,8 +763,26 @@ func TestCUBIC_RecoveryAfterTimeout(t *testing.T) {
 	}
 }
 
-// TestCUBIC_Reset verifies a controller reset after a timeout, also before
-// its timer, starts the next connection afresh.
+// TestCUBIC_Timer verifies the controller runs its timer: data in flight
+// arms it, with the deadline reported through tcp.Policies, and the ACK
+// stops it with an RTT sample.
+func TestCUBIC_Timer(t *testing.T) {
+	client, server, cubic, packet, _ := connPair(t, pairConfig{})
+	if _, err := client.Write(make([]byte, testMSS)); err != nil {
+		t.Fatal("write:", err)
+	}
+	relay(t, client, server, packet)
+	if d := (tcp.Policies{cubic}).NextDeadline(); d == 0 || d != cubic.Timer().NextDeadline() {
+		t.Fatalf("deadline %d with data in flight, want the timer's %d", d, cubic.Timer().NextDeadline())
+	}
+	relay(t, server, client, packet)
+	if cubic.Timer().Running() || cubic.Timer().SmoothedRTT() == 0 {
+		t.Errorf("timer running %v, SRTT %v after the ACK; want stopped and sampled", cubic.Timer().Running(), cubic.Timer().SmoothedRTT())
+	}
+}
+
+// TestCUBIC_Reset verifies a controller reset after a timeout, which also
+// resets its timer, starts the next connection afresh.
 func TestCUBIC_Reset(t *testing.T) {
 	client, _, cubic, packet, clock := connPair(t, pairConfig{cwnd: 6})
 	if _, err := client.Write(make([]byte, testMSS)); err != nil {
@@ -793,12 +794,12 @@ func TestCUBIC_Reset(t *testing.T) {
 	if cubic.timer.Expirations() != 1 || cubic.WindowSegments() != 1 {
 		t.Fatalf("timeouts %d, cwnd %v; test needs one timeout", cubic.timer.Expirations(), cubic.WindowSegments())
 	}
-	tcp.Policies{cubic, cubic.timer}.Reset()
+	cubic.Reset()
 	cb := client.ControlBlock()
 	limit, _, rtx := cubic.preTx(cb.SendUNA(), cb.SendUNA(), 0, cubic.timer.Expirations(), false, 0)
-	if cubic.WindowSegments() != 6 || !math.IsInf(cubic.SlowStartThresh(), 1) || rtx || limit != 6*cubic.smss {
-		t.Errorf("cwnd %v, ssthresh %v, resend %v, limit %d after Reset; want 6, +Inf, none, %d",
-			cubic.WindowSegments(), cubic.SlowStartThresh(), rtx, limit, 6*cubic.smss)
+	if cubic.WindowSegments() != 6 || !math.IsInf(cubic.SlowStartThresh(), 1) || rtx || limit != 6*cubic.smss || cubic.timer.Expirations() != 0 {
+		t.Errorf("cwnd %v, ssthresh %v, resend %v, limit %d, timeouts %d after Reset; want 6, +Inf, none, %d, 0",
+			cubic.WindowSegments(), cubic.SlowStartThresh(), rtx, limit, cubic.timer.Expirations(), 6*cubic.smss)
 	}
 }
 

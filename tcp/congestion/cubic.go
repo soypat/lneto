@@ -1,7 +1,6 @@
 // Package congestion implements TCP congestion control as [tcp.Policy]
 // implementations. A controller limits new data to its congestion window and
-// takes timeouts and the smoothed RTT from an [rto.Timer] installed before it
-// in [tcp.Policies].
+// runs its own [rto.Timer] for timeouts and the smoothed RTT.
 package congestion
 
 import (
@@ -28,11 +27,9 @@ const (
 
 // CUBICConfig configures a [CUBIC] controller.
 type CUBICConfig struct {
-	// Nanotime returns monotonic time in nanoseconds. Required.
+	// Nanotime returns monotonic time in nanoseconds, also for the timer.
+	// Required.
 	Nanotime func() int64
-	// Timer supplies timeouts and the smoothed RTT. Install it before the
-	// controller in [tcp.Policies]. Required.
-	Timer *rto.Timer
 	// InitialCwnd is the initial window in segments. Zero means 10, RFC
 	// 6928's window for an SMSS up to 1460.
 	InitialCwnd tcp.Size
@@ -49,15 +46,17 @@ type CUBICConfig struct {
 // function skips the time it does not. Its segments exclude the options of
 // the Policies before it in [tcp.Policies].
 //
-// A timeout of [CUBICConfig.Timer], a resend of data and a fast retransmit the
-// ControlBlock owes, which the controller requests itself, are losses, except
-// for the zero-window probe octet the peer refused and copies of SND.UNA
-// (below). A loss starts recovery until the data sent before it is
-// acknowledged; further losses meanwhile belong to the same event, and partial
-// ACKs resend the next hole not resent yet, one per round trip also after a
-// timeout. Duplicate ACKs for that data are no new loss until SND.UNA passes
-// it (RFC 6582 §3.2). The first two duplicate ACKs each allow one more segment
-// (RFC 3042).
+// It runs its own retransmission timer, which [CUBIC.Timer] returns. Install
+// no other [rto.Timer] beside it.
+//
+// A timeout, a resend of data and a fast retransmit the ControlBlock owes,
+// which the controller requests itself, are losses, except for the zero-window
+// probe octet the peer refused and copies of SND.UNA (below). A loss starts
+// recovery until the data sent before it is acknowledged; further losses
+// meanwhile belong to the same event, and partial ACKs resend the next hole
+// not resent yet, one per round trip also after a timeout. Duplicate ACKs for
+// that data are no new loss until SND.UNA passes it (RFC 6582 §3.2). The first
+// two duplicate ACKs each allow one more segment (RFC 3042).
 //
 // The ControlBlock resends SND.UNA on every duplicate ACK from the third. Each
 // copy the peer already holds draws a duplicate ACK at a later SND.UNA, so as
@@ -76,7 +75,7 @@ type CUBICConfig struct {
 type CUBIC struct {
 	cfg             cubicConfig
 	nanotime        func() int64
-	timer           *rto.Timer
+	timer           rto.Timer
 	lastExpirations uint32 // Timer timeouts already handled.
 
 	cwnd      float64 // Segments.
@@ -140,10 +139,10 @@ var _ tcp.Policy = (*CUBIC)(nil)
 
 // Configure applies cfg and resets the controller.
 func (c *CUBIC) Configure(cfg CUBICConfig) error {
-	if cfg.Nanotime == nil {
-		return lneto.ErrMissingHALConfig
-	} else if cfg.Timer == nil || cfg.SlowStartThresh < 0 {
+	if cfg.SlowStartThresh < 0 {
 		return lneto.ErrInvalidConfig
+	} else if err := c.timer.Configure(cfg.Nanotime); err != nil {
+		return err
 	}
 	icwnd := cfg.InitialCwnd
 	if icwnd == 0 {
@@ -158,7 +157,7 @@ func (c *CUBIC) Configure(cfg CUBICConfig) error {
 		ssthresh:        ssthresh,
 		fastConvergence: cfg.FastConvergence,
 	}
-	c.nanotime, c.timer = cfg.Nanotime, cfg.Timer
+	c.nanotime = cfg.Nanotime
 	c.Reset()
 	return nil
 }
@@ -174,20 +173,29 @@ func (c *CUBIC) Reset() {
 		ssthresh: c.cfg.ssthresh,
 		smss:     defaultMSS,
 	}
+	c.timer.Reset()
 }
+
+// Timer returns the retransmission timer the controller runs, for example to
+// receive the samples of timestamps.Config.Timer.
+func (c *CUBIC) Timer() *rto.Timer { return &c.timer }
+
+// NextDeadline returns the timer's next deadline. See [rto.Timer.NextDeadline].
+func (c *CUBIC) NextDeadline() int64 { return c.timer.NextDeadline() }
 
 // PreRx records the send state before the segment is processed. It
 // implements [tcp.Policy].
 func (c *CUBIC) PreRx(h *tcp.Handler, incoming tcp.Frame) bool {
 	cb := h.ControlBlock()
 	c.una, c.sendRoom = cb.SendUNA(), cb.MaxInFlightData()
-	return true
+	return c.timer.PreRx(h, incoming)
 }
 
 // PostRx grows the window on an ACK of new data and reduces it when the
 // ControlBlock owes a fast retransmit after three duplicate ACKs not answering
 // copies. It implements [tcp.Policy].
 func (c *CUBIC) PostRx(h *tcp.Handler, prevState tcp.State, accepted tcp.Frame) {
+	c.timer.PostRx(h, prevState, accepted)
 	cb := h.ControlBlock()
 	seg := accepted.Segment(len(accepted.Payload()))
 	if !prevState.IsSynchronized() || !seg.Flags.HasAny(tcp.FlagACK) {
@@ -231,17 +239,19 @@ func (c *CUBIC) postRx(una, nxt tcp.Value, owed, dupACK bool, now int64) {
 	}
 }
 
-// PreTx handles a timeout, requests a pending resend of SND.UNA and limits new
-// data to the window left after the octets in flight. It implements
-// [tcp.Policy].
+// PreTx runs the timer, handles a timeout, requests a pending resend of SND.UNA
+// and limits new data to the window left after the octets in flight. It
+// implements [tcp.Policy].
 func (c *CUBIC) PreTx(h *tcp.Handler, outgoingOpts tcp.Frame) (newTransmitLimit tcp.Size, rtxFrom tcp.Value, retransmit bool) {
+	_, _, timeout := c.timer.PreTx(h, outgoingOpts)
 	cb := h.ControlBlock()
 	offset, _ := outgoingOpts.OffsetAndFlags()
 	c.setSMSS(cb.SendMSS(), tcp.Size(len(outgoingOpts.RawData())-int(offset)*4))
 	una, nxt := cb.SendUNA(), cb.SendNext()
 	queued := min(tcp.Size(h.BufferedUnsent()), cb.MaxInFlightData())
 	probing := cb.MaxInFlightData() == 0 && tcp.Sizeof(una, nxt) <= 1
-	return c.preTx(una, nxt, queued, c.timer.Expirations(), probing, c.nanotime())
+	newTransmitLimit, _, retransmit = c.preTx(una, nxt, queued, c.timer.Expirations(), probing, c.nanotime())
+	return newTransmitLimit, una, retransmit || timeout // Both resend SND.UNA.
 }
 
 // preTx handles a transmit with queued octets of new data the peer's window
@@ -278,6 +288,7 @@ func (c *CUBIC) preTx(una, nxt tcp.Value, queued tcp.Size, expirations uint32, p
 // probe, and clears the resend request once a segment covering SND.UNA is
 // sent. It implements [tcp.Policy].
 func (c *CUBIC) PostTx(h *tcp.Handler, outgoing tcp.Frame) {
+	c.timer.PostTx(h, outgoing)
 	c.postTx(outgoing.Segment(len(outgoing.Payload())), h.ControlBlock().SendUNA())
 }
 
