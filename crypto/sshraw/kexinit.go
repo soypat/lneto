@@ -68,8 +68,8 @@ type KexInitMsg struct {
 func (m *KexInitMsg) reset() { *m = KexInitMsg{} }
 
 // Decode parses a KEXINIT payload starting at its message type byte and
-// validates every name-list. The reserved field is not checked to be zero.
-// Decode fails if the message is not complete.
+// validates every name-list; all but the language lists must hold a name.
+// The reserved field is not checked to be zero. Decode fails if the message is not complete.
 func (m *KexInitMsg) Decode(payload []byte) (int, error) {
 	m.reset()
 	var dec decoder
@@ -79,6 +79,9 @@ func (m *KexInitMsg) Decode(payload []byte) (int, error) {
 	var lists [numKexLists]uint32
 	for i := range lists {
 		list := dec.NameList()
+		if len(list) == 0 && i < languagesC2S {
+			dec.Fail(lneto.ErrInvalidField) // Each algorithm name-list MUST contain a name, RFC 4253 7.1.
+		}
 		lists[i] = uint32(dec.Off() - len(list))
 	}
 	dec.Bool()   // first_kex_packet_follows.
@@ -134,20 +137,23 @@ func (m *KexInitMsg) LanguagesClientToServer() []byte { return m.list(languagesC
 // LanguagesServerToClient returns languages_server_to_client, usually empty.
 func (m *KexInitMsg) LanguagesServerToClient() []byte { return m.list(languagesS2C) }
 
+func (m *KexInitMsg) firstKexPktOff() int {
+	last := m.list(languagesS2C)
+	return int(m.lists[languagesS2C]) + len(last)
+}
+
 // FirstKexPacketFollows reports whether the sender guessed the key exchange
 // method and sent its first packet already. If the guess is wrong the packet
 // must be ignored, RFC 4253 7.
-func (m *KexInitMsg) FirstKexPacketFollows() bool {
-	last := m.list(languagesS2C)
-	off := int(m.lists[languagesS2C]) + len(last)
-	return m.buf[off] != 0
-}
+func (m *KexInitMsg) FirstKexPacketFollows() bool { return m.buf[m.firstKexPktOff()] != 0 }
 
-// WrongGuess reports whether the peer that sent m guessed the key exchange and
-// guessed wrong, in which case its next packet must be silently ignored,
-// RFC 4253 7. own is the KEXINIT sent to the peer. The guess is right when both
-// sides prefer the same key exchange and host key algorithms, those listed first.
-func (m *KexInitMsg) WrongGuess(own *KexInitMsg) bool {
+// RawReserved returns bytes starting after first_kex_packet_follows. Should start with 4 zero bytes as per RFC 4253.
+func (m *KexInitMsg) RawReserved() []byte { return m.buf[m.firstKexPktOff()+1:] }
+
+// WrongGuess reports whether the peer that sent m guessed the key exchange wrong, so its next
+// packet must be silently ignored. own is the KEXINIT sent to the peer; agreed is whether every
+// other algorithm was negotiated, see [Negotiate].
+func (m *KexInitMsg) WrongGuess(own *KexInitMsg, agreed bool) bool {
 	if !m.FirstKexPacketFollows() {
 		return false
 	}
@@ -155,7 +161,7 @@ func (m *KexInitMsg) WrongGuess(own *KexInitMsg) bool {
 	ownKex, _ := nextName(own.KexAlgorithms())
 	peerHostKey, _ := nextName(m.HostKeyAlgorithms())
 	ownHostKey, _ := nextName(own.HostKeyAlgorithms())
-	return !internal.BytesEqual(peerKex, ownKex) || !internal.BytesEqual(peerHostKey, ownHostKey)
+	return !agreed || !internal.BytesEqual(peerKex, ownKex) || !internal.BytesEqual(peerHostKey, ownHostKey)
 }
 
 // decoder provides an API to readably decode SSH messages, RFC 4251 5, see [wire.Decoder].

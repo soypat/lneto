@@ -2,8 +2,25 @@ package sshraw
 
 import (
 	"bytes"
+	"errors"
 	"testing"
+
+	"github.com/soypat/lneto"
 )
+
+// validKexLists returns the name-lists of a minimal valid KEXINIT: one name in
+// each algorithm list and empty language lists, RFC 4253 7.1.
+func validKexLists() (lists [numKexLists][]string) {
+	lists[kexAlgorithms] = []string{"curve25519-sha256"}
+	lists[hostKeyAlgorithms] = []string{"ssh-ed25519"}
+	lists[ciphersC2S] = []string{"chacha20-poly1305@openssh.com"}
+	lists[ciphersS2C] = []string{"chacha20-poly1305@openssh.com"}
+	lists[macsC2S] = []string{"hmac-sha2-256"}
+	lists[macsS2C] = []string{"hmac-sha2-256"}
+	lists[compressionC2S] = []string{"none"}
+	lists[compressionS2C] = []string{"none"}
+	return lists
+}
 
 // newKexInit encodes a KEXINIT payload whose i'th name-list is lists[i].
 func newKexInit(t *testing.T, lists [numKexLists][]string, follows bool) []byte {
@@ -24,13 +41,9 @@ func newKexInit(t *testing.T, lists [numKexLists][]string, follows bool) []byte 
 }
 
 func TestKexInitDecode(t *testing.T) {
-	var lists [numKexLists][]string
+	lists := validKexLists()
 	lists[kexAlgorithms] = []string{"curve25519-sha256", "kex-strict-c-v00@openssh.com"}
-	lists[hostKeyAlgorithms] = []string{"ssh-ed25519"}
 	lists[ciphersC2S] = []string{"aes128-gcm@openssh.com"}
-	lists[ciphersS2C] = []string{"chacha20-poly1305@openssh.com"}
-	lists[compressionC2S] = []string{"none"}
-	lists[compressionS2C] = []string{"none"}
 	payload := newKexInit(t, lists, true)
 
 	var m KexInitMsg
@@ -84,9 +97,25 @@ func TestKexInitDecode(t *testing.T) {
 	}
 }
 
+// TestKexInitDecodeEmptyList checks every algorithm name-list must hold a name while
+// the language lists may be empty, RFC 4253 7.1.
+func TestKexInitDecodeEmptyList(t *testing.T) {
+	var m KexInitMsg
+	for i := range numKexLists {
+		lists := validKexLists()
+		lists[i] = nil
+		_, err := m.Decode(newKexInit(t, lists, false))
+		if optional := i == languagesC2S || i == languagesS2C; optional && err != nil {
+			t.Errorf("empty language list %d: %v", i, err)
+		} else if !optional && !errors.Is(err, lneto.ErrInvalidField) {
+			t.Errorf("empty algorithm list %d: err=%v, want %v", i, err, lneto.ErrInvalidField)
+		}
+	}
+}
+
 func TestPseudoAlgorithms(t *testing.T) {
 	pseudo := []string{KexStrictClient, KexStrictServer, ExtInfoClient, ExtInfoServer}
-	var lists [numKexLists][]string
+	lists := validKexLists()
 	lists[kexAlgorithms] = append([]string{"curve25519-sha256"}, pseudo...)
 	var m KexInitMsg
 	if _, err := m.Decode(newKexInit(t, lists, false)); err != nil {
@@ -107,7 +136,7 @@ func TestPseudoAlgorithms(t *testing.T) {
 
 func TestKexInitWrongGuess(t *testing.T) {
 	decode := func(kex, hostKey []string, follows bool) *KexInitMsg {
-		var lists [numKexLists][]string
+		lists := validKexLists()
 		lists[kexAlgorithms] = kex
 		lists[hostKeyAlgorithms] = hostKey
 		var m KexInitMsg
@@ -120,19 +149,21 @@ func TestKexInitWrongGuess(t *testing.T) {
 	hostKey := []string{"ssh-ed25519", "ecdsa-sha2-nistp256"}
 	own := decode(kex, hostKey, false)
 	for _, tc := range []struct {
-		name          string
-		kex, hostKey  []string
-		follows, want bool
+		name                  string
+		kex, hostKey          []string
+		agreed, follows, want bool
 	}{
-		{"no guess", []string{"ecdh-sha2-nistp256"}, hostKey, false, false},
-		{"right", kex, hostKey, true, false},
-		{"right, other lists differ", []string{kex[0], "x"}, []string{hostKey[0]}, true, false},
-		{"kex wrong", []string{kex[1], kex[0]}, hostKey, true, true},
-		{"host key wrong", kex, []string{hostKey[1], hostKey[0]}, true, true},
-		{"prefix", []string{"curve25519-sha256x"}, hostKey, true, true},
+		{"no guess", []string{"ecdh-sha2-nistp256"}, hostKey, true, false, false},
+		{"no guess, other algorithms disagree", kex, hostKey, false, false, false},
+		{"right", kex, hostKey, true, true, false},
+		{"right, later names differ", []string{kex[0], "x"}, []string{hostKey[0]}, true, true, false},
+		{"kex wrong", []string{kex[1], kex[0]}, hostKey, true, true, true},
+		{"host key wrong", kex, []string{hostKey[1], hostKey[0]}, true, true, true},
+		{"prefix", []string{"curve25519-sha256x"}, hostKey, true, true, true},
+		{"other algorithms disagree", kex, hostKey, false, true, true},
 	} {
 		peer := decode(tc.kex, tc.hostKey, tc.follows)
-		if got := peer.WrongGuess(own); got != tc.want {
+		if got := peer.WrongGuess(own, tc.agreed); got != tc.want {
 			t.Errorf("%s: WrongGuess=%v, want %v", tc.name, got, tc.want)
 		}
 	}
