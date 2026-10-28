@@ -139,7 +139,7 @@ func (mh *muxHandler) FilterResetLocalPorts() {
 }
 
 func (mh *muxHandler) FilterAddLocalPort(startPort, nports uint16) {
-	if int(startPort)+int(nports) > math.MaxUint16 {
+	if int(startPort)+int(nports) > math.MaxUint16+1 {
 		panic("port overflow")
 	}
 	f := internal.SliceReclaim(&mh.filterLPorts)
@@ -150,8 +150,7 @@ func (mh *muxHandler) FilterAddLocalPort(startPort, nports uint16) {
 func (mh *muxHandler) FilterLocalPort(lport uint16) (filtered bool) {
 	filtered = len(mh.filterLPorts) > 0
 	for i := range mh.filterLPorts {
-		maxPort := mh.filterLPorts[i].startPort + mh.filterLPorts[i].nports
-		if lport >= mh.filterLPorts[i].startPort && lport < maxPort {
+		if lport-mh.filterLPorts[i].startPort < mh.filterLPorts[i].nports { // lport < startPort wraps and fails check.
 			filtered = false
 			break
 		}
