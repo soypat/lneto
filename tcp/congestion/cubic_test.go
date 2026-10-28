@@ -469,8 +469,8 @@ func TestCUBIC_LimitedTransmit(t *testing.T) {
 	c.postRx(c.una, nxt, false, true, 3)
 	loss(c, 4)
 	c.postRx(c.una, nxt, false, true, 5)
-	if c.dupACKs != 0 {
-		t.Errorf("%d duplicate ACKs counted in recovery, want 0", c.dupACKs)
+	if c.dup.n != 0 {
+		t.Errorf("%d duplicate ACKs counted in recovery, want 0", c.dup.n)
 	}
 }
 
@@ -824,8 +824,8 @@ func TestCUBIC_WindowUpdateNotDuplicate(t *testing.T) {
 	if relay(t, server, client, packet) == 0 {
 		t.Fatal("test needs the server's window update")
 	}
-	if cubic.dupACKs != 0 {
-		t.Errorf("window update counted as %d duplicate ACKs, want 0", cubic.dupACKs)
+	if cubic.dup.n != 0 {
+		t.Errorf("window update counted as %d duplicate ACKs, want 0", cubic.dup.n)
 	}
 }
 

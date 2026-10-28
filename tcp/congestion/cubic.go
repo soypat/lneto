@@ -100,13 +100,7 @@ type CUBIC struct {
 	// ACKs and resends are no new loss (RFC 6582 §3.2 step 1).
 	haveRecover bool
 	highRxt     tcp.Value // End of the data resent since the loss (RFC 6675).
-	dupACKs     uint8     // Duplicate ACKs not answering copies, up to 3 (RFC 3042, 5681).
-
-	// Copies of SND.UNA and the duplicate ACKs answering them.
-	copyOwed  bool      // Resends the ControlBlock owes for this SND.UNA are no loss.
-	copies    uint8     // Copies of SND.UNA sent.
-	answers   uint8     // Duplicate ACKs expected for copies of earlier SND.UNAs.
-	copiesNxt tcp.Value // SND.NXT at the latest copy. Once SND.UNA passes it, all were answered.
+	dup         dupACKs   // Also allowing one segment each for the first two (RFC 3042).
 
 	cwndLimited  bool // The last transmit had data to fill the window.
 	appLimited   bool // The window has not been full since appLimitedAt.
@@ -204,33 +198,23 @@ func (c *CUBIC) PostRx(h *tcp.Handler, prevState tcp.State, accepted tcp.Frame) 
 		return
 	}
 	una, nxt := cb.SendUNA(), cb.SendNext()
-	// RFC 5681 §2, with the peer's window not grown.
-	dupACK := seg.ACK == c.una && una == c.una && una.LessThan(nxt) && seg.DATALEN == 0 &&
-		!seg.Flags.HasAny(tcp.FlagSYN|tcp.FlagFIN) && cb.MaxInFlightData() <= c.sendRoom
+	dupACK := isDupACK(seg, c.una, una, nxt, c.sendRoom, cb.MaxInFlightData())
 	c.postRx(una, nxt, cb.HasPendingRetransmit(), dupACK, c.nanotime())
 }
 
 func (c *CUBIC) postRx(una, nxt tcp.Value, owed, dupACK bool, now int64) {
 	if c.una.LessThan(una) {
-		c.fastRetransmit, c.haveProbe, c.copyOwed = false, false, false
-		c.dupACKs = 0
+		c.fastRetransmit, c.haveProbe = false, false
+		c.dup.acked(una)
 		c.haveRecover = c.haveRecover && !c.recover.LessThan(una)
-		c.answers, c.copies = c.answers+min(c.copies, 255-c.answers), 0
-		if c.copiesNxt.LessThan(una) {
-			c.answers = 0
-		}
 		c.onACK(tcp.Sizeof(c.una, una), una, now)
 	} else {
-		if dupACK && c.answers > 0 {
-			c.answers--
-		} else if dupACK && !c.inRecovery {
-			c.dupACKs = min(c.dupACKs+1, 3)
+		if dupACK {
+			c.dup.dup(!c.inRecovery)
 		}
 		if owed {
-			if c.dupACKs == 3 && !c.onProbe(una) && !c.haveRecover {
+			if c.dup.owed(!c.onProbe(una) && !c.haveRecover) {
 				c.onLoss(nxt)
-			} else {
-				c.copyOwed = true
 			}
 			c.fastRetransmit = true
 		}
@@ -278,7 +262,7 @@ func (c *CUBIC) preTx(una, nxt tcp.Value, queued tcp.Size, expirations uint32, p
 		c.appLimited = false
 		c.epoch += now - c.appLimitedAt // The epoch skips the pause (§5.8).
 	}
-	cwnd += tcp.Size(min(c.dupACKs, 2)) * c.smss
+	cwnd += tcp.Size(min(c.dup.n, 2)) * c.smss
 	if flight >= cwnd {
 		return 0, rtxFrom, retransmit
 	}
@@ -296,10 +280,7 @@ func (c *CUBIC) PostTx(h *tcp.Handler, outgoing tcp.Frame) {
 
 func (c *CUBIC) postTx(seg tcp.Segment, una tcp.Value) {
 	if seg.DATALEN > 0 && seg.SEQ.LessThan(c.nxt) && !c.probing {
-		isCopy := seg.SEQ == una && c.copyOwed
-		if isCopy {
-			c.copies, c.copiesNxt = min(c.copies, 254)+1, c.nxt
-		} else if !c.haveRecover {
+		if !c.dup.resent(seg.SEQ, una, c.nxt) && !c.haveRecover {
 			c.onLoss(c.nxt)
 		}
 		if end := tcp.Add(seg.SEQ, seg.DATALEN); c.highRxt.LessThan(end) {
@@ -329,11 +310,15 @@ func (c *CUBIC) SlowStartThresh() float32 { return c.ssthresh }
 // unacknowledged.
 func (c *CUBIC) onProbe(una tcp.Value) bool { return c.haveProbe && una == c.probe }
 
-func (c *CUBIC) setSMSS(peer, local tcp.Size) {
+func (c *CUBIC) setSMSS(peer, local tcp.Size) { c.smss = segmentSize(peer, local) }
+
+// segmentSize returns the smaller of the peer's MSS, defaultMSS if it sent
+// none, and the local room for data.
+func segmentSize(peer, local tcp.Size) tcp.Size {
 	if peer == 0 {
 		peer = defaultMSS
 	}
-	c.smss = min(peer, max(local, 1))
+	return min(peer, max(local, 1))
 }
 
 // onACK handles an ACK of acked new octets.
@@ -401,7 +386,7 @@ func (c *CUBIC) onLoss(nxt tcp.Value) {
 		return
 	}
 	c.inRecovery, c.recover, c.haveRecover, c.highRxt = true, nxt, true, c.una
-	c.dupACKs = 0
+	c.dup.n = 0
 	c.epochSet = false
 	if c.cfg.fastConvergence && c.cwnd < c.wMax {
 		c.wMax = c.cwnd * (1 + cubicBeta) / 2
@@ -426,5 +411,5 @@ func (c *CUBIC) onRTO(nxt tcp.Value) {
 	c.cwnd = 1
 	c.epochSet = false
 	c.inRecovery, c.afterRTO, c.recover, c.haveRecover, c.highRxt = true, true, nxt, true, c.una
-	c.dupACKs = 0
+	c.dup.n = 0
 }
