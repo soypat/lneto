@@ -10,6 +10,8 @@ import (
 	"github.com/soypat/lneto/tcp"
 )
 
+// TODO: migrate these to [tcp.ExchangeTest.Run]/A/B
+
 /*
 	 Section 3.5 of RFC 9293: Basic 3-way handshake for connection synchronization.
 		TCP Peer A                                           TCP Peer B
