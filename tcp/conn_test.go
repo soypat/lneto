@@ -3,10 +3,12 @@ package tcp
 import (
 	"net"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/soypat/lneto"
+	"github.com/soypat/lneto/internal"
 )
 
 func newConfiguredConn(t *testing.T) *Conn {
@@ -215,6 +217,54 @@ func TestConn_PinnedStaleAfterReopen(t *testing.T) {
 	}
 	if got := fresh.LocalPort(); got != 1235 {
 		t.Errorf("fresh LocalPort=%d, want 1235", got)
+	}
+}
+
+// TestConn_ECN verifies a Conn passes its ECNPolicy the codepoint of a
+// received IPv4 packet and writes the policy's codepoint into a sent one.
+func TestConn_ECN(t *testing.T) {
+	var conns [2]Conn
+	var policies [2]ecnPolicy
+	for i := range conns {
+		policies[i] = ecnPolicy{recordingPolicy: newRecordingPolicy(), send: uint8(i + 1)}
+		err := conns[i].Configure(ConnConfig{
+			RxBuf: make([]byte, 512), TxBuf: make([]byte, 512), TxPacketQueueSize: 4,
+			RWBackoff: backoffYield, Policy: &policies[i],
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	client, server := &conns[0], &conns[1]
+	if err := server.OpenListen(80, 200); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.OpenActive(1234, netip.MustParseAddrPort("10.0.0.1:80"), 100); err != nil {
+		t.Fatal(err)
+	}
+	const ihl = 20
+	packet := make([]byte, 128)
+	packet[0] = 0x45 // IPv4 without options.
+	n, err := client.Encapsulate(packet, 0, ihl)
+	if err != nil || n == 0 {
+		t.Fatalf("Encapsulate = %d, %v", n, err)
+	}
+	if cp, _ := internal.GetIPECN(packet); cp != 1 {
+		t.Fatalf("sent codepoint %02b, want the policy's 01", cp)
+	}
+	internal.SetIPECN(packet, internal.ECNCE)
+	if err := server.Demux(packet[:ihl+n], ihl); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(policies[1].recv, []uint8{internal.ECNCE}) {
+		t.Errorf("server's policy received codepoints %v, want [11]", policies[1].recv)
+	}
+	clear(packet)
+	packet[0] = 0x45
+	if n, err := server.Encapsulate(packet, 0, ihl); err != nil || n == 0 {
+		t.Fatalf("Encapsulate = %d, %v", n, err)
+	} else if cp, _ := internal.GetIPECN(packet); cp != 2 {
+		t.Errorf("sent codepoint %02b, want the policy's 10", cp)
 	}
 }
 

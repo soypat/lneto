@@ -35,6 +35,21 @@ type Policy interface {
 	PostRx(h *Handler, prevState State, accepted Frame)
 }
 
+// ECNPolicy is a [Policy] doing Explicit Congestion Notification (RFC 3168),
+// whose codepoints are in the IP header the Handler does not see. A [Conn]
+// whose Policy is one, also through [Policies], passes it the codepoint of
+// every packet it receives and writes the one it returns into every packet
+// it sends. Policies is one also without ECN members, then sending Not-ECT.
+type ECNPolicy interface {
+	Policy
+	// RecvECN takes the ECN codepoint of the packet whose segment is received
+	// next.
+	RecvECN(codepoint uint8)
+	// SendECN returns the ECN codepoint for the packet of the segment just
+	// sent.
+	SendECN() (codepoint uint8)
+}
+
 // Policies drives several [Policy] implementations as one, so independent
 // concerns such as a retransmission timer and selective acknowledgement can be
 // combined without one embedding the other. Install it with
@@ -48,6 +63,8 @@ type Policy interface {
 //   - PreTx returns the smallest new-data limit, and requests a retransmission
 //     if any member does, from the lowest sequence requested, so the resend
 //     covers what every requester wanted.
+//   - RecvECN reaches every member that is an [ECNPolicy], and SendECN returns
+//     the first non-zero codepoint among them.
 //
 // Members writing options in PreTx must append after the options already
 // present, which end at the frame's data offset, and raise the offset to cover
@@ -100,6 +117,29 @@ func (ps Policies) PostRx(h *Handler, prevState State, accepted Frame) {
 	for _, p := range ps {
 		p.PostRx(h, prevState, accepted)
 	}
+}
+
+// RecvECN passes the codepoint to every member that is an [ECNPolicy]. It
+// implements [ECNPolicy].
+func (ps Policies) RecvECN(codepoint uint8) {
+	for _, p := range ps {
+		if ep, ok := p.(ECNPolicy); ok {
+			ep.RecvECN(codepoint)
+		}
+	}
+}
+
+// SendECN returns the first non-zero codepoint of the members that are an
+// [ECNPolicy], or 0. It implements [ECNPolicy].
+func (ps Policies) SendECN() uint8 {
+	for _, p := range ps {
+		if ep, ok := p.(ECNPolicy); ok {
+			if cp := ep.SendECN(); cp != 0 {
+				return cp
+			}
+		}
+	}
+	return 0
 }
 
 // NextDeadline returns the earliest non-zero deadline among members that have a

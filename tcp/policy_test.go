@@ -3,6 +3,7 @@ package tcp
 import (
 	"bytes"
 	"math/rand"
+	"slices"
 	"testing"
 
 	"github.com/soypat/lneto/ethernet"
@@ -563,6 +564,29 @@ func TestPolicies_Merge(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type ecnPolicy struct {
+	*recordingPolicy
+	recv []uint8 // Codepoints received.
+	send uint8
+}
+
+func (p *ecnPolicy) RecvECN(codepoint uint8) { p.recv = append(p.recv, codepoint) }
+func (p *ecnPolicy) SendECN() uint8          { return p.send }
+
+// TestPolicies_ECN verifies every ECN member receives the codepoint and the
+// first non-zero codepoint is sent, also from nested Policies.
+func TestPolicies_ECN(t *testing.T) {
+	a, b := &ecnPolicy{recordingPolicy: newRecordingPolicy()}, &ecnPolicy{recordingPolicy: newRecordingPolicy(), send: 2}
+	ps := Policies{newRecordingPolicy(), Policies{a}, b}
+	ps.RecvECN(3)
+	if got := ps.SendECN(); got != 2 || !slices.Equal(a.recv, []uint8{3}) || !slices.Equal(b.recv, []uint8{3}) {
+		t.Errorf("SendECN = %d, members received %v and %v; want 2, [3], [3]", got, a.recv, b.recv)
+	}
+	if got := (Policies{newRecordingPolicy()}).SendECN(); got != 0 {
+		t.Errorf("SendECN = %d without ECN members, want 0", got)
 	}
 }
 

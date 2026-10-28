@@ -139,7 +139,7 @@ func (tcb *ControlBlock) SetLogger(log *slog.Logger) {
 // Segments which are keepalives should not be passed into Recv or Send methods.
 func (tcb *ControlBlock) IncomingIsKeepalive(incomingSegment Segment) bool {
 	return incomingSegment.SEQ == tcb.rcv.NXT-1 &&
-		incomingSegment.Flags == FlagACK &&
+		incomingSegment.Flags&^flagECN == FlagACK &&
 		incomingSegment.ACK == tcb.snd.NXT && incomingSegment.DATALEN == 0
 }
 
@@ -654,7 +654,7 @@ func (tcb *ControlBlock) validateIncomingSegment(seg Segment) (err error) {
 	established := tcb._state == StateEstablished
 	// Linux probes a zero window with an empty ACK at RCV.NXT-1 (tcp_xmit_probe_skb)
 	// instead of the one octet at RCV.NXT that RFC 9293 §3.8.6.1 describes.
-	linuxZeroWindowProbe := tcb.rcv.WND == 0 && seg.SEQ == tcb.rcv.NXT-1 && flags == FlagACK && seg.DATALEN == 0
+	linuxZeroWindowProbe := tcb.rcv.WND == 0 && seg.SEQ == tcb.rcv.NXT-1 && flags&^flagECN == FlagACK && seg.DATALEN == 0
 	acksOld := hasAck && !tcb.snd.UNA.LessThan(seg.ACK)
 	acksUnsentData := hasAck && !seg.ACK.LessThanEq(tcb.snd.NXT)
 	ctlOrDataSegment := established && (seg.DATALEN > 0 || flags.HasAny(FlagFIN|FlagRST))

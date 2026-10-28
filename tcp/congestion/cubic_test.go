@@ -10,6 +10,7 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/tcp"
+	"github.com/soypat/lneto/tcp/ecn"
 	"github.com/soypat/lneto/tcp/sack"
 	"github.com/soypat/lneto/tcp/timestamps"
 )
@@ -297,6 +298,126 @@ func TestCUBIC_UnansweredCopies(t *testing.T) {
 	}
 }
 
+// TestCUBIC_ECE verifies the peer's echo of a congestion mark reduces the
+// window like a loss without a resend, and only once per window of data,
+// during which it does not grow (RFC 3168 §6.1.2), also not on the ACK of that
+// window.
+func TestCUBIC_ECE(t *testing.T) {
+	c := newCUBIC(t, CUBICConfig{InitialCwnd: 10})
+	nxt := c.una + tcp.Value(c.CongestionWindow())
+	c.onECE(c.una, nxt)
+	if _, _, rtx := c.preTx(c.una, nxt, 0, 0, false, 1); c.WindowSegments() != 7 || c.SlowStartThresh() != 7 || rtx || c.inRecovery {
+		t.Fatalf("cwnd %v, ssthresh %v, resend %v, recovery %v after ECE; want 7, 7, none, none", c.WindowSegments(), c.SlowStartThresh(), rtx, c.inRecovery)
+	}
+	ack(c, testMSS, 1)
+	c.onECE(c.una, nxt)
+	if c.WindowSegments() != 7 {
+		t.Fatalf("cwnd %v after an ACK and ECE in the same window, want 7", c.WindowSegments())
+	}
+	c.onECE(nxt, nxt+tcp.Value(c.CongestionWindow())) // On the ACK of the window.
+	if c.WindowSegments() != 7 {
+		t.Fatalf("cwnd %v after ECE on the ACK of the window, want 7", c.WindowSegments())
+	}
+	ack(c, tcp.Sizeof(c.una, nxt), 2)
+	if c.onECE(nxt, nxt+tcp.Value(c.CongestionWindow())); c.WindowSegments() != 7 {
+		t.Fatalf("cwnd %v after the ACK of the window and another ECE, want 7", c.WindowSegments())
+	}
+	beyond := nxt + testMSS
+	next := beyond + tcp.Value(c.CongestionWindow())
+	c.onECE(beyond, next)
+	if got := c.WindowSegments(); got >= 7 {
+		t.Fatalf("cwnd %v after ECE beyond the window, want below 7", got)
+	}
+	ack(c, tcp.Sizeof(c.una, next)+testMSS, 3)
+	reduced := c.WindowSegments()
+	ack(c, testMSS, 4)
+	if got := c.WindowSegments(); got <= reduced {
+		t.Errorf("cwnd %v once the reduced window was acknowledged, want above %v", got, reduced)
+	}
+}
+
+// TestCUBIC_ECEAndLoss verifies a loss after ECE in the same window starts
+// recovery without reducing the window again, ECE in recovery does not
+// reduce it, and a timeout ends the reduction for ECE so the window grows.
+func TestCUBIC_ECEAndLoss(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		events   func(c *CUBIC, nxt tcp.Value)
+		wantCwnd float32
+		wantRtx  bool
+	}{
+		{name: "loss-after-ece", events: func(c *CUBIC, nxt tcp.Value) { c.onECE(c.una, nxt); loss(c, 1) }, wantCwnd: 7, wantRtx: true},
+		{name: "ece-in-recovery", events: func(c *CUBIC, nxt tcp.Value) { loss(c, 1); c.onECE(c.una, nxt) }, wantCwnd: 7, wantRtx: true},
+		{name: "timeout-after-ece", events: func(c *CUBIC, nxt tcp.Value) {
+			c.onECE(c.una, nxt)
+			c.preTx(c.una, nxt, 0, 1, false, 1)
+			ack(c, testMSS, 2) // Partial ACK.
+		}, wantCwnd: 2, wantRtx: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newCUBIC(t, CUBICConfig{InitialCwnd: 10})
+			nxt := c.una + tcp.Value(c.CongestionWindow())
+			tc.events(c, nxt)
+			if _, _, rtx := c.preTx(c.una, nxt, 0, c.lastExpirations, false, 3); c.WindowSegments() != tc.wantCwnd || rtx != tc.wantRtx {
+				t.Errorf("cwnd %v, resend %v; want %v, %v", c.WindowSegments(), rtx, tc.wantCwnd, tc.wantRtx)
+			}
+		})
+	}
+}
+
+// TestCUBIC_ECN verifies a congestion mark on a connection with ECN, whose
+// echo the whole window's ACKs carry, reduces the window once without a
+// timeout, and one segment of data carries CWR.
+func TestCUBIC_ECN(t *testing.T) {
+	var policies [2]ecn.Policy
+	client, server, cubic, packet, _ := connPair(t, pairConfig{cwnd: 10, ecn: &policies})
+	if !policies[0].Enabled() || !policies[1].Enabled() {
+		t.Fatal("ECN not negotiated")
+	}
+	if _, err := client.Write(make([]byte, 20*testMSS)); err != nil {
+		t.Fatal("write:", err)
+	}
+	cwrs, marked := 0, false
+	// send returns the segments the client sends, counting those with CWR.
+	send := func() (out [][]byte) {
+		for n := sendOnly(t, client, packet); n != 0; n = sendOnly(t, client, packet) {
+			if frm, _ := tcp.NewFrame(packet[:n]); frm.Segment(0).Flags.HasAny(tcp.FlagCWR) {
+				cwrs++
+			}
+			out = append(out, slices.Clone(packet[:n]))
+		}
+		return out
+	}
+	// The server answers each segment, then the client takes each answer and
+	// sends after it, while answers echoing the mark are still to come.
+	for toServer := send(); len(toServer) > 0; {
+		var acks [][]byte
+		for _, seg := range toServer {
+			if !marked {
+				policies[1].RecvECN(ecn.CE)
+				marked = true
+			}
+			if err := server.Recv(seg); err != nil {
+				t.Fatal(err)
+			}
+			for m := sendOnly(t, server, packet); m != 0; m = sendOnly(t, server, packet) {
+				acks = append(acks, slices.Clone(packet[:m]))
+			}
+		}
+		toServer = nil
+		for _, ack := range acks {
+			if err := client.Recv(ack); err != nil {
+				t.Fatal(err)
+			}
+			toServer = append(toServer, send()...)
+		}
+	}
+	if cubic.SlowStartThresh() != 7 || cwrs != 1 || client.BufferedUnsent() != 0 || cubic.timer.Expirations() != 0 {
+		t.Errorf("ssthresh %v, %d segments with CWR, %d octets unsent, %d timeouts; want 7, 1, 0, 0",
+			cubic.SlowStartThresh(), cwrs, client.BufferedUnsent(), cubic.timer.Expirations())
+	}
+}
+
 // TestCUBIC_RecoverWraps verifies a loss after SND.UNA passed the data sent
 // before the last one cuts the window also 3GB later, when sequence numbers
 // have wrapped past it.
@@ -497,10 +618,11 @@ func TestCUBIC_LimitsNewData(t *testing.T) {
 
 // pairConfig configures connPair.
 type pairConfig struct {
-	cwnd      tcp.Size // Initial window of the client.
-	sack      bool     // SACK on both sides.
-	ts        bool     // Timestamps on both sides.
-	serverMTU int      // Server's MTU in the handshake, connMTU if zero.
+	cwnd      tcp.Size       // Initial window of the client.
+	sack      bool           // SACK on both sides.
+	ts        bool           // Timestamps on both sides.
+	serverMTU int            // Server's MTU in the handshake, connMTU if zero.
+	ecn       *[2]ecn.Policy // ECN on the client and the server.
 }
 
 // connPair returns two established handlers with a CUBIC controller and its
@@ -540,6 +662,9 @@ func connPair(t *testing.T, cfg pairConfig) (client, server *tcp.Handler, cubic 
 		}
 		client.SetPolicy(tcp.Policies{&cts, cubic})
 		server.SetPolicy(&sts)
+	case cfg.ecn != nil:
+		client.SetPolicy(tcp.Policies{&cfg.ecn[0], cubic})
+		server.SetPolicy(&cfg.ecn[1])
 	}
 	if err := server.OpenListen(80, 0); err != nil {
 		t.Fatal(err)
