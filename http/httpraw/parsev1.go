@@ -46,16 +46,6 @@ var (
 	errBadContentLength = errors.New("httpraw: invalid Content-Length value")
 )
 
-func newByteset(searchSet string) (bs internal.ByteSet) {
-	bs.Add(searchSet)
-	return bs
-}
-
-var (
-	searchColonNL  = newByteset(":\n")      // ":\n"
-	searchCRLFNull = newByteset("\r\n\x00") // "\r\n\x00"
-)
-
 // maxBufLen bounds the header buffer. Offsets/lengths are stored as uint16
 // (tokint); a buffer past this would truncate/overflow those, silently
 // returning the wrong bytes or panicking on a wrapped slice bound.
@@ -290,12 +280,14 @@ func (hb *headerv1Buf) next(ss *scannerState) pairKV {
 
 	// n is parsing offset. Will start by storing colon index.
 	n := 0
+	var searcher internal.ByteSet
 	if ss.nextColon >= 0 {
 		// Retake from last colon found.
 		n = ss.nextColon
 		ss.nextColon = -1
 	} else {
-		n = searchColonNL.IndexAny(b2s(buf))
+		searcher.Add(":\n")
+		n = searcher.IndexAny(b2s(buf))
 		if n < 0 {
 			// Neither colon nor newline yet: name split across reads.
 			ss.err = ErrNeedMoreData
@@ -305,6 +297,7 @@ func (hb *headerv1Buf) next(ss *scannerState) pairKV {
 			ss.err = errInvalidName
 			return hb.kv.noKV()
 		}
+		searcher.Clear()
 	}
 	// n stores colon position by now.
 	if !isToken(buf[:n]) {
@@ -324,8 +317,9 @@ func (hb *headerv1Buf) next(ss *scannerState) pairKV {
 	valueStart := n
 
 	// Find end of value. Values may be multiline, in which case we must treat newlines followed by whitespace as part of the value.
+	searcher.Add("\r\n\x00")
 	for {
-		i := searchCRLFNull.IndexAny(b2s(buf[n:]))
+		i := searcher.IndexAny(b2s(buf[n:]))
 		if i < 0 {
 			ss.err = ErrNeedMoreData
 			return hb.kv.noKV()
