@@ -66,7 +66,7 @@ func (kvb *kvBuffer) ReadFromBytes(buf []byte) error {
 func (kvb *kvBuffer) ReadLimited(r io.Reader, limit int) (int, error) {
 	free := kvb.free()
 	growthEnabled := kvb.BufferGrowthEnabled()
-	if !growthEnabled && (free == 0 || free < limit) || len(kvb.buf) >= maxBufLen {
+	if !growthEnabled && (free == 0 || free < limit) || limit > maxBufLen-len(kvb.buf) {
 		return 0, ErrBufferExhausted
 	} else if kvb.flags.HasAny(flagMangledBuffer) {
 		return 0, errMangledBuffer
@@ -76,7 +76,7 @@ func (kvb *kvBuffer) ReadLimited(r io.Reader, limit int) (int, error) {
 		return 0, io.ErrNoProgress
 	}
 	kvb.buf = slices.Grow(kvb.buf, limit)
-	n, err := r.Read(kvb.buf[len(kvb.buf):min(len(kvb.buf)+limit, maxBufLen)])
+	n, err := r.Read(kvb.buf[len(kvb.buf) : len(kvb.buf)+limit])
 	kvb.buf = kvb.buf[:len(kvb.buf)+n]
 	if err != nil {
 		if n > 0 && err == io.EOF {
