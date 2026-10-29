@@ -59,6 +59,8 @@ type headerv1Buf struct {
 	// buf []byte
 	// offset into buf for parsing.
 	off int
+	// clen is the parsed Content-Length, valid when flagContentLength set; -1 if invalid or differing duplicates.
+	clen int64
 	// args contains key-value store.
 	// headers []argsKV
 }
@@ -69,6 +71,7 @@ type headerv1Buf struct {
 func (h *headerv1Buf) reset(buf []byte, numHeaderCapacity int) {
 	h.kv.Reset(buf, numHeaderCapacity)
 	h.off = 0
+	h.clen = 0
 }
 
 type scannerState struct {
@@ -133,6 +136,9 @@ func (hb *headerv1Buf) parseNextHeaders(ss *scannerState, flags Flags) {
 			return
 		}
 		hb.kv.kvs = append(hb.kv.kvs, kv)
+		if int(kv.key.len) == len(headerContentLength) && equalFold(hb.kv.musttoken(kv.key), headerContentLength) {
+			hb.noteContentLength(trimOWS(hb.kv.musttoken(kv.value)))
+		}
 	}
 	debuglog("http:nexthdr:done")
 }

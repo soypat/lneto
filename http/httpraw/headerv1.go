@@ -34,6 +34,7 @@ const (
 	flagReaderEOF
 	// set if [Header.SetStatus] or [Header.SetStatusInt] has been called.
 	FlagStatusSet
+	flagContentLength // set once a Content-Length field is parsed, see headerv1Buf.clen.
 )
 
 // HasAny returns true if any of the argument flags are set.
@@ -267,20 +268,32 @@ func (h *HeaderV1) NormalizeKeys() {
 	}
 }
 
-// ContentLength returns the body length declared by the Content-Length field.
-// If the field is not present then the returned bool is false. Will return error for invalid or non-integer value.
+// ContentLength returns the body length declared by the parsed Content-Length field; fields
+// set after parsing with Set or Add are not reflected. If the field is not present then the
+// returned bool is false. Returns error for an invalid value or differing duplicates, RFC 9112 6.3.
 func (h *HeaderV1) ContentLength() (_ int64, present bool, _ error) {
-	value := h.GetFold(headerContentLength)
-	if value == nil {
+	if !h.Flags().HasAny(flagContentLength) {
 		return 0, false, nil
+	} else if h.hbuf.clen < 0 {
+		return 0, true, errBadContentLength
 	}
-	value = trimOWS(value)
+	return h.hbuf.clen, true, nil
+}
+
+// noteContentLength records a parsed Content-Length field value, invalidating clen on a bad
+// value or a duplicate differing from the first, RFC 9112 6.3. Identical ones pass, RFC 9110 8.6.
+func (hb *headerv1Buf) noteContentLength(value []byte) {
 	// Unsigned parse of 63 bits rejects a sign and anything past int64's range.
 	n, err := strconv.ParseUint(b2s(value), 10, 63)
-	if err != nil {
-		return int64(n), true, errBadContentLength // strconv's error allocates and is not comparable.
+	switch {
+	case err != nil:
+		hb.clen = -1
+	case !hb.kv.flags.HasAny(flagContentLength):
+		hb.clen = int64(n)
+	case hb.clen != int64(n):
+		hb.clen = -2
 	}
-	return int64(n), true, nil
+	hb.kv.flags |= flagContentLength
 }
 
 // Add adds a new key-value pair to the HTTP header. Calling Add mangles the buffer.
