@@ -5,15 +5,7 @@ package main
 import (
 	"encoding/binary"
 	"machine"
-	"time"
 )
-
-func readSuperRNG(b []byte) (int, error) {
-	for i := range b {
-		v, _ := machine.GetRNG() // On RP2040 this is not great, so we take other sources.
-		b[i] = uint8(machine.ReadTemperature()) ^ uint8(time.Now().Nanosecond()) ^ uint8(v)
-	}
-}
 
 // readRNG uses tinygo's machine package HAL GetRNG to read into byte slice.
 func readRNG(b []byte) (int, error) {
