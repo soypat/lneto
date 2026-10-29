@@ -16,6 +16,9 @@ var (
 	errNoBoundary   = errors.New("httpraw: multipart boundary not set")
 	errUnparsed     = errors.New("need to finish parsing")
 	errInvalidName  = errors.New("invalid header name")
+	errInvalidValue = errors.New("invalid header value")
+
+	errInvalidRequestLine = errors.New("httpraw: invalid request line")
 	// ErrBufferExhausted signals a buffer with no room left for the data being
 	// written and no permission to grow, see [KVBuffer.EnableBufferGrowth].
 	// Enlarging the buffer handed to Reset is the only fix; a server answers it
@@ -42,6 +45,29 @@ var (
 	errBadDelimiter     = errors.New("httpraw: junk between multipart delimiter and part")
 	errNoContentLength  = errors.New("httpraw: no Content-Length field")
 	errBadContentLength = errors.New("httpraw: invalid Content-Length value")
+)
+
+func newByteset(searchSet string) (bs internal.ByteSet) {
+	bs.Add(searchSet)
+	return bs
+}
+
+var (
+	// notToken matches every byte that is not an RFC 9110 5.6.2 tchar.
+	notToken = func() (bs internal.ByteSet) {
+		bs.AddRange('0', '9')
+		bs.AddRange('A', 'Z')
+		bs.AddRange('a', 'z')
+		bs.Add("!#$%&'*+-.^_`|~")
+		bs.Invert()
+		return bs
+	}()
+	// ctl matches RFC 5234 control bytes, bare CR and NUL included.
+	ctl = func() (bs internal.ByteSet) {
+		bs.AddRange(0, 0x1f)
+		bs.Add("\x7f")
+		return bs
+	}()
 )
 
 // maxBufLen bounds the header buffer. Offsets/lengths are stored as uint16
@@ -179,6 +205,8 @@ func (hb *headerv1Buf) parseFirstLineRequest(initFlags Flags) (method, uri, prot
 	b := hb.scanLine()
 	if len(b) < 5 {
 		return method, uri, proto, flags, ErrNeedMoreData
+	} else if ctl.IndexAny(b2s(b)) >= 0 {
+		return method, uri, proto, flags, errInvalidRequestLine // No control bytes, bare CR included, RFC 9112 3.
 	}
 	debuglog("http:req:parse")
 
@@ -206,6 +234,9 @@ func (hb *headerv1Buf) parseFirstLineRequest(initFlags Flags) (method, uri, prot
 		uri = hb.kv.view(b[methodEnd+1:])
 		method = hb.kv.view(b[:methodEnd])
 		return method, uri, proto, flags | flagNoHTTP11, lneto.ErrUnsupported
+	}
+	if methodEnd == 0 || notToken.IndexAny(b2s(b[:methodEnd])) >= 0 {
+		return method, uri, proto, flags, errInvalidRequestLine // Method is a token, RFC 9110 9.1.
 	}
 	method = hb.kv.view(b[:methodEnd])
 	return method, uri, proto, flags, nil
@@ -274,41 +305,30 @@ func (hb *headerv1Buf) next(ss *scannerState) pairKV {
 	} else if blen >= 1 && buf[0] == '\n' {
 		hb.off += 1
 		return hb.kv.noKV() // \n\n Ends header.
+	} else if blen == 1 && buf[0] == '\r' {
+		ss.err = ErrNeedMoreData // CR of the CRLF ending header, LF yet to arrive.
+		return hb.kv.noKV()
 	}
 
 	// n is parsing offset. Will start by storing colon index.
 	n := 0
+
 	if ss.nextColon >= 0 {
 		// Retake from last colon found.
 		n = ss.nextColon
 		ss.nextColon = -1
 	} else {
-		n = bytes.IndexByte(buf, ':')
-		x := bytes.IndexByte(buf, '\n')
-		if x < 0 {
-			// A header name should always at some point be followed by a \n
-			// even if it's the one that terminates the header block.
+		// Name ends at its first non-token byte, which must be the colon, RFC 9110 5.6.2.
+		n = notToken.IndexAny(b2s(buf))
+		if n < 0 {
+			// Only token bytes yet: name split across reads.
 			ss.err = ErrNeedMoreData
 			return hb.kv.noKV()
-		} else if x < n {
-			// There was a \n before the colon! This is invalid.
-			ss.err = errInvalidName
-			return hb.kv.noKV()
-		} else if n < 0 {
-			// A newline is present (x>=0 reached here) but the line has no
-			// colon: malformed, not incomplete. A split arriving before the
-			// colon has no newline yet and is caught by the x<0 branch above,
-			// so it still returns ErrNeedMoreData.
+		} else if n == 0 || buf[n] != ':' {
+			// Empty name, newline before colon or invalid byte, i.e: whitespace before colon, RFC 9112 5.1.
 			ss.err = errInvalidName
 			return hb.kv.noKV()
 		}
-	}
-	// n stores colon position by now.
-	if bytes.IndexByte(buf[:n], ' ') >= 0 || bytes.IndexByte(buf[:n], '\t') >= 0 {
-		// Spaces between the header key and colon are not allowed.
-		// See RFC 7230, Section 3.2.4.
-		ss.err = errInvalidName
-		return hb.kv.noKV()
 	}
 
 	// Ready to store key..
@@ -322,14 +342,26 @@ func (hb *headerv1Buf) next(ss *scannerState) pairKV {
 	valueStart := n
 
 	// Find end of value. Values may be multiline, in which case we must treat newlines followed by whitespace as part of the value.
+	matcher := newByteset("\r\n\x00")
 	for {
-		nl := bytes.IndexByte(buf[n:], '\n')
-		if nl < 0 || nl+n+1 == len(buf) {
-			// No newline or newline is last character and can't know if is multiline.
+		i := matcher.IndexAny(b2s(buf[n:]))
+		if i < 0 {
 			ss.err = ErrNeedMoreData
 			return hb.kv.noKV()
 		}
-		n += nl + 1 // Index of the newly found newline.
+		n += i
+		if buf[n] == '\r' {
+			n++ // CR may only precede LF, RFC 9110 5.5.
+		}
+		if n < len(buf) && buf[n] != '\n' {
+			ss.err = errInvalidValue // NUL or bare CR.
+			return hb.kv.noKV()
+		} else if n+1 >= len(buf) {
+			// CR or LF is last byte: can't know yet if LF or a folded line follows.
+			ss.err = ErrNeedMoreData
+			return hb.kv.noKV()
+		}
+		n++ // Index past the newly found newline.
 		nextChar := buf[n]
 		if nextChar != ' ' && nextChar != '\t' {
 			break // End of value found.
