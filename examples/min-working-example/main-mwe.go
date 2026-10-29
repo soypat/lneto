@@ -30,8 +30,10 @@ const (
 	tcpCloseTimeout       = protoTimeout
 )
 
+var start = time.Now()
+
 var nanotime = func() int64 {
-	return time.Now().UnixNano()
+	return time.Since(start).Nanoseconds() // Guaranteed monotonic for Go.
 }
 
 var network Interface
@@ -64,6 +66,7 @@ func run(ctx context.Context, stack *xnet.StackAsync) error {
 	err = stack.Reset(xnet.StackConfig{
 		Hostname: "lneto-mwe",
 		RandSeed: time.Now().UnixNano(),
+		Entropy:  entropy,
 		// A passive TCP listener to many remote ports takes up one spot, active TCP clients to one remote port take up a spot.
 		MaxActiveTCPPorts: 1,
 		// MaxUDPConns: 1 , // For MDNS support.
@@ -211,4 +214,15 @@ func tcpBackoff(consecutiveBackoffs uint) time.Duration {
 
 func makeMsgErr(msg string, err error) error {
 	return errors.New(msg + ": " + err.Error())
+}
+
+func entropy(b []byte) (int, error) {
+	// Whenever possible use a good entropy source.
+	// This example is a MWE meant to compile for the Pico
+	// so we omit using crypto/rand.Read. When you can use it.
+	for i := range b {
+		time.Sleep(time.Microsecond)
+		b[i] = byte(nanotime())
+	}
+	return len(b), nil
 }
