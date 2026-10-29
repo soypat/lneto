@@ -276,11 +276,11 @@ func (h *HeaderV1) ContentLength() (_ int64, present bool, _ error) {
 	}
 	value = trimOWS(value)
 	// Unsigned parse of 63 bits rejects a sign and anything past int64's range.
-	n, err := strconv.ParseInt(b2s(value), 10, 64)
-	if err != nil || n < 0 {
-		return n, true, errBadContentLength // strconv's error allocates and is not comparable.
+	n, err := strconv.ParseUint(b2s(value), 10, 63)
+	if err != nil {
+		return int64(n), true, errBadContentLength // strconv's error allocates and is not comparable.
 	}
-	return n, true, nil
+	return int64(n), true, nil
 }
 
 // Add adds a new key-value pair to the HTTP header. Calling Add mangles the buffer.
