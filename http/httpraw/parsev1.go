@@ -42,6 +42,7 @@ var (
 	errBadDelimiter     = errors.New("httpraw: junk between multipart delimiter and part")
 	errNoContentLength  = errors.New("httpraw: no Content-Length field")
 	errBadContentLength = errors.New("httpraw: invalid Content-Length value")
+	errBadParam         = errors.New("httpraw: invalid header field parameter")
 )
 
 // maxBufLen bounds the header buffer. Offsets/lengths are stored as uint16
