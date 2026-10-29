@@ -15,6 +15,20 @@ func (bs *ByteSet) Add(searchSet string) {
 	}
 }
 
+// AddRange adds bytes lo through hi inclusive to the byte set.
+func (bs *ByteSet) AddRange(lo, hi byte) {
+	for c := int(lo); c <= int(hi); c++ { // int: byte counter would wrap at 0xff.
+		bs[c>>5] |= 1 << (c & 31)
+	}
+}
+
+// Invert makes the byte set match exactly the bytes it did not match.
+func (bs *ByteSet) Invert() {
+	for i := range bs {
+		bs[i] = ^bs[i]
+	}
+}
+
 // Clear clears the entire ByteSet state so it matches nothing.
 func (bs *ByteSet) Clear() { *bs = ByteSet{} }
 

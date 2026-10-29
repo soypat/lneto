@@ -3,7 +3,6 @@ package httpraw
 import (
 	"bytes"
 	"errors"
-	"strings"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -18,6 +17,8 @@ var (
 	errUnparsed     = errors.New("need to finish parsing")
 	errInvalidName  = errors.New("invalid header name")
 	errInvalidValue = errors.New("invalid header value")
+
+	errInvalidRequestLine = errors.New("httpraw: invalid request line")
 	// ErrBufferExhausted signals a buffer with no room left for the data being
 	// written and no permission to grow, see [KVBuffer.EnableBufferGrowth].
 	// Enlarging the buffer handed to Reset is the only fix; a server answers it
@@ -44,6 +45,29 @@ var (
 	errBadDelimiter     = errors.New("httpraw: junk between multipart delimiter and part")
 	errNoContentLength  = errors.New("httpraw: no Content-Length field")
 	errBadContentLength = errors.New("httpraw: invalid Content-Length value")
+)
+
+func newByteset(searchSet string) (bs internal.ByteSet) {
+	bs.Add(searchSet)
+	return bs
+}
+
+var (
+	// notToken matches every byte that is not an RFC 9110 5.6.2 tchar.
+	notToken = func() (bs internal.ByteSet) {
+		bs.AddRange('0', '9')
+		bs.AddRange('A', 'Z')
+		bs.AddRange('a', 'z')
+		bs.Add("!#$%&'*+-.^_`|~")
+		bs.Invert()
+		return bs
+	}()
+	// ctl matches RFC 5234 control bytes, bare CR and NUL included.
+	ctl = func() (bs internal.ByteSet) {
+		bs.AddRange(0, 0x1f)
+		bs.Add("\x7f")
+		return bs
+	}()
 )
 
 // maxBufLen bounds the header buffer. Offsets/lengths are stored as uint16
@@ -181,6 +205,8 @@ func (hb *headerv1Buf) parseFirstLineRequest(initFlags Flags) (method, uri, prot
 	b := hb.scanLine()
 	if len(b) < 5 {
 		return method, uri, proto, flags, ErrNeedMoreData
+	} else if ctl.IndexAny(b2s(b)) >= 0 {
+		return method, uri, proto, flags, errInvalidRequestLine // No control bytes, bare CR included, RFC 9112 3.
 	}
 	debuglog("http:req:parse")
 
@@ -208,6 +234,9 @@ func (hb *headerv1Buf) parseFirstLineRequest(initFlags Flags) (method, uri, prot
 		uri = hb.kv.view(b[methodEnd+1:])
 		method = hb.kv.view(b[:methodEnd])
 		return method, uri, proto, flags | flagNoHTTP11, lneto.ErrUnsupported
+	}
+	if methodEnd == 0 || notToken.IndexAny(b2s(b[:methodEnd])) >= 0 {
+		return method, uri, proto, flags, errInvalidRequestLine // Method is a token, RFC 9110 9.1.
 	}
 	method = hb.kv.view(b[:methodEnd])
 	return method, uri, proto, flags, nil
@@ -276,34 +305,30 @@ func (hb *headerv1Buf) next(ss *scannerState) pairKV {
 	} else if blen >= 1 && buf[0] == '\n' {
 		hb.off += 1
 		return hb.kv.noKV() // \n\n Ends header.
+	} else if blen == 1 && buf[0] == '\r' {
+		ss.err = ErrNeedMoreData // CR of the CRLF ending header, LF yet to arrive.
+		return hb.kv.noKV()
 	}
 
 	// n is parsing offset. Will start by storing colon index.
 	n := 0
-	var searcher internal.ByteSet
+
 	if ss.nextColon >= 0 {
 		// Retake from last colon found.
 		n = ss.nextColon
 		ss.nextColon = -1
 	} else {
-		searcher.Add(":\n")
-		n = searcher.IndexAny(b2s(buf))
+		// Name ends at its first non-token byte, which must be the colon, RFC 9110 5.6.2.
+		n = notToken.IndexAny(b2s(buf))
 		if n < 0 {
-			// Neither colon nor newline yet: name split across reads.
+			// Only token bytes yet: name split across reads.
 			ss.err = ErrNeedMoreData
 			return hb.kv.noKV()
-		} else if buf[n] != ':' {
-			// Newline before any colon: malformed line, not incomplete.
+		} else if n == 0 || buf[n] != ':' {
+			// Empty name, newline before colon or invalid byte, i.e: whitespace before colon, RFC 9112 5.1.
 			ss.err = errInvalidName
 			return hb.kv.noKV()
 		}
-		searcher.Clear()
-	}
-	// n stores colon position by now.
-	if !isToken(buf[:n]) {
-		// Names are tokens, RFC 9110 5.6.2: also rejects whitespace before colon, RFC 9112 5.1.
-		ss.err = errInvalidName
-		return hb.kv.noKV()
 	}
 
 	// Ready to store key..
@@ -317,9 +342,9 @@ func (hb *headerv1Buf) next(ss *scannerState) pairKV {
 	valueStart := n
 
 	// Find end of value. Values may be multiline, in which case we must treat newlines followed by whitespace as part of the value.
-	searcher.Add("\r\n\x00")
+	matcher := newByteset("\r\n\x00")
 	for {
-		i := searcher.IndexAny(b2s(buf[n:]))
+		i := matcher.IndexAny(b2s(buf[n:]))
 		if i < 0 {
 			ss.err = ErrNeedMoreData
 			return hb.kv.noKV()
@@ -350,17 +375,6 @@ func (hb *headerv1Buf) next(ss *scannerState) pairKV {
 	resultKV.value = hb.kv.view(buf[valueStart:valueEnd])
 	hb.off += n
 	return resultKV
-}
-
-// isToken reports whether b is a non-empty RFC 9110 5.6.2 token.
-func isToken(b []byte) bool {
-	for _, c := range b {
-		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' ||
-			strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0) {
-			return false
-		}
-	}
-	return len(b) > 0
 }
 
 // ConnectionClose returns true if 'Connection: close' header is set or if a invalid header was found.

@@ -27,3 +27,31 @@ func TestByteSetIndexAny(t *testing.T) {
 		}
 	}
 }
+
+func TestByteSetAddRangeInvert(t *testing.T) {
+	for _, test := range []struct {
+		lo, hi byte
+		invert bool
+		s      string
+		want   int
+	}{
+		{lo: '0', hi: '9', s: "ab7c", want: 2},
+		{lo: '0', hi: '9', s: "abc", want: -1},
+		{lo: 0, hi: 0x1f, s: "ab\tc", want: 2},
+		{lo: 0xf0, hi: 0xff, s: "a\xff", want: 1},
+		{lo: 0, hi: 0xff, s: "x", want: 0},
+		{lo: 'b', hi: 'a', s: "ab", want: -1}, // lo > hi is empty.
+		{lo: 'a', hi: 'z', invert: true, s: "abC", want: 2},
+		{lo: 'b', hi: 'a', invert: true, s: "\x00", want: 0},
+		{lo: 0, hi: 0xff, invert: true, s: "abc", want: -1},
+	} {
+		var bs ByteSet
+		bs.AddRange(test.lo, test.hi)
+		if test.invert {
+			bs.Invert()
+		}
+		if got := bs.IndexAny(test.s); got != test.want {
+			t.Errorf("AddRange(%#x, %#x) invert=%v IndexAny(%q): want %d, got %d", test.lo, test.hi, test.invert, test.s, test.want, got)
+		}
+	}
+}
