@@ -4,19 +4,28 @@ import (
 	"unsafe"
 )
 
-// IndexAnyBytes searches searchedString for the first match with any of
-// seachSet bytes. Is created separate to strings.IndexAny to avoid
-// Unicode overhead and any allocation that could result from it and since
-// byte set can easily be SIMD-izable (in future).
-func IndexAnyBytes(searchedString, searchSet string) int {
-	var set [8]uint32 // Bit c set when byte c is in searchSet.
+// ByteSet defines a set of bytes ranging values 0-255. Zero value matches nothing.
+type ByteSet [8]uint32
+
+// Add adds a set of bytes to the byte set.
+func (bs *ByteSet) Add(searchSet string) {
 	for i := 0; i < len(searchSet); i++ {
 		c := searchSet[i]
-		set[c>>5] |= 1 << (c & 31)
+		bs[c>>5] |= 1 << (c & 31)
 	}
-	for i := 0; i < len(searchedString); i++ {
-		c := searchedString[i]
-		if set[c>>5]&(1<<(c&31)) != 0 {
+}
+
+// Clear clears the entire ByteSet state so it matches nothing.
+func (bs *ByteSet) Clear() { *bs = ByteSet{} }
+
+// IndexAny searches searchedString for the first match with any of
+// set of bytes. Is created separate to strings.IndexAny to avoid
+// Unicode overhead and any allocation that could result from it and since
+// byte set can easily be SIMD-izable (in future).
+func (bs *ByteSet) IndexAny(searchString string) int {
+	for i := 0; i < len(searchString); i++ {
+		c := searchString[i]
+		if bs[c>>5]&(1<<(c&31)) != 0 {
 			return i
 		}
 	}

@@ -46,6 +46,16 @@ var (
 	errBadContentLength = errors.New("httpraw: invalid Content-Length value")
 )
 
+func newByteset(searchSet string) (bs internal.ByteSet) {
+	bs.Add(searchSet)
+	return bs
+}
+
+var (
+	searchColonNL  = newByteset(":\n")      // ":\n"
+	searchCRLFNull = newByteset("\r\n\x00") // "\r\n\x00"
+)
+
 // maxBufLen bounds the header buffer. Offsets/lengths are stored as uint16
 // (tokint); a buffer past this would truncate/overflow those, silently
 // returning the wrong bytes or panicking on a wrapped slice bound.
@@ -285,7 +295,7 @@ func (hb *headerv1Buf) next(ss *scannerState) pairKV {
 		n = ss.nextColon
 		ss.nextColon = -1
 	} else {
-		n = internal.IndexAnyBytes(b2s(buf), ":\n")
+		n = searchColonNL.IndexAny(b2s(buf))
 		if n < 0 {
 			// Neither colon nor newline yet: name split across reads.
 			ss.err = ErrNeedMoreData
@@ -315,7 +325,7 @@ func (hb *headerv1Buf) next(ss *scannerState) pairKV {
 
 	// Find end of value. Values may be multiline, in which case we must treat newlines followed by whitespace as part of the value.
 	for {
-		i := internal.IndexAnyBytes(b2s(buf[n:]), "\r\n\x00")
+		i := searchCRLFNull.IndexAny(b2s(buf[n:]))
 		if i < 0 {
 			ss.err = ErrNeedMoreData
 			return hb.kv.noKV()

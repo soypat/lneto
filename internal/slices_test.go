@@ -2,7 +2,8 @@ package internal
 
 import "testing"
 
-func TestIndexAnyBytes(t *testing.T) {
+func TestByteSetIndexAny(t *testing.T) {
+	var bs ByteSet
 	for _, test := range []struct {
 		s, set string
 		want   int
@@ -19,7 +20,9 @@ func TestIndexAnyBytes(t *testing.T) {
 		{s: "\xff\x80", set: "\x80", want: 1},
 		{s: "\xc3\xa9", set: "\xa9", want: 1},
 	} {
-		if got := IndexAnyBytes(test.s, test.set); got != test.want {
+		bs.Clear()
+		bs.Add(test.set)
+		if got := bs.IndexAny(test.s); got != test.want {
 			t.Errorf("IndexAnyBytes(%q, %q): want %d, got %d", test.s, test.set, test.want, got)
 		}
 	}
