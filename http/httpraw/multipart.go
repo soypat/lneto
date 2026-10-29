@@ -71,7 +71,7 @@ func (hdr *MultipartHeader) Reset() {
 // 1 to 70 characters long, RFC 2046 5.1.1; a zero length boundary would match
 // every "--" in the body.
 func (m *Multipart) SetContentType(contentType []byte) error {
-	m.Boundary = ContentParam(contentType, "boundary")
+	m.Boundary = contentParam(contentType, "boundary")
 	if len(m.Boundary) == 0 || len(m.Boundary) > 70 {
 		return errNoBoundary // RFC 2046 5.1.1: 1..70 characters, required.
 	}
@@ -114,8 +114,19 @@ func (m *Multipart) NextHeader(dst *MultipartHeader, data []byte) (parsedLen int
 	}
 	dst.PartView = data[after : after+end+2]
 	disposition := partField(dst.PartView)
-	dst.Name = append(dst.Name[:0], ContentParam(disposition, "name")...)
-	dst.Filename = append(dst.Filename[:0], ContentParam(disposition, "filename")...)
+	rest := disposition
+	for len(rest) > 0 {
+		var key, value []byte
+		key, value, rest, err = NextContentParam(rest)
+		if err != nil {
+			dst.Reset()
+			return 0, err
+		} else if len(dst.Name) == 0 && equalFold(key, "name") {
+			dst.Name = append(dst.Name, value...)
+		} else if len(dst.Filename) == 0 && equalFold(key, "filename") {
+			dst.Filename = append(dst.Filename, value...)
+		}
+	}
 	return after + end + 4, nil
 }
 
@@ -183,44 +194,63 @@ func MediaTypeIs(value []byte, mediaType string) bool {
 	return equalFold(trimOWS(value), mediaType)
 }
 
-// ContentParam returns the value of a parameter of a header field value, i.e:
+// NextContentParam splits the leading parameter off a header field value or the rest of a previous call,
+// i.e: "charset" and "utf-8" off "text/plain; charset=utf-8". Loop until key is nil:
+//
+//	key, val, rest, err := httpraw.NextContentParam(contentType)
+//	for ; key != nil; key, val, rest, err = httpraw.NextContentParam(rest) {
+//		// use key, val.
+//	}
+//
+// Quoted values come without quotes and with escapes as on the wire. A parameter without value
+// or an unterminated quoted string returns nil key and an error, failing closed like mime.ParseMediaType.
+func NextContentParam(value []byte) (key, paramValue, rest []byte, err error) {
+	semi := bytes.IndexByte(value, ';')
+	if semi < 0 {
+		return nil, nil, nil, nil // No parameters left.
+	}
+	value = trimOWS(value[semi+1:])
+	if len(value) == 0 {
+		return nil, nil, nil, nil // Trailing semicolon.
+	}
+	eq := bytes.IndexByte(value, '=')
+	if eq < 0 || bytes.IndexByte(value[:eq], ';') >= 0 {
+		return nil, nil, nil, errBadParam // Parameter without value.
+	}
+	key = trimOWS(value[:eq])
+	paramValue = value[eq+1:]
+	if len(paramValue) > 0 && paramValue[0] == '"' {
+		end := 1 // Closing quote index, skipping quoted-pairs, RFC 9110 5.6.4.
+		for end < len(paramValue) && paramValue[end] != '"' {
+			if paramValue[end] == '\\' {
+				end++
+			}
+			end++
+		}
+		if end >= len(paramValue) {
+			return nil, nil, nil, errBadParam // Unterminated quoted string.
+		}
+		return key, paramValue[1:end], paramValue[end+1:], nil
+	}
+	end := bytes.IndexByte(paramValue, ';')
+	if end >= 0 {
+		paramValue, rest = paramValue[:end], paramValue[end:]
+	}
+	return key, trimOWS(paramValue), rest, nil
+}
+
+// contentParam returns the value of a parameter of a header field value, i.e:
 // "utf-8" for key "charset" of "text/plain; charset=utf-8". Quoted values are
 // returned without their quotes and with escapes left as they appear on the
 // wire. Key matching is case insensitive, RFC 9110 5.6.6.
-func ContentParam(value []byte, key string) []byte {
-	for len(value) > 0 {
-		semi := bytes.IndexByte(value, ';')
-		if semi < 0 {
-			return nil // No parameters left.
-		}
-		value = trimOWS(value[semi+1:])
-		eq := bytes.IndexByte(value, '=')
-		if eq < 0 {
-			return nil
-		}
-		gotKey := trimOWS(value[:eq])
-		value = value[eq+1:]
-		param := value
-		if len(param) > 0 && param[0] == '"' {
-			end := bytes.IndexByte(param[1:], '"')
-			if end < 0 {
-				return nil // Unterminated quoted string.
-			}
-			param, value = param[1:end+1], param[end+2:]
-		} else {
-			end := bytes.IndexByte(param, ';')
-			if end >= 0 {
-				param, value = param[:end], param[end:]
-			} else {
-				value = nil
-			}
-			param = trimOWS(param)
-		}
+func contentParam(value []byte, key string) []byte {
+	gotKey, param, rest, _ := NextContentParam(value)
+	for ; gotKey != nil; gotKey, param, rest, _ = NextContentParam(rest) {
 		if equalFold(gotKey, key) {
 			return param
 		}
 	}
-	return nil
+	return nil // Absent or malformed parameter list, see NextContentParam.
 }
 
 // partField returns the Content-Disposition field value of a part header block.

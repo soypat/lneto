@@ -480,7 +480,7 @@ func (exch *Exchange) RequestParseCookie(dst *httpraw.Cookie, key string) error 
 
 // RequestContentType returns the request's Content-Type field value as it
 // appears on the wire, parameters included, nil if absent. Test it with
-// [httpraw.MediaTypeIs] and pick parameters out with [httpraw.ContentParam].
+// [httpraw.MediaTypeIs] and pick parameters out with [httpraw.NextContentParam].
 func (exch *Exchange) RequestContentType() []byte {
 	// Folded: field names are case insensitive and HTTP/2 mandates lowercase, so
 	// a proxy translating h2 to h1 sends "content-type", RFC 9110 5.1.
