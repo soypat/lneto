@@ -3,6 +3,7 @@ package httpraw
 import (
 	"bytes"
 	"errors"
+	"strings"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -16,6 +17,7 @@ var (
 	errNoBoundary   = errors.New("httpraw: multipart boundary not set")
 	errUnparsed     = errors.New("need to finish parsing")
 	errInvalidName  = errors.New("invalid header name")
+	errInvalidValue = errors.New("invalid header value")
 	// ErrBufferExhausted signals a buffer with no room left for the data being
 	// written and no permission to grow, see [KVBuffer.EnableBufferGrowth].
 	// Enlarging the buffer handed to Reset is the only fix; a server answers it
@@ -283,30 +285,20 @@ func (hb *headerv1Buf) next(ss *scannerState) pairKV {
 		n = ss.nextColon
 		ss.nextColon = -1
 	} else {
-		n = bytes.IndexByte(buf, ':')
-		x := bytes.IndexByte(buf, '\n')
-		if x < 0 {
-			// A header name should always at some point be followed by a \n
-			// even if it's the one that terminates the header block.
+		n = internal.IndexAnyBytes(b2s(buf), ":\n")
+		if n < 0 {
+			// Neither colon nor newline yet: name split across reads.
 			ss.err = ErrNeedMoreData
 			return hb.kv.noKV()
-		} else if x < n {
-			// There was a \n before the colon! This is invalid.
-			ss.err = errInvalidName
-			return hb.kv.noKV()
-		} else if n < 0 {
-			// A newline is present (x>=0 reached here) but the line has no
-			// colon: malformed, not incomplete. A split arriving before the
-			// colon has no newline yet and is caught by the x<0 branch above,
-			// so it still returns ErrNeedMoreData.
+		} else if buf[n] != ':' {
+			// Newline before any colon: malformed line, not incomplete.
 			ss.err = errInvalidName
 			return hb.kv.noKV()
 		}
 	}
 	// n stores colon position by now.
-	if bytes.IndexByte(buf[:n], ' ') >= 0 || bytes.IndexByte(buf[:n], '\t') >= 0 {
-		// Spaces between the header key and colon are not allowed.
-		// See RFC 7230, Section 3.2.4.
+	if !isToken(buf[:n]) {
+		// Names are tokens, RFC 9110 5.6.2: also rejects whitespace before colon, RFC 9112 5.1.
 		ss.err = errInvalidName
 		return hb.kv.noKV()
 	}
@@ -323,13 +315,24 @@ func (hb *headerv1Buf) next(ss *scannerState) pairKV {
 
 	// Find end of value. Values may be multiline, in which case we must treat newlines followed by whitespace as part of the value.
 	for {
-		nl := bytes.IndexByte(buf[n:], '\n')
-		if nl < 0 || nl+n+1 == len(buf) {
-			// No newline or newline is last character and can't know if is multiline.
+		i := internal.IndexAnyBytes(b2s(buf[n:]), "\r\n\x00")
+		if i < 0 {
 			ss.err = ErrNeedMoreData
 			return hb.kv.noKV()
 		}
-		n += nl + 1 // Index of the newly found newline.
+		n += i
+		if buf[n] == '\r' {
+			n++ // CR may only precede LF, RFC 9110 5.5.
+		}
+		if n < len(buf) && buf[n] != '\n' {
+			ss.err = errInvalidValue // NUL or bare CR.
+			return hb.kv.noKV()
+		} else if n+1 >= len(buf) {
+			// CR or LF is last byte: can't know yet if LF or a folded line follows.
+			ss.err = ErrNeedMoreData
+			return hb.kv.noKV()
+		}
+		n++ // Index past the newly found newline.
 		nextChar := buf[n]
 		if nextChar != ' ' && nextChar != '\t' {
 			break // End of value found.
@@ -343,6 +346,17 @@ func (hb *headerv1Buf) next(ss *scannerState) pairKV {
 	resultKV.value = hb.kv.view(buf[valueStart:valueEnd])
 	hb.off += n
 	return resultKV
+}
+
+// isToken reports whether b is a non-empty RFC 9110 5.6.2 token.
+func isToken(b []byte) bool {
+	for _, c := range b {
+		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' ||
+			strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0) {
+			return false
+		}
+	}
+	return len(b) > 0
 }
 
 // ConnectionClose returns true if 'Connection: close' header is set or if a invalid header was found.

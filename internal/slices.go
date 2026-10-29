@@ -4,6 +4,25 @@ import (
 	"unsafe"
 )
 
+// IndexAnyBytes searches searchedString for the first match with any of
+// seachSet bytes. Is created separate to strings.IndexAny to avoid
+// Unicode overhead and any allocation that could result from it and since
+// byte set can easily be SIMD-izable (in future).
+func IndexAnyBytes(searchedString, searchSet string) int {
+	var set [8]uint32 // Bit c set when byte c is in searchSet.
+	for i := 0; i < len(searchSet); i++ {
+		c := searchSet[i]
+		set[c>>5] |= 1 << (c & 31)
+	}
+	for i := 0; i < len(searchedString); i++ {
+		c := searchedString[i]
+		if set[c>>5]&(1<<(c&31)) != 0 {
+			return i
+		}
+	}
+	return -1
+}
+
 // BytesEqual is heapless replacement of [bytes.Equal] since it allocates in tinygo.
 // https://github.com/tinygo-org/tinygo/issues/4045
 func BytesEqual(a, b []byte) bool {

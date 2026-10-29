@@ -535,6 +535,23 @@ func TestParseRequest_InvalidHeaderSpaceBeforeColon(t *testing.T) {
 	}
 }
 
+// RFC 9110 5.6.2, 5.5: names are tokens, values carry no CR or NUL.
+func TestParseRequest_InvalidHeaderChars(t *testing.T) {
+	for _, field := range []string{
+		"X\x00Y: 1",
+		"X\rY: 1",
+		"X(Y: 1",
+		"X: a\rTransfer-Encoding: chunked",
+		"X: a\x00b",
+	} {
+		var hdr HeaderV1
+		err := hdr.ParseBytes(false, []byte("GET / HTTP/1.1\r\n"+field+"\r\n\r\n"))
+		if err == nil {
+			t.Errorf("want error for field %q", field)
+		}
+	}
+}
+
 func splitInto(s string, n int) []string {
 	var chunks []string
 	for len(s) > 0 {
