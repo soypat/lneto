@@ -1553,6 +1553,21 @@ func TestExchangeRespondReportsOverflow(t *testing.T) {
 	}
 }
 
+// Content-Length is the peer's claim: it must not size the form's buffer.
+func TestExchangeRequestParseFormHugeContentLength(t *testing.T) {
+	var gotErr error
+	var form httpraw.Form
+	var sm MuxSlice
+	sm.Reset(1)
+	sm.Handle("/f", func(exch *Exchange) {
+		gotErr = exch.RequestParseForm(&form, false, false)
+	})
+	serve(t, "POST /f HTTP/1.1\r\nHost: h\r\n"+formType+"Content-Length: 9223372036854775807\r\n\r\na=1", &sm)
+	if gotErr == nil {
+		t.Fatal("want error for Content-Length past what the form can hold")
+	}
+}
+
 // Query and body are read into one form buffer and parsed together, so both
 // sources are present at once and read order decides which value a key resolves
 // to. A key carried by both keeps both pairs, in wire order.
