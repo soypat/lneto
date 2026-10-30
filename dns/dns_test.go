@@ -223,6 +223,26 @@ func TestDecodeMessage(t *testing.T) {
 	}
 }
 
+// A zeroed message is QDCOUNT 5 byte root-name questions, so counts alone place
+// a record's fixed fields where off+N wraps uint16 at the 64KiB limit.
+func TestDecodeMessageOffsetWrap(t *testing.T) {
+	tests := []struct{ qd, an uint16 }{
+		{qd: 13105},        // Last question name ends at 65533: off+4 wraps.
+		{qd: 13103, an: 1}, // Answer name ends at 65528: off+10 wraps.
+	}
+	for _, tt := range tests {
+		msg := make([]byte, math.MaxUint16)
+		frm, _ := NewFrame(msg)
+		frm.SetQDCount(tt.qd)
+		frm.SetANCount(tt.an)
+		var m Message
+		m.LimitResourceDecoding(tt.qd, tt.an, 0, 0)
+		if _, _, err := m.Decode(msg); err == nil {
+			t.Error("want error decoding record past message end")
+		}
+	}
+}
+
 func TestMessage_Validate(t *testing.T) {
 	name := MustNewName("example.com")
 
