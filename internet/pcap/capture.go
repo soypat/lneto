@@ -786,6 +786,7 @@ func (pc *PacketBreakdown) CaptureHTTP(dst []Frame, pkt []byte, bitOffset int) (
 	const asRequest = false
 	httpData := pkt[bitOffset/8:]
 	pc.hdr.Reset(httpData, maxCapturedHeaderFields)
+	pc.hdr.ConfigBufferGrowth(false)
 	err := pc.hdr.Parse(asResponse)
 	if err != nil {
 		pc.hdr.Reset(httpData, 0)     // Field table already sized, reuse it.
