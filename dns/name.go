@@ -215,16 +215,14 @@ func visitAllLabels(msg []byte, off uint16, fn func(b []byte), allowCompression 
 	// to data that belongs to other names and thus doesn't count towards to
 	// the usage of this name.
 	var newOff = off
+	// nameLen is the wire length of labels visited. RFC 1035 3.1 caps a name at
+	// 255 octets, which also bounds what a pointer loop expands to.
+	var nameLen int
 
 	for {
 		start, end, isPtr, err := NextLabel(msg[off:])
 		if err != nil {
 			return off, err
-		} else if start == end {
-			if ptr == 0 {
-				newOff = off + 1 // advance past the null terminator byte
-			}
-			break
 		} else if isPtr {
 			if !allowCompression {
 				return newOff, errCompressedSRV
@@ -238,8 +236,17 @@ func visitAllLabels(msg []byte, off uint16, fn func(b []byte), allowCompression 
 			} else if ptr++; ptr > 10 {
 				return newOff, errTooManyPtr
 			}
+		} else if start == end {
+			if ptr == 0 {
+				newOff = off + 1 // advance past the null terminator byte
+			}
+			break
 		} else {
 			// Is normal label; start/end are relative to msg[off:].
+			nameLen += int(end) // end counts the length byte.
+			if nameLen >= 255 { // Terminator must still fit.
+				return off, errNameTooLong
+			}
 			fn(msg[off+start : off+end])
 			off += end
 		}
