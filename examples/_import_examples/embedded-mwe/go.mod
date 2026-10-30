@@ -1,17 +1,23 @@
 module embeddedmwe
 
-go 1.26.0
+go 1.26.2
 
 require (
 	github.com/soypat/cyw43439 v0.2.0
 	github.com/soypat/lneto v0.4.0
+	github.com/usbarmory/go-net v0.0.0-20260416163630-1078311e0956
+	github.com/usbarmory/tamago v1.26.3
 	tinygo.org/x/espradio v0.5.0
 )
 
 require (
+	github.com/google/btree v1.1.2 // indirect
 	github.com/soypat/seqs v0.0.0-20260125140838-2c1c6b1bd69e // indirect
 	github.com/tinygo-org/pio v0.3.0 // indirect
 	golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e // indirect
+	golang.org/x/sys v0.26.0 // indirect
+	golang.org/x/time v0.7.0 // indirect
+	gvisor.dev/gvisor v0.0.0-20250911055229-61a46406f068 // indirect
 )
 
 // These replace directives point to local checkouts during development.
