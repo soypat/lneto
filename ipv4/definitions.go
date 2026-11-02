@@ -65,10 +65,10 @@ func (tos ToS) ECN() uint8 { return uint8(tos & 0b11) }
 type Flags uint16
 
 const (
-	flagIsEvilPos           = 13
+	flagMoreFragPos         = 13
 	flagDontFragPos         = 14
-	flagMoreFragPos         = 15
-	FlagOffsetMask          = (1 << flagIsEvilPos) - 1
+	flagIsEvilPos           = 15
+	FlagOffsetMask          = (1 << flagMoreFragPos) - 1
 	flagIsEvil        Flags = 1 << flagIsEvilPos
 	FlagDontFragment  Flags = 1 << flagDontFragPos
 	FlagMoreFragments Flags = 1 << flagMoreFragPos
