@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	csrng "crypto/rand"
 	_ "embed"
 	"encoding/hex"
 	"errors"
@@ -117,6 +118,7 @@ func run() (err error) {
 	err = stack.Reset(xnet.StackConfig{
 		Hostname:          "httpserver",
 		RandSeed:          softRand,
+		Entropy:           csrng.Read,
 		HardwareAddress:   nicHW,
 		MTU:               uint16(mtu),
 		MaxActiveTCPPorts: 1000,

@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	csrng "crypto/rand"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -107,6 +108,7 @@ func run() error {
 	if err := stack.Reset(xnet.StackConfig{
 		Hostname:          "berkeley-http",
 		RandSeed:          softRand,
+		Entropy:           csrng.Read,
 		HardwareAddress:   nicHW,
 		MTU:               uint16(mtu),
 		MaxActiveTCPPorts: 1024,
@@ -337,6 +339,7 @@ func mockClient(stack *xnet.StackAsync, port uint16, subnet netip.Prefix) {
 		Hostname:          "the-other",
 		MTU:               uint16(stack.MTU()),
 		RandSeed:          int64(stack.Prand32()),
+		Entropy:           csrng.Read,
 	})
 	if err != nil {
 		panic(err.Error())

@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	csrng "crypto/rand"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -143,6 +144,7 @@ func run() (err error) {
 	err = stack.Reset(xnet.StackConfig{
 		Hostname:          "xnet-test",
 		RandSeed:          softRand,
+		Entropy:           csrng.Read,
 		HardwareAddress:   brHW,
 		MTU:               uint16(mtu),
 		MaxActiveTCPPorts: 1,
