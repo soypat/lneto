@@ -1,0 +1,10 @@
+github.com/soypat/cyw43439 v0.2.0 h1:xG85waKoeFgwToHMdExVPMZdITNdbdO9gUuDZk3WrHs=
+github.com/soypat/cyw43439 v0.2.0/go.mod h1:PXS9E4wJ2f3BK3Vqf//gw1tE2kipMlNuubNm5au5RGc=
+github.com/soypat/seqs v0.0.0-20260125140838-2c1c6b1bd69e h1:xF3R+8683ngGNUeIy8PHJZiJZ/XIw+hlGgxg572P0Mw=
+github.com/soypat/seqs v0.0.0-20260125140838-2c1c6b1bd69e/go.mod h1:oCVCNGCHMKoBj97Zp9znLbQ1nHxpkmOY9X+UAGzOxc8=
+github.com/tinygo-org/pio v0.3.0 h1:opEnOtw58KGB4RJD3/n/Rd0/djYGX3DeJiXLI6y/yDI=
+github.com/tinygo-org/pio v0.3.0/go.mod h1:wf6c6lKZp+pQOzKKcpzchmRuhiMc27ABRuo7KVnaMFU=
+golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e h1:HgI6W1OolKK6tcV74is+rl9SMT0njsHlp0TbQiGXI/A=
+golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e/go.mod h1:DBoxwWhjaW8DJJw/YeM4zpeOKMC1FMXSblsYy+1mFSw=
+tinygo.org/x/espradio v0.5.0 h1:K+Kq4LUW2lG5ck9o4tbCwhlKA1Dog4ODZjV/HhmBOVo=
+tinygo.org/x/espradio v0.5.0/go.mod h1:2SwdQCIZTp+TshZXtf89YHNbM7mMVtAGmg/v056XSx0=
