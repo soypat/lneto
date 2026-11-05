@@ -12,7 +12,7 @@ import (
 const (
 	multiBoundary = "----abc123"
 	multiBody     = "------abc123\r\n" +
-		"Content-Disposition: form-data; name=\"caption\"\r\n" +
+		"Content-Disposition: form-data; name=caption\r\n" + // unquoted.
 		"\r\n" +
 		"hi there\r\n" +
 		"------abc123\r\n" +
@@ -136,7 +136,7 @@ func TestNextPartHeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const wantHdr = "Content-Disposition: form-data; name=\"caption\"\r\n"
+	const wantHdr = "Content-Disposition: form-data; name=caption\r\n"
 	if string(hdr.PartView) != wantHdr {
 		t.Errorf("want header %q, got %q", wantHdr, hdr.PartView)
 	}
@@ -179,8 +179,8 @@ func TestNextPartHeaderNeedMore(t *testing.T) {
 	} {
 		var hdr MultipartHeader
 		parsed, err := m.NextHeader(&hdr, []byte(data))
-		if parsed != 0 || err != nil {
-			t.Errorf("%q: want (0, nil) asking for more data, got (%d, %v)", data, parsed, err)
+		if parsed != 0 || err != ErrNeedMoreData {
+			t.Errorf("%q: want (0, ErrNeedMoreData), got (%d, %v)", data, parsed, err)
 		}
 	}
 }
@@ -353,9 +353,7 @@ func TestMultipartLoop(t *testing.T) {
 		if err == io.EOF {
 			break
 		} else if err != nil {
-			t.Fatal(err)
-		} else if parsed == 0 {
-			t.Fatal("header must complete within the buffer")
+			t.Fatal(err) // ErrNeedMoreData: header must complete within the buffer.
 		}
 		name := string(hdr.Name)
 		total := 0
@@ -374,5 +372,56 @@ func TestMultipartLoop(t *testing.T) {
 	want := "caption:8|photo:28"
 	if strings.Join(got, "|") != want {
 		t.Errorf("want %q, got %q", want, strings.Join(got, "|"))
+	}
+}
+
+func TestMultipart_UnquotedLastParam_NoTrailingCR(t *testing.T) {
+	buf := make([]byte, 64)
+	tests := []struct {
+		name         string
+		line         string
+		wantFilename string
+	}{
+		{
+			name:         "quoted, CRLF terminated (control)",
+			line:         `form-data; name="file"; filename="admin"` + "\r\n",
+			wantFilename: "admin",
+		},
+		{
+			name:         "CRLF terminated (wire format)",
+			line:         `form-data; name="file"; filename=admin` + "\r\n",
+			wantFilename: "admin",
+		},
+		{
+			name:         "LF terminated",
+			line:         `form-data; name="file"; filename=admin` + "\n",
+			wantFilename: "admin",
+		},
+	}
+	const boundary = "BOUND"
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf = append(buf[:0], "--"...)
+			buf = append(buf, boundary...)
+			buf = append(buf, "\r\nContent-Disposition: "...)
+			buf = append(buf, tt.line...) // already ends in \r\n or \n
+
+			buf = append(buf, "Content-Type: application/octet-stream\r\n\r\nhello\r\n"...)
+			buf = append(buf, "--"...)
+			buf = append(buf, boundary...)
+			buf = append(buf, "--\r\n"...)
+			var mp Multipart
+			mp.Boundary = append(mp.Boundary, boundary...)
+			var mh MultipartHeader
+			n, err := mp.NextHeader(&mh, buf)
+			if err != nil && err != io.EOF {
+				t.Fatal("parsing next header:", err)
+			} else if n == 0 {
+				t.Error("no bytes parsed")
+			} else if string(mh.Filename) != tt.wantFilename {
+				t.Errorf("want filename %q, got %q", tt.wantFilename, mh.Filename)
+			}
+		})
 	}
 }

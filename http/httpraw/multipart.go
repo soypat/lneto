@@ -18,11 +18,10 @@ import (
 //	var hdr httpraw.MultipartHeader
 //	for {
 //		parsed, err := m.NextHeader(&hdr, buf[:buflen])
-//		if err != nil {
+//		if err == httpraw.ErrNeedMoreData {
+//			continue // Header block incomplete: read more into buf[buflen:] and retry.
+//		} else if err != nil {
 //			break // io.EOF at the closing delimiter, body done.
-//		} else if parsed == 0 {
-//			// Header block incomplete: read more into buf[buflen:] and retry.
-//			continue
 //		}
 //		buflen = copy(buf, buf[parsed:buflen])
 //		for {
@@ -80,7 +79,7 @@ func (m *Multipart) SetContentType(contentType []byte) error {
 
 // NextHeader parses the leading part's header block off a multipart body into
 // dst, returning how many bytes of data it consumed: the part's content begins
-// at data[parsedLen]. A zero parsedLen and no error means data holds no complete
+// at data[parsedLen]. [ErrNeedMoreData] error means data holds no complete
 // delimiter and header block yet, so the caller reads more in and retries.
 // Returns [io.EOF] once the closing delimiter is reached. dst is reset on error.
 func (m *Multipart) NextHeader(dst *MultipartHeader, data []byte) (parsedLen int, err error) {
@@ -90,11 +89,11 @@ func (m *Multipart) NextHeader(dst *MultipartHeader, data []byte) (parsedLen int
 	}
 	idx := m.indexDelimiter(data)
 	if idx < 0 {
-		return 0, nil
+		return 0, ErrNeedMoreData
 	}
 	after := idx + len("--") + len(m.Boundary)
 	if after+2 > len(data) {
-		return 0, nil // Cannot tell a closing delimiter yet.
+		return 0, ErrNeedMoreData // Cannot tell a closing delimiter yet.
 	} else if data[after] == '-' && data[after+1] == '-' {
 		return 0, io.EOF
 	}
@@ -103,27 +102,37 @@ func (m *Multipart) NextHeader(dst *MultipartHeader, data []byte) (parsedLen int
 		after++
 	}
 	if after >= len(data) {
-		return 0, nil
+		return 0, ErrNeedMoreData
 	} else if data[after] != '\n' {
 		return 0, errBadDelimiter
 	}
 	after++
 	end := bytes.Index(data[after:], []byte("\r\n\r\n"))
 	if end < 0 {
-		return 0, nil
+		return 0, ErrNeedMoreData
 	}
 	dst.PartView = data[after : after+end+2]
 	disposition := partField(dst.PartView)
 	rest := disposition
+	seenName := false
+	seenFilename := false
 	for len(rest) > 0 {
 		var key, value []byte
 		key, value, rest, err = NextContentParam(rest)
 		if err != nil {
 			dst.Reset()
 			return 0, err
-		} else if len(dst.Name) == 0 && equalFold(key, "name") {
+		} else if equalFold(key, "name") {
+			if seenName {
+				return 0, errDuplicateKey
+			}
+			seenName = true
 			dst.Name = append(dst.Name, value...)
-		} else if len(dst.Filename) == 0 && equalFold(key, "filename") {
+		} else if equalFold(key, "filename") {
+			if seenFilename {
+				return 0, errDuplicateKey
+			}
+			seenFilename = true
 			dst.Filename = append(dst.Filename, value...)
 		}
 	}
@@ -261,6 +270,9 @@ func partField(partHdr []byte) []byte {
 		line := partHdr
 		if eol >= 0 {
 			line, partHdr = partHdr[:eol], partHdr[eol+1:]
+			if eol != 0 && line[eol-1] == '\r' {
+				line = line[:eol-1]
+			}
 		} else {
 			partHdr = nil
 		}

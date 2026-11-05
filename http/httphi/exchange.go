@@ -657,14 +657,14 @@ func (exch *Exchange) ReadMultiparts(dst []MultipartSink, buf []byte, newSink fu
 		var parsed int
 		for {
 			parsed, err = mp.NextHeader(&part.Header, buf[:buflen])
-			if err != nil {
+			if err == nil {
+				break // Delimiter and header block complete.
+			} else if err != httpraw.ErrNeedMoreData {
 				dst = dst[:len(dst)-1]
 				if err == io.EOF {
 					err = nil // Closing delimiter, body done.
 				}
 				return dst, err
-			} else if parsed > 0 {
-				break // Delimiter and header block complete.
 			} else if buflen == len(buf) {
 				dst = dst[:len(dst)-1]
 				return dst, lneto.ErrShortBuffer // Header longer than buf.

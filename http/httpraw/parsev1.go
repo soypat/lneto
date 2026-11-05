@@ -26,6 +26,7 @@ var (
 	// answers it with 431, RFC 6585 5: no larger buffer is coming, so reading
 	// the rest of the block would only spend memory on a request already lost.
 	ErrHeaderTooMany = errors.New("httpraw: more header fields than buffer holds")
+	errDuplicateKey  = errors.New("duplicate key")
 	// Header.Set and Header.Add mangles the buffer.
 	// Call them after retrieving the Body. Do not call them before parsing the header (why would you even do that?).
 	errMangledBuffer    = errors.New("httpraw: mangled buffer")
