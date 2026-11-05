@@ -450,6 +450,9 @@ type pairKV struct {
 // exchanges, multiply it by the pair capacity to account the field table.
 const SizeKV = int(unsafe.Sizeof(pairKV{}))
 
+// MaxKVBufferLen is the maximum allowable size in bytes of the [kvBuffer] used by [HeaderV1], [Form] and [Cookie].
+const MaxKVBufferLen = ^tokint(0) - 1
+
 // isValid is for stores parsed in place, where offset 0 is the first key so
 // only length can signal presence. Empty keys are valid: see valueless cookies.
 func (pair pairKV) isValid() bool {

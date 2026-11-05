@@ -6,6 +6,7 @@ import (
 
 // Cookie implements cookie key-value parsing. Methods function similarly to eponymous [HeaderV1] methods.
 // Cookie represents a single-line Cookie header value in a HTTP header, much like the standard library Cookie.
+// Cookie can only process up to [MaxKVBufferLen] bytes.
 type Cookie struct {
 	kv kvBuffer
 }
