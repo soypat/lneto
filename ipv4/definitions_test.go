@@ -31,6 +31,34 @@ func TestAppendFormatAddr(t *testing.T) {
 	}
 }
 
+// TestFlagsWireLayout checks Flags against the RFC 791 wire layout of header bytes 6:8:
+// bit 0 (MSB) reserved/evil (RFC 3514), bit 1 DF, bit 2 MF, then a 13-bit fragment offset.
+func TestFlagsWireLayout(t *testing.T) {
+	tests := []struct {
+		wire     uint16
+		evil     bool
+		df, mf   bool
+		fragOff  uint16
+		newFlags Flags // NewFlags(fragOff, df, mf).
+	}{
+		{wire: 0x8000, evil: true, newFlags: 0},
+		{wire: 0x4000, df: true, newFlags: 0x4000},
+		{wire: 0x2000, mf: true, newFlags: 0x2000},
+		{wire: 0x2001, mf: true, fragOff: 1, newFlags: 0x2001},
+		{wire: 0x1fff, fragOff: 0x1fff, newFlags: 0x1fff},
+	}
+	for _, tc := range tests {
+		f := Flags(tc.wire)
+		if f.IsEvil() != tc.evil || f.DontFragment() != tc.df || f.MoreFragments() != tc.mf || f.FragmentOffset() != tc.fragOff {
+			t.Errorf("%#04x: got evil=%v df=%v mf=%v off=%d, want evil=%v df=%v mf=%v off=%d", tc.wire,
+				f.IsEvil(), f.DontFragment(), f.MoreFragments(), f.FragmentOffset(), tc.evil, tc.df, tc.mf, tc.fragOff)
+		}
+		if got := NewFlags(tc.fragOff, tc.df, tc.mf); got != tc.newFlags {
+			t.Errorf("NewFlags(%d, %v, %v) = %#04x, want %#04x", tc.fragOff, tc.df, tc.mf, got, tc.newFlags)
+		}
+	}
+}
+
 func TestIsLinkLocal(t *testing.T) {
 	tests := []struct {
 		addr [4]byte
