@@ -190,6 +190,8 @@ func TestHeaderContentLength(t *testing.T) {
 		{field: ""}, // Absent field is no body and no error, RFC 9112 6.3.
 		{field: "Content-Length:", wantErr: errBadContentLength},     // Present but empty.
 		{field: "Content-Length: -1", wantErr: errBadContentLength},  // Digits only, RFC 9112 6.2.
+		{field: "Content-Length: +5", wantErr: errBadContentLength},  // Digits only, RFC 9112 6.2.
+		{field: "Content-Length: -0", wantErr: errBadContentLength},  // Digits only, RFC 9112 6.2.
 		{field: "Content-Length: 1 2", wantErr: errBadContentLength}, // Not a list.
 		{field: "Content-Length: 9223372036854775808", wantErr: errBadContentLength},
 	} {
