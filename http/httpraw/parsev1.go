@@ -328,7 +328,6 @@ func (hb *headerv1Buf) next(ss *scannerState) pairKV {
 
 	// n is parsing offset. Will start by storing colon index.
 	n := 0
-
 	if ss.nextColon >= 0 {
 		// Retake from last colon found.
 		n = ss.nextColon
