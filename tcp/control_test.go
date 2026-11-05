@@ -978,9 +978,9 @@ func TestChallengeACK_CounterSaturates(t *testing.T) {
 	}
 }
 
-// TestControlSYNOnClosingStates verifies SYN rejection in other synchronized states
+// TestControlBlockSYNOnClosingStates verifies SYN rejection in other synchronized states
 // beyond ESTABLISHED (FIN-WAIT-1, FIN-WAIT-2, CLOSE-WAIT).
-func TestControlSYNOnClosingStates(t *testing.T) {
+func TestControlBlockSYNOnClosingStates(t *testing.T) {
 	states := []State{StateFinWait1, StateFinWait2, StateCloseWait}
 	for _, state := range states {
 		t.Run(state.String(), func(t *testing.T) {
@@ -1006,10 +1006,10 @@ func TestControlSYNOnClosingStates(t *testing.T) {
 	}
 }
 
-// TestControlWindowReject_ChallengeACK verifies that per RFC 9293 §3.4,
+// TestControlBlockWindowReject_ChallengeACK verifies that per RFC 9293 §3.4,
 // segments failing the receive window acceptability test generate a challenge ACK
 // rather than being silently dropped.
-func TestControlWindowReject_ChallengeACK(t *testing.T) {
+func TestControlBlockWindowReject_ChallengeACK(t *testing.T) {
 	const (
 		issA   Value = 1000
 		issB   Value = 5000
@@ -1158,7 +1158,7 @@ func TestControlWindowReject_ChallengeACK(t *testing.T) {
 	})
 }
 
-// TestControlPendingSegment_ACKSuppressedWhenWindowFull replicates the root cause of the
+// TestControlBlockPendingSegment_ACKSuppressedWhenWindowFull replicates the root cause of the
 // "reject in/out seg: seq not in snd/rcv.wnd" regression reported after eab43c4.
 //
 // When inFlight >= snd.WND (send window full) and the caller has buffered TX data
@@ -1179,7 +1179,7 @@ func TestControlWindowReject_ChallengeACK(t *testing.T) {
 //
 // The challenge ACK fix at 3d0bc93 masks this by allowing recovery, but the
 // underlying ACK suppression still causes unnecessary retransmission delays.
-func TestControlPendingSegment_ACKSuppressedWhenWindowFull(t *testing.T) {
+func TestControlBlockPendingSegment_ACKSuppressedWhenWindowFull(t *testing.T) {
 	const (
 		localISS     Value = 1000
 		remoteISS    Value = 5000
@@ -1254,9 +1254,9 @@ func TestControlPendingSegment_ACKSuppressedWhenWindowFull(t *testing.T) {
 	})
 }
 
-// TestControlSYNPreestablished_StillAllowed ensures the fix doesn't break normal SYN
+// TestControlBlockSYNPreestablished_StillAllowed ensures the fix doesn't break normal SYN
 // processing in pre-established states (LISTEN, SYN-SENT, SYN-RCVD).
-func TestControlSYNPreestablished_StillAllowed(t *testing.T) {
+func TestControlBlockSYNPreestablished_StillAllowed(t *testing.T) {
 	const issA, issB, windowA, windowB = 100, 300, 1000, 1000
 
 	t.Run("LISTEN", func(t *testing.T) {
@@ -1287,7 +1287,7 @@ func TestControlSYNPreestablished_StillAllowed(t *testing.T) {
 	})
 }
 
-func TestControlRecvAckUpdatesUnaCorrectly(t *testing.T) {
+func TestControlBlockRecvAckUpdatesUnaCorrectly(t *testing.T) {
 	// Create a TCB in ESTABLISHED state with some data sent but not yet acknowledged.
 	tcb := &ControlBlock{
 		_state: StateEstablished,
