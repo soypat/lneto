@@ -679,3 +679,27 @@ func TestHeaderV1AcceptsV1Versions(t *testing.T) {
 		})
 	}
 }
+
+func TestTestHeaderV1ParseErrors(t *testing.T) {
+	var h HeaderV1
+	var buf [64]byte
+	for _, test := range []struct {
+		raw        string
+		asResponse bool
+		wantErr    error
+	}{
+		{raw: "HTTP/1.1 200 OK\x00\r\n", asResponse: true, wantErr: errInvalidResponseLine},
+		{raw: "GET / HTTP/1.1\x00\r\n", asResponse: false, wantErr: errInvalidRequestLine},
+		{raw: "HTTP\r\n", asResponse: true, wantErr: ErrNeedMoreData},
+		{raw: "GET\r\n", asResponse: false, wantErr: ErrNeedMoreData},
+		{raw: "\x00aasdadsbc\r\n", asResponse: true, wantErr: errInvalidResponseLine},
+		{raw: "HTTP/1.1 200 OK\x00\r\n", asResponse: true, wantErr: errInvalidResponseLine},
+		{raw: "HTTP/1.1 200 OK\t\r\n\r\n", asResponse: true, wantErr: nil},
+	} {
+		h.Reset(buf[:], 4)
+		err := h.ParseBytes(test.asResponse, []byte(test.raw))
+		if err != test.wantErr {
+			t.Errorf("response=%v %q\n\twant %q, got %q", test.asResponse, test.raw, test.wantErr, err)
+		}
+	}
+}

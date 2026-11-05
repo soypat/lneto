@@ -18,7 +18,8 @@ var (
 	errInvalidName  = errors.New("invalid header name")
 	errInvalidValue = errors.New("invalid header value")
 
-	errInvalidRequestLine = errors.New("httpraw: invalid request line")
+	errInvalidRequestLine  = errors.New("httpraw: invalid request line")
+	errInvalidResponseLine = errors.New("httpraw: invalid response line")
 	// ErrBufferExhausted signals a buffer with no room left for the data being
 	// written and no permission to grow, see [KVBuffer.EnableBufferGrowth].
 	// Enlarging the buffer handed to Reset is the only fix; a server answers it
@@ -53,6 +54,8 @@ func newByteset(searchSet string) (bs internal.ByteSet) {
 }
 
 var (
+	// crlfNull matches \r,\n,\x00
+	crlfNull = newByteset("\r\n\x00")
 	// notToken matches every byte that is not an RFC 9110 5.6.2 tchar.
 	notToken = func() (bs internal.ByteSet) {
 		bs.AddRange('0', '9')
@@ -211,6 +214,9 @@ func (hb *headerv1Buf) parseFirstLineRequest(initFlags Flags) (method, uri, prot
 	debuglog("http:req:parse")
 
 	methodEnd := max(0, bytes.IndexByte(b, ' '))
+	if methodEnd == 0 || notToken.IndexAny(b2s(b[:methodEnd])) >= 0 {
+		return method, uri, proto, flags, errInvalidRequestLine // Method is a token, RFC 9110 9.1.
+	}
 	reqURIEnd := bytes.IndexByte(b[methodEnd+1:], ' ')
 	if reqURIEnd > 0 {
 		reqURIEnd += methodEnd + 1
@@ -235,9 +241,6 @@ func (hb *headerv1Buf) parseFirstLineRequest(initFlags Flags) (method, uri, prot
 		method = hb.kv.view(b[:methodEnd])
 		return method, uri, proto, flags | flagNoHTTP11, lneto.ErrUnsupported
 	}
-	if methodEnd == 0 || notToken.IndexAny(b2s(b[:methodEnd])) >= 0 {
-		return method, uri, proto, flags, errInvalidRequestLine // Method is a token, RFC 9110 9.1.
-	}
 	method = hb.kv.view(b[:methodEnd])
 	return method, uri, proto, flags, nil
 }
@@ -253,6 +256,19 @@ func (hb *headerv1Buf) parseFirstLineResponse(initFlags Flags) (statusCode, stat
 	b := hb.scanLine()
 	if len(b) < 5 {
 		return statusCode, statusText, flags, ErrNeedMoreData
+	}
+
+	// HTAB allowed in reason-phrase, so reuse ctl excluding \t
+	ctlSearch := b
+	for len(ctlSearch) > 0 {
+		idx := ctl.IndexAny(b2s(ctlSearch))
+		if idx < 0 {
+			break
+		}
+		if ctlSearch[idx] != '\t' {
+			return statusCode, statusText, flags, errInvalidResponseLine
+		}
+		ctlSearch = ctlSearch[idx+1:]
 	}
 	debuglog("http:resp:parse")
 
@@ -342,9 +358,9 @@ func (hb *headerv1Buf) next(ss *scannerState) pairKV {
 	valueStart := n
 
 	// Find end of value. Values may be multiline, in which case we must treat newlines followed by whitespace as part of the value.
-	matcher := newByteset("\r\n\x00")
+
 	for {
-		i := matcher.IndexAny(b2s(buf[n:]))
+		i := crlfNull.IndexAny(b2s(buf[n:]))
 		if i < 0 {
 			ss.err = ErrNeedMoreData
 			return hb.kv.noKV()
