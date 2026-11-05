@@ -243,6 +243,26 @@ func TestDecodeMessageOffsetWrap(t *testing.T) {
 	}
 }
 
+// RFC 1035 3.1 caps names at 255 octets. A pointer loop must hit the cap before
+// the pointer limit, else it expands to 11 times the message.
+func TestNameDecodeTooLong(t *testing.T) {
+	label := "\x3f" + strings.Repeat("a", 63)
+	tests := []struct {
+		msg string
+		off uint16
+	}{
+		{msg: strings.Repeat(label, 4) + "\x00"},   // 257 octets.
+		{msg: "\x00" + label + "\xc0\x01", off: 1}, // Pointer back to its own start.
+		{msg: label + "\xc0\x00"},                  // Pointer to 0 is a loop, not a terminator.
+	}
+	for _, tt := range tests {
+		var name Name
+		if _, err := name.Decode([]byte(tt.msg), tt.off); err != errNameTooLong {
+			t.Errorf("off=%d got %v, want %v", tt.off, err, errNameTooLong)
+		}
+	}
+}
+
 func TestMessage_Validate(t *testing.T) {
 	name := MustNewName("example.com")
 
