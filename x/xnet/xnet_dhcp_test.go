@@ -15,6 +15,15 @@ import (
 )
 
 func TestNetstackDHCPRetriesTimeout(t *testing.T) {
+	testNetstackDHCPRetry(t, 3900*time.Millisecond)
+}
+
+func TestNetstackDHCPRetriesSecondTimeout(t *testing.T) {
+	testNetstackDHCPRetry(t, 7900*time.Millisecond)
+}
+
+func testNetstackDHCPRetry(t *testing.T, dropDuration time.Duration) {
+	t.Helper()
 	svAddr := [4]byte{192, 168, 1, 1}
 	server, _ := newDHCPServerStack(t, dhcpv4.ServerConfig{
 		ServerAddr: svAddr,
@@ -52,9 +61,9 @@ func TestNetstackDHCPRetriesTimeout(t *testing.T) {
 	}()
 
 	start := time.Now()
-	dropUntil := start.Add(3900 * time.Millisecond)
+	dropUntil := start.Add(dropDuration)
 	var discard [dhcpTestMTU + ethernet.MaxOverheadSize]byte
-	for time.Since(start) < 8*time.Second {
+	for time.Since(start) < 10*time.Second {
 		select {
 		case got := <-done:
 			if got.err != nil {

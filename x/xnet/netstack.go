@@ -79,7 +79,7 @@ func (netstack *Netstack) EnableDHCP(ctx context.Context, enabled bool, requestA
 	}
 	const (
 		attemptTimeout = 4 * time.Second
-		maxAttempts    = 2
+		maxAttempts    = 3
 	)
 	deadline, hasDeadline := ctx.Deadline()
 	var results *DHCPResults
