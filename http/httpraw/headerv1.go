@@ -204,12 +204,16 @@ func (h *HeaderV1) Reset(buf []byte, numHeaderCapacity int) {
 	const persistentFlags = flagNoBufferGrow
 	debuglog("http:reset:hbuf")
 	h.hbuf.reset(buf, numHeaderCapacity)
-	if h.Flags().HasAny(flagNoBufferGrow) && h.BufferCapacity() < 32 {
+	if h.Flags().HasAny(flagNoBufferGrow) && h.BufferCapacity() < MinimumHeaderV1BufferLength {
 		panic("small buffer and flagNoBufferGrow set")
 	}
 	*h = HeaderV1{hbuf: h.hbuf}
 	debuglog("http:reset:done")
 }
+
+// MinimumHeaderV1Length is the minimum buffer length [HeaderV1] needs to succesfully parse a request and response.
+// It is not the minimum legal HTTP/1.1 header length which must include Host field.
+const MinimumHeaderV1BufferLength = max(len("GET / HTTP1.1\r\n\r\n"), len("HTTP/1.1 200 OK\r\n\r\n"))
 
 // Body returns the surplus data following headers. It is only valid as long as Parse* or Reset methods are not called.
 func (h *HeaderV1) Body() ([]byte, error) {
