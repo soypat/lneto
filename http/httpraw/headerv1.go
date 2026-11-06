@@ -48,6 +48,8 @@ func (f Flags) HasAny(checkThese Flags) bool {
 //   - Cookies (see [Cookie]).
 //   - Special header optimizations.
 //   - Content-Length validation and other special header field value validation.
+//
+// HeaderV1 can only process up to [MaxKVBufferLen] bytes, not including HTTP body.
 type HeaderV1 struct {
 	hbuf headerv1Buf
 

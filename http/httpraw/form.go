@@ -12,6 +12,7 @@ import (
 // Pairs are stored as they appear on the wire, percent-encoded and with '+'
 // undecoded, until [Form.Decode] rewrites them in place. The caller bounds the
 // data: Form parses the buffer it is handed and reads nothing more.
+// Form can only process up to [MaxKVBufferLen] bytes of form data.
 type Form struct {
 	kv kvBuffer
 }

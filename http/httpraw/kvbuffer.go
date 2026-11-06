@@ -66,7 +66,7 @@ func (kvb *kvBuffer) ReadFromBytes(buf []byte) error {
 func (kvb *kvBuffer) ReadLimited(r io.Reader, limit int) (int, error) {
 	free := kvb.free()
 	growthEnabled := kvb.BufferGrowthEnabled()
-	if !growthEnabled && (free == 0 || free < limit) || len(kvb.buf) >= maxBufLen {
+	if !growthEnabled && (free == 0 || free < limit) || limit > maxBufLen-len(kvb.buf) {
 		return 0, ErrBufferExhausted
 	} else if kvb.flags.HasAny(flagMangledBuffer) {
 		return 0, errMangledBuffer
@@ -76,7 +76,7 @@ func (kvb *kvBuffer) ReadLimited(r io.Reader, limit int) (int, error) {
 		return 0, io.ErrNoProgress
 	}
 	kvb.buf = slices.Grow(kvb.buf, limit)
-	n, err := r.Read(kvb.buf[len(kvb.buf):min(len(kvb.buf)+limit, maxBufLen)])
+	n, err := r.Read(kvb.buf[len(kvb.buf) : len(kvb.buf)+limit])
 	kvb.buf = kvb.buf[:len(kvb.buf)+n]
 	if err != nil {
 		if n > 0 && err == io.EOF {
@@ -449,6 +449,9 @@ type pairKV struct {
 // budgeting a fixed memory pool up front, such as a Router sizing its
 // exchanges, multiply it by the pair capacity to account the field table.
 const SizeKV = int(unsafe.Sizeof(pairKV{}))
+
+// MaxKVBufferLen is the maximum allowable size in bytes of the [kvBuffer] used by [HeaderV1], [Form] and [Cookie].
+const MaxKVBufferLen = ^tokint(0) - 1
 
 // isValid is for stores parsed in place, where offset 0 is the first key so
 // only length can signal presence. Empty keys are valid: see valueless cookies.
