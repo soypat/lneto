@@ -44,11 +44,6 @@ var (
 	errBadContentLength = errors.New("httpraw: invalid Content-Length value")
 )
 
-// maxBufLen bounds the header buffer. Offsets/lengths are stored as uint16
-// (tokint); a buffer past this would truncate/overflow those, silently
-// returning the wrong bytes or panicking on a wrapped slice bound.
-const maxBufLen = 0xffff
-
 func protoIsV1(s string) bool {
 	return s[:min(len(strHTTP1), len(s))] == strHTTP1
 }
@@ -99,7 +94,7 @@ func (h *HeaderV1) parse(asResponse bool) (err error) {
 }
 
 func (h *HeaderV1) parseFirstLine(asResponse bool) (err error) {
-	if len(h.hbuf.kv.buf) > maxBufLen {
+	if len(h.hbuf.kv.buf) > MaxKVBufferLen {
 		return errBufferTooLarge // Offsets would overflow uint16 tokint.
 	}
 	flags := h.Flags()

@@ -50,7 +50,7 @@ func (kvb *kvBuffer) ReadFromBytes(buf []byte) error {
 		return io.ErrNoProgress // Nothing handed over, not a buffer problem.
 	} else if kvb.flags.HasAny(flagMangledBuffer) {
 		return errMangledBuffer
-	} else if len(buf)+cap(kvb.buf) > maxBufLen {
+	} else if len(buf)+cap(kvb.buf) > MaxKVBufferLen {
 		return ErrBufferExhausted
 	}
 	free := kvb.free()
@@ -66,7 +66,7 @@ func (kvb *kvBuffer) ReadFromBytes(buf []byte) error {
 func (kvb *kvBuffer) ReadLimited(r io.Reader, limit int) (int, error) {
 	free := kvb.free()
 	growthEnabled := kvb.BufferGrowthEnabled()
-	if !growthEnabled && (free == 0 || free < limit) || limit > maxBufLen-len(kvb.buf) {
+	if !growthEnabled && (free == 0 || free < limit) || limit > MaxKVBufferLen-len(kvb.buf) {
 		return 0, ErrBufferExhausted
 	} else if kvb.flags.HasAny(flagMangledBuffer) {
 		return 0, errMangledBuffer
@@ -311,7 +311,7 @@ func (kvb *kvBuffer) reserve(need int) (enoughSpace bool) {
 	if len(kvb.buf) == 0 {
 		need++ // mustAppend* reserves byte 0 on an empty buffer.
 	}
-	if len(kvb.buf)+need > maxBufLen {
+	if len(kvb.buf)+need > MaxKVBufferLen {
 		kvb.flags |= flagOOMReached // Offsets would overflow uint16 tokint.
 		return false
 	}
@@ -451,7 +451,8 @@ type pairKV struct {
 const SizeKV = int(unsafe.Sizeof(pairKV{}))
 
 // MaxKVBufferLen is the maximum allowable size in bytes of the [kvBuffer] used by [HeaderV1], [Form] and [Cookie].
-const MaxKVBufferLen = ^tokint(0) - 1
+// If as a user you need more please file an issue https://github.com/soypat/lneto/issues/new
+const MaxKVBufferLen = 0xffff
 
 // isValid is for stores parsed in place, where offset 0 is the first key so
 // only length can signal presence. Empty keys are valid: see valueless cookies.
