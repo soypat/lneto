@@ -70,10 +70,13 @@ func (hdr *MultipartHeader) Reset() {
 // 1 to 70 characters long, RFC 2046 5.1.1; a zero length boundary would match
 // every "--" in the body.
 func (m *Multipart) SetContentType(contentType []byte) error {
-	m.Boundary = contentParam(contentType, "boundary")
-	if len(m.Boundary) == 0 || len(m.Boundary) > 70 {
+	bound, err := contentParam(contentType, "boundary")
+	if err != nil {
+		return err
+	} else if len(bound) == 0 || len(bound) > 70 {
 		return errNoBoundary // RFC 2046 5.1.1: 1..70 characters, required.
 	}
+	m.Boundary = bound
 	return nil
 }
 
@@ -124,12 +127,14 @@ func (m *Multipart) NextHeader(dst *MultipartHeader, data []byte) (parsedLen int
 			return 0, err
 		} else if equalFold(key, "name") {
 			if seenName {
+				dst.Reset()
 				return 0, errDuplicateKey
 			}
 			seenName = true
 			dst.Name = append(dst.Name, value...)
 		} else if equalFold(key, "filename") {
 			if seenFilename {
+				dst.Reset()
 				return 0, errDuplicateKey
 			}
 			seenFilename = true
@@ -252,14 +257,21 @@ func NextContentParam(value []byte) (key, paramValue, rest []byte, err error) {
 // "utf-8" for key "charset" of "text/plain; charset=utf-8". Quoted values are
 // returned without their quotes and with escapes left as they appear on the
 // wire. Key matching is case insensitive, RFC 9110 5.6.6.
-func contentParam(value []byte, key string) []byte {
-	gotKey, param, rest, _ := NextContentParam(value)
-	for ; gotKey != nil; gotKey, param, rest, _ = NextContentParam(rest) {
-		if equalFold(gotKey, key) {
-			return param
+// firstParam is nil if not found. Duplicate keys return [errDuplicateKey].
+func contentParam(value []byte, key string) (firstParam []byte, err error) {
+	found := false
+	for gotKey, param, rest, err := NextContentParam(value); gotKey != nil; gotKey, param, rest, err = NextContentParam(rest) {
+		if err != nil {
+			return nil, err
+		} else if equalFold(gotKey, key) {
+			if found {
+				return firstParam, errDuplicateKey
+			}
+			firstParam = param
+			found = true
 		}
 	}
-	return nil // Absent or malformed parameter list, see NextContentParam.
+	return firstParam, nil
 }
 
 // partField returns the Content-Disposition field value of a part header block.

@@ -23,6 +23,83 @@ const (
 		"------abc123--\r\n"
 )
 
+func TestMultipart_Table(t *testing.T) {
+	buf := make([]byte, 64)
+	tests := []struct {
+		name         string
+		line         string
+		wantFilename string
+		wantName     string
+		wantErr      error
+	}{
+		{
+			name:     "quoted, CRLF terminated (control)",
+			line:     `form-data; name="file"; filename="admin"` + "\r\n",
+			wantName: "file", wantFilename: "admin",
+		},
+		{
+			name:     "CRLF terminated (wire format)",
+			line:     `form-data; name="file"; filename=admin` + "\r\n",
+			wantName: "file", wantFilename: "admin",
+		},
+		{
+			name:     "LF terminated",
+			line:     `form-data; name="file"; filename=admin` + "\n",
+			wantName: "file", wantFilename: "admin",
+		},
+		{
+			name:    "dupe filename",
+			line:    `form-data; name="file"; filename=admin; name="admin"` + "\n",
+			wantErr: errDuplicateKey,
+		},
+		{
+			name:    "dupe name",
+			line:    `form-data;filename=peter; name="file"; filename=admin` + "\n",
+			wantErr: errDuplicateKey,
+		},
+		{
+			name:    "need more data",
+			line:    `form-data;filename=peter; nam`,
+			wantErr: errBadParam,
+		},
+	}
+	const boundary = "BOUND"
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf = append(buf[:0], "--"...)
+			buf = append(buf, boundary...)
+			buf = append(buf, "\r\nContent-Disposition: "...)
+			buf = append(buf, tt.line...) // already ends in \r\n or \n
+
+			buf = append(buf, "Content-Type: application/octet-stream\r\n\r\nhello\r\n"...)
+			buf = append(buf, "--"...)
+			buf = append(buf, boundary...)
+			buf = append(buf, "--\r\n"...)
+			var mp Multipart
+			mp.Boundary = append(mp.Boundary, boundary...)
+			var mh MultipartHeader
+			n, err := mp.NextHeader(&mh, buf)
+			if err != nil && err != io.EOF {
+				if tt.wantErr == err {
+					if len(mh.Filename) != 0 || len(mh.Name) != 0 {
+						t.Fatal("header data not empty on error", err)
+					}
+					return // OK.
+				}
+				t.Fatal("parsing next header:", err)
+			} else if n == 0 {
+				t.Error("no bytes parsed")
+			} else if string(mh.Filename) != tt.wantFilename {
+				t.Errorf("want filename %q, got %q", tt.wantFilename, mh.Filename)
+			}
+			if string(mh.Name) != tt.wantName {
+				t.Errorf("want name %q, got %q", tt.wantName, mh.Name)
+			}
+		})
+	}
+}
+
 func TestMultipartBoundary(t *testing.T) {
 	var mp Multipart
 	for _, test := range []struct {
@@ -79,9 +156,10 @@ func TestMediaTypeIs(t *testing.T) {
 
 func TestContentParam(t *testing.T) {
 	for _, test := range []struct {
-		value string
-		key   string
-		want  string
+		value   string
+		key     string
+		want    string
+		wantErr error
 	}{
 		{value: "text/plain; charset=utf-8", key: "charset", want: "utf-8"},
 		{value: "text/plain;charset=utf-8", key: "charset", want: "utf-8"}, // No space.
@@ -94,11 +172,17 @@ func TestContentParam(t *testing.T) {
 		{value: `form-data; filename="a\".php"`, key: "filename", want: `a\".php`},
 		{value: `form-data; filename="a\\"; name=x`, key: "name", want: "x"},
 		{value: `form-data; filename="a\"`, key: "filename", want: ""}, // Unterminated.
+		{value: "form-data; name=x; name=y", key: "name", wantErr: errDuplicateKey},
 		// A parameter without value fails closed like mime.ParseMediaType, so no duplicate is picked.
-		{value: "form-data; b; name=x; name=y", key: "name", want: ""},
+		{value: "form-data; b; name=x; name=y", key: "name", wantErr: errBadParam},
 	} {
-		got := contentParam([]byte(test.value), test.key)
-		if string(got) != test.want {
+		got, err := contentParam([]byte(test.value), test.key)
+		if err != nil {
+			if err == test.wantErr {
+				continue
+			}
+			t.Error(err)
+		} else if string(got) != test.want {
 			t.Errorf("%q key %q: want %q, got %q", test.value, test.key, test.want, got)
 		}
 	}
@@ -372,56 +456,5 @@ func TestMultipartLoop(t *testing.T) {
 	want := "caption:8|photo:28"
 	if strings.Join(got, "|") != want {
 		t.Errorf("want %q, got %q", want, strings.Join(got, "|"))
-	}
-}
-
-func TestMultipart_UnquotedLastParam_NoTrailingCR(t *testing.T) {
-	buf := make([]byte, 64)
-	tests := []struct {
-		name         string
-		line         string
-		wantFilename string
-	}{
-		{
-			name:         "quoted, CRLF terminated (control)",
-			line:         `form-data; name="file"; filename="admin"` + "\r\n",
-			wantFilename: "admin",
-		},
-		{
-			name:         "CRLF terminated (wire format)",
-			line:         `form-data; name="file"; filename=admin` + "\r\n",
-			wantFilename: "admin",
-		},
-		{
-			name:         "LF terminated",
-			line:         `form-data; name="file"; filename=admin` + "\n",
-			wantFilename: "admin",
-		},
-	}
-	const boundary = "BOUND"
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			buf = append(buf[:0], "--"...)
-			buf = append(buf, boundary...)
-			buf = append(buf, "\r\nContent-Disposition: "...)
-			buf = append(buf, tt.line...) // already ends in \r\n or \n
-
-			buf = append(buf, "Content-Type: application/octet-stream\r\n\r\nhello\r\n"...)
-			buf = append(buf, "--"...)
-			buf = append(buf, boundary...)
-			buf = append(buf, "--\r\n"...)
-			var mp Multipart
-			mp.Boundary = append(mp.Boundary, boundary...)
-			var mh MultipartHeader
-			n, err := mp.NextHeader(&mh, buf)
-			if err != nil && err != io.EOF {
-				t.Fatal("parsing next header:", err)
-			} else if n == 0 {
-				t.Error("no bytes parsed")
-			} else if string(mh.Filename) != tt.wantFilename {
-				t.Errorf("want filename %q, got %q", tt.wantFilename, mh.Filename)
-			}
-		})
 	}
 }
