@@ -12,7 +12,7 @@ import (
 const (
 	multiBoundary = "----abc123"
 	multiBody     = "------abc123\r\n" +
-		"Content-Disposition: form-data; name=\"caption\"\r\n" +
+		"Content-Disposition: form-data; name=caption\r\n" + // unquoted.
 		"\r\n" +
 		"hi there\r\n" +
 		"------abc123\r\n" +
@@ -22,6 +22,83 @@ const (
 		"\x89PNG\r\n--not-the-boundary\r\n\x00\xff\r\n" +
 		"------abc123--\r\n"
 )
+
+func TestMultipart_Table(t *testing.T) {
+	buf := make([]byte, 64)
+	tests := []struct {
+		name         string
+		line         string
+		wantFilename string
+		wantName     string
+		wantErr      error
+	}{
+		{
+			name:     "quoted, CRLF terminated (control)",
+			line:     `form-data; name="file"; filename="admin"` + "\r\n",
+			wantName: "file", wantFilename: "admin",
+		},
+		{
+			name:     "CRLF terminated (wire format)",
+			line:     `form-data; name="file"; filename=admin` + "\r\n",
+			wantName: "file", wantFilename: "admin",
+		},
+		{
+			name:     "LF terminated",
+			line:     `form-data; name="file"; filename=admin` + "\n",
+			wantName: "file", wantFilename: "admin",
+		},
+		{
+			name:    "dupe filename",
+			line:    `form-data; name="file"; filename=admin; name="admin"` + "\n",
+			wantErr: errDuplicateKey,
+		},
+		{
+			name:    "dupe name",
+			line:    `form-data;filename=peter; name="file"; filename=admin` + "\n",
+			wantErr: errDuplicateKey,
+		},
+		{
+			name:    "need more data",
+			line:    `form-data;filename=peter; nam`,
+			wantErr: errBadParam,
+		},
+	}
+	const boundary = "BOUND"
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf = append(buf[:0], "--"...)
+			buf = append(buf, boundary...)
+			buf = append(buf, "\r\nContent-Disposition: "...)
+			buf = append(buf, tt.line...) // already ends in \r\n or \n
+
+			buf = append(buf, "Content-Type: application/octet-stream\r\n\r\nhello\r\n"...)
+			buf = append(buf, "--"...)
+			buf = append(buf, boundary...)
+			buf = append(buf, "--\r\n"...)
+			var mp Multipart
+			mp.Boundary = append(mp.Boundary, boundary...)
+			var mh MultipartHeader
+			n, err := mp.NextHeader(&mh, buf)
+			if err != nil && err != io.EOF {
+				if tt.wantErr == err {
+					if len(mh.Filename) != 0 || len(mh.Name) != 0 {
+						t.Fatal("header data not empty on error", err)
+					}
+					return // OK.
+				}
+				t.Fatal("parsing next header:", err)
+			} else if n == 0 {
+				t.Error("no bytes parsed")
+			} else if string(mh.Filename) != tt.wantFilename {
+				t.Errorf("want filename %q, got %q", tt.wantFilename, mh.Filename)
+			}
+			if string(mh.Name) != tt.wantName {
+				t.Errorf("want name %q, got %q", tt.wantName, mh.Name)
+			}
+		})
+	}
+}
 
 func TestMultipartBoundary(t *testing.T) {
 	var mp Multipart
@@ -79,9 +156,10 @@ func TestMediaTypeIs(t *testing.T) {
 
 func TestContentParam(t *testing.T) {
 	for _, test := range []struct {
-		value string
-		key   string
-		want  string
+		value   string
+		key     string
+		want    string
+		wantErr error
 	}{
 		{value: "text/plain; charset=utf-8", key: "charset", want: "utf-8"},
 		{value: "text/plain;charset=utf-8", key: "charset", want: "utf-8"}, // No space.
@@ -90,10 +168,47 @@ func TestContentParam(t *testing.T) {
 		{value: "form-data; name=\"photo\"", key: "nope", want: ""},
 		{value: "form-data; names=x; name=y", key: "name", want: "y"}, // Prefix must not match.
 		{value: "text/plain", key: "charset", want: ""},
+		// Quoted-pairs do not end a quoted string and are left escaped, RFC 9110 5.6.4.
+		{value: `form-data; filename="a\".php"`, key: "filename", want: `a\".php`},
+		{value: `form-data; filename="a\\"; name=x`, key: "name", want: "x"},
+		{value: `form-data; filename="a\"`, key: "filename", want: ""}, // Unterminated.
+		{value: "form-data; name=x; name=y", key: "name", wantErr: errDuplicateKey},
+		// A parameter without value fails closed like mime.ParseMediaType, so no duplicate is picked.
+		{value: "form-data; b; name=x; name=y", key: "name", wantErr: errBadParam},
 	} {
-		got := ContentParam([]byte(test.value), test.key)
-		if string(got) != test.want {
+		got, err := contentParam([]byte(test.value), test.key)
+		if err != nil {
+			if err == test.wantErr {
+				continue
+			}
+			t.Error(err)
+		} else if string(got) != test.want {
 			t.Errorf("%q key %q: want %q, got %q", test.value, test.key, test.want, got)
+		}
+	}
+}
+
+func TestNextContentParam(t *testing.T) {
+	for _, test := range []struct {
+		value   string
+		want    string // Parameters yielded as "key=value" joined by '|'.
+		wantErr bool
+	}{
+		{value: "text/plain; charset=utf-8; q=1", want: "charset=utf-8|q=1"},
+		{value: "text/plain;charset=utf-8", want: "charset=utf-8"},
+		{value: `form-data; name="a;b"; filename="x\".y"`, want: `name=a;b|filename=x\".y`},
+		{value: "text/plain", want: ""},
+		{value: "text/plain;", want: ""}, // Trailing semicolon ends parameters.
+		{value: "form-data; b; name=x", want: "", wantErr: true},
+		{value: `form-data; name=x; filename="a`, want: "name=x", wantErr: true},
+	} {
+		var got []string
+		key, val, rest, err := NextContentParam([]byte(test.value))
+		for ; key != nil; key, val, rest, err = NextContentParam(rest) {
+			got = append(got, string(key)+"="+string(val))
+		}
+		if joined := strings.Join(got, "|"); joined != test.want || (err != nil) != test.wantErr {
+			t.Errorf("%q: want %q err=%v, got %q err=%v", test.value, test.want, test.wantErr, joined, err)
 		}
 	}
 }
@@ -105,7 +220,7 @@ func TestNextPartHeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const wantHdr = "Content-Disposition: form-data; name=\"caption\"\r\n"
+	const wantHdr = "Content-Disposition: form-data; name=caption\r\n"
 	if string(hdr.PartView) != wantHdr {
 		t.Errorf("want header %q, got %q", wantHdr, hdr.PartView)
 	}
@@ -148,8 +263,8 @@ func TestNextPartHeaderNeedMore(t *testing.T) {
 	} {
 		var hdr MultipartHeader
 		parsed, err := m.NextHeader(&hdr, []byte(data))
-		if parsed != 0 || err != nil {
-			t.Errorf("%q: want (0, nil) asking for more data, got (%d, %v)", data, parsed, err)
+		if parsed != 0 || err != ErrNeedMoreData {
+			t.Errorf("%q: want (0, ErrNeedMoreData), got (%d, %v)", data, parsed, err)
 		}
 	}
 }
@@ -244,6 +359,19 @@ func TestNextPartBodySplitDelimiter(t *testing.T) {
 }
 
 // A file part carries both parameters, and the raw block stays available.
+// A malformed Content-Disposition fails the part and leaves dst reset, as NextHeader documents.
+func TestNextHeaderBadParamResets(t *testing.T) {
+	m := Multipart{Boundary: []byte(multiBoundary)}
+	var hdr MultipartHeader
+	part := "--" + multiBoundary + "\r\nContent-Disposition: form-data; name=x; bad\r\n\r\nhi\r\n"
+	_, err := m.NextHeader(&hdr, []byte(part))
+	if err == nil {
+		t.Fatal("want error for parameter without value")
+	} else if len(hdr.Name) != 0 || hdr.PartView != nil {
+		t.Errorf("want dst reset on error, got name %q view %q", hdr.Name, hdr.PartView)
+	}
+}
+
 func TestNextHeaderFilePart(t *testing.T) {
 	m := Multipart{Boundary: []byte(multiBoundary)}
 	var hdr MultipartHeader
@@ -309,9 +437,7 @@ func TestMultipartLoop(t *testing.T) {
 		if err == io.EOF {
 			break
 		} else if err != nil {
-			t.Fatal(err)
-		} else if parsed == 0 {
-			t.Fatal("header must complete within the buffer")
+			t.Fatal(err) // ErrNeedMoreData: header must complete within the buffer.
 		}
 		name := string(hdr.Name)
 		total := 0

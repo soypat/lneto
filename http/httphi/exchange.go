@@ -480,7 +480,7 @@ func (exch *Exchange) RequestParseCookie(dst *httpraw.Cookie, key string) error 
 
 // RequestContentType returns the request's Content-Type field value as it
 // appears on the wire, parameters included, nil if absent. Test it with
-// [httpraw.MediaTypeIs] and pick parameters out with [httpraw.ContentParam].
+// [httpraw.MediaTypeIs] and pick parameters out with [httpraw.NextContentParam].
 func (exch *Exchange) RequestContentType() []byte {
 	// Folded: field names are case insensitive and HTTP/2 mandates lowercase, so
 	// a proxy translating h2 to h1 sends "content-type", RFC 9110 5.1.
@@ -657,14 +657,14 @@ func (exch *Exchange) ReadMultiparts(dst []MultipartSink, buf []byte, newSink fu
 		var parsed int
 		for {
 			parsed, err = mp.NextHeader(&part.Header, buf[:buflen])
-			if err != nil {
+			if err == nil {
+				break // Delimiter and header block complete.
+			} else if err != httpraw.ErrNeedMoreData {
 				dst = dst[:len(dst)-1]
 				if err == io.EOF {
 					err = nil // Closing delimiter, body done.
 				}
 				return dst, err
-			} else if parsed > 0 {
-				break // Delimiter and header block complete.
 			} else if buflen == len(buf) {
 				dst = dst[:len(dst)-1]
 				return dst, lneto.ErrShortBuffer // Header longer than buf.

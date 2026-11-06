@@ -18,11 +18,10 @@ import (
 //	var hdr httpraw.MultipartHeader
 //	for {
 //		parsed, err := m.NextHeader(&hdr, buf[:buflen])
-//		if err != nil {
+//		if err == httpraw.ErrNeedMoreData {
+//			continue // Header block incomplete: read more into buf[buflen:] and retry.
+//		} else if err != nil {
 //			break // io.EOF at the closing delimiter, body done.
-//		} else if parsed == 0 {
-//			// Header block incomplete: read more into buf[buflen:] and retry.
-//			continue
 //		}
 //		buflen = copy(buf, buf[parsed:buflen])
 //		for {
@@ -71,16 +70,19 @@ func (hdr *MultipartHeader) Reset() {
 // 1 to 70 characters long, RFC 2046 5.1.1; a zero length boundary would match
 // every "--" in the body.
 func (m *Multipart) SetContentType(contentType []byte) error {
-	m.Boundary = ContentParam(contentType, "boundary")
-	if len(m.Boundary) == 0 || len(m.Boundary) > 70 {
+	bound, err := contentParam(contentType, "boundary")
+	if err != nil {
+		return err
+	} else if len(bound) == 0 || len(bound) > 70 {
 		return errNoBoundary // RFC 2046 5.1.1: 1..70 characters, required.
 	}
+	m.Boundary = bound
 	return nil
 }
 
 // NextHeader parses the leading part's header block off a multipart body into
 // dst, returning how many bytes of data it consumed: the part's content begins
-// at data[parsedLen]. A zero parsedLen and no error means data holds no complete
+// at data[parsedLen]. [ErrNeedMoreData] error means data holds no complete
 // delimiter and header block yet, so the caller reads more in and retries.
 // Returns [io.EOF] once the closing delimiter is reached. dst is reset on error.
 func (m *Multipart) NextHeader(dst *MultipartHeader, data []byte) (parsedLen int, err error) {
@@ -90,11 +92,11 @@ func (m *Multipart) NextHeader(dst *MultipartHeader, data []byte) (parsedLen int
 	}
 	idx := m.indexDelimiter(data)
 	if idx < 0 {
-		return 0, nil
+		return 0, ErrNeedMoreData
 	}
 	after := idx + len("--") + len(m.Boundary)
 	if after+2 > len(data) {
-		return 0, nil // Cannot tell a closing delimiter yet.
+		return 0, ErrNeedMoreData // Cannot tell a closing delimiter yet.
 	} else if data[after] == '-' && data[after+1] == '-' {
 		return 0, io.EOF
 	}
@@ -103,19 +105,42 @@ func (m *Multipart) NextHeader(dst *MultipartHeader, data []byte) (parsedLen int
 		after++
 	}
 	if after >= len(data) {
-		return 0, nil
+		return 0, ErrNeedMoreData
 	} else if data[after] != '\n' {
 		return 0, errBadDelimiter
 	}
 	after++
 	end := bytes.Index(data[after:], []byte("\r\n\r\n"))
 	if end < 0 {
-		return 0, nil
+		return 0, ErrNeedMoreData
 	}
 	dst.PartView = data[after : after+end+2]
 	disposition := partField(dst.PartView)
-	dst.Name = append(dst.Name[:0], ContentParam(disposition, "name")...)
-	dst.Filename = append(dst.Filename[:0], ContentParam(disposition, "filename")...)
+	rest := disposition
+	seenName := false
+	seenFilename := false
+	for len(rest) > 0 {
+		var key, value []byte
+		key, value, rest, err = NextContentParam(rest)
+		if err != nil {
+			dst.Reset()
+			return 0, err
+		} else if equalFold(key, "name") {
+			if seenName {
+				dst.Reset()
+				return 0, errDuplicateKey
+			}
+			seenName = true
+			dst.Name = append(dst.Name, value...)
+		} else if equalFold(key, "filename") {
+			if seenFilename {
+				dst.Reset()
+				return 0, errDuplicateKey
+			}
+			seenFilename = true
+			dst.Filename = append(dst.Filename, value...)
+		}
+	}
 	return after + end + 4, nil
 }
 
@@ -183,44 +208,70 @@ func MediaTypeIs(value []byte, mediaType string) bool {
 	return equalFold(trimOWS(value), mediaType)
 }
 
-// ContentParam returns the value of a parameter of a header field value, i.e:
+// NextContentParam splits the leading parameter off a header field value or the rest of a previous call,
+// i.e: "charset" and "utf-8" off "text/plain; charset=utf-8". Loop until key is nil:
+//
+//	key, val, rest, err := httpraw.NextContentParam(contentType)
+//	for ; key != nil; key, val, rest, err = httpraw.NextContentParam(rest) {
+//		// use key, val.
+//	}
+//
+// Quoted values come without quotes and with escapes as on the wire. A parameter without value
+// or an unterminated quoted string returns nil key and an error, failing closed like mime.ParseMediaType.
+func NextContentParam(value []byte) (key, paramValue, rest []byte, err error) {
+	semi := bytes.IndexByte(value, ';')
+	if semi < 0 {
+		return nil, nil, nil, nil // No parameters left.
+	}
+	value = trimOWS(value[semi+1:])
+	if len(value) == 0 {
+		return nil, nil, nil, nil // Trailing semicolon.
+	}
+	eq := bytes.IndexByte(value, '=')
+	if eq < 0 || bytes.IndexByte(value[:eq], ';') >= 0 {
+		return nil, nil, nil, errBadParam // Parameter without value.
+	}
+	key = trimOWS(value[:eq])
+	paramValue = value[eq+1:]
+	if len(paramValue) > 0 && paramValue[0] == '"' {
+		end := 1 // Closing quote index, skipping quoted-pairs, RFC 9110 5.6.4.
+		for end < len(paramValue) && paramValue[end] != '"' {
+			if paramValue[end] == '\\' {
+				end++
+			}
+			end++
+		}
+		if end >= len(paramValue) {
+			return nil, nil, nil, errBadParam // Unterminated quoted string.
+		}
+		return key, paramValue[1:end], paramValue[end+1:], nil
+	}
+	end := bytes.IndexByte(paramValue, ';')
+	if end >= 0 {
+		paramValue, rest = paramValue[:end], paramValue[end:]
+	}
+	return key, trimOWS(paramValue), rest, nil
+}
+
+// contentParam returns the value of a parameter of a header field value, i.e:
 // "utf-8" for key "charset" of "text/plain; charset=utf-8". Quoted values are
 // returned without their quotes and with escapes left as they appear on the
 // wire. Key matching is case insensitive, RFC 9110 5.6.6.
-func ContentParam(value []byte, key string) []byte {
-	for len(value) > 0 {
-		semi := bytes.IndexByte(value, ';')
-		if semi < 0 {
-			return nil // No parameters left.
-		}
-		value = trimOWS(value[semi+1:])
-		eq := bytes.IndexByte(value, '=')
-		if eq < 0 {
-			return nil
-		}
-		gotKey := trimOWS(value[:eq])
-		value = value[eq+1:]
-		param := value
-		if len(param) > 0 && param[0] == '"' {
-			end := bytes.IndexByte(param[1:], '"')
-			if end < 0 {
-				return nil // Unterminated quoted string.
+// firstParam is nil if not found. Duplicate keys return [errDuplicateKey].
+func contentParam(value []byte, key string) (firstParam []byte, err error) {
+	found := false
+	for gotKey, param, rest, err := NextContentParam(value); gotKey != nil; gotKey, param, rest, err = NextContentParam(rest) {
+		if err != nil {
+			return nil, err
+		} else if equalFold(gotKey, key) {
+			if found {
+				return firstParam, errDuplicateKey
 			}
-			param, value = param[1:end+1], param[end+2:]
-		} else {
-			end := bytes.IndexByte(param, ';')
-			if end >= 0 {
-				param, value = param[:end], param[end:]
-			} else {
-				value = nil
-			}
-			param = trimOWS(param)
-		}
-		if equalFold(gotKey, key) {
-			return param
+			firstParam = param
+			found = true
 		}
 	}
-	return nil
+	return firstParam, nil
 }
 
 // partField returns the Content-Disposition field value of a part header block.
@@ -231,6 +282,9 @@ func partField(partHdr []byte) []byte {
 		line := partHdr
 		if eol >= 0 {
 			line, partHdr = partHdr[:eol], partHdr[eol+1:]
+			if eol != 0 && line[eol-1] == '\r' {
+				line = line[:eol-1]
+			}
 		} else {
 			partHdr = nil
 		}
