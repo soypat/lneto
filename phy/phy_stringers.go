@@ -39,18 +39,19 @@ func _() {
 	// An "invalid array index" compiler error signifies that the constant values have changed.
 	// Re-run the stringer command to generate them again.
 	var x [1]struct{}
-	_ = x[errInvalidAddr-1]
-	_ = x[errCtlBit-2]
-	_ = x[errNoPHY-3]
-	_ = x[errResetTimeout-4]
-	_ = x[errIncompleteAN-5]
-	_ = x[errPHYIsolated-6]
-	_ = x[errPHYDown-7]
+	_ = x[ErrInvalidAddr-1]
+	_ = x[ErrPHYDown-2]
+	_ = x[ErrNoPHY-3]
+	_ = x[errCtlBit-4]
+	_ = x[errResetTimeout-5]
+	_ = x[ErrIncompleteAN-6]
+	_ = x[errPHYIsolated-7]
+	_ = x[errTurnaround-8]
 }
 
-const _errPhy_name = "invalid phy addrunable to set control enable bitno phy foundphy reset timeoutautonegotiate did not completePHY isolated from MIIphy powered down"
+const _errPhy_name = "invalid phy addrphy powered downno phy foundunable to set control enable bitphy reset timeoutautonegotiate did not completePHY isolated from MIIPHY did not drive turnaround low"
 
-var _errPhy_index = [...]uint8{0, 16, 48, 60, 77, 107, 128, 144}
+var _errPhy_index = [...]uint8{0, 16, 32, 44, 76, 93, 123, 144, 176}
 
 func (i errPhy) String() string {
 	idx := int(i) - 1

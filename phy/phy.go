@@ -7,7 +7,6 @@ package phy
 //go:generate stringer -type=LinkMode,errPhy -linecomment -output=phy_stringers.go
 
 import (
-	"errors"
 	"time"
 
 	"github.com/soypat/lneto"
@@ -37,14 +36,15 @@ func (e errPhy) Error() string {
 
 const (
 	_               errPhy = iota
-	errInvalidAddr         // invalid phy addr
-	errCtlBit              // unable to set control enable bit
-	errNoPHY               // no phy found
-	errResetTimeout        // phy reset timeout
-	errIncompleteAN        // autonegotiate did not complete
-	errPHYIsolated         // PHY isolated from MII
-	errPHYDown             // phy powered down
-	errTurnaround          // PHY did not drive turnaround low
+	ErrInvalidAddr         // invalid phy addr
+	ErrPHYDown             // phy powered down
+	ErrNoPHY               // no phy found
+	ErrIncompleteAN        // autonegotiate did not complete
+
+	errCtlBit       // unable to set control enable bit
+	errResetTimeout // phy reset timeout
+	errPHYIsolated  // PHY isolated from MII
+	errTurnaround   // PHY did not drive turnaround low
 )
 
 // FindPHYs finds all regular non-clause45 PHYs on the MDIO bus and writes them to dst.
@@ -71,7 +71,7 @@ func FindClause22PHYs(mdio MDIOBus, dst []uint8) (n int, err error) {
 		time.Sleep(150 * time.Microsecond)
 	}
 	if n <= 0 {
-		err = errNoPHY
+		err = ErrNoPHY
 	}
 	return n, err
 }
@@ -86,7 +86,7 @@ type Device struct {
 // ConfigureAs22 resets all state of device to be used as a Clause22 device. Does not do a software reset.
 func (phy *Device) ConfigureAs22(mdio MDIOBus, phyAddr uint8) error {
 	if phyAddr > 31 {
-		return errInvalidAddr
+		return ErrInvalidAddr
 	} else if mdio == nil {
 		return lneto.ErrInvalidConfig
 	}
@@ -257,7 +257,7 @@ func (phy *Device) WaitForLinkWithDeadline(deadline time.Time) (bool, error) {
 	} else if ctl&BMCRIsolate != 0 {
 		return false, errPHYIsolated
 	} else if ctl&BMCRPowerDown != 0 {
-		return false, errPHYDown
+		return false, ErrPHYDown
 	}
 
 	// First read clears latched-low bits (LinkStatus, ANComplete).
@@ -300,7 +300,7 @@ func (phy *Device) NegotiatedLink() (LinkMode, error) {
 		return LinkDown, err
 	}
 	if status&BMSRANComplete == 0 {
-		return LinkDown, errors.New("auto-negotiation not complete")
+		return LinkDown, ErrIncompleteAN
 	}
 
 	// Read our advertisement
