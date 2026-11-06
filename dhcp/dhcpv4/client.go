@@ -94,9 +94,11 @@ func (c *Client) BeginRequest(xid uint32, cfg RequestConfig) error {
 	c.reqIP = addr4{addr: cfg.RequestedAddr, valid: !internal.IsZeroed(cfg.RequestedAddr[:]...)} // TODO(pato): what's lighter? Comparing the [4]byte or ...byte
 	c.clientMAC = cfg.ClientHardwareAddr
 	if cfg.ClientID != "" {
-		c.clientID = append(c.clientID[:0], cfg.ClientID...)
+		c.clientID = append(c.clientID[:0], 0)
+		c.clientID = append(c.clientID, cfg.ClientID...)
 	} else {
-		c.clientID = append(c.clientID[:0], c.clientMAC[:]...)
+		c.clientID = append(c.clientID[:0], 1)
+		c.clientID = append(c.clientID, c.clientMAC[:]...)
 	}
 	return nil
 }
@@ -316,19 +318,6 @@ func (c *Client) setHeader(frm Frame) {
 	if c.state.HasIP() {
 		*frm.CIAddr() = c.offer.addr
 	}
-	if c.state == StateInit {
-		siaddr := frm.SIAddr()[:]
-		for i := range siaddr {
-			siaddr[i] = 255
-		}
-	} else {
-		if !c.siip.valid {
-			*frm.SIAddr() = c.svip.addr
-		} else {
-			*frm.SIAddr() = c.siip.addr
-		}
-	}
-	*frm.YIAddr() = c.offer.addr
 	copy(frm.CHAddrAs6()[:], c.clientMAC[:])
 	frm.SetMagicCookie(MagicCookie)
 }

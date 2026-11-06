@@ -1,11 +1,92 @@
 package dhcpv4
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/soypat/lneto/internal"
 	"github.com/soypat/lneto/ipv4"
 )
+
+func TestClientRequestFields(t *testing.T) {
+	const xid = 123
+	mac := [6]byte{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
+	tests := []struct {
+		name     string
+		clientID string
+		wantID   []byte
+	}{
+		{
+			name:   "hardware address",
+			wantID: []byte{1, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff},
+		},
+		{
+			name:     "opaque identifier",
+			clientID: "lneto-client",
+			wantID:   append([]byte{0}, "lneto-client"...),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cl Client
+			err := cl.BeginRequest(xid, RequestConfig{
+				ClientHardwareAddr: mac,
+				ClientID:           tt.clientID,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var buf [1024]byte
+			n, err := cl.Encapsulate(buf[:], -1, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			frm, err := NewFrame(buf[:n])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := *frm.YIAddr(); got != ([4]byte{}) {
+				t.Errorf("DHCPDISCOVER yiaddr=%v, want zero", got)
+			}
+			if got := *frm.SIAddr(); got != ([4]byte{}) {
+				t.Errorf("DHCPDISCOVER siaddr=%v, want zero", got)
+			}
+
+			var gotID []byte
+			err = frm.ForEachOption(func(_ int, opt OptNum, data []byte) error {
+				if opt == OptClientIdentifier {
+					gotID = append(gotID, data...)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(gotID, tt.wantID) {
+				t.Errorf("client identifier=%v, want %v", gotID, tt.wantID)
+			}
+
+			cl.state = StateSelecting
+			cl.offer.set4([4]byte{192, 168, 1, 2})
+			cl.svip.set4([4]byte{192, 168, 1, 1})
+			n, err = cl.Encapsulate(buf[:], -1, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			frm, err = NewFrame(buf[:n])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := *frm.YIAddr(); got != ([4]byte{}) {
+				t.Errorf("DHCPREQUEST yiaddr=%v, want zero", got)
+			}
+			if got := *frm.SIAddr(); got != ([4]byte{}) {
+				t.Errorf("DHCPREQUEST siaddr=%v, want zero", got)
+			}
+		})
+	}
+}
 
 func TestClientServer(t *testing.T) {
 	svAddr := [4]byte{192, 168, 1, 1}
