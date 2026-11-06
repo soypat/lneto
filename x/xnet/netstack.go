@@ -77,12 +77,33 @@ func (netstack *Netstack) EnableDHCP(ctx context.Context, enabled bool, requestA
 	} else if requestAddr.IsValid() {
 		return netip.Addr{}, netip.Addr{}, 0, lneto.ErrUnsupported
 	}
-	timeout := 4 * time.Second
-	deadline, ok := ctx.Deadline()
-	if ok {
-		timeout = time.Until(deadline)
+	const (
+		attemptTimeout = 4 * time.Second
+		maxAttempts    = 2
+	)
+	deadline, hasDeadline := ctx.Deadline()
+	var results *DHCPResults
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		timeout := attemptTimeout
+		if hasDeadline {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				break
+			}
+			if remaining < timeout {
+				timeout = remaining
+			}
+		} else if attempt > 0 {
+			break
+		}
+		results, err = netstack.gstack.blk.DoDHCPv4(addr, timeout)
+		if err == nil {
+			break
+		}
+		if err != errDeadlineExceed {
+			return netip.Addr{}, netip.Addr{}, 0, err
+		}
 	}
-	results, err := netstack.gstack.blk.DoDHCPv4(addr, timeout)
 	if err != nil {
 		return netip.Addr{}, netip.Addr{}, 0, err
 	}
