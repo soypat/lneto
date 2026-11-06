@@ -680,7 +680,7 @@ func TestHeaderV1AcceptsV1Versions(t *testing.T) {
 	}
 }
 
-func TestTestHeaderV1ParseErrors(t *testing.T) {
+func TestHeaderV1ParseErrors(t *testing.T) {
 	var h HeaderV1
 	var buf [64]byte
 	for _, test := range []struct {
