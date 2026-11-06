@@ -1,16 +1,83 @@
 package xnet
 
 import (
+	"context"
 	"net/netip"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/dhcp/dhcpv4"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/ipv4"
 )
+
+func TestNetstackDHCPRetriesTimeout(t *testing.T) {
+	svAddr := [4]byte{192, 168, 1, 1}
+	server, _ := newDHCPServerStack(t, dhcpv4.ServerConfig{
+		ServerAddr: svAddr,
+		Gateway:    svAddr,
+		Subnet:     ipv4.PrefixFrom(svAddr, 24),
+	})
+	var client Netstack
+	backoff := func(uint) time.Duration { return time.Millisecond }
+	err := client.Reset(NetstackConfig{
+		StackConfig: StackConfig{
+			Hostname:        "dhcpcl-2",
+			RandSeed:        2,
+			HardwareAddress: [6]byte{0xbe, 0xef, 0, 0, 0, 2},
+			MTU:             dhcpTestMTU,
+		},
+		BackoffStack: backoff,
+		TCPPoolConfig: TCPPoolConfig{
+			NewBackoff: func() lneto.BackoffStrategy { return backoff },
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		addr netip.Addr
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 9*time.Second)
+		defer cancel()
+		addr, _, _, err := client.EnableDHCP(ctx, true, netip.Addr{})
+		done <- result{addr: addr, err: err}
+	}()
+
+	start := time.Now()
+	dropUntil := start.Add(3900 * time.Millisecond)
+	var discard [dhcpTestMTU + ethernet.MaxOverheadSize]byte
+	for time.Since(start) < 8*time.Second {
+		select {
+		case got := <-done:
+			if got.err != nil {
+				t.Fatal(got.err)
+			}
+			if want := netip.AddrFrom4([4]byte{192, 168, 1, 2}); got.addr != want {
+				t.Fatalf("assigned address=%v, want %v", got.addr, want)
+			}
+			return
+		default:
+		}
+		if time.Now().Before(dropUntil) {
+			_, err := client.stack.EgressEthernet(discard[:])
+			if err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			shuttle(t, &client.stack, server, 2, nil)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("DHCP retry did not complete")
+}
 
 const dhcpTestMTU = 1500
 
