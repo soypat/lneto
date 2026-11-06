@@ -9,54 +9,6 @@ import (
 	"github.com/soypat/lneto"
 )
 
-// newRetransmitQueue builds a queue holding npkt sent packets of pktlen octets
-// each, starting at iss, plus any leftover unsent data. It returns the queue and
-// the full byte stream that was written.
-func newRetransmitQueue(t *testing.T, bufsize, maxPkts, npkt, pktlen, unsent int, iss Value) (*ringTx, []byte) {
-	t.Helper()
-	var rtx ringTx
-	if err := rtx.Reset(make([]byte, bufsize), maxPkts, iss); err != nil {
-		t.Fatal(err)
-	}
-	stream := make([]byte, npkt*pktlen+unsent)
-	for i := range stream {
-		stream[i] = byte(i + 1) // Non-zero so a stale ring shows up as a mismatch.
-	}
-	if n, err := rtx.Write(stream); err != nil || n != len(stream) {
-		t.Fatalf("write n=%d err=%v", n, err)
-	}
-	seq := iss
-	scratch := make([]byte, pktlen)
-	for i := range npkt {
-		n, err := rtx.MakePacket(scratch, seq)
-		if err != nil {
-			t.Fatalf("packet %d: %v", i, err)
-		}
-		if n != pktlen {
-			t.Fatalf("packet %d: n=%d, want %d", i, n, pktlen)
-		}
-		seq += Value(n)
-	}
-	testQueueSanity(t, &rtx)
-	return &rtx, stream
-}
-
-// mustRemake asserts the queue re-emits datalen octets at seq matching want.
-func mustRemake(t *testing.T, rtx *ringTx, seq Value, want []byte) {
-	t.Helper()
-	got := make([]byte, len(want))
-	n, err := rtx.MakePacket(got, seq)
-	if err != nil {
-		t.Fatalf("MakePacket at seq %d: %v", seq, err)
-	}
-	if n != len(want) {
-		t.Fatalf("MakePacket at seq %d: n=%d, want %d", seq, n, len(want))
-	}
-	if !bytes.Equal(got, want) {
-		t.Fatalf("MakePacket at seq %d: got %v, want %v", seq, got, want)
-	}
-}
-
 func TestMakePacketRetransmitWithFullQueue(t *testing.T) {
 	const iss, pktlen, npkt = Value(100), 4, 3
 	rtx, stream := newRetransmitQueue(t, 64, npkt, npkt, pktlen, pktlen, iss)
