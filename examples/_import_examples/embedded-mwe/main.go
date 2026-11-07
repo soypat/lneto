@@ -9,21 +9,28 @@ package main
 import (
 	"context"
 	_ "embed"
+	"net"
 	"net/netip"
 	"strings"
 	"time"
 
-	"github.com/soypat/lneto"
-	"github.com/soypat/lneto/x/netdev"
+	"github.com/soypat/lneto/http/httphi"
 	"github.com/soypat/lneto/x/xnet"
 )
 
+const (
+	kB                  = 1 << 10 // kilobyte
+	numHTTPProcs        = 4       // number of goroutines spawned for serving HTTP requests.
+	numBytesPerHTTPProc = 2 * kB  // HTTP memory buffers used per HTTP conn.
+)
+
 var (
+	// Ignore wifi credentials for UTP/RJ45 cabled devices.
 	//go:embed wifi.credentials
 	credentials string
 	// remove windows CRLF "\r\n" and trailing newline.
 	credentialsNormalized = strings.TrimSuffix(strings.ReplaceAll(credentials, "\r\n", "\n"), "\n")
-	wifiParams            ConnectParams
+	connParams            ConnectParams
 )
 
 func main() {
@@ -32,101 +39,53 @@ func main() {
 	if !ok {
 		fail("must write newline separated ssid/password in wifi.credentials", nil)
 	}
-	wifiParams = NewConnectParams(ssid, password)
-
-	// Link: power up chip and join network. Some chips only know their MAC after joining.
-	var dev Netdev
-	failIfErr("device init", dev.Init())
-	dev.LinkNotify(onLinkChange)
-	failIfErr("link connect", dev.LinkConnect(wifiParams))
-	hw, err := dev.HardwareAddr6()
-	failIfErr("hardware addr", err)
-
-	// Stack: protocol state and sockets.
-	var stack xnet.Netstack
-	failIfErr("stack reset", stack.Reset(stackConfig(hw)))
-	failIfErr("icmp enable", stack.EnableICMP(true))
-
-	// Runner: moves frames between device and stack.
-	var iface netdev.Interface[ConnectParams]
-	failIfErr("iface init", iface.Init(&dev, &dev, netdev.InterfaceConfig{}))
-	var runner netdev.Runner[ConnectParams]
-	failIfErr("runner config", runner.Configure(netdev.RunnerConfig[ConnectParams]{
-		Buffers: iface.RunnerBuffers(2),
-		Backoff: backoff,
-		Flags:   dev.RunnerFlags(),
-	}))
-	go func() {
-		failIfErr("runner", runner.Run(context.Background(), &iface, &stack))
-	}()
-
-	// Application: request address and report runner state.
-	assigned, gateway, subnetBits, err := stack.EnableDHCP(context.Background(), true, netip.Addr{})
-	failIfErr("dhcp", err)
-	println("assigned", assigned.String(), "gateway", gateway.String(), "subnet", subnetBits)
+	connParams = NewConnectParams(ssid, password)
+	stack, runner, err := SetupDevice(connParams)
+	failIfErr("setting up device", err)
+	ctx := context.Background()
+	go ServerHTTP(ctx, stack, 80)
 	for {
 		runner.PrintDebug()
 		time.Sleep(2 * time.Second)
 	}
 }
 
-func stackConfig(hw [6]byte) xnet.NetstackConfig {
-	return xnet.NetstackConfig{
-		StackConfig: xnet.StackConfig{
-			Entropy:           Entropy,
-			RandSeed:          time.Now().UnixNano() | 1,
-			Hostname:          "lneto-mwe",
-			MaxActiveTCPPorts: 4,
-			MaxActiveUDPPorts: 4,
-			ICMPQueueLimit:    1,
-			MTU:               1500,
-			PassivePeers:      4,
-			HardwareAddress:   hw,
-		},
-		BackoffStack: backoff,
-		TCPPoolConfig: xnet.TCPPoolConfig{
-			PoolSize:           4,
-			QueueSize:          4,
-			TxBufSize:          2048,
-			RxBufSize:          512,
-			NewBackoff:         func() lneto.BackoffStrategy { return backoff },
-			EstablishedTimeout: 5 * time.Second,
-			ClosingTimeout:     3 * time.Second,
-		},
-	}
-}
-
-// compile-time interface checks.
-var _ lneto.BackoffStrategy = backoff
-var _ netdev.Stack = (*xnet.Netstack)(nil)
-
-func backoff(consecutiveBackoffs uint) time.Duration {
-	return 5 * time.Millisecond
-}
-
-// onLinkChange requests one immediate reconnect when link drops.
-func onLinkChange(connected bool) (retries int, reconnectParams ConnectParams) {
-	println("link connected:", connected)
-	if !connected {
-		return 1, wifiParams
-	}
-	return 0, ConnectParams{}
-}
-
-func failIfErr(msg string, err error) {
+func ServerHTTP(ctx context.Context, stack *xnet.Netstack, port uint16) {
+	c, err := stack.Socket(context.Background(), "tcp", xnet.AF_INET, xnet.SOCK_STREAM, netip.AddrPortFrom(netip.Addr{}, 80), netip.AddrPort{})
 	if err != nil {
-		fail(msg, err)
+		fail("tcp listener socket", err)
+		return
 	}
-	println("PASS", msg)
+	l, ok := c.(net.Listener)
+	if !ok {
+		fail("listener interface cast failed", nil)
+		return
+	}
+	var mux httphi.MuxSlice
+	mux.Handle("GET /", func(ex *httphi.Exchange) {
+		ex.RespondString(200, "", "hello!")
+	})
+	var router httphi.Router
+	err = router.Configure(&mux, httphi.DefaultRouterConfig(numHTTPProcs, numBytesPerHTTPProc, mux.MaxPathValues()))
+	if err != nil {
+		fail("router config", err)
+	}
+	for ctx.Err() == nil {
+		conn, err := l.Accept()
+		if err != nil {
+			fail("listener accept", err)
+			return
+		}
+		err = router.Handle(conn)
+		if err != nil {
+			conn.Close() // remember to close connections if not handled by router.
+			println("router handling failed", err)
+			continue
+		}
+	}
+	fail("context ended while serving HTTP", ctx.Err())
 }
 
-func fail(msg string, err error) {
-	var errstr string
-	if err != nil {
-		errstr = err.Error()
-	}
-	for {
-		println("FAIL:", msg, errstr)
-		time.Sleep(time.Second)
-	}
+func ServeUDPEcho(ctx context.Context, stack *xnet.Netstack, port uint16) {
+	// TODO(soypat):
 }
