@@ -4,10 +4,9 @@
 package phy
 
 // Add more stringers in linecomment mode by adding them to type flag (comma separated).
-//go:generate stringer -type=LinkMode -linecomment -output=phy_stringers.go
+//go:generate stringer -type=LinkMode,errPhy -linecomment -output=phy_stringers.go
 
 import (
-	"errors"
 	"time"
 
 	"github.com/soypat/lneto"
@@ -28,6 +27,25 @@ type MDIOBus interface {
 	// Write writes a 16-bit value to a PHY register.
 	Write(phyAddr, devAddr uint8, regAddr, value uint16) error
 }
+
+type errPhy uint8
+
+func (e errPhy) Error() string {
+	return e.String()
+}
+
+const (
+	_               errPhy = iota
+	ErrInvalidAddr         // invalid phy addr
+	ErrPHYDown             // phy powered down
+	ErrNoPHY               // no phy found
+	ErrIncompleteAN        // autonegotiate did not complete
+
+	errCtlBit       // unable to set control enable bit
+	errResetTimeout // phy reset timeout
+	errPHYIsolated  // PHY isolated from MII
+	errTurnaround   // PHY did not drive turnaround low
+)
 
 // FindPHYs finds all regular non-clause45 PHYs on the MDIO bus and writes them to dst.
 // FindClause22PHYs returns error only if unable to find no PHYs.
@@ -53,12 +71,10 @@ func FindClause22PHYs(mdio MDIOBus, dst []uint8) (n int, err error) {
 		time.Sleep(150 * time.Microsecond)
 	}
 	if n <= 0 {
-		err = errors.New("no phy found")
+		err = ErrNoPHY
 	}
 	return n, err
 }
-
-var errInvalidPhyAddr error = lneto.ErrInvalidAddr
 
 type Device struct {
 	mdio    MDIOBus
@@ -70,8 +86,7 @@ type Device struct {
 // ConfigureAs22 resets all state of device to be used as a Clause22 device. Does not do a software reset.
 func (phy *Device) ConfigureAs22(mdio MDIOBus, phyAddr uint8) error {
 	if phyAddr > 31 {
-		return errInvalidPhyAddr
-
+		return ErrInvalidAddr
 	} else if mdio == nil {
 		return lneto.ErrInvalidConfig
 	}
@@ -119,8 +134,10 @@ func (phy *Device) EnableAutoNegotiation(b bool) error {
 		return err
 	}
 	ctl, err = phy.BasicControl()
-	if (ctl&BMCRANEnable != 0) != b {
-		return errors.New("unable to set control enable bit")
+	if err != nil {
+		return err
+	} else if (ctl&BMCRANEnable != 0) != b {
+		return errCtlBit
 	}
 	return nil
 }
@@ -160,7 +177,7 @@ func (phy *Device) ResetPHY() (err error) {
 	if err != nil {
 		return err
 	}
-	return errors.New("PHY reset timeout")
+	return errResetTimeout
 }
 
 // SetupForced disables auto-negotiation and forces a specific link mode.
@@ -238,9 +255,9 @@ func (phy *Device) WaitForLinkWithDeadline(deadline time.Time) (bool, error) {
 	if err != nil {
 		return false, err
 	} else if ctl&BMCRIsolate != 0 {
-		return false, errors.New("PHY isolated from MII")
+		return false, errPHYIsolated
 	} else if ctl&BMCRPowerDown != 0 {
-		return false, errors.New("PHY powered down")
+		return false, ErrPHYDown
 	}
 
 	// First read clears latched-low bits (LinkStatus, ANComplete).
@@ -283,7 +300,7 @@ func (phy *Device) NegotiatedLink() (LinkMode, error) {
 		return LinkDown, err
 	}
 	if status&BMSRANComplete == 0 {
-		return LinkDown, errors.New("auto-negotiation not complete")
+		return LinkDown, ErrIncompleteAN
 	}
 
 	// Read our advertisement
