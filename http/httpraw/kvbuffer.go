@@ -451,7 +451,8 @@ type pairKV struct {
 const SizeKV = int(unsafe.Sizeof(pairKV{}))
 
 // MaxKVBufferLen is the maximum allowable size in bytes of the [kvBuffer] used by [HeaderV1], [Form] and [Cookie].
-// If as a user you need more please file an issue https://github.com/soypat/lneto/issues/new
+// This size is given by [tokint] integer size, 16bit as of now. If as a user you need more please
+// file an issue https://github.com/soypat/lneto/issues/new, we could add a build tag for 32bit size tokint.
 const MaxKVBufferLen = 0xffff
 
 // isValid is for stores parsed in place, where offset 0 is the first key so
