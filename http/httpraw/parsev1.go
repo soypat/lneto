@@ -152,7 +152,7 @@ func (h *HeaderV1) parseNextHeaders(flags Flags) error {
 	return nil
 }
 
-func (hb *headerv1Buf) free() int { return hb.kv.free() }
+func (hb *headerv1Buf) free() int { return hb.kv.BufferFree() }
 
 func (hb *headerv1Buf) parseNextHeaders(ss *scannerState, flags Flags) {
 	debuglog("http:nexthdr:loop")

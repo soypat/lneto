@@ -17,7 +17,9 @@ type kvBuffer struct {
 	flags Flags
 }
 
-func (kvb *kvBuffer) free() int { return cap(kvb.buf) - len(kvb.buf) }
+// BufferFree returns the remaining available memory to grow via Read* calls without growing the underlying byte slice.
+// When [flagNoBufferGrow] is set Read* calls will fail if reading more than this amount of data.
+func (kvb *kvBuffer) BufferFree() int { return cap(kvb.buf) - len(kvb.buf) }
 
 // BufferRaw returns the underlying buffer, its length being the portion in use.
 // Stored pairs alias it, so writing to it mangles them.
@@ -53,7 +55,7 @@ func (kvb *kvBuffer) ReadFromBytes(buf []byte) error {
 	} else if len(buf)+cap(kvb.buf) > MaxKVBufferLen {
 		return ErrBufferExhausted
 	}
-	free := kvb.free()
+	free := kvb.BufferFree()
 	if len(buf) > free && !kvb.BufferGrowthEnabled() {
 		return ErrBufferExhausted
 	}
@@ -61,10 +63,10 @@ func (kvb *kvBuffer) ReadFromBytes(buf []byte) error {
 	return nil
 }
 
-// ReadLimited appends at most limit bytes read from r to the underlying buffer.
-// A read returning data alongside [io.EOF] reports a nil error, later ones io.EOF.
+// ReadLimited appends up to limit bytes from io.Reader without going over [MaxKVBufferLen].
+// If [flagNoBufferGrow] is set it will not grow the buffer. A read returning data alongside [io.EOF] reports a nil error, later ones io.EOF.
 func (kvb *kvBuffer) ReadLimited(r io.Reader, limit int) (int, error) {
-	free := kvb.free()
+	free := kvb.BufferFree()
 	growthEnabled := kvb.BufferGrowthEnabled()
 	if !growthEnabled && (free == 0 || free < limit) || limit > MaxKVBufferLen-len(kvb.buf) {
 		return 0, ErrBufferExhausted
@@ -315,7 +317,7 @@ func (kvb *kvBuffer) reserve(need int) (enoughSpace bool) {
 		kvb.flags |= flagOOMReached // Offsets would overflow uint16 tokint.
 		return false
 	}
-	if need > kvb.free() {
+	if need > kvb.BufferFree() {
 		if kvb.flags.HasAny(flagNoBufferGrow) {
 			kvb.flags |= flagOOMReached
 			return false

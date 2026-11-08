@@ -132,9 +132,7 @@ func (h *HeaderV1) ParsingSuccess() bool {
 	return h.Flags().HasAny(flagDoneParsingHeader)
 }
 
-// ReadFromLimited reads at most maxBytesToRead from reader and appends them to underlying buffer.
-// Used to accumulate HTTP header for later parsing with [HeaderV1.TryParse].
-// If read is successful (read length>0) and reader returns [io.EOF] then ReadFromLimited will return a nil error.
+// ReadFromLimited calls [kvBuffer.ReadLimited].
 func (h *HeaderV1) ReadFromLimited(r io.Reader, maxBytesToRead int) (int, error) {
 	return h.hbuf.kv.ReadLimited(r, maxBytesToRead)
 }
