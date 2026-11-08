@@ -339,7 +339,7 @@ func (rhdr *ResourceHeader) Decode(msg []byte, off uint16) (uint16, error) {
 	if err != nil {
 		return off, err
 	}
-	if off+10 > uint16(len(msg)) {
+	if int(off)+10 > len(msg) {
 		return off, errResourceLen
 	}
 	rhdr.Type = Type(binary.BigEndian.Uint16(msg[off:]))     // 2
@@ -559,7 +559,7 @@ func (q *Question) Decode(msg []byte, off uint16) (uint16, error) {
 	if err != nil {
 		return off, err
 	}
-	if off+4 > uint16(len(msg)) {
+	if int(off)+4 > len(msg) {
 		return off, errResourceLen
 	}
 	q.Type = Type(binary.BigEndian.Uint16(msg[off:]))

@@ -206,12 +206,16 @@ func (h *HeaderV1) Reset(buf []byte, numHeaderCapacity int) {
 	const persistentFlags = flagNoBufferGrow
 	debuglog("http:reset:hbuf")
 	h.hbuf.reset(buf, numHeaderCapacity)
-	if h.Flags().HasAny(flagNoBufferGrow) && h.BufferCapacity() < 32 {
+	if h.Flags().HasAny(flagNoBufferGrow) && h.BufferCapacity() < MinimumHeaderV1BufferLength {
 		panic("small buffer and flagNoBufferGrow set")
 	}
 	*h = HeaderV1{hbuf: h.hbuf}
 	debuglog("http:reset:done")
 }
+
+// MinimumHeaderV1Length is the minimum buffer length [HeaderV1] needs to succesfully parse a request and response.
+// It is not the minimum legal HTTP/1.1 header length which must include Host field.
+const MinimumHeaderV1BufferLength = max(len("GET / HTTP1.1\r\n\r\n"), len("HTTP/1.1 200 OK\r\n\r\n"))
 
 // Body returns the surplus data following headers. It is only valid as long as Parse* or Reset methods are not called.
 func (h *HeaderV1) Body() ([]byte, error) {
@@ -278,11 +282,11 @@ func (h *HeaderV1) ContentLength() (_ int64, present bool, _ error) {
 	}
 	value = trimOWS(value)
 	// Unsigned parse of 63 bits rejects a sign and anything past int64's range.
-	n, err := strconv.ParseInt(b2s(value), 10, 64)
-	if err != nil || n < 0 {
-		return n, true, errBadContentLength // strconv's error allocates and is not comparable.
+	n, err := strconv.ParseUint(b2s(value), 10, 63)
+	if err != nil {
+		return int64(n), true, errBadContentLength // strconv's error allocates and is not comparable.
 	}
-	return n, true, nil
+	return int64(n), true, nil
 }
 
 // Add adds a new key-value pair to the HTTP header. Calling Add mangles the buffer.

@@ -1,9 +1,5 @@
 package phy
 
-import (
-	"errors"
-)
-
 var _ MDIOBus = (*MDIOBitBang)(nil) // compile time guarantee of interface implementation.
 
 const (
@@ -93,7 +89,7 @@ func (m *MDIOBitBang) Read(phyAddr, devAddr uint8, regAddr uint16) (uint16, erro
 		for range 32 {
 			m.getBit()
 		}
-		return 0xffff, errors.New("PHY did not drive turnaround low")
+		return 0xffff, errTurnaround
 	}
 	ret := m.getNum(16)
 	m.getBit()

@@ -535,6 +535,40 @@ func TestParseRequest_InvalidHeaderSpaceBeforeColon(t *testing.T) {
 	}
 }
 
+// RFC 9110 9.1, RFC 9112 3: method is a token, request line carries no control bytes.
+func TestParseRequest_InvalidRequestLineChars(t *testing.T) {
+	for _, line := range []string{
+		"GET /a\rb HTTP/1.1",
+		"GET /a\x00b HTTP/1.1",
+		"GET /a\tb HTTP/1.1",
+		"GET /a\x7fb HTTP/1.1",
+		"G(T / HTTP/1.1",
+	} {
+		var hdr HeaderV1
+		err := hdr.ParseBytes(false, []byte(line+"\r\nHost: h\r\n\r\n"))
+		if err == nil {
+			t.Errorf("want error for request line %q", line)
+		}
+	}
+}
+
+// RFC 9110 5.6.2, 5.5: names are tokens, values carry no CR or NUL.
+func TestParseRequest_InvalidHeaderChars(t *testing.T) {
+	for _, field := range []string{
+		"X\x00Y: 1",
+		"X\rY: 1",
+		"X(Y: 1",
+		"X: a\rTransfer-Encoding: chunked",
+		"X: a\x00b",
+	} {
+		var hdr HeaderV1
+		err := hdr.ParseBytes(false, []byte("GET / HTTP/1.1\r\n"+field+"\r\n\r\n"))
+		if err == nil {
+			t.Errorf("want error for field %q", field)
+		}
+	}
+}
+
 func splitInto(s string, n int) []string {
 	var chunks []string
 	for len(s) > 0 {
@@ -643,5 +677,29 @@ func TestHeaderV1AcceptsV1Versions(t *testing.T) {
 				t.Error("want a successful parse")
 			}
 		})
+	}
+}
+
+func TestHeaderV1ParseErrors(t *testing.T) {
+	var h HeaderV1
+	var buf [64]byte
+	for _, test := range []struct {
+		raw        string
+		asResponse bool
+		wantErr    error
+	}{
+		{raw: "HTTP/1.1 200 OK\x00\r\n", asResponse: true, wantErr: errInvalidResponseLine},
+		{raw: "GET / HTTP/1.1\x00\r\n", asResponse: false, wantErr: errInvalidRequestLine},
+		{raw: "HTTP\r\n", asResponse: true, wantErr: ErrNeedMoreData},
+		{raw: "GET\r\n", asResponse: false, wantErr: ErrNeedMoreData},
+		{raw: "\x00aasdadsbc\r\n", asResponse: true, wantErr: errInvalidResponseLine},
+		{raw: "HTTP/1.1 200 OK\x00\r\n", asResponse: true, wantErr: errInvalidResponseLine},
+		{raw: "HTTP/1.1 200 OK\t\r\n\r\n", asResponse: true, wantErr: nil},
+	} {
+		h.Reset(buf[:], 4)
+		err := h.ParseBytes(test.asResponse, []byte(test.raw))
+		if err != test.wantErr {
+			t.Errorf("response=%v %q\n\twant %q, got %q", test.asResponse, test.raw, test.wantErr, err)
+		}
 	}
 }

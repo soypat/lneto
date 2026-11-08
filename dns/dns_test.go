@@ -223,6 +223,46 @@ func TestDecodeMessage(t *testing.T) {
 	}
 }
 
+// A zeroed message is QDCOUNT 5 byte root-name questions, so counts alone place
+// a record's fixed fields where off+N wraps uint16 at the 64KiB limit.
+func TestDecodeMessageOffsetWrap(t *testing.T) {
+	tests := []struct{ qd, an uint16 }{
+		{qd: 13105},        // Last question name ends at 65533: off+4 wraps.
+		{qd: 13103, an: 1}, // Answer name ends at 65528: off+10 wraps.
+	}
+	for _, tt := range tests {
+		msg := make([]byte, math.MaxUint16)
+		frm, _ := NewFrame(msg)
+		frm.SetQDCount(tt.qd)
+		frm.SetANCount(tt.an)
+		var m Message
+		m.LimitResourceDecoding(tt.qd, tt.an, 0, 0)
+		if _, _, err := m.Decode(msg); err == nil {
+			t.Error("want error decoding record past message end")
+		}
+	}
+}
+
+// RFC 1035 3.1 caps names at 255 octets. A pointer loop must hit the cap before
+// the pointer limit, else it expands to 11 times the message.
+func TestNameDecodeTooLong(t *testing.T) {
+	label := "\x3f" + strings.Repeat("a", 63)
+	tests := []struct {
+		msg string
+		off uint16
+	}{
+		{msg: strings.Repeat(label, 4) + "\x00"},   // 257 octets.
+		{msg: "\x00" + label + "\xc0\x01", off: 1}, // Pointer back to its own start.
+		{msg: label + "\xc0\x00"},                  // Pointer to 0 is a loop, not a terminator.
+	}
+	for _, tt := range tests {
+		var name Name
+		if _, err := name.Decode([]byte(tt.msg), tt.off); err != errNameTooLong {
+			t.Errorf("off=%d got %v, want %v", tt.off, err, errNameTooLong)
+		}
+	}
+}
+
 func TestMessage_Validate(t *testing.T) {
 	name := MustNewName("example.com")
 

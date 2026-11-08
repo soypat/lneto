@@ -1,9 +1,13 @@
 package tcp
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"math/rand"
 	"testing"
+
+	"github.com/soypat/lneto/ethernet"
 )
 
 const logExchange = false
@@ -367,5 +371,139 @@ func (tcb *ControlBlock) HelperExchange(t *testing.T, exchange []Exchange) {
 		} else if ok && ex.WantPending == nil {
 			t.Fatalf(pfx+"[%d] pending:\n got=%+v\nwant=none", i, pending)
 		}
+	}
+}
+
+// cbSending returns a control block in ESTABLISHED with iss..iss+sent already
+// given to the network.
+func cbSending(t *testing.T, iss Value, sent Size) *ControlBlock {
+	t.Helper()
+	var tcb ControlBlock
+	tcb.prepareToHandshake(iss, 4096, StateEstablished)
+	tcb.snd.WND = 4096
+	tcb.snd.MSS = 500
+	tcb.rcv.NXT = 9000
+	tcb.rcv.WND = 4096
+	tcb.snd.NXT = iss + Value(sent)
+	tcb.snd.UNA = iss
+	return &tcb
+}
+
+// Handler helpers.
+
+// rtxSetup establishes a client with a recordingPolicy and returns it.
+func rtxSetup(t *testing.T, seed int64, buf []byte) (client *Handler, pol *recordingPolicy) {
+	t.Helper()
+	client, server := newHandler(t, ethernet.MaxMTU, 4), newHandler(t, ethernet.MaxMTU, 4)
+	pol = newRecordingPolicy()
+	client.SetPolicy(pol)
+	setupClientServer(t, rand.New(rand.NewSource(seed)), client, server)
+	establish(t, client, server, buf)
+	return client, pol
+}
+
+// rtxSendData writes data and emits it as one segment, returning its SEQ.
+func rtxSendData(t *testing.T, h *Handler, buf []byte, data string) Value {
+	t.Helper()
+	if _, err := h.Write([]byte(data)); err != nil {
+		t.Fatal("write:", err)
+	}
+	seq := h.ControlBlock().SendNext()
+	clear(buf)
+	n, err := h.Send(buf)
+	if err != nil {
+		t.Fatal("send:", err)
+	} else if n != sizeHeaderTCP+len(data) {
+		t.Fatalf("sent %d bytes, want %d", n, sizeHeaderTCP+len(data))
+	}
+	return seq
+}
+
+// rtxSend emits one segment and returns it with its payload.
+func rtxSend(t *testing.T, h *Handler, buf []byte) (Segment, string) {
+	t.Helper()
+	clear(buf)
+	n, err := h.Send(buf)
+	if err != nil {
+		t.Fatal("send:", err)
+	} else if n == 0 {
+		t.Fatal("no segment emitted")
+	}
+	return mustSegment(t, buf[:n], n-sizeHeaderTCP), string(buf[sizeHeaderTCP:n])
+}
+
+// synOptions parses the option block of a raw TCP frame and returns the MSS
+// and window-scale values found, with ok flags for presence.
+func synOptions(t *testing.T, frame []byte) (mss uint16, mssOK bool, shift uint8, shiftOK bool) {
+	t.Helper()
+	tfrm, err := NewFrame(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oc OptionCodec
+	err = oc.ForEachOption(tfrm.Options(), func(kind OptionKind, data []byte) error {
+		switch {
+		case kind == OptMaxSegmentSize && len(data) == 2:
+			mss = uint16(data[0])<<8 | uint16(data[1])
+			mssOK = true
+		case kind == OptWindowScale && len(data) == 1:
+			shift = data[0]
+			shiftOK = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mss, mssOK, shift, shiftOK
+}
+
+// Tx queue helpers.
+
+// newRetransmitQueue builds a queue holding npkt sent packets of pktlen octets
+// each, starting at iss, plus any leftover unsent data. It returns the queue and
+// the full byte stream that was written.
+func newRetransmitQueue(t *testing.T, bufsize, maxPkts, npkt, pktlen, unsent int, iss Value) (*ringTx, []byte) {
+	t.Helper()
+	var rtx ringTx
+	if err := rtx.Reset(make([]byte, bufsize), maxPkts, iss); err != nil {
+		t.Fatal(err)
+	}
+	stream := make([]byte, npkt*pktlen+unsent)
+	for i := range stream {
+		stream[i] = byte(i + 1) // Non-zero so a stale ring shows up as a mismatch.
+	}
+	if n, err := rtx.Write(stream); err != nil || n != len(stream) {
+		t.Fatalf("write n=%d err=%v", n, err)
+	}
+	seq := iss
+	scratch := make([]byte, pktlen)
+	for i := range npkt {
+		n, err := rtx.MakePacket(scratch, seq)
+		if err != nil {
+			t.Fatalf("packet %d: %v", i, err)
+		}
+		if n != pktlen {
+			t.Fatalf("packet %d: n=%d, want %d", i, n, pktlen)
+		}
+		seq += Value(n)
+	}
+	testQueueSanity(t, &rtx)
+	return &rtx, stream
+}
+
+// mustRemake asserts the queue re-emits datalen octets at seq matching want.
+func mustRemake(t *testing.T, rtx *ringTx, seq Value, want []byte) {
+	t.Helper()
+	got := make([]byte, len(want))
+	n, err := rtx.MakePacket(got, seq)
+	if err != nil {
+		t.Fatalf("MakePacket at seq %d: %v", seq, err)
+	}
+	if n != len(want) {
+		t.Fatalf("MakePacket at seq %d: n=%d, want %d", seq, n, len(want))
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("MakePacket at seq %d: got %v, want %v", seq, got, want)
 	}
 }
