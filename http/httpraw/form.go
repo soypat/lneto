@@ -39,7 +39,9 @@ func (f *Form) ReadFromBytes(b []byte) error { return f.kv.ReadFromBytes(b) }
 func (f *Form) BufferUsed() int { return f.kv.BufferUsed() }
 
 // ReadLimited appends at most limit bytes read from r to the underlying buffer. A read returning data alongside io.EOF reports a nil error, later ones io.EOF.
-func (f *Form) ReadLimited(r io.Reader, limit int) (int, error) { return f.kv.ReadLimited(r, limit) }
+func (f *Form) ReadLimited(r io.Reader, limit int) (int, error) {
+	return f.kv.ReadFromLimited(r, limit)
+}
 
 // ParseBytes copies the argument bytes to the Form's underlying buffer and parses them.
 func (f *Form) ParseBytes(b []byte) error {

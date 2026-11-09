@@ -63,10 +63,10 @@ func (kvb *kvBuffer) ReadFromBytes(buf []byte) error {
 	return nil
 }
 
-// ReadLimited reads up to limit bytes. ReadLimited will return an error if limit is greater than what it can read.
+// ReadFromLimited will return [ErrBufferExhausted] and 0 bytes read if limit is greater than what it can read.
 // when buffer growth is disabled limit<[kvBuffer.BufferFree]; on growth enabled limit<[MaxKVBufferLen]-[kvBuffer.BufferUsed].
 // A read returning data alongside [io.EOF] reports a nil error, later ones io.EOF.
-func (kvb *kvBuffer) ReadLimited(r io.Reader, limit int) (int, error) {
+func (kvb *kvBuffer) ReadFromLimited(r io.Reader, limit int) (int, error) {
 	free := kvb.BufferFree()
 	growthEnabled := kvb.BufferGrowthEnabled()
 	if !growthEnabled && (free == 0 || free < limit) || limit > MaxKVBufferLen-len(kvb.buf) {

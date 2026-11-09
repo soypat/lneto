@@ -132,11 +132,11 @@ func (h *HeaderV1) ParsingSuccess() bool {
 	return h.Flags().HasAny(flagDoneParsingHeader)
 }
 
-// ReadFromLimited reads up to limit bytes. ReadFromLimited will return an error if limit is greater than what it can read:
+// ReadFromLimited reads up to limit bytes. ReadFromLimited will return [ErrBufferExhausted] and 0 bytes read if limit is greater than what it can read:
 // when buffer growth is disabled limit<[HeaderV1.BufferFree]; on growth enabled limit<[MaxKVBufferLen]-[HeaderV1.BufferUsed].
 // A read returning data alongside [io.EOF] reports a nil error, later ones io.EOF.
 func (h *HeaderV1) ReadFromLimited(r io.Reader, limit int) (int, error) {
-	return h.hbuf.kv.ReadLimited(r, limit)
+	return h.hbuf.kv.ReadFromLimited(r, limit)
 }
 
 // ReadFromBytes appends argument buffer to underlying buffer.
