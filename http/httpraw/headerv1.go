@@ -48,6 +48,8 @@ func (f Flags) HasAny(checkThese Flags) bool {
 //   - Cookies (see [Cookie]).
 //   - Special header optimizations.
 //   - Content-Length validation and other special header field value validation.
+//
+// HeaderV1 can only process up to [MaxKVBufferLen] bytes, not including HTTP body.
 type HeaderV1 struct {
 	hbuf headerv1Buf
 
@@ -130,11 +132,11 @@ func (h *HeaderV1) ParsingSuccess() bool {
 	return h.Flags().HasAny(flagDoneParsingHeader)
 }
 
-// ReadFromLimited reads at most maxBytesToRead from reader and appends them to underlying buffer.
-// Used to accumulate HTTP header for later parsing with [HeaderV1.TryParse].
-// If read is successful (read length>0) and reader returns [io.EOF] then ReadFromLimited will return a nil error.
-func (h *HeaderV1) ReadFromLimited(r io.Reader, maxBytesToRead int) (int, error) {
-	return h.hbuf.kv.ReadLimited(r, maxBytesToRead)
+// ReadFromLimited reads up to limit bytes. ReadFromLimited will return [ErrBufferExhausted] and 0 bytes read if limit is greater than what it can read:
+// when buffer growth is disabled limit<[HeaderV1.BufferFree]; on growth enabled limit<[MaxKVBufferLen]-[HeaderV1.BufferUsed].
+// A read returning data alongside [io.EOF] reports a nil error, later ones io.EOF.
+func (h *HeaderV1) ReadFromLimited(r io.Reader, limit int) (int, error) {
+	return h.hbuf.kv.ReadFromLimited(r, limit)
 }
 
 // ReadFromBytes appends argument buffer to underlying buffer.

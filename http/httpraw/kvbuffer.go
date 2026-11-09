@@ -17,7 +17,9 @@ type kvBuffer struct {
 	flags Flags
 }
 
-func (kvb *kvBuffer) free() int { return cap(kvb.buf) - len(kvb.buf) }
+// BufferFree returns the remaining available memory to grow via Read* calls without growing the underlying byte slice.
+// When [flagNoBufferGrow] is set Read* calls will fail if reading more than this amount of data.
+func (kvb *kvBuffer) BufferFree() int { return cap(kvb.buf) - len(kvb.buf) }
 
 // BufferRaw returns the underlying buffer, its length being the portion in use.
 // Stored pairs alias it, so writing to it mangles them.
@@ -50,10 +52,10 @@ func (kvb *kvBuffer) ReadFromBytes(buf []byte) error {
 		return io.ErrNoProgress // Nothing handed over, not a buffer problem.
 	} else if kvb.flags.HasAny(flagMangledBuffer) {
 		return errMangledBuffer
-	} else if len(buf)+cap(kvb.buf) > maxBufLen {
+	} else if len(buf)+cap(kvb.buf) > MaxKVBufferLen {
 		return ErrBufferExhausted
 	}
-	free := kvb.free()
+	free := kvb.BufferFree()
 	if len(buf) > free && !kvb.BufferGrowthEnabled() {
 		return ErrBufferExhausted
 	}
@@ -61,12 +63,13 @@ func (kvb *kvBuffer) ReadFromBytes(buf []byte) error {
 	return nil
 }
 
-// ReadLimited appends at most limit bytes read from r to the underlying buffer.
+// ReadFromLimited will return [ErrBufferExhausted] and 0 bytes read if limit is greater than what it can read.
+// when buffer growth is disabled limit<[kvBuffer.BufferFree]; on growth enabled limit<[MaxKVBufferLen]-[kvBuffer.BufferUsed].
 // A read returning data alongside [io.EOF] reports a nil error, later ones io.EOF.
-func (kvb *kvBuffer) ReadLimited(r io.Reader, limit int) (int, error) {
-	free := kvb.free()
+func (kvb *kvBuffer) ReadFromLimited(r io.Reader, limit int) (int, error) {
+	free := kvb.BufferFree()
 	growthEnabled := kvb.BufferGrowthEnabled()
-	if !growthEnabled && (free == 0 || free < limit) || len(kvb.buf) >= maxBufLen {
+	if !growthEnabled && (free == 0 || free < limit) || limit > MaxKVBufferLen-len(kvb.buf) {
 		return 0, ErrBufferExhausted
 	} else if kvb.flags.HasAny(flagMangledBuffer) {
 		return 0, errMangledBuffer
@@ -76,7 +79,7 @@ func (kvb *kvBuffer) ReadLimited(r io.Reader, limit int) (int, error) {
 		return 0, io.ErrNoProgress
 	}
 	kvb.buf = slices.Grow(kvb.buf, limit)
-	n, err := r.Read(kvb.buf[len(kvb.buf):min(len(kvb.buf)+limit, maxBufLen)])
+	n, err := r.Read(kvb.buf[len(kvb.buf) : len(kvb.buf)+limit])
 	kvb.buf = kvb.buf[:len(kvb.buf)+n]
 	if err != nil {
 		if n > 0 && err == io.EOF {
@@ -311,11 +314,11 @@ func (kvb *kvBuffer) reserve(need int) (enoughSpace bool) {
 	if len(kvb.buf) == 0 {
 		need++ // mustAppend* reserves byte 0 on an empty buffer.
 	}
-	if len(kvb.buf)+need > maxBufLen {
+	if len(kvb.buf)+need > MaxKVBufferLen {
 		kvb.flags |= flagOOMReached // Offsets would overflow uint16 tokint.
 		return false
 	}
-	if need > kvb.free() {
+	if need > kvb.BufferFree() {
 		if kvb.flags.HasAny(flagNoBufferGrow) {
 			kvb.flags |= flagOOMReached
 			return false
@@ -449,6 +452,11 @@ type pairKV struct {
 // budgeting a fixed memory pool up front, such as a Router sizing its
 // exchanges, multiply it by the pair capacity to account the field table.
 const SizeKV = int(unsafe.Sizeof(pairKV{}))
+
+// MaxKVBufferLen is the maximum allowable size in bytes of the [kvBuffer] used by [HeaderV1], [Form] and [Cookie].
+// This size is given by [tokint] integer size, 16bit as of now. If as a user you need more please
+// file an issue https://github.com/soypat/lneto/issues/new, we could add a build tag for 32bit size tokint.
+const MaxKVBufferLen = 0xffff
 
 // isValid is for stores parsed in place, where offset 0 is the first key so
 // only length can signal presence. Empty keys are valid: see valueless cookies.
