@@ -228,8 +228,8 @@ func NextContentParam(value []byte) (key, paramValue, rest []byte, err error) {
 		return nil, nil, nil, nil // Trailing semicolon.
 	}
 	eq := bytes.IndexByte(value, '=')
-	if eq < 0 || bytes.IndexByte(value[:eq], ';') >= 0 {
-		return nil, nil, nil, errBadParam // Parameter without value.
+	if eq <= 0 || bytes.IndexByte(value[:eq], ';') >= 0 {
+		return nil, nil, nil, errBadParam // Empty parameter key or no value found.
 	}
 	key = trimOWS(value[:eq])
 	paramValue = value[eq+1:]
@@ -257,21 +257,24 @@ func NextContentParam(value []byte) (key, paramValue, rest []byte, err error) {
 // "utf-8" for key "charset" of "text/plain; charset=utf-8". Quoted values are
 // returned without their quotes and with escapes left as they appear on the
 // wire. Key matching is case insensitive, RFC 9110 5.6.6.
-// firstParam is nil if not found. Duplicate keys return [errDuplicateKey].
+// firstParam is nil if not found. Duplicate keys return [errDuplicateKey] and first encountered param matching key.
 func contentParam(value []byte, key string) (firstParam []byte, err error) {
 	found := false
-	for gotKey, param, rest, err := NextContentParam(value); gotKey != nil; gotKey, param, rest, err = NextContentParam(rest) {
-		if err != nil {
-			return nil, err
-		} else if equalFold(gotKey, key) {
-			if found {
-				return firstParam, errDuplicateKey
-			}
-			firstParam = param
-			found = true
+	gotKey, param, rest, err := NextContentParam(value)
+	for ; gotKey != nil && err == nil; gotKey, param, rest, err = NextContentParam(rest) {
+		if !equalFold(gotKey, key) {
+			continue
 		}
+		if found {
+			return firstParam, errDuplicateKey
+		}
+		firstParam = param
+		found = true
 	}
-	return firstParam, nil
+	if err != nil {
+		return nil, err
+	}
+	return firstParam, err
 }
 
 // partField returns the Content-Disposition field value of a part header block.

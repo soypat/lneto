@@ -33,6 +33,16 @@ func TestMultipart_Table(t *testing.T) {
 		wantErr      error
 	}{
 		{
+			name:    "empty parameter name",
+			line:    `form-data; =x` + "\r\n",
+			wantErr: errBadParam,
+		},
+		{
+			name:    "singled out word",
+			line:    `multipart/form-data; x;` + "\r\n",
+			wantErr: errBadParam,
+		},
+		{
 			name:     "quoted, CRLF terminated (control)",
 			line:     `form-data; name="file"; filename="admin"` + "\r\n",
 			wantName: "file", wantFilename: "admin",
@@ -48,17 +58,17 @@ func TestMultipart_Table(t *testing.T) {
 			wantName: "file", wantFilename: "admin",
 		},
 		{
-			name:    "dupe filename",
+			name:    "dupe name",
 			line:    `form-data; name="file"; filename=admin; name="admin"` + "\n",
 			wantErr: errDuplicateKey,
 		},
 		{
-			name:    "dupe name",
+			name:    "dupe filename",
 			line:    `form-data;filename=peter; name="file"; filename=admin` + "\n",
 			wantErr: errDuplicateKey,
 		},
 		{
-			name:    "need more data",
+			name:    "singled out parameter key, no value",
 			line:    `form-data;filename=peter; nam`,
 			wantErr: errBadParam,
 		},
@@ -80,14 +90,13 @@ func TestMultipart_Table(t *testing.T) {
 			mp.Boundary = append(mp.Boundary, boundary...)
 			var mh MultipartHeader
 			n, err := mp.NextHeader(&mh, buf)
-			if err != nil && err != io.EOF {
-				if tt.wantErr == err {
-					if len(mh.Filename) != 0 || len(mh.Name) != 0 {
-						t.Fatal("header data not empty on error", err)
-					}
-					return // OK.
+			if err != tt.wantErr {
+				t.Fatalf("want error %v, got err %v", tt.wantErr, err)
+			} else if err != nil {
+				if n != 0 || len(mh.Filename) > 0 || len(mh.Name) > 0 {
+					t.Errorf("expected no bytes read on error %d, file=%q name=%q", n, mh.Filename, mh.Name)
 				}
-				t.Fatal("parsing next header:", err)
+				return
 			} else if n == 0 {
 				t.Error("no bytes parsed")
 			} else if string(mh.Filename) != tt.wantFilename {
@@ -155,35 +164,39 @@ func TestMediaTypeIs(t *testing.T) {
 }
 
 func TestContentParam(t *testing.T) {
-	for _, test := range []struct {
+	for i, test := range []struct {
 		value   string
 		key     string
 		want    string
 		wantErr error
 	}{
-		{value: "text/plain; charset=utf-8", key: "charset", want: "utf-8"},
-		{value: "text/plain;charset=utf-8", key: "charset", want: "utf-8"}, // No space.
-		{value: "text/plain; charset=\"utf-8\"", key: "charset", want: "utf-8"},
-		{value: "form-data; name=\"photo\"; filename=\"a;b.png\"", key: "filename", want: "a;b.png"},
-		{value: "form-data; name=\"photo\"", key: "nope", want: ""},
-		{value: "form-data; names=x; name=y", key: "name", want: "y"}, // Prefix must not match.
-		{value: "text/plain", key: "charset", want: ""},
+		0: {value: "text/plain; charset=utf-8", key: "charset", want: "utf-8"},
+		1: {value: "text/plain;charset=utf-8", key: "charset", want: "utf-8"}, // No space.
+		2: {value: "text/plain; charset=\"utf-8\"", key: "charset", want: "utf-8"},
+		3: {value: "form-data; name=\"photo\"; filename=\"a;b.png\"", key: "filename", want: "a;b.png"},
+		4: {value: "form-data; name=\"photo\"", key: "nope", want: ""},
+		5: {value: "form-data; names=x; name=y", key: "name", want: "y"}, // Prefix must not match.
+		6: {value: "text/plain", key: "charset", want: ""},
 		// Quoted-pairs do not end a quoted string and are left escaped, RFC 9110 5.6.4.
-		{value: `form-data; filename="a\".php"`, key: "filename", want: `a\".php`},
-		{value: `form-data; filename="a\\"; name=x`, key: "name", want: "x"},
-		{value: `form-data; filename="a\"`, key: "filename", want: ""}, // Unterminated.
-		{value: "form-data; name=x; name=y", key: "name", wantErr: errDuplicateKey},
+		7:  {value: `form-data; filename="a\".php"`, key: "filename", want: `a\".php`},
+		8:  {value: `form-data; filename="a\\"; name=x`, key: "name", want: "x"},
+		9:  {value: `form-data; filename="a\"`, key: "filename", wantErr: errBadParam}, // Unterminated.
+		10: {value: "form-data; name=x; name=y", key: "name", wantErr: errDuplicateKey},
 		// A parameter without value fails closed like mime.ParseMediaType, so no duplicate is picked.
-		{value: "form-data; b; name=x; name=y", key: "name", wantErr: errBadParam},
+		11: {value: "form-data; b; name=x; name=y", key: "name", wantErr: errBadParam},
+		12: {value: "multipart/form-data; x;", key: "x", wantErr: errBadParam},
+		13: {value: "multipart/form-data; x;", key: "name", wantErr: errBadParam},
 	} {
 		got, err := contentParam([]byte(test.value), test.key)
-		if err != nil {
-			if err == test.wantErr {
-				continue
+		if err != test.wantErr {
+			t.Errorf("%d `%s` want error %v, got %v", i, test.value, test.wantErr, err)
+		} else if err != nil {
+			if err != errDuplicateKey && got != nil {
+				t.Errorf("%d `%s` expected nil result on error %s", i, test.value, got)
 			}
-			t.Error(err)
+			continue
 		} else if string(got) != test.want {
-			t.Errorf("%q key %q: want %q, got %q", test.value, test.key, test.want, got)
+			t.Errorf("%d `%s` key %q: want %q, got %q", i, test.value, test.key, test.want, got)
 		}
 	}
 }
