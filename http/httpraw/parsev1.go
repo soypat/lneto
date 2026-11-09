@@ -73,11 +73,6 @@ var (
 	}()
 )
 
-// maxBufLen bounds the header buffer. Offsets/lengths are stored as uint16
-// (tokint); a buffer past this would truncate/overflow those, silently
-// returning the wrong bytes or panicking on a wrapped slice bound.
-const maxBufLen = 0xffff
-
 func protoIsV1(s string) bool {
 	return s[:min(len(strHTTP1), len(s))] == strHTTP1
 }
