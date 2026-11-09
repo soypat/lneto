@@ -14,14 +14,17 @@ import (
 // compile-time interface checks.
 var _ lneto.BackoffStrategy = backoff
 var _ netdev.Stack = (*xnet.Netstack)(nil)
+var _setupConnParams connectParams // is opaque type
 
 func SetupDevice(connParams connectParams) (*xnet.Netstack, *netdev.Runner[ConnectParams], error) {
+	_setupConnParams = connParams
 	// Link: power up chip and join network. Some chips only know their MAC after joining.
 	var dev Netdev
 	err := dev.Init()
 	if err != nil {
 		return nil, nil, makeErr("device init", err)
 	}
+	dev.LinkNotify(dev.onLinkChange)
 	err = dev.LinkConnect(connParams)
 	if err != nil {
 		return nil, nil, makeErr("link connect", err)
@@ -55,20 +58,11 @@ func SetupDevice(connParams connectParams) (*xnet.Netstack, *netdev.Runner[Conne
 	if err != nil {
 		return nil, nil, makeErr("netdev runner config", err)
 	}
-	go func() {
-		nfail := 0
-		for {
-			err = runner.Run(context.Background(), &iface, &stack)
-			if err != nil {
-				nfail++
-				for nfail > 5 {
-					println("runner goroutine failed too many times, end net loop:", err.Error())
-					time.Sleep(time.Second)
-				}
-				println("runner goroutine failure:", err.Error())
-			}
-		}
-	}()
+
+	// Goroutine handling packets to and from Stack-Device interface with [netdev.Runner.Run].
+	// Needed before enabling DHCP, or else no data will be sent nor received from stack. Lneto requires users to handle goroutines.
+	go runNetdev(context.Background(), &dev, &runner, &iface, &stack)
+
 	// Application: request address and report runner state.
 	assigned, gateway, subnetBits, err := stack.EnableDHCP(context.Background(), true, netip.Addr{})
 	if err != nil {
@@ -78,17 +72,32 @@ func SetupDevice(connParams connectParams) (*xnet.Netstack, *netdev.Runner[Conne
 	return &stack, &runner, nil
 }
 
-func backoff(consecutiveBackoffs uint) time.Duration {
-	return 5 * time.Millisecond
+func runNetdev(ctx context.Context, dev *Netdev, runner *netdev.Runner[ConnectParams], iface *netdev.Interface[ConnectParams], stack netdev.Stack) {
+	nfail := 0
+	for {
+		err := runner.Run(ctx, iface, stack)
+		if err != nil {
+			nfail++
+			for nfail > 5 {
+				println("runner goroutine failed too many times, end net loop:", err.Error())
+				time.Sleep(time.Second)
+			}
+			println("runner goroutine failure:", err.Error())
+		} else {
+			for {
+				println("runner terminated without error, connected=", dev.IsConnected())
+				if err := ctx.Err(); err != nil {
+					println("ctx err:", err.Error())
+				}
+				time.Sleep(time.Second)
+			}
+		}
+		time.Sleep(time.Second) // Retry in a bit.
+	}
 }
 
-// onLinkChange requests one immediate reconnect when link drops.
-func onLinkChange(connected bool) (retries int, reconnectParams ConnectParams) {
-	println("link connected:", connected)
-	if !connected {
-		return 1, connParams
-	}
-	return 0, ConnectParams{}
+func backoff(consecutiveBackoffs uint) time.Duration {
+	return 5 * time.Millisecond
 }
 
 func stackConfig(hw [6]byte) xnet.NetstackConfig {

@@ -25,33 +25,30 @@ const (
 )
 
 var (
-	// Ignore wifi credentials for UTP/RJ45 cabled devices.
+	// Ignore wifi credentials for UTP/RJ45 cabled devices, can be empty file.
 	//go:embed wifi.credentials
 	credentials string
 	// remove windows CRLF "\r\n" and trailing newline.
 	credentialsNormalized = strings.TrimSuffix(strings.ReplaceAll(credentials, "\r\n", "\n"), "\n")
-	connParams            ConnectParams
 )
 
 func main() {
 	time.Sleep(time.Second) // Let serial monitor attach.
-	ssid, password, ok := strings.Cut(credentialsNormalized, "\n")
-	if !ok {
-		fail("must write newline separated ssid/password in wifi.credentials", nil)
-	}
-	connParams = NewConnectParams(ssid, password)
+	ssid, password, _ := strings.Cut(credentialsNormalized, "\n")
+	connParams, err := NewConnectParams(ssid, password)
+	failIfErr("setting conn params (devices needing auth)", err)
 	stack, runner, err := SetupDevice(connParams)
 	failIfErr("setting up device", err)
 	ctx := context.Background()
-	go ServerHTTP(ctx, stack, 80)
+	go ServeHTTP(ctx, stack, 80)
 	for {
 		runner.PrintDebug()
 		time.Sleep(2 * time.Second)
 	}
 }
 
-func ServerHTTP(ctx context.Context, stack *xnet.Netstack, port uint16) {
-	c, err := stack.Socket(context.Background(), "tcp", xnet.AF_INET, xnet.SOCK_STREAM, netip.AddrPortFrom(netip.Addr{}, 80), netip.AddrPort{})
+func ServeHTTP(ctx context.Context, stack *xnet.Netstack, port uint16) {
+	c, err := stack.Socket(ctx, "tcp", xnet.AF_INET, xnet.SOCK_STREAM, netip.AddrPortFrom(netip.Addr{}, port), netip.AddrPort{})
 	if err != nil {
 		fail("tcp listener socket", err)
 		return

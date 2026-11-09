@@ -12,8 +12,11 @@ const runnerFlags = netdev.RunnerInterfacePoll
 
 type connectParams = espradio.STAConfig
 
-func newConnectParams(ssid, password string) ConnectParams {
-	return connectParams{SSID: ssid, Password: password}
+func newConnectParams(ssid, password string) (_ ConnectParams, err error) {
+	if ssid == "" {
+		err = errNeedSSID
+	}
+	return connectParams{SSID: ssid, Password: password}, err
 }
 
 type device struct {

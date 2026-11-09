@@ -4,6 +4,7 @@ package main
 
 import (
 	csrng "crypto/rand"
+	"errors"
 
 	"github.com/soypat/lneto/x/netdev"
 )
@@ -13,8 +14,8 @@ const runnerFlags netdev.RunnerFlags = 0
 
 type connectParams struct{}
 
-func newConnectParams(ssid, password string) ConnectParams {
-	return connectParams{}
+func newConnectParams(ssid, password string) (ConnectParams, error) {
+	return connectParams{}, errors.ErrUnsupported
 }
 
 type device struct{}
