@@ -35,6 +35,10 @@ func (a *subnetTable) reset(arpEntries int, passivePeers uint8) {
 }
 
 func (a *subnetTable) hwDynamicResolve(addr [4]byte, arph *arp.Handler) (mac []byte, err error) {
+	if ipv4.IsMulticast(addr) {
+		// The group MAC is 01:00:5e plus the low 23 bits of the address, RFC 1112 section 6.4.
+		return []byte{0x01, 0x00, 0x5e, addr[1] & 0x7f, addr[2], addr[3]}, nil
+	}
 	if !a.subnet4.Contains(addr) {
 		return nil, nil // not in subnet; caller uses gateway/default routing (nil MAC = no filtering)
 	}

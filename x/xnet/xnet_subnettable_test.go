@@ -157,3 +157,24 @@ func makeMinimalIPv4Frame(dstMAC, srcMAC [6]byte, srcIP, dstIP [4]byte) []byte {
 	copy(frame[30:34], dstIP[:])
 	return frame
 }
+
+// TestSubnetTable_MulticastMAC checks that a multicast destination such as
+// mDNS 224.0.0.251 maps to its group MAC instead of the gateway or an ARP query.
+func TestSubnetTable_MulticastMAC(t *testing.T) {
+	var st subnetTable
+	st.reset(4, 0)
+	st.subnet4 = ipv4.PrefixFrom([4]byte{192, 168, 1, 10}, 24)
+	for _, tc := range []struct {
+		ip  [4]byte
+		mac [6]byte
+	}{
+		{[4]byte{224, 0, 0, 251}, [6]byte{0x01, 0x00, 0x5e, 0x00, 0x00, 0xfb}},
+		{[4]byte{239, 255, 255, 250}, [6]byte{0x01, 0x00, 0x5e, 0x7f, 0xff, 0xfa}},
+		{[4]byte{225, 128, 1, 2}, [6]byte{0x01, 0x00, 0x5e, 0x00, 0x01, 0x02}},
+	} {
+		mac, err := st.hwDynamicResolve(tc.ip, nil)
+		if err != nil || len(mac) != 6 || [6]byte(mac) != tc.mac {
+			t.Errorf("%v: got %x %v, want %x", tc.ip, mac, err, tc.mac)
+		}
+	}
+}
