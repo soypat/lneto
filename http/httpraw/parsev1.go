@@ -3,6 +3,7 @@ package httpraw
 import (
 	"bytes"
 	"errors"
+	"strings"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -12,11 +13,12 @@ var (
 	errNoProto = errors.New("missing protocol, HTTP/0.9 unsupported")
 	// ErrNeedMoreData signals a parser was handed an incomplete buffer: append
 	// more data to it and call again.
-	ErrNeedMoreData = errors.New("need more data: cannot find trailing lf/delimiter")
-	errNoBoundary   = errors.New("httpraw: multipart boundary not set")
-	errUnparsed     = errors.New("need to finish parsing")
-	errInvalidName  = errors.New("invalid header name")
-	errInvalidValue = errors.New("invalid header value")
+	ErrNeedMoreData  = errors.New("need more data: cannot find trailing lf/delimiter")
+	errNoBoundary    = errors.New("httpraw: multipart boundary not set")
+	errUnparsed      = errors.New("need to finish parsing")
+	errInvalidName   = errors.New("invalid header name")
+	errInvalidValue  = errors.New("invalid header value")
+	errDuplicateHost = errors.New("httpraw: more than one Host field")
 
 	errInvalidRequestLine  = errors.New("httpraw: invalid request line")
 	errInvalidResponseLine = errors.New("httpraw: invalid response line")
@@ -56,14 +58,28 @@ func newByteset(searchSet string) (bs internal.ByteSet) {
 }
 
 var (
-	// crlfNull matches \r,\n,\x00
-	crlfNull = newByteset("\r\n\x00")
+	// valueCtl matches the control bytes a field value may not hold, all but HTAB, RFC 9110 5.5.
+	valueCtl = func() (bs internal.ByteSet) {
+		bs.AddRange(0, '\t'-1)
+		bs.AddRange('\t'+1, 0x1f)
+		bs.Add("\x7f")
+		return bs
+	}()
 	// notToken matches every byte that is not an RFC 9110 5.6.2 tchar.
 	notToken = func() (bs internal.ByteSet) {
 		bs.AddRange('0', '9')
 		bs.AddRange('A', 'Z')
 		bs.AddRange('a', 'z')
 		bs.Add("!#$%&'*+-.^_`|~")
+		bs.Invert()
+		return bs
+	}()
+	// notScheme matches every byte that is not an RFC 3986 3.1 scheme char.
+	notScheme = func() (bs internal.ByteSet) {
+		bs.AddRange('0', '9')
+		bs.AddRange('A', 'Z')
+		bs.AddRange('a', 'z')
+		bs.Add("+-.")
 		bs.Invert()
 		return bs
 	}()
@@ -75,8 +91,35 @@ var (
 	}()
 )
 
+// isRequestTarget reports whether non-empty target has a request-target form, RFC 9112 3.2.
+func isRequestTarget(method, target string) bool {
+	// Query escapes are checked per parameter when decoded, as net/http does.
+	path, _, _ := strings.Cut(target, "?")
+	for i := 0; i < len(path); i++ {
+		if path[i] != '%' {
+			continue
+		} else if i+2 >= len(path) {
+			return false
+		}
+		_, okhi := unhexdigit(path[i+1])
+		_, oklo := unhexdigit(path[i+2])
+		if !okhi || !oklo {
+			return false // pct-encoded = "%" HEXDIG HEXDIG, RFC 3986 2.1.
+		}
+		i += 2
+	}
+	if target[0] == '/' || target == "*" || method == "CONNECT" {
+		return true // origin-form, asterisk-form, authority-form.
+	}
+	// absolute-form: scheme ":" with scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ), RFC 3986 3.1.
+	colon := strings.IndexByte(target, ':')
+	alpha := target[0]|0x20 >= 'a' && target[0]|0x20 <= 'z'
+	return colon > 0 && alpha && notScheme.IndexAny(target[:colon]) < 0
+}
+
 func protoIsV1(s string) bool {
-	return s[:min(len(strHTTP1), len(s))] == strHTTP1
+	// HTTP-version = "HTTP/" DIGIT "." DIGIT (RFC 9112 §2.3); any 1.x minor is processed as 1.1 (RFC 9110 §6.2).
+	return len(s) == len(strHTTP1)+1 && s[:len(strHTTP1)] == strHTTP1 && s[len(strHTTP1)] >= '0' && s[len(strHTTP1)] <= '9'
 }
 
 type headerv1Buf struct {
@@ -145,6 +188,10 @@ func (h *HeaderV1) parseNextHeaders(flags Flags) error {
 		h.hbuf.kv.flags |= flagConnClose
 		return ss.err
 	}
+	if i := h.hbuf.kv.getFoldIdx(headerHost); h.requestTarget.start != 0 && i >= 0 && h.hbuf.kv.foldIdxFrom(headerHost, i+1) >= 0 {
+		h.hbuf.kv.flags |= flagConnClose
+		return errDuplicateHost // A request has at most one Host field line, RFC 9112 3.2.
+	}
 	h.hbuf.kv.flags |= flagDoneParsingHeader
 	return nil
 }
@@ -168,8 +215,16 @@ func (hb *headerv1Buf) offBuf() []byte {
 }
 
 func (hb *headerv1Buf) skipLeadingCRLF() {
-	for hb.off < len(hb.kv.buf) && (hb.kv.buf[hb.off] == '\n' || hb.kv.buf[hb.off] == '\r') {
-		hb.off++
+	// Only empty lines are ignored, RFC 9112 2.2: a bare CR is left for the line check to refuse.
+	for {
+		buf := hb.offBuf()
+		if len(buf) >= 1 && buf[0] == '\n' {
+			hb.off++
+		} else if len(buf) >= 2 && buf[0] == '\r' && buf[1] == '\n' {
+			hb.off += 2
+		} else {
+			return
+		}
 	}
 }
 
@@ -237,6 +292,9 @@ func (hb *headerv1Buf) parseFirstLineRequest(initFlags Flags) (method, uri, prot
 		uri = hb.kv.view(b[methodEnd+1:])
 		method = hb.kv.view(b[:methodEnd])
 		return method, uri, proto, flags | flagNoHTTP11, lneto.ErrUnsupported
+	}
+	if !isRequestTarget(b2s(b[:methodEnd]), b2s(b[methodEnd+1:reqURIEnd])) {
+		return method, uri, proto, flags, errInvalidRequestLine
 	}
 	method = hb.kv.view(b[:methodEnd])
 	return method, uri, proto, flags, nil
@@ -356,7 +414,7 @@ func (hb *headerv1Buf) next(ss *scannerState) pairKV {
 	// Find end of value. Values may be multiline, in which case we must treat newlines followed by whitespace as part of the value.
 
 	for {
-		i := crlfNull.IndexAny(b2s(buf[n:]))
+		i := valueCtl.IndexAny(b2s(buf[n:]))
 		if i < 0 {
 			ss.err = ErrNeedMoreData
 			return hb.kv.noKV()
@@ -366,7 +424,7 @@ func (hb *headerv1Buf) next(ss *scannerState) pairKV {
 			n++ // CR may only precede LF, RFC 9110 5.5.
 		}
 		if n < len(buf) && buf[n] != '\n' {
-			ss.err = errInvalidValue // NUL or bare CR.
+			ss.err = errInvalidValue // CTL or bare CR.
 			return hb.kv.noKV()
 		} else if n+1 >= len(buf) {
 			// CR or LF is last byte: can't know yet if LF or a folded line follows.
@@ -377,6 +435,11 @@ func (hb *headerv1Buf) next(ss *scannerState) pairKV {
 		nextChar := buf[n]
 		if nextChar != ' ' && nextChar != '\t' {
 			break // End of value found.
+		}
+		// obs-fold: replace line break with SP in place, RFC 9112 5.2.
+		buf[n-1] = ' '
+		if buf[n-2] == '\r' {
+			buf[n-2] = ' '
 		}
 	}
 

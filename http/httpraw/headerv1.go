@@ -14,6 +14,7 @@ const (
 	headerCookie        = "Cookie"
 	headerConnection    = "Connection"
 	headerContentLength = "Content-Length"
+	headerHost          = "Host"
 	strClose            = "close"
 	strKeepAlive        = "keep-alive"
 )
@@ -276,11 +277,17 @@ func (h *HeaderV1) NormalizeKeys() {
 // ContentLength returns the body length declared by the Content-Length field.
 // If the field is not present then the returned bool is false. Will return error for invalid or non-integer value.
 func (h *HeaderV1) ContentLength() (_ int64, present bool, _ error) {
-	value := h.GetFold(headerContentLength)
-	if value == nil {
+	kv := &h.hbuf.kv
+	i := kv.getFoldIdx(headerContentLength)
+	if i < 0 {
 		return 0, false, nil
 	}
-	value = trimOWS(value)
+	value := trimOWS(kv.AtValue(i))
+	for i = kv.foldIdxFrom(headerContentLength, i+1); i >= 0; i = kv.foldIdxFrom(headerContentLength, i+1) {
+		if !bytes.Equal(trimOWS(kv.AtValue(i)), value) {
+			return 0, true, errBadContentLength // Differing duplicates make framing invalid, RFC 9112 6.3.
+		}
+	}
 	// Unsigned parse of 63 bits rejects a sign and anything past int64's range.
 	n, err := strconv.ParseUint(b2s(value), 10, 63)
 	if err != nil {

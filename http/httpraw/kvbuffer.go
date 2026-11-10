@@ -292,8 +292,13 @@ func (kvb *kvBuffer) getIdx(key string) int {
 }
 
 func (kvb *kvBuffer) getFoldIdx(key string) int {
-	for i, pair := range kvb.kvs {
-		if pair.isValid() && EqualFoldASCII(key, b2s(kvb.AtKey(i))) {
+	return kvb.foldIdxFrom(key, 0)
+}
+
+// foldIdxFrom is getFoldIdx searching from pair index from onwards, to find duplicates.
+func (kvb *kvBuffer) foldIdxFrom(key string, from int) int {
+	for i := from; i < len(kvb.kvs); i++ {
+		if kvb.kvs[i].isValid() && EqualFoldASCII(key, b2s(kvb.AtKey(i))) {
 			return i
 		}
 	}

@@ -605,7 +605,7 @@ func TestConnectionCloseFolded(t *testing.T) {
 		{proto: "HTTP/1.0", field: "connection: keep-alive", wantClose: false},
 		{proto: "HTTP/1.0", field: "Connection: Keep-Alive", wantClose: false},
 		{proto: "HTTP/1.0", field: "Connection: TE, keep-alive", wantClose: false},
-		{proto: "HTTP/1.0", field: "Host: h", wantClose: true},
+		{proto: "HTTP/1.0", field: "Accept: */*", wantClose: true},
 	} {
 		t.Run(test.proto+" "+test.field, func(t *testing.T) {
 			var hdr HeaderV1
@@ -635,6 +635,11 @@ func TestHeaderV1RejectsUnsupportedVersion(t *testing.T) {
 		{name: "h2c preface", raw: "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"},
 		{name: "request http09 no version", raw: "GET /index.html\r\nHost: h\r\n\r\n"},
 		{name: "request bogus proto", raw: "GET / BANANA\r\nHost: h\r\n\r\n"},
+		// HTTP-version is "HTTP/" DIGIT "." DIGIT (RFC 9112 §2.3). Previously only the "HTTP/1." prefix was checked. lfuzzo found.
+		{name: "request v1 no minor", raw: "GET / HTTP/1.\r\nHost: h\r\n\r\n"},
+		{name: "request v1 minor not digit", raw: "GET / HTTP/1.x\r\nHost: h\r\n\r\n"},
+		{name: "request v1 minor too long", raw: "GET / HTTP/1.11\r\nHost: h\r\n\r\n"},
+		{name: "response v1 no minor", raw: "HTTP/1. 200 OK\r\nServer: s\r\n\r\n", asResponse: true},
 		{name: "response http2", raw: "HTTP/2.0 200 OK\r\nServer: s\r\n\r\n", asResponse: true},
 		{name: "response http09", raw: "HTTP/0.9 200 OK\r\nServer: s\r\n\r\n", asResponse: true},
 	} {
@@ -665,6 +670,7 @@ func TestHeaderV1AcceptsV1Versions(t *testing.T) {
 	}{
 		{raw: "GET / HTTP/1.1\r\nHost: h\r\n\r\n"},
 		{raw: "GET / HTTP/1.0\r\nHost: h\r\n\r\n"},
+		{raw: "GET / HTTP/1.2\r\nHost: h\r\n\r\n"}, // Higher minor is processed as HTTP/1.1 (RFC 9110 §6.2).
 		{raw: "HTTP/1.1 200 OK\r\nServer: s\r\n\r\n", asResponse: true},
 		{raw: "HTTP/1.0 200 OK\r\nServer: s\r\n\r\n", asResponse: true},
 	} {
@@ -677,6 +683,146 @@ func TestHeaderV1AcceptsV1Versions(t *testing.T) {
 				t.Error("want a successful parse")
 			}
 		})
+	}
+}
+
+// request-target must be origin, absolute, authority (CONNECT) or asterisk form (RFC 9112 §3.2).
+// Previously any target was accepted, i.e: "0". lfuzzo found.
+func TestHeaderV1RequestTargetForm(t *testing.T) {
+	for _, test := range []struct {
+		method, target string
+		wantErr        error
+	}{
+		{method: "GET", target: "/"},
+		{method: "GET", target: "/a?b=1"},
+		{method: "OPTIONS", target: "*"},
+		{method: "GET", target: "http://h/x"},
+		{method: "GET", target: "a+b-c.1:x"},
+		{method: "CONNECT", target: "h:443"},
+		{method: "CONNECT", target: "127.0.0.1:443"},
+		{method: "GET", target: "0", wantErr: errInvalidRequestLine},
+		{method: "GET", target: "a/b", wantErr: errInvalidRequestLine},
+		{method: "GET", target: ":x", wantErr: errInvalidRequestLine},
+		{method: "GET", target: "1http://h/", wantErr: errInvalidRequestLine},
+		{method: "GET", target: "h_t:x", wantErr: errInvalidRequestLine},
+		{method: "GET", target: "**", wantErr: errInvalidRequestLine},
+	} {
+		var h HeaderV1
+		raw := test.method + " " + test.target + " HTTP/1.1\r\nHost: h\r\n\r\n"
+		err := h.ParseBytes(false, []byte(raw))
+		if err != test.wantErr {
+			t.Errorf("%q: want %v, got %v", raw, test.wantErr, err)
+		}
+	}
+}
+
+// Every '%' in request-target path starts a pct-encoded triplet "%" HEXDIG HEXDIG (RFC 3986 2.1); query is checked on decode.
+// Previously percent-encoding was not checked, i.e: "/000%" was accepted. lfuzzo found.
+func TestHeaderV1RequestTargetPercent(t *testing.T) {
+	for _, test := range []struct {
+		target  string
+		wantErr error
+	}{
+		{target: "/a%2Fb"},
+		{target: "/a?b=%7e%7E"},
+		{target: "/%", wantErr: errInvalidRequestLine},
+		{target: "/%2", wantErr: errInvalidRequestLine},
+		{target: "/%zz", wantErr: errInvalidRequestLine},
+		{target: "/a?b=%"},
+		{target: "/%?b=1", wantErr: errInvalidRequestLine},
+		{target: "http://h/%G0", wantErr: errInvalidRequestLine},
+	} {
+		var h HeaderV1
+		raw := "GET " + test.target + " HTTP/1.1\r\nHost: h\r\n\r\n"
+		err := h.ParseBytes(false, []byte(raw))
+		if err != test.wantErr {
+			t.Errorf("%q: want %v, got %v", raw, test.wantErr, err)
+		}
+	}
+}
+
+// Each obs-fold CRLF in a field value is replaced with SP before the value is interpreted (RFC 9112 5.2).
+// Previously the fold was kept raw, i.e: value "a\r\n\tb". lfuzzo found.
+func TestHeaderV1ObsFoldReplaced(t *testing.T) {
+	var h HeaderV1
+	err := h.ParseBytes(false, []byte("GET / HTTP/1.1\r\nX: a\r\n\tb\r\nY: c\n d\n e\r\n\r\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(h.Get("X")); got != "a  \tb" {
+		t.Errorf("X: want %q, got %q", "a  \tb", got)
+	}
+	if got := string(h.Get("Y")); got != "c  d  e" {
+		t.Errorf("Y: want %q, got %q", "c  d  e", got)
+	}
+}
+
+// A request with more than one Host field line is refused, any name case (RFC 9112 3.2); responses are unaffected.
+// Previously both were accepted, i.e: "Host:\nHost:". lfuzzo found.
+func TestHeaderV1DuplicateHost(t *testing.T) {
+	for _, test := range []struct {
+		raw        string
+		asResponse bool
+		wantErr    error
+	}{
+		{raw: "GET / HTTP/1.1\r\nHost: h\r\n\r\n"},
+		{raw: "GET / HTTP/1.1\r\nHost: h\r\nHost: h\r\n\r\n", wantErr: errDuplicateHost},
+		{raw: "GET / HTTP/1.0\r\nHost:\r\nhOST:\r\n\r\n", wantErr: errDuplicateHost},
+		{raw: "HTTP/1.1 200 OK\r\nHost: h\r\nHost: h\r\n\r\n", asResponse: true},
+	} {
+		var h HeaderV1
+		err := h.ParseBytes(test.asResponse, []byte(test.raw))
+		if err != test.wantErr {
+			t.Errorf("%q: want %v, got %v", test.raw, test.wantErr, err)
+		}
+	}
+}
+
+// A field value holds VCHAR, obs-text, SP and HTAB only: any other CTL is refused (RFC 9110 5.5).
+// Previously only CR, LF and NUL were refused, i.e: "\x10" was accepted. lfuzzo found.
+func TestHeaderV1FieldValueCTL(t *testing.T) {
+	for _, test := range []struct {
+		value   string
+		wantErr error
+	}{
+		{value: "a b"},
+		{value: "a\tb"},
+		{value: "a\x80\xffb"},
+		{value: "a\x10b", wantErr: errInvalidValue},
+		{value: "a\x7fb", wantErr: errInvalidValue},
+		{value: "a\x00b", wantErr: errInvalidValue},
+		{value: "a\rb", wantErr: errInvalidValue},
+	} {
+		var h HeaderV1
+		raw := "GET / HTTP/1.1\r\nX: " + test.value + "\r\n\r\n"
+		err := h.ParseBytes(false, []byte(raw))
+		if err != test.wantErr {
+			t.Errorf("%q: want %v, got %v", raw, test.wantErr, err)
+		}
+	}
+}
+
+// Only empty lines (CRLF or LF) before the first line are ignored, RFC 9112 2.2; a bare CR is refused.
+// Previously any run of CR and LF was skipped, i.e: "\rGET" parsed as "GET". lfuzzo found.
+func TestHeaderV1LeadingEmptyLines(t *testing.T) {
+	for _, test := range []struct {
+		raw        string
+		asResponse bool
+		wantErr    error
+	}{
+		{raw: "\r\nGET / HTTP/1.1\r\n\r\n"},
+		{raw: "\n\r\n\nGET / HTTP/1.1\r\n\r\n"},
+		{raw: "\r\nHTTP/1.1 200 OK\r\n\r\n", asResponse: true},
+		{raw: "\rGET / HTTP/1.1\r\n\r\n", wantErr: errInvalidRequestLine},
+		{raw: "\r\r\nGET / HTTP/1.1\r\n\r\n", wantErr: ErrNeedMoreData}, // First line "\r" is under the 5 byte minimum.
+		{raw: "\r\n\rGET / HTTP/1.1\r\n\r\n", wantErr: errInvalidRequestLine},
+		{raw: "\rHTTP/1.1 200 OK\r\n\r\n", asResponse: true, wantErr: errInvalidResponseLine},
+	} {
+		var h HeaderV1
+		err := h.ParseBytes(test.asResponse, []byte(test.raw))
+		if err != test.wantErr {
+			t.Errorf("%q: want %v, got %v", test.raw, test.wantErr, err)
+		}
 	}
 }
 
