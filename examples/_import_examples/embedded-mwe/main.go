@@ -22,6 +22,7 @@ const (
 	kB                  = 1 << 10 // kilobyte
 	numHTTPProcs        = 4       // number of goroutines spawned for serving HTTP requests.
 	numBytesPerHTTPProc = 2 * kB  // HTTP memory buffers used per HTTP conn.
+	udpEchoBufSize      = 1500    // Largest datagram echoed; fits any datagram at MTU 1500.
 )
 
 var (
@@ -41,6 +42,7 @@ func main() {
 	failIfErr("setting up device", err)
 	ctx := context.Background()
 	go ServeHTTP(ctx, stack, 80)
+	go ServeUDPEcho(ctx, stack, 7) // RFC 862 echo port.
 	for {
 		runner.PrintDebug()
 		time.Sleep(2 * time.Second)
@@ -61,6 +63,10 @@ func ServeHTTP(ctx context.Context, stack *xnet.Netstack, port uint16) {
 	var mux httphi.MuxSlice
 	mux.Handle("GET /", func(ex *httphi.Exchange) {
 		ex.RespondString(200, "", "hello!")
+	})
+	mux.Handle("GET /user/{route}", func(ex *httphi.Exchange) {
+		route := ex.PathValue("route")
+		ex.Respond(200, "", route)
 	})
 	var router httphi.Router
 	err = router.Configure(&mux, httphi.DefaultRouterConfig(numHTTPProcs, numBytesPerHTTPProc, mux.MaxPathValues()))
@@ -84,5 +90,28 @@ func ServeHTTP(ctx context.Context, stack *xnet.Netstack, port uint16) {
 }
 
 func ServeUDPEcho(ctx context.Context, stack *xnet.Netstack, port uint16) {
-	// TODO(soypat):
+	c, err := stack.Socket(ctx, "udp", xnet.AF_INET, xnet.SOCK_DGRAM, netip.AddrPortFrom(netip.Addr{}, port), netip.AddrPort{})
+	if err != nil {
+		fail("udp listener socket", err)
+		return
+	}
+	pc, ok := c.(net.PacketConn) // Unconnected UDP socket (no remote address) is a net.PacketConn.
+	if !ok {
+		fail("packet conn interface cast failed", nil)
+		return
+	}
+	defer pc.Close()
+	buf := make([]byte, udpEchoBufSize)
+	for ctx.Err() == nil {
+		n, raddr, err := pc.ReadFrom(buf)
+		if err != nil {
+			fail("udp read", err)
+			return
+		}
+		_, err = pc.WriteTo(buf[:n], raddr)
+		if err != nil {
+			println("udp echo write failed", err.Error())
+		}
+	}
+	fail("context ended while serving UDP echo", ctx.Err())
 }
