@@ -69,6 +69,14 @@ func TestHeaderV1ReadParse_table(t *testing.T) {
 		{name: "target scheme digit first", header: "GET 1http://h/ HTTP/1.1\r\n\r\n", wantParseErr: errInvalidRequestLine},
 		{name: "target scheme bad char", header: "GET h_t:x HTTP/1.1\r\n\r\n", wantParseErr: errInvalidRequestLine},
 		{name: "target double asterisk", header: "GET ** HTTP/1.1\r\n\r\n", wantParseErr: errInvalidRequestLine},
+		// Path pct-encoded is "%" HEXDIG HEXDIG, RFC 3986 2.1; query escapes are checked on decode, as net/http does.
+		{name: "target pct", header: "GET /a%2Fb HTTP/1.1\r\n\r\n", checkTarget: "/a%2Fb"},
+		{name: "target pct query lenient", header: "GET /a?b=% HTTP/1.1\r\n\r\n", checkTarget: "/a?b=%"},
+		{name: "target pct truncated", header: "GET /% HTTP/1.1\r\n\r\n", wantParseErr: errInvalidRequestLine},
+		{name: "target pct one digit", header: "GET /%2 HTTP/1.1\r\n\r\n", wantParseErr: errInvalidRequestLine},
+		{name: "target pct not hex", header: "GET /%zz HTTP/1.1\r\n\r\n", wantParseErr: errInvalidRequestLine},
+		{name: "target pct before query", header: "GET /%?b=1 HTTP/1.1\r\n\r\n", wantParseErr: errInvalidRequestLine},
+		{name: "target pct absolute", header: "GET http://h/%G0 HTTP/1.1\r\n\r\n", wantParseErr: errInvalidRequestLine},
 	}
 	var header HeaderV1
 	header.Reset(make([]byte, 256), maxNumHeaders)
