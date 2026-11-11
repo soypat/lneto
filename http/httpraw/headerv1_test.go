@@ -335,6 +335,8 @@ func TestHeaderContentLength(t *testing.T) {
 		{field: "Content-Length: 3\r\ncontent-length:  3 ", wantErr: errBadContentLength}, // Identical duplicates may be kept, RFC 9110 8.6, we reject.
 		{field: "Content-Length: 3\r\nContent-Length: 5", wantErr: errBadContentLength},   // Differing duplicates, RFC 9112 6.3. Previously first was used.
 		{field: "Content-Length: 3\r\nContent-Length: x", wantErr: errBadContentLength},
+		{field: "content-length: 5", want: 5}, // Field names are case-insensitive, RFC 9110 5.1.
+		{field: "content-length: 7\r\nContent-Length: 5", wantErr: errBadContentLength},
 	} {
 		var h HeaderV1
 		raw := "POST / HTTP/1.1\r\nHost: h\r\n"
