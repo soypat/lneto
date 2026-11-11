@@ -487,6 +487,10 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 		return lneto.ErrMismatch
 	}
 	conn.trace("tcpconn.Recv", slog.Uint64("lport", uint64(conn.h.LocalPort())), slog.Uint64("rport", uint64(conn.h.remotePort)))
+	if ep, ok := conn.h.policy.(ECNPolicy); ok {
+		codepoint, _ := internal.GetIPECN(buf[:off]) // Not-ECT if unreadable.
+		ep.RecvECN(codepoint)
+	}
 	prevState := conn.h.State()
 	err = conn.h.Recv(buf[off:])
 	if err != nil {
@@ -527,6 +531,9 @@ func (conn *Conn) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 	err = internal.SetIPAddrs(ipFrame, conn.ipID, nil, conn.remoteAddr)
 	if err != nil {
 		return 0, err
+	}
+	if ep, ok := conn.h.policy.(ECNPolicy); ok {
+		internal.SetIPECN(ipFrame, ep.SendECN()) // The IP layer computes the checksum after.
 	}
 	conn.ipID++
 	return n, nil
