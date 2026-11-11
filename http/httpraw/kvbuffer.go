@@ -130,10 +130,10 @@ func (kvb *kvBuffer) GetFold(key string) []byte {
 	return kvb.AtValue(i)
 }
 
-// GetFoldIdxFrom returns the value of the first key that matches starting from startIdx index, ascii-case-insensitive.
+// GetFoldIdxFrom returns the index of the first key that matches starting from startIdx index, ascii-case-insensitive, or -1.
 func (kvb *kvBuffer) GetFoldIdxFrom(key string, startIdx int) int {
-	for i := startIdx; i < len(kvb.kvs) && kvb.kvs[i].HasValue(); i++ {
-		if internal.EqualFoldASCII(key, b2s(kvb.musttoken(kvb.kvs[i].key))) {
+	for i := startIdx; i < len(kvb.kvs); i++ {
+		if kvb.kvs[i].isValid() && internal.EqualFoldASCII(key, b2s(kvb.musttoken(kvb.kvs[i].key))) {
 			return i
 		}
 	}

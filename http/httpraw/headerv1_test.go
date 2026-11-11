@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"strconv"
 	"strings"
@@ -42,7 +43,11 @@ func TestHeaderV1ReadParse_table(t *testing.T) {
 		// Duplicate host.
 		{name: "dupe host", header: req + "Host:1\r\nHost:2\r\n\r\n", wantParseErr: errDuplicateHost},
 		{name: "dupe host case insensitive", header: req + "host:1\r\nHost:2\r\n\r\n", wantParseErr: errDuplicateHost},
-		// ...
+		// Field value is VCHAR, obs-text, SP and HTAB only, RFC 9110 5.5.
+		{name: "value htab", header: req + "X: a\tb\r\n\r\n", checkKeys: [][2]string{{"X", "a\tb"}}},
+		{name: "value obs-text", header: req + "X: a\x80b\r\n\r\n", checkKeys: [][2]string{{"X", "a\x80b"}}},
+		{name: "value ctl", header: req + "X: a\x10b\r\n\r\n", wantParseErr: errInvalidValue},
+		{name: "value del", header: req + "X: a\x7fb\r\n\r\n", wantParseErr: errInvalidValue},
 	}
 	var header HeaderV1
 	header.Reset(make([]byte, 256), maxNumHeaders)
@@ -54,7 +59,7 @@ func TestHeaderV1ReadParse_table(t *testing.T) {
 			} else if err != nil {
 				return
 			}
-			if test.checkCloseConn != 0 && test.checkCloseConn == closed && !header.ConnectionClose() {
+			if test.checkCloseConn != 0 && header.ConnectionClose() != (test.checkCloseConn == closed) {
 				t.Errorf("want connclosed=%v, got %v", test.checkCloseConn == closed, header.ConnectionClose())
 			}
 			for _, key := range test.checkKeys {
@@ -69,6 +74,85 @@ func TestHeaderV1ReadParse_table(t *testing.T) {
 
 func s2b(str string) []byte {
 	return unsafe.Slice(unsafe.StringData(str), len(str))
+}
+
+// Get, GetFold and ForEach agree with a reference model after Add, Set, Add sequences.
+// Keys in a row differ by more than case so GetFold of a case-swapped key must equal Get.
+func TestHeaderV1AddSetGet_table(t *testing.T) {
+	type kv struct {
+		k, v string
+	}
+	kvs := func(pairs ...string) []kv {
+		list := make([]kv, len(pairs))
+		for i := range pairs {
+			k, v, _ := strings.Cut(pairs[i], ":")
+			list[i] = kv{k: k, v: v}
+		}
+		return list
+	}
+	var tests = []struct {
+		name  string
+		adds  []kv
+		sets  []kv
+		adds2 []kv
+	}{
+		{name: "add", adds: kvs("a:b")},
+		{name: "add dupe first wins", adds: kvs("A:1", "A:22")},
+		{name: "set absent", sets: kvs("C:z")},
+		{name: "set replaces dupes", adds: kvs("A:1", "A:22"), sets: kvs("A:3")},
+		{name: "set grows value", adds: kvs("A:1", "B:x"), sets: kvs("A:longer")},
+		{name: "add after set", adds: kvs("A:1"), sets: kvs("A:2"), adds2: kvs("A:3")},
+		// Set reuses "A:1" and invalidates "A:22"; GetFold stopped at the invalidated pair, missing "B".
+		{name: "key after invalidated", adds: kvs("A:1", "A:22", "B:x"), sets: kvs("A:1")},
+	}
+	buf := make([]byte, 0, 1024)
+	var header HeaderV1
+	ref := make(map[string]string) // Value Get must return: first added, or last set.
+	refN := make(map[string]int)   // Pairs ForEach must visit per key.
+	gotN := make(map[string]int)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			header.Reset(buf[:0], 16)
+			clear(ref)
+			clear(refN)
+			clear(gotN)
+			add := func(pairs []kv) {
+				for _, p := range pairs {
+					header.Add(p.k, p.v)
+					if _, ok := ref[p.k]; !ok {
+						ref[p.k] = p.v
+					}
+					refN[p.k]++
+				}
+			}
+			add(test.adds)
+			for _, p := range test.sets {
+				header.Set(p.k, p.v)
+				ref[p.k] = p.v
+				refN[p.k] = 1
+			}
+			add(test.adds2)
+			for k, want := range ref {
+				if got := header.Get(k); string(got) != want {
+					t.Errorf("Get(%q) want %q, got %q", k, want, got)
+				}
+				swapped := strings.ToUpper(k)
+				if swapped == k {
+					swapped = strings.ToLower(k)
+				}
+				if got := header.GetFold(swapped); string(got) != want {
+					t.Errorf("GetFold(%q) want %q, got %q", swapped, want, got)
+				}
+			}
+			header.ForEach(func(k, v []byte) bool {
+				gotN[string(k)]++
+				return true
+			})
+			if !maps.Equal(gotN, refN) {
+				t.Errorf("ForEach pairs per key want %v, got %v", refN, gotN)
+			}
+		})
+	}
 }
 
 func TestHeaderParseRequest(t *testing.T) {

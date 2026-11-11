@@ -605,7 +605,7 @@ func TestConnectionCloseFolded(t *testing.T) {
 		{proto: "HTTP/1.0", field: "connection: keep-alive", wantClose: false},
 		{proto: "HTTP/1.0", field: "Connection: Keep-Alive", wantClose: false},
 		{proto: "HTTP/1.0", field: "Connection: TE, keep-alive", wantClose: false},
-		{proto: "HTTP/1.0", field: "Host: h", wantClose: true},
+		{proto: "HTTP/1.0", field: "Accept: */*", wantClose: true},
 	} {
 		t.Run(test.proto+" "+test.field, func(t *testing.T) {
 			var hdr HeaderV1

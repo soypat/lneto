@@ -165,7 +165,7 @@ func (hb *headerv1Buf) parseNextHeaders(ss *scannerState, flags Flags) {
 			return
 		} else if internal.EqualFoldASCII(b2s(hb.kv.musttoken(kv.key)), headerHost) {
 			if hb.kv.flags&flagHostSet != 0 {
-				// A request has at most one Host field line, RFC 9112 3.2.
+				// At most one Host field line, RFC 9112 3.2; responses held to it too, Host means nothing there.
 				ss.err = errDuplicateHost
 				return
 			}
