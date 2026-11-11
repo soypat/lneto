@@ -36,6 +36,7 @@ func TestHeaderV1ReadParse_table(t *testing.T) {
 		asResponse     bool
 		checkCloseConn int
 		checkKeys      [][2]string
+		checkTarget    string
 	}{
 		// Leading empty lines.
 		{name: "1 leading empty line", header: "\r\n" + req + "\r\n"},
@@ -55,6 +56,19 @@ func TestHeaderV1ReadParse_table(t *testing.T) {
 		{name: "bad req version 1.10", header: "GET / HTTP/1.10\r\n\r\n", wantParseErr: lneto.ErrUnsupported},
 		{name: "bad resp version 2.0", header: "HTTP/2.0 200 OK\r\n\r\n", asResponse: true, wantParseErr: lneto.ErrUnsupported},
 		{name: "bad resp version 2.0", header: "HTTP/2.0 200 OK\r\n\r\n", asResponse: true, wantParseErr: lneto.ErrUnsupported},
+		// Request-target is origin, absolute, authority (CONNECT) or asterisk form, RFC 9112 3.2.
+		{name: "target origin", header: "GET /a?b=1 HTTP/1.1\r\n\r\n", checkTarget: "/a?b=1"},
+		{name: "target asterisk", header: "OPTIONS * HTTP/1.1\r\n\r\n", checkTarget: "*"},
+		{name: "target absolute", header: "GET http://h/x HTTP/1.1\r\n\r\n", checkTarget: "http://h/x"},
+		{name: "target absolute scheme chars", header: "GET a+b-c.1:x HTTP/1.1\r\n\r\n", checkTarget: "a+b-c.1:x"},
+		{name: "target authority", header: "CONNECT h:443 HTTP/1.1\r\n\r\n", checkTarget: "h:443"},
+		{name: "target authority ip", header: "CONNECT 127.0.0.1:443 HTTP/1.1\r\n\r\n", checkTarget: "127.0.0.1:443"},
+		{name: "target no form", header: "GET 0 HTTP/1.1\r\n\r\n", wantParseErr: errInvalidRequestLine},
+		{name: "target relative", header: "GET a/b HTTP/1.1\r\n\r\n", wantParseErr: errInvalidRequestLine},
+		{name: "target empty scheme", header: "GET :x HTTP/1.1\r\n\r\n", wantParseErr: errInvalidRequestLine},
+		{name: "target scheme digit first", header: "GET 1http://h/ HTTP/1.1\r\n\r\n", wantParseErr: errInvalidRequestLine},
+		{name: "target scheme bad char", header: "GET h_t:x HTTP/1.1\r\n\r\n", wantParseErr: errInvalidRequestLine},
+		{name: "target double asterisk", header: "GET ** HTTP/1.1\r\n\r\n", wantParseErr: errInvalidRequestLine},
 	}
 	var header HeaderV1
 	header.Reset(make([]byte, 256), maxNumHeaders)
@@ -74,6 +88,9 @@ func TestHeaderV1ReadParse_table(t *testing.T) {
 				if b2s(got) != key[1] {
 					t.Errorf("key=%q got %q, want %q", key[0], got, key[1])
 				}
+			}
+			if test.checkTarget != "" && b2s(header.RequestTarget()) != test.checkTarget {
+				t.Errorf("want target %q, got %q", test.checkTarget, header.RequestTarget())
 			}
 		})
 	}
