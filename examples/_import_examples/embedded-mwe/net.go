@@ -29,6 +29,7 @@ func SetupDevice(connParams connectParams) (*xnet.Netstack, *netdev.Runner[Conne
 	if err != nil {
 		return nil, nil, makeErr("link connect", err)
 	}
+	dev._connected.Store(true)
 	hw, err := dev.HardwareAddr6()
 	if err != nil {
 		return nil, nil, makeErr("hardware addr", err)

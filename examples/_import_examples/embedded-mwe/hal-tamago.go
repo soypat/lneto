@@ -14,8 +14,8 @@ const runnerFlags = netdev.RunnerInterfacePoll
 // Wired NICs have no association step, WiFi credentials are ignored.
 type connectParams struct{}
 
-func newConnectParams(ssid, password string) ConnectParams {
-	return connectParams{}
+func newConnectParams(ssid, password string) (ConnectParams, error) {
+	return connectParams{}, nil // Wired NIC don't do authentication or parametrization.
 }
 
 // nic is implemented by TamaGo NIC drivers, i.e: *enet.ENET and *virtio.Net.
