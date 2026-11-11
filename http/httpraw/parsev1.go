@@ -82,7 +82,8 @@ var (
 )
 
 func protoIsV1(s string) bool {
-	return s[:min(len(strHTTP1), len(s))] == strHTTP1
+	// HTTP-version = "HTTP/" DIGIT "." DIGIT, RFC 9112 2.3; any 1.x minor is processed as 1.1, RFC 9110 6.2.
+	return len(s) == len(strHTTP1)+1 && s[:len(strHTTP1)] == strHTTP1 && s[len(strHTTP1)] >= '0' && s[len(strHTTP1)] <= '9'
 }
 
 type headerv1Buf struct {
