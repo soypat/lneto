@@ -218,9 +218,8 @@ func (s *StackBerkeley) Send(sockfd int, buf []byte, flags int, deadline time.Ti
 	if !conn.isvalid() {
 		return 0, fmt.Errorf("Send: unknown sockfd %d", sockfd)
 	}
-	if !deadline.IsZero() {
-		conn.sock.SetWriteDeadline(deadline)
-	}
+	// A zero deadline clears an earlier one, as net.Conn defines.
+	conn.sock.SetWriteDeadline(deadline)
 	return conn.sock.Write(buf)
 }
 
@@ -233,9 +232,8 @@ func (s *StackBerkeley) Recv(sockfd int, buf []byte, flags int, deadline time.Ti
 	if !conn.isvalid() {
 		return 0, fmt.Errorf("Recv: unknown sockfd %d", sockfd)
 	}
-	if !deadline.IsZero() {
-		conn.sock.SetReadDeadline(deadline)
-	}
+	// A zero deadline clears an earlier one, as net.Conn defines.
+	conn.sock.SetReadDeadline(deadline)
 	return conn.sock.Read(buf)
 }
 
