@@ -121,6 +121,15 @@ func (kvb *kvBuffer) Get(key string) []byte {
 	return kvb.AtValue(i)
 }
 
+// GetFoldCheckDupe is [kvBuffer.GetFold] but also reports whether a later key is ascii-case-insensitive equal.
+func (kvb *kvBuffer) GetFoldCheckDupe(key string) (_ []byte, isDupe bool) {
+	i := kvb.GetFoldIdxFrom(key, 0)
+	if i < 0 {
+		return nil, false
+	}
+	return kvb.AtValue(i), kvb.GetFoldIdxFrom(key, i+1) >= 0
+}
+
 // GetFold returns the value of the first key that matches ascii-case-insensitive.
 func (kvb *kvBuffer) GetFold(key string) []byte {
 	i := kvb.GetFoldIdxFrom(key, 0)
