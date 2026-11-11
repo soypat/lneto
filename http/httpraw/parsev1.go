@@ -30,6 +30,7 @@ var (
 	// answers it with 431, RFC 6585 5: no larger buffer is coming, so reading
 	// the rest of the block would only spend memory on a request already lost.
 	ErrHeaderTooMany = errors.New("httpraw: more header fields than buffer holds")
+	errDuplicateHost = errors.New("httpraw: more than one Host field")
 	errDuplicateKey  = errors.New("duplicate key")
 	// Header.Set and Header.Add mangles the buffer.
 	// Call them after retrieving the Body. Do not call them before parsing the header (why would you even do that?).
@@ -56,8 +57,13 @@ func newByteset(searchSet string) (bs internal.ByteSet) {
 }
 
 var (
-	// crlfNull matches \r,\n,\x00
-	crlfNull = newByteset("\r\n\x00")
+	// valueCtl matches the control bytes a field value may not hold, all but HTAB, RFC 9110 5.5.
+	valueCtl = func() (bs internal.ByteSet) {
+		bs.AddRange(0, '\t'-1)
+		bs.AddRange('\t'+1, 0x1f)
+		bs.Add("\x7f")
+		return bs
+	}()
 	// notToken matches every byte that is not an RFC 9110 5.6.2 tchar.
 	notToken = func() (bs internal.ByteSet) {
 		bs.AddRange('0', '9')
@@ -157,6 +163,13 @@ func (hb *headerv1Buf) parseNextHeaders(ss *scannerState, flags Flags) {
 		if !hb.kv.canAddOneKV() {
 			ss.err = ErrHeaderTooMany
 			return
+		} else if internal.EqualFoldASCII(b2s(hb.kv.musttoken(kv.key)), headerHost) {
+			if hb.kv.flags&flagHostSet != 0 {
+				// A request has at most one Host field line, RFC 9112 3.2.
+				ss.err = errDuplicateHost
+				return
+			}
+			hb.kv.flags |= flagHostSet
 		}
 		hb.kv.kvs = append(hb.kv.kvs, kv)
 	}
@@ -356,7 +369,7 @@ func (hb *headerv1Buf) next(ss *scannerState) pairKV {
 	// Find end of value. Values may be multiline, in which case we must treat newlines followed by whitespace as part of the value.
 
 	for {
-		i := crlfNull.IndexAny(b2s(buf[n:]))
+		i := valueCtl.IndexAny(b2s(buf[n:]))
 		if i < 0 {
 			ss.err = ErrNeedMoreData
 			return hb.kv.noKV()
@@ -366,7 +379,7 @@ func (hb *headerv1Buf) next(ss *scannerState) pairKV {
 			n++ // CR may only precede LF, RFC 9110 5.5.
 		}
 		if n < len(buf) && buf[n] != '\n' {
-			ss.err = errInvalidValue // NUL or bare CR.
+			ss.err = errInvalidValue // CTL or bare CR.
 			return hb.kv.noKV()
 		} else if n+1 >= len(buf) {
 			// CR or LF is last byte: can't know yet if LF or a folded line follows.

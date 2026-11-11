@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 // defaultKVCap is the key/value table size tests hand to Reset. A Reset with 0
@@ -16,6 +17,59 @@ import (
 // code wants on reuse but leaves a fresh value unable to hold a single pair when
 // growth is disabled, see [Form.Reset].
 const defaultKVCap = 16
+
+func TestHeaderV1ReadParse_table(t *testing.T) {
+	const (
+		req           = "GET / HTTP/1.1\r\n"
+		rsp           = "HTTP/1.1 200 OK\r\n"
+		maxNumHeaders = 4
+		closed        = 1
+		keepalive     = 2
+	)
+	var tests = []struct {
+		name           string
+		header         string
+		wantParseErr   error
+		asResponse     bool
+		checkCloseConn int
+		checkKeys      [][2]string
+	}{
+		// Leading empty lines.
+		{name: "1 leading empty line", header: "\r\n" + req + "\r\n"},
+		{name: "2 leading empty lines", header: "\r\n\r\n" + req + "\r\n"},
+		{name: "1 leading empty line resp", header: "\r\n" + rsp + "\r\n", asResponse: true},
+		{name: "2 leading empty lines resp", header: "\r\n\r\n" + rsp + "\r\n", asResponse: true},
+		// Duplicate host.
+		{name: "dupe host", header: req + "Host:1\r\nHost:2\r\n\r\n", wantParseErr: errDuplicateHost},
+		{name: "dupe host case insensitive", header: req + "host:1\r\nHost:2\r\n\r\n", wantParseErr: errDuplicateHost},
+		// ...
+	}
+	var header HeaderV1
+	header.Reset(make([]byte, 256), maxNumHeaders)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := header.ParseBytes(test.asResponse, s2b(test.header))
+			if err != test.wantParseErr {
+				t.Fatalf("want parse error %v, got %v", test.wantParseErr, err)
+			} else if err != nil {
+				return
+			}
+			if test.checkCloseConn != 0 && test.checkCloseConn == closed && !header.ConnectionClose() {
+				t.Errorf("want connclosed=%v, got %v", test.checkCloseConn == closed, header.ConnectionClose())
+			}
+			for _, key := range test.checkKeys {
+				got := header.Get(key[0])
+				if b2s(got) != key[1] {
+					t.Errorf("key=%q got %q, want %q", key[0], got, key[1])
+				}
+			}
+		})
+	}
+}
+
+func s2b(str string) []byte {
+	return unsafe.Slice(unsafe.StringData(str), len(str))
+}
 
 func TestHeaderParseRequest(t *testing.T) {
 	const (
