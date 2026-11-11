@@ -12,6 +12,7 @@ const (
 	strHTTP11           = strHTTP1 + "1"
 	strCRLF             = "\r\n"
 	headerCookie        = "Cookie"
+	headerHost          = "Host"
 	headerConnection    = "Connection"
 	headerContentLength = "Content-Length"
 	strClose            = "close"
@@ -34,6 +35,7 @@ const (
 	flagReaderEOF
 	// set if [Header.SetStatus] or [Header.SetStatusInt] has been called.
 	FlagStatusSet
+	flagHostSet
 )
 
 // HasAny returns true if any of the argument flags are set.
@@ -189,11 +191,6 @@ func (h *HeaderV1) BufferCapacity() int {
 	return cap(h.hbuf.kv.BufferRaw())
 }
 
-// ForEach iterates over header key-value field tuples.
-func (h *HeaderV1) ForEach(cb func(key, value []byte) bool) {
-	h.hbuf.kv.ForEach(cb)
-}
-
 // Reset discards all parsed data and sets the buffer data to buf. This method
 // can be used to avoid copying and growing buffers. Call [HeaderV1.Parse] after setting buffer
 // data with Reset to parse data in-place.
@@ -227,6 +224,16 @@ func (h *HeaderV1) Body() ([]byte, error) {
 		return h.BufferRaw()[h.hbuf.off:], nil
 	}
 	return nil, errUnparsed
+}
+
+// ForEach iterates over header key-value field tuples.
+func (h *HeaderV1) ForEach(cb func(key, value []byte) bool) {
+	h.hbuf.kv.ForEach(cb)
+}
+
+// Add adds a new key-value pair to the HTTP header. Calling Add mangles the buffer.
+func (h *HeaderV1) Add(key, value string) {
+	h.hbuf.kv.appendPair(key, value)
 }
 
 // SetBytes is equivalent to [HeaderV1.Set] but with a []byte value. Does not keep reference to value slice.
@@ -264,15 +271,6 @@ func (h *HeaderV1) GetFold(key string) []byte {
 	return h.hbuf.kv.GetFold(key)
 }
 
-// NormalizeKeys normalizes all header keys. i.e: CONTENT-type -> Content-Type
-func (h *HeaderV1) NormalizeKeys() {
-	for i, kv := range h.hbuf.kv.kvs {
-		if kv.isValidHeader() {
-			NormalizeHeaderKey(h.hbuf.kv.AtKey(i))
-		}
-	}
-}
-
 // ContentLength returns the body length declared by the Content-Length field.
 // If the field is not present then the returned bool is false. Will return error for invalid or non-integer value.
 func (h *HeaderV1) ContentLength() (_ int64, present bool, _ error) {
@@ -289,9 +287,13 @@ func (h *HeaderV1) ContentLength() (_ int64, present bool, _ error) {
 	return int64(n), true, nil
 }
 
-// Add adds a new key-value pair to the HTTP header. Calling Add mangles the buffer.
-func (h *HeaderV1) Add(key, value string) {
-	h.hbuf.kv.appendPair(key, value)
+// NormalizeKeys normalizes all header keys. i.e: CONTENT-type -> Content-Type
+func (h *HeaderV1) NormalizeKeys() {
+	for i, kv := range h.hbuf.kv.kvs {
+		if kv.isValidHeader() {
+			NormalizeHeaderKey(h.hbuf.kv.AtKey(i))
+		}
+	}
 }
 
 // Method returns HTTP request method.
