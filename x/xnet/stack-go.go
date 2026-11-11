@@ -128,8 +128,8 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 		// [StackAsync.ephemeralPort] for why random selection breaks dial churn.
 		laddr = netip.AddrPortFrom(laddr.Addr(), s.blk.async.ephemeralPort())
 	}
-	if laddr.Addr().IsUnspecified() {
-		// Fill in the stack's configured address for the requested family.
+	if !laddr.Addr().IsValid() || laddr.Addr().IsUnspecified() {
+		// Zero or unspecified: fill in the stack's configured address for the requested family.
 		if isV6 {
 			laddr = netip.AddrPortFrom(netip.AddrFrom16(s.blk.async.Addr6()), laddr.Port())
 		} else {

@@ -720,6 +720,48 @@ func TestStackGoListenerHalfOpenTimeout(t *testing.T) {
 	}
 }
 
+// Listening on zero netip.Addr (port only) must bind the stack address, as unspecified does.
+func TestStackGoListenZeroAddr(t *testing.T) {
+	const port = 8080
+	const mtu = ethernet.MaxMTU
+	tests := []struct {
+		name    string
+		network string
+		sotype  int
+		laddr   netip.AddrPort
+	}{
+		{name: "udp/zero", network: "udp", sotype: sockDGRAM, laddr: netip.AddrPortFrom(netip.Addr{}, port)},
+		{name: "udp/unspecified", network: "udp", sotype: sockDGRAM, laddr: netip.AddrPortFrom(netip.IPv4Unspecified(), port)},
+		{name: "tcp/zero", network: "tcp", sotype: sockSTREAM, laddr: netip.AddrPortFrom(netip.Addr{}, port)},
+		{name: "tcp/unspecified", network: "tcp", sotype: sockSTREAM, laddr: netip.AddrPortFrom(netip.IPv4Unspecified(), port)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sv := newTestStack(t, "sv1", 1, mtu, 1, 1)
+			sg := newTestStackGo(sv, 1, time.Second, 1)
+			sock, err := sg.SocketNetip(context.Background(), tc.network, syscall.AF_INET, tc.sotype, tc.laddr, netip.AddrPort{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var local net.Addr
+			switch c := sock.(type) {
+			case net.PacketConn:
+				defer c.Close()
+				local = c.LocalAddr()
+			case net.Listener:
+				defer c.Close()
+				local = c.Addr()
+			default:
+				t.Fatalf("socket %T is neither net.PacketConn nor net.Listener", sock)
+			}
+			want := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), port).String()
+			if got := local.String(); got != want {
+				t.Errorf("local addr: got %s, want %s", got, want)
+			}
+		})
+	}
+}
+
 func setIfZero[T comparable](a *T, v T) {
 	var z T
 	if *a == z {
