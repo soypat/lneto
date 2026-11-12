@@ -162,7 +162,7 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 			if isV6 {
 				err = s.blk.async.RegisterListenerUDP6(&pc.c)
 			} else {
-				err = s.blk.async.RegisterListenerUDP(&pc.c)
+				err = s.blk.async.RegisterListenerUDP4(&pc.c)
 			}
 			if err != nil {
 				return nil, err

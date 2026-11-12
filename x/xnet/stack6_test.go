@@ -2,7 +2,9 @@ package xnet
 
 import (
 	"bytes"
+	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/tcp"
@@ -214,6 +216,52 @@ func TestStack6UDP_DataExchange(t *testing.T) {
 	}
 	if !bytes.Equal(rbuf[:n], want) {
 		t.Errorf("got %q, want %q", rbuf[:n], want)
+	}
+}
+
+func TestStack6RegisterListenerUDP6_PortRange(t *testing.T) {
+	const (
+		svStart  = 5000
+		svNPorts = 4
+		svPort   = svStart + svNPorts - 1
+		clPort   = 6001
+	)
+	cl, sv := newStack6Pair(t, 101, 2, 0)
+	buf := make([]byte, maxFrame6)
+
+	var pc udp.PacketConn
+	if err := pc.Configure(udp.PacketConnConfig{
+		RxBuf: make([]byte, 2048), TxBuf: make([]byte, 2048),
+		RxQueueSize: 4, TxQueueSize: 4,
+		RWBackoff: backoffYield,
+	}); err != nil {
+		t.Fatal("pc Configure:", err)
+	}
+	if err := pc.OpenPortRange(netip.AddrPortFrom(netip.AddrFrom16(sv.Addr6()), svStart), svNPorts); err != nil {
+		t.Fatal("pc.OpenPortRange:", err)
+	}
+	if err := sv.RegisterListenerUDP6(&pc); err != nil {
+		t.Fatal("RegisterListenerUDP6:", err)
+	}
+	conn := newUDPConn6(t)
+	if err := cl.DialUDP6(conn, clPort, sv.Addr6(), svPort); err != nil {
+		t.Fatal("DialUDP6:", err)
+	}
+	want := []byte("to range6")
+	if _, err := conn.Write(want); err != nil {
+		t.Fatal("Write:", err)
+	}
+	if n := exchangeIPv6Once(t, cl, sv, buf); n == 0 {
+		t.Fatal("expected packet from client")
+	}
+	pc.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	var rbuf [256]byte
+	n, lport, from, err := pc.ReadFromLocal(rbuf[:])
+	if err != nil {
+		t.Fatal("ReadFromLocal:", err)
+	}
+	if !bytes.Equal(rbuf[:n], want) || lport != svPort || from.Port() != clPort {
+		t.Errorf("got %q on port %d from %v, want %q on port %d from port %d", rbuf[:n], lport, from, want, svPort, clPort)
 	}
 }
 

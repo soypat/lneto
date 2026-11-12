@@ -22,9 +22,9 @@ type node struct {
 	// that require an ARP to set the remoteAddr beforehand.
 	remoteAddr []byte
 	proto      uint16 // StackNode.Protocol()
-	lport      uint16 // StackNode.LocalPort()
+	lport      uint16 // StackNode.LocalPort() or first port of range.
+	nports     uint16 // Node receives ports [lport, lport+nports). 1 for single port nodes.
 	// currConnID stores the stack node *connID value on registration.
-	// Placed after the uint16 fields so the three pack into a single 8 byte word.
 	currConnID uint32
 }
 
@@ -37,16 +37,24 @@ type handlers struct {
 	logger
 }
 
-// nextFreePort returns the first port in [start, start+numToCheck*inc) wrapping past 65535. 0 returned if none found.
+// nextFreePort checks numToCheck ports from start in steps of increment wrapping past 65535 and returns the first free one.
+// A port inside a port range jumps to the end of the range, which counts as a check. 0 returned if none found.
 func (h *handlers) nextFreePort(start, increment, numToCheck uint16) uint16 {
 	if increment == 0 {
 		panic("invalid use of nextFreePort")
 	}
-	for i := range numToCheck {
-		port := start + i*increment
-		if port != 0 && h.nodeByPort(port) == nil {
-			return port
+	port := start
+	for range numToCheck {
+		if port != 0 {
+			node := h.nodeByPort(port)
+			if node == nil {
+				return port
+			} else if node.nports > 1 {
+				port = node.lport + node.nports // Wraps to 0 past 65535.
+				continue
+			}
 		}
+		port += increment
 	}
 	return 0
 }
@@ -74,7 +82,7 @@ func (h *handlers) registerByPortProto(n node) error {
 	if err != nil {
 		return err
 	}
-	if h.nodeByPortProto(n.lport, n.proto) != nil {
+	if h.nodeOverlapping(n.lport, n.nports, n.proto) != nil {
 		return lneto.ErrAlreadyRegistered
 	}
 	h.nodes = append(h.nodes, n)
@@ -125,17 +133,19 @@ func (h *handlers) nodeByProto(proto uint16) *node {
 func (h *handlers) nodeByPort(port uint16) *node {
 	for i := range h.nodes {
 		node := &h.nodes[i]
-		if node.lport == port && !node.IsInvalid() {
+		if port-node.lport < node.nports && !node.IsInvalid() { // port < lport wraps and fails check.
 			return node
 		}
 	}
 	return nil
 }
 
-func (h *handlers) nodeByPortProto(port uint16, protocol uint16) *node {
+// nodeOverlapping returns a node of protocol receiving any port of [port, port+nports).
+func (h *handlers) nodeOverlapping(port, nports, protocol uint16) *node {
+	end := int(port) + int(nports)
 	for i := range h.nodes {
 		node := &h.nodes[i]
-		if node.lport == port && node.proto == protocol && !node.IsInvalid() {
+		if node.proto == protocol && int(port) < int(node.lport)+int(node.nports) && int(node.lport) < end && !node.IsInvalid() {
 			return node
 		}
 	}
@@ -233,6 +243,7 @@ func nodeFromStackNode(s lneto.StackNode, port uint16, protocol uint64, remoteAd
 		callbacks:  makecbnode(s),
 		proto:      uint16(protocol),
 		lport:      port,
+		nports:     1,
 		remoteAddr: remoteAddr, // SHARED MEMORY- used to signal.
 	}
 }
