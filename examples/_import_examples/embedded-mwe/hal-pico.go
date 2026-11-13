@@ -19,8 +19,11 @@ type connectParams struct {
 	cyw43439.JoinOptions
 }
 
-func newConnectParams(ssid, password string) ConnectParams {
-	return connectParams{SSID: ssid, JoinOptions: cyw43439.JoinOptions{Passphrase: password}}
+func newConnectParams(ssid, password string) (_ ConnectParams, err error) {
+	if ssid == "" {
+		err = errNeedSSID
+	}
+	return connectParams{SSID: ssid, JoinOptions: cyw43439.JoinOptions{Passphrase: password}}, err
 }
 
 type device struct {
