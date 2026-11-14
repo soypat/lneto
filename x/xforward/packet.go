@@ -22,7 +22,8 @@ type Packet struct {
 }
 
 // ValidatePacket checks IP and transport headers in buf and returns a [Packet] view over it.
-// Fragments, v4-mapped addresses in IPv6, zero ports and bad checksums are rejected.
+// Fragments, zero ports, bad checksums and non-unicast addresses (unspecified, multicast,
+// limited broadcast, v4-mapped in IPv6) are rejected.
 // IPv6 Hop-by-Hop, Routing and Destination Options headers are skipped up to a fixed depth.
 // Only TCP, UDP and ICMP payloads are accepted; ICMP is not checked past the IP header.
 func ValidatePacket(buf []byte, v *lneto.Validator) (Packet, error) {
@@ -48,6 +49,8 @@ func ValidatePacket(buf []byte, v *lneto.Validator) (Packet, error) {
 			return Packet{}, lneto.ErrBadCRC
 		} else if flags := ifrm.Flags(); flags.MoreFragments() || flags.FragmentOffset() != 0 {
 			return Packet{}, lneto.ErrUnsupported // uspfilter-style callers never inject fragments.
+		} else if !isUnicast4(*ifrm.SourceAddr()) || !isUnicast4(*ifrm.DestinationAddr()) {
+			return Packet{}, lneto.ErrInvalidAddr
 		}
 		p.buf = buf[:ifrm.TotalLength()]
 		p.proto = ifrm.Protocol()
@@ -59,7 +62,7 @@ func ValidatePacket(buf []byte, v *lneto.Validator) (Packet, error) {
 		i6frm.ValidateSize(v)
 		if err = v.ErrPop(); err != nil {
 			return Packet{}, err
-		} else if isV4Mapped(i6frm.SourceAddr()) || isV4Mapped(i6frm.DestinationAddr()) {
+		} else if !isUnicast6(i6frm.SourceAddr()) || !isUnicast6(i6frm.DestinationAddr()) {
 			return Packet{}, lneto.ErrInvalidAddr
 		}
 		p.buf = buf[:sizeIPv6Header+int(i6frm.PayloadLength())]
@@ -193,4 +196,13 @@ func mapV4(addr4 []byte) [16]byte {
 	return m
 }
 
-func isV4Mapped(addr *[16]byte) bool { return [12]byte(addr[:12]) == v4InV6 }
+// isUnicast4 reports whether addr may source or terminate a flow: not unspecified, multicast or limited broadcast.
+// Directed broadcast depends on a netmask and is left to the caller.
+func isUnicast4(addr [4]byte) bool {
+	return addr != ipv4.UnspecifiedAddr() && !ipv4.IsMulticast(addr) && !ipv4.IsBroadcast(addr)
+}
+
+// isUnicast6 reports whether addr may source or terminate a flow: not unspecified, multicast (ff00::/8) or v4-mapped.
+func isUnicast6(addr *[16]byte) bool {
+	return *addr != [16]byte{} && addr[0] != 0xff && [12]byte(addr[:12]) != v4InV6
+}

@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/soypat/lneto"
@@ -22,21 +23,29 @@ type TCPForwarder struct {
 	// mu serializes every TCPHandler call except Read and Write. Taken before any flow lock.
 	mu      sync.Mutex
 	h       TCPHandler
-	wake    func() // Called with no lock held.
+	wake    func() // Called with neither mu nor a flow lock held.
 	backoff lneto.BackoffStrategy
+	// kick holds slots FlowConn I/O gave data to send. Merged into h.dirty by Encapsulate under mu.
+	kick flagSet
 	// conns holds per-slot FlowConn state, reset on Accept.
 	conns []struct {
+		// mu is the flow lock: guards the slot's TCPHandler state, rd and wd.
+		mu sync.Mutex
 		// wmu serializes Write and CloseWrite so concurrent writes do not interleave
 		// and a FIN does not cut in-flight data. Taken before mu.
 		wmu    sync.Mutex
-		rd, wd time.Time // Deadlines, guarded by the slot's flow lock.
+		rd, wd time.Time // Deadlines.
 	}
 }
+
+func (tf *TCPForwarder) lockSlot(slot int)   { tf.conns[slot].mu.Lock() }
+func (tf *TCPForwarder) unlockSlot(slot int) { tf.conns[slot].mu.Unlock() }
 
 // TCPForwarderConfig configures a [TCPForwarder].
 type TCPForwarderConfig struct {
 	TCPHandlerConfig
 	// Wake is called after a flow may have a segment to send. Must not block.
+	// Called without the forwarder lock or a flow lock held; may run inside a FlowConn.Write.
 	// nil means caller polls Encapsulate.
 	Wake func()
 	// RWBackoff is how [FlowConn] waits on empty reads and full writes. Required.
@@ -50,7 +59,8 @@ func (tf *TCPForwarder) Configure(cfg TCPForwarderConfig) error {
 	}
 	tf.mu.Lock()
 	defer tf.mu.Unlock()
-	err := tf.h.Configure(cfg.TCPHandlerConfig)
+	tf.h.locker = tf
+	err := tf.h.Configure(cfg.TCPHandlerConfig) // Aborts old flows under the old conns' locks.
 	if err != nil {
 		return err
 	}
@@ -63,6 +73,7 @@ func (tf *TCPForwarder) Configure(cfg TCPForwarderConfig) error {
 		tf.conns[i].rd = time.Time{}
 		tf.conns[i].wd = time.Time{}
 	}
+	tf.kick.reset(n)
 	return nil
 }
 
@@ -83,11 +94,10 @@ func (tf *TCPForwarder) Accept(flow TCPFlow, rxbuf, txbuf []byte) (FlowConn, err
 	tf.mu.Lock()
 	err := tf.h.Accept(flow, rxbuf, txbuf)
 	if err == nil {
-		f := &tf.h.flows[flow.slot]
-		f.mu.Lock()
-		tf.conns[flow.slot].rd = time.Time{}
-		tf.conns[flow.slot].wd = time.Time{}
-		f.mu.Unlock()
+		s := &tf.conns[flow.slot]
+		s.mu.Lock()
+		s.rd, s.wd = time.Time{}, time.Time{}
+		s.mu.Unlock()
 	}
 	tf.mu.Unlock()
 	tf.doWake() // SYN-ACK, or RST on failure, is due.
@@ -106,10 +116,13 @@ func (tf *TCPForwarder) Reject(flow TCPFlow) error {
 	return err
 }
 
-// Encapsulate is [TCPHandler.Encapsulate] under lock.
+// Encapsulate is [TCPHandler.Encapsulate] under lock, also sending what FlowConn I/O queued.
 func (tf *TCPForwarder) Encapsulate(carrierData []byte, offsetToIP int) (int, error) {
 	tf.mu.Lock()
 	defer tf.mu.Unlock()
+	for i := range tf.kick {
+		tf.h.dirty[i] |= tf.kick.take(i)
+	}
 	return tf.h.Encapsulate(carrierData, offsetToIP)
 }
 
@@ -147,8 +160,8 @@ func (c FlowConn) Read(b []byte) (int, error) {
 	}
 	var backoffs uint
 	for {
-		n, wake, err := c.tf.h.read(c.flow, b)
-		if wake {
+		n, kick, err := c.tf.h.read(c.flow, b)
+		if kick && c.tf.kick.set(int(c.flow.slot)) {
 			c.tf.doWake()
 		}
 		if n > 0 || err != nil {
@@ -169,8 +182,8 @@ func (c FlowConn) Write(b []byte) (n int, err error) {
 	defer s.wmu.Unlock()
 	var backoffs uint
 	for n < len(b) {
-		ngot, wake, err := c.tf.h.write(c.flow, b[n:])
-		if wake {
+		ngot, kick, err := c.tf.h.write(c.flow, b[n:])
+		if kick && c.tf.kick.set(int(c.flow.slot)) {
 			c.tf.doWake()
 		}
 		n += ngot
@@ -227,7 +240,7 @@ func (c FlowConn) SetReadDeadline(t time.Time) error { return c.setDeadline(t, t
 func (c FlowConn) SetWriteDeadline(t time.Time) error { return c.setDeadline(t, false, true) }
 
 func (c FlowConn) setDeadline(t time.Time, read, write bool) error {
-	f, err := c.tf.h.lockFlow(c.flow)
+	_, err := c.tf.h.lockFlow(c.flow)
 	if err != nil {
 		return err
 	}
@@ -238,21 +251,22 @@ func (c FlowConn) setDeadline(t time.Time, read, write bool) error {
 	if write {
 		s.wd = t
 	}
-	f.mu.Unlock()
+	s.mu.Unlock()
 	return nil
 }
 
 // expired returns [os.ErrDeadlineExceeded] once the read or write deadline has passed.
 func (c FlowConn) expired(write bool) error {
-	f, err := c.tf.h.lockFlow(c.flow)
+	_, err := c.tf.h.lockFlow(c.flow)
 	if err != nil {
 		return err
 	}
-	deadline := c.tf.conns[c.flow.slot].rd
+	s := &c.tf.conns[c.flow.slot]
+	deadline := s.rd
 	if write {
-		deadline = c.tf.conns[c.flow.slot].wd
+		deadline = s.wd
 	}
-	f.mu.Unlock()
+	s.mu.Unlock()
 	if !deadline.IsZero() && !time.Now().Before(deadline) {
 		return os.ErrDeadlineExceeded
 	}
@@ -268,4 +282,45 @@ func (c FlowConn) Stats() (rxPkts, txPkts uint32, err error) {
 	c.tf.mu.Lock()
 	defer c.tf.mu.Unlock()
 	return c.tf.h.Stats(c.flow)
+}
+
+// flagSet is a bitset over flow slots whose bits may be set and taken concurrently.
+// Words are updated with CompareAndSwap, available on every target including TinyGo.
+type flagSet []atomic.Uint32
+
+// reset sizes the set for n slots and clears every bit.
+func (fs *flagSet) reset(n int) {
+	words := (n + 31) / 32
+	if cap(*fs) < words {
+		*fs = make(flagSet, words)
+		return
+	}
+	*fs = (*fs)[:words]
+	for i := range *fs {
+		(*fs)[i].Store(0)
+	}
+}
+
+// set raises bit i and reports whether it was clear.
+func (fs flagSet) set(i int) (wasClear bool) {
+	w, bit := &fs[i>>5], uint32(1)<<(i&31)
+	for {
+		old := w.Load()
+		if old&bit != 0 {
+			return false
+		} else if w.CompareAndSwap(old, old|bit) {
+			return true
+		}
+	}
+}
+
+// take clears word i and returns its bits.
+func (fs flagSet) take(i int) uint32 {
+	w := &fs[i]
+	for {
+		old := w.Load()
+		if old == 0 || w.CompareAndSwap(old, 0) {
+			return old
+		}
+	}
 }

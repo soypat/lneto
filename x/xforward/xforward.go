@@ -25,6 +25,12 @@ microcontroller can drive everything from one loop:
 		}
 	}
 
+Trust: source addresses are not verified before Accept, so a caller that dials
+upstream on isNew spends an outbound connection per unverified SYN. Run behind an
+authenticated tunnel and apply destination policy (loopback, link-local, metadata
+addresses) before dialing. Handshakes are bounded by PendingTimeout and closes by
+CloseTimeout; idle established flows are the caller's to time out.
+
 [TCPForwarder] wraps [TCPHandler] for concurrent use, handing out blocking
 [FlowConn]s. A desktop pump goroutine then looks like:
 
@@ -103,7 +109,7 @@ func (k *flowKey) id() FlowID {
 }
 
 // nextGen returns the slot generation after g, skipping 0 so zero-value handles never match.
-func nextGen(g uint16) uint16 {
+func nextGen(g uint32) uint32 {
 	g++
 	if g == 0 {
 		g = 1

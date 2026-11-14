@@ -18,7 +18,7 @@ type UDPHandler struct {
 		lastSeen int64
 		rxPkts   uint32
 		txPkts   uint32
-		gen      uint16 // bumped on removal; stale UDPFlow fails with net.ErrClosed.
+		gen      uint32 // bumped on removal; stale UDPFlow fails with net.ErrClosed.
 	}
 	idle  int64
 	mono  internal.Monotonic
@@ -34,15 +34,16 @@ type UDPHandlerConfig struct {
 	IdleTimeout time.Duration
 	// NanoTime returns monotonic time in nanoseconds. Required.
 	NanoTime func() int64
-	// Key seeds flow table hashing. Must be secret and non-zero.
-	Key [16]byte
+	// Entropy fills dst with the secret flow table key, read once per Configure.
+	// Required; crypto/rand.Read fits.
+	Entropy func(dst []byte) (n int, err error)
 }
 
 // UDPFlow is a handle to a forwarded UDP flow. It becomes stale once removed or expired.
 type UDPFlow struct {
 	ID   FlowID
 	slot uint16
-	gen  uint16
+	gen  uint32
 }
 
 // Slot returns the flow's slot index in [0, MaxFlows) so callers can keep per-flow data in their own slice.
@@ -58,17 +59,27 @@ func (f UDPFlow) HeaderLen() int {
 
 // Configure sizes the handler for cfg and resets it. Handles from before become stale.
 func (uh *UDPHandler) Configure(cfg UDPHandlerConfig) error {
-	if cfg.NanoTime == nil {
+	if cfg.NanoTime == nil || cfg.Entropy == nil {
 		return lneto.ErrMissingHALConfig
-	} else if cfg.MaxFlows == 0 || cfg.MaxFlows > maxFlows || cfg.IdleTimeout <= 0 || internal.IsZeroed(cfg.Key) {
+	} else if cfg.MaxFlows == 0 || cfg.MaxFlows > maxFlows || cfg.IdleTimeout <= 0 {
 		return lneto.ErrInvalidConfig
 	}
+	var key [16]byte
+	if err := readKeys(cfg.Entropy, key[:]); err != nil {
+		return err
+	}
+	// New generations start past every old one so earlier handles stay stale even if flows is reallocated.
+	var gen uint32
+	for _, f := range uh.flows[:cap(uh.flows)] {
+		gen = max(gen, f.gen)
+	}
+	gen = nextGen(gen)
 	n := int(cfg.MaxFlows)
-	uh.table.reset(n, cfg.Key)
+	uh.table.reset(n, key)
 	internal.SliceReuse(&uh.flows, n)
 	uh.flows = uh.flows[:n]
 	for i := range uh.flows {
-		uh.flows[i].gen = nextGen(uh.flows[i].gen)
+		uh.flows[i].gen = gen
 	}
 	uh.idle = int64(cfg.IdleTimeout)
 	uh.mono.Config(cfg.NanoTime)

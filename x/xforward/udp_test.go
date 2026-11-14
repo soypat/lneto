@@ -3,6 +3,7 @@ package xforward_test
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"testing"
@@ -15,7 +16,7 @@ import (
 func newUDP(t testing.TB, maxFlows uint16, clock *testClock) *xforward.UDPHandler {
 	t.Helper()
 	uh := new(xforward.UDPHandler)
-	err := uh.Configure(xforward.UDPHandlerConfig{MaxFlows: maxFlows, IdleTimeout: 10 * time.Second, NanoTime: clock.nanotime, Key: testKey})
+	err := uh.Configure(xforward.UDPHandlerConfig{MaxFlows: maxFlows, IdleTimeout: 10 * time.Second, NanoTime: clock.nanotime, Entropy: testEntropy})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,10 +35,13 @@ func TestUDPHandlerConfigure(t *testing.T) {
 		{name: "zero flows", mod: func(c *xforward.UDPHandlerConfig) { c.MaxFlows = 0 }, want: lneto.ErrInvalidConfig},
 		{name: "too many flows", mod: func(c *xforward.UDPHandlerConfig) { c.MaxFlows = 1<<15 + 1 }, want: lneto.ErrInvalidConfig},
 		{name: "zero idle", mod: func(c *xforward.UDPHandlerConfig) { c.IdleTimeout = 0 }, want: lneto.ErrInvalidConfig},
-		{name: "zero key", mod: func(c *xforward.UDPHandlerConfig) { c.Key = [16]byte{} }, want: lneto.ErrInvalidConfig},
+		{name: "no entropy", mod: func(c *xforward.UDPHandlerConfig) { c.Entropy = nil }, want: lneto.ErrMissingHALConfig},
+		{name: "entropy error", mod: func(c *xforward.UDPHandlerConfig) { c.Entropy = failEntropy }, want: errEntropy},
+		{name: "short entropy", mod: func(c *xforward.UDPHandlerConfig) { c.Entropy = shortEntropy }, want: io.ErrShortWrite},
+		{name: "zeroed entropy", mod: func(c *xforward.UDPHandlerConfig) { c.Entropy = zeroedEntropy }, want: lneto.ErrInvalidConfig},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := xforward.UDPHandlerConfig{MaxFlows: 4, IdleTimeout: time.Second, NanoTime: clock.nanotime, Key: testKey}
+			cfg := xforward.UDPHandlerConfig{MaxFlows: 4, IdleTimeout: time.Second, NanoTime: clock.nanotime, Entropy: testEntropy}
 			if tc.mod != nil {
 				tc.mod(&cfg)
 			}
@@ -168,6 +172,23 @@ func TestUDPHandlerAbort(t *testing.T) {
 	}
 	if _, _, isNew, err := uh.Demux(udpPkt(t, "10.0.0.3:5000", "1.1.1.1:53", "q")); err != nil || !isNew {
 		t.Fatalf("after Abort: isNew=%v err=%v", isNew, err)
+	}
+}
+
+func TestUDPHandlerReconfigureStaleHandle(t *testing.T) {
+	var clock testClock
+	uh := newUDP(t, 1, &clock)
+	stale, _, _, _ := uh.Demux(udpPkt(t, "10.0.0.2:5000", "1.1.1.1:53", "q"))
+	err := uh.Configure(xforward.UDPHandlerConfig{MaxFlows: 2, IdleTimeout: 10 * time.Second, NanoTime: clock.nanotime, Entropy: testEntropy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, _, _, _ := uh.Demux(udpPkt(t, "10.0.0.3:5000", "1.1.1.1:53", "q"))
+	if fresh.Slot() != stale.Slot() {
+		t.Fatalf("test setup: fresh slot %d, stale slot %d", fresh.Slot(), stale.Slot())
+	}
+	if _, _, err := uh.Stats(stale); !errors.Is(err, net.ErrClosed) {
+		t.Errorf("handle from before Configure: got %v, want net.ErrClosed", err)
 	}
 }
 

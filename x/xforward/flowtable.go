@@ -2,7 +2,9 @@ package xforward
 
 import (
 	"encoding/binary"
+	"io"
 
+	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
 )
 
@@ -13,6 +15,19 @@ type flowTable struct {
 	keys    []flowKey // slot → key.
 	index   []uint16  // probe entries holding slot+1, 0 is empty. len is a power of two ≥ 2*len(keys).
 	free    []uint16  // stack of free slots.
+}
+
+// readKeys fills keys from entropy. Fails on a short read or all-zero output.
+func readKeys(entropy func(dst []byte) (int, error), keys []byte) error {
+	n, err := entropy(keys)
+	if err != nil {
+		return err
+	} else if n != len(keys) {
+		return io.ErrShortWrite
+	} else if internal.IsZeroed(keys...) {
+		return lneto.ErrInvalidConfig
+	}
+	return nil
 }
 
 // reset sizes the table for maxFlows slots and empties it.

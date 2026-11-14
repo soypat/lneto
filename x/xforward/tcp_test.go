@@ -30,7 +30,10 @@ func TestTCPHandlerConfigure(t *testing.T) {
 		{name: "pending above flows", mod: func(c *xforward.TCPHandlerConfig) { c.MaxPending = c.MaxFlows + 1 }, want: lneto.ErrInvalidConfig},
 		{name: "zero queue", mod: func(c *xforward.TCPHandlerConfig) { c.TxPacketQueueSize = 0 }, want: lneto.ErrInvalidConfig},
 		{name: "zero pending timeout", mod: func(c *xforward.TCPHandlerConfig) { c.PendingTimeout = 0 }, want: lneto.ErrInvalidConfig},
-		{name: "zero key", mod: func(c *xforward.TCPHandlerConfig) { c.Key = [16]byte{} }, want: lneto.ErrInvalidConfig},
+		{name: "no entropy", mod: func(c *xforward.TCPHandlerConfig) { c.Entropy = nil }, want: lneto.ErrMissingHALConfig},
+		{name: "entropy error", mod: func(c *xforward.TCPHandlerConfig) { c.Entropy = failEntropy }, want: errEntropy},
+		{name: "short entropy", mod: func(c *xforward.TCPHandlerConfig) { c.Entropy = shortEntropy }, want: io.ErrShortWrite},
+		{name: "zeroed entropy", mod: func(c *xforward.TCPHandlerConfig) { c.Entropy = zeroedEntropy }, want: lneto.ErrInvalidConfig},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testTCPConfig(clock.nanotime)
@@ -117,6 +120,23 @@ func TestTCPHandlerHandshake(t *testing.T) {
 	}
 }
 
+func TestTCPHandlerJumboCarrier(t *testing.T) {
+	env := newTCPEnv(t, nil)
+	p := newPeer(t, "10.0.0.2:40000", "192.0.2.1:443", 4096)
+	flow, _, _ := env.demux(t, p.send())
+	if err := env.fwd.Accept(flow, make([]byte, 4096), make([]byte, 4096)); err != nil {
+		t.Fatal(err)
+	}
+	carrier := make([]byte, 70_000) // Above the 16-bit IP length.
+	n, err := env.fwd.Encapsulate(carrier, 0)
+	if err != nil || n == 0 {
+		t.Fatalf("Encapsulate n=%d err=%v", n, err)
+	}
+	if mss := optionMSS(tcpOf(t, carrier[:n])); mss != 65535-40 {
+		t.Errorf("MSS %d, want %d", mss, 65535-40)
+	}
+}
+
 func TestTCPHandlerReject(t *testing.T) {
 	env := newTCPEnv(t, nil)
 	p := newPeer(t, "10.0.0.2:40000", "192.0.2.1:443", 4096)
@@ -184,6 +204,26 @@ func TestTCPHandlerStraySegment(t *testing.T) {
 				t.Errorf("got %s seq=%d ack=%d, want %s seq=%d ack=%d", flags, tfrm.Seq(), tfrm.Ack(), tc.wantFlags, tc.wantSeq, tc.wantAck)
 			}
 		})
+	}
+}
+
+func TestTCPHandlerStrayRSTAfterData(t *testing.T) {
+	env := newTCPEnv(t, nil)
+	p := newPeer(t, "10.0.0.2:40000", "192.0.2.1:443", 4096)
+	flow := env.connect(t, p, make([]byte, 4096), make([]byte, 4096))
+	if _, err := env.fwd.Write(flow, []byte("data")); err != nil {
+		t.Fatal(err)
+	}
+	stray := buildIP(netip.MustParseAddr("10.0.0.9"), netip.MustParseAddr("192.0.2.1"), lneto.IPProtoTCP, tcpSeg(1234, 80, 5, 77, tcp.FlagACK, nil))
+	env.demux(t, stray)
+	first := encap(t, &env.fwd)
+	if first == nil || mustValidate(t, first).ID() != (xforward.FlowID{Local: p.addr, Remote: p.dst}) {
+		t.Fatal("stray RST sent before flow data")
+	}
+	if rst := encap(t, &env.fwd); rst == nil {
+		t.Fatal("stray RST not sent once flows idle")
+	} else if _, flags := tcpOf(t, rst).OffsetAndFlags(); flags != tcp.FlagRST {
+		t.Errorf("flags %s, want RST", flags)
 	}
 }
 
@@ -377,12 +417,76 @@ func TestTCPHandlerCloseTimeout(t *testing.T) {
 	if err := env.fwd.Release(flow); err != nil {
 		t.Fatal(err)
 	}
-	encap(t, &env.fwd) // FIN lost; peer never answers.
+	fin := encap(t, &env.fwd) // FIN lost; peer never answers.
 	env.clock.now = int64(time.Second)
-	encap(t, &env.fwd)
+	rst := encap(t, &env.fwd)
+	if rst == nil {
+		t.Fatal("no RST on CloseTimeout")
+	}
+	tfrm := tcpOf(t, rst)
+	if _, flags := tfrm.OffsetAndFlags(); flags != tcp.FlagRST|tcp.FlagACK || tfrm.Seq() != tcpOf(t, fin).Seq()+1 {
+		t.Errorf("got %s seq=%d, want RST|ACK seq=%d", flags, tfrm.Seq(), tcpOf(t, fin).Seq()+1)
+	}
 	p2 := newPeer(t, "10.0.0.2:40001", "192.0.2.1:443", 4096)
 	if _, isNew, err := env.demux(t, p2.send()); err != nil || !isNew {
 		t.Fatalf("flow not reaped after CloseTimeout: isNew=%v err=%v", isNew, err)
+	}
+}
+
+func TestTCPHandlerHandshakeTimeout(t *testing.T) {
+	env := newTCPEnv(t, func(_ *tcpEnv, c *xforward.TCPHandlerConfig) { c.MaxFlows, c.MaxPending = 1, 1 })
+	p := newPeer(t, "10.0.0.2:40000", "192.0.2.1:443", 4096)
+	flow, _, _ := env.demux(t, p.send())
+	if err := env.fwd.Accept(flow, make([]byte, 4096), make([]byte, 4096)); err != nil {
+		t.Fatal(err)
+	}
+	synack := encap(t, &env.fwd)
+	if synack == nil {
+		t.Fatal("no SYN-ACK")
+	} // Peer never completes the handshake.
+	if d := env.fwd.NextDeadline(); d != int64(time.Second) {
+		t.Fatalf("NextDeadline %d, want %d", d, time.Second)
+	}
+	env.clock.now = int64(time.Second)
+	rst := encap(t, &env.fwd)
+	if rst == nil {
+		t.Fatal("no RST on handshake timeout")
+	}
+	tfrm := tcpOf(t, rst)
+	if _, flags := tfrm.OffsetAndFlags(); flags != tcp.FlagRST|tcp.FlagACK || tfrm.Seq() != tcpOf(t, synack).Seq()+1 || tfrm.Ack() != 1001 {
+		t.Errorf("got %s seq=%d ack=%d", flags, tfrm.Seq(), tfrm.Ack())
+	}
+	buf := make([]byte, 16)
+	if _, err := env.fwd.Read(flow, buf); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("Read after handshake timeout: got %v, want net.ErrClosed", err)
+	}
+	if _, err := env.fwd.Write(flow, buf); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("Write after handshake timeout: got %v, want net.ErrClosed", err)
+	}
+	if err := env.fwd.Release(flow); err != nil {
+		t.Fatal(err)
+	}
+	p2 := newPeer(t, "10.0.0.2:40001", "192.0.2.1:443", 4096)
+	if _, isNew, err := env.demux(t, p2.send()); err != nil || !isNew {
+		t.Fatalf("slot not reaped: isNew=%v err=%v", isNew, err)
+	}
+}
+
+func TestTCPHandlerReconfigureStaleHandle(t *testing.T) {
+	env := newTCPEnv(t, func(_ *tcpEnv, c *xforward.TCPHandlerConfig) { c.MaxFlows, c.MaxPending = 1, 1 })
+	stale := env.connect(t, newPeer(t, "10.0.0.2:40000", "192.0.2.1:443", 4096), make([]byte, 4096), make([]byte, 4096))
+	cfg := testTCPConfig(env.clock.nanotime)
+	cfg.MaxFlows = 8 // Grows the flow slice.
+	if err := env.fwd.Configure(cfg); err != nil {
+		t.Fatal(err)
+	}
+	p := newPeer(t, "10.0.0.3:40000", "192.0.2.1:443", 4096)
+	fresh := env.connect(t, p, make([]byte, 4096), make([]byte, 4096))
+	if fresh.Slot() != stale.Slot() {
+		t.Fatalf("test setup: fresh slot %d, stale slot %d", fresh.Slot(), stale.Slot())
+	}
+	if _, err := env.fwd.Write(stale, []byte("x")); !errors.Is(err, net.ErrClosed) {
+		t.Errorf("handle from before Configure: got %v, want net.ErrClosed", err)
 	}
 }
 

@@ -2,10 +2,9 @@ package xforward
 
 import (
 	"log/slog"
+	"math"
 	"math/bits"
 	"net"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/soypat/lneto"
@@ -19,20 +18,20 @@ const minTCPCarrier = sizeIPv6Header + 60
 // TCPHandler terminates TCP flows addressed to any IP:port, answering as the
 // original destination. A SYN is held until [TCPHandler.Accept] or [TCPHandler.Reject].
 //
-// [TCPHandler.Read] and [TCPHandler.Write] lock only their flow, so they may run
-// concurrently with any method but Configure. All other methods must be serialized
-// by the caller; see [TCPForwarder]. Lock order is caller's lock, then flow lock.
+// Not safe for concurrent use; see [TCPForwarder].
 type TCPHandler struct {
-	flows      []tcpFlow // len MaxFlows, fixed at Configure.
-	table      flowTable
-	dirty      flagSet // slots that may have a segment to send. Set by flow I/O, cleared by Encapsulate.
-	cursor     uint16  // round-robin start of the dirty scan.
+	flows  []tcpFlow // len MaxFlows, fixed at Configure.
+	table  flowTable
+	dirty  bitset // slots that may have a segment to send. Set by flow I/O, cleared by Encapsulate.
+	cursor uint16 // round-robin start of the dirty scan.
+	// locker, set only by TCPForwarder, guards a slot against FlowConn I/O running outside its lock.
+	locker     slotLocker
 	npending   uint16
 	maxPending uint16
 	txQueue    int // TxPacketQueueSize passed to SetBuffers on Accept.
 	rst        rstQueue
 	mono       internal.Monotonic
-	key        [16]byte // ISN (RFC 6528) and flow table hash key.
+	key        [16]byte // ISN (RFC 6528) key.
 
 	pendingTimeout int64
 	closeTimeout   int64
@@ -52,10 +51,26 @@ const (
 	flowReleased
 )
 
+// slotLocker serializes one flow slot. Lock order is the caller's lock, then the slot's.
+type slotLocker interface {
+	lockSlot(slot int)
+	unlockSlot(slot int)
+}
+
+func (th *TCPHandler) lock(slot int) {
+	if th.locker != nil {
+		th.locker.lockSlot(slot)
+	}
+}
+
+func (th *TCPHandler) unlock(slot int) {
+	if th.locker != nil {
+		th.locker.unlockSlot(slot)
+	}
+}
+
+// tcpFlow is a flow slot. Under TCPForwarder its fields are guarded by the slot lock.
 type tcpFlow struct {
-	// mu guards every other field. Encapsulate clears the flow's dirty bit under mu
-	// so a concurrent Write cannot have its bit cleared without its data sent.
-	mu     sync.Mutex
 	h      tcp.Handler
 	policy tcp.Policy // one per slot from NewPolicy; NextDeadline read directly.
 	rx, tx []byte     // Accept's buffers, passed to ReleaseBuffers on reap.
@@ -63,7 +78,7 @@ type tcpFlow struct {
 	at     int64      // pending: SYN arrival. released: release time.
 	rxPkts uint32
 	txPkts uint32
-	gen    uint16 // bumped on reap; stale TCPFlow fails with net.ErrClosed.
+	gen    uint32 // bumped on reap; stale TCPFlow fails with net.ErrClosed.
 	// state stores whether flow is released: caller intent not derivable from tcp.Handler's public API.
 	state flowState
 }
@@ -73,7 +88,7 @@ type tcpFlow struct {
 type TCPFlow struct {
 	ID   FlowID
 	slot uint16
-	gen  uint16
+	gen  uint32
 }
 
 // Slot returns the flow's slot index in [0, MaxFlows) so callers can keep per-flow data in their own slice.
@@ -88,9 +103,11 @@ type TCPHandlerConfig struct {
 	// TxPacketQueueSize is the per-flow retransmit queue length. See [tcp.ConnConfig].
 	TxPacketQueueSize int
 	// NewPolicy creates one Policy per slot at Configure (RTO, SACK, congestion control).
-	// A Policy with a NextDeadline method schedules retransmits. nil disables policies.
+	// A Policy with a NextDeadline method schedules retransmits. nil disables policies:
+	// no retransmission timer nor zero-window probes, so lost segments stall the flow.
 	NewPolicy func() tcp.Policy
-	// PendingTimeout rejects a held SYN not accepted in time. Must exceed the caller's upstream dial timeout.
+	// PendingTimeout rejects a held SYN not accepted in time, and resets an accepted flow
+	// whose handshake does not complete in time. Must exceed the caller's upstream dial timeout.
 	PendingTimeout time.Duration
 	// CloseTimeout aborts a released flow that has not finished closing in time.
 	CloseTimeout time.Duration
@@ -100,20 +117,31 @@ type TCPHandlerConfig struct {
 	ReleaseBuffers func(rx, tx []byte)
 	// NanoTime returns monotonic time in nanoseconds. Required.
 	NanoTime func() int64
-	// Key seeds ISNs and flow table hashing. Must be secret and non-zero.
-	Key    [16]byte
-	Logger *slog.Logger
+	// Entropy fills dst with secret random bytes for ISN (RFC 6528) and flow table keys,
+	// read once per Configure. Required; crypto/rand.Read fits.
+	Entropy func(dst []byte) (n int, err error)
+	Logger  *slog.Logger
 }
 
 // Configure sizes the handler for cfg and resets it. Flows from before are reaped.
 func (th *TCPHandler) Configure(cfg TCPHandlerConfig) error {
-	if cfg.NanoTime == nil {
+	if cfg.NanoTime == nil || cfg.Entropy == nil {
 		return lneto.ErrMissingHALConfig
 	} else if cfg.MaxFlows == 0 || cfg.MaxFlows > maxFlows || cfg.MaxPending == 0 || cfg.MaxPending > cfg.MaxFlows ||
-		cfg.TxPacketQueueSize <= 0 || cfg.PendingTimeout <= 0 || cfg.CloseTimeout <= 0 || internal.IsZeroed(cfg.Key) {
+		cfg.TxPacketQueueSize <= 0 || cfg.PendingTimeout <= 0 || cfg.CloseTimeout <= 0 {
 		return lneto.ErrInvalidConfig
 	}
+	var keys [32]byte // ISN key, then table key.
+	if err := readKeys(cfg.Entropy, keys[:]); err != nil {
+		return err
+	}
 	th.Abort() // Hand buffers of previous flows to the previous ReleaseBuffers.
+	// New generations start past every old one so earlier handles stay stale even if flows is reallocated.
+	var gen uint32
+	for i := range th.flows[:cap(th.flows)] {
+		gen = max(gen, th.flows[:cap(th.flows)][i].gen)
+	}
+	gen = nextGen(gen)
 	n := int(cfg.MaxFlows)
 	internal.SliceReuse(&th.flows, n)
 	th.flows = th.flows[:n]
@@ -126,16 +154,16 @@ func (th *TCPHandler) Configure(cfg TCPHandlerConfig) error {
 		f.h.SetPolicy(f.policy)
 		f.h.SetLoggers(cfg.Logger, nil)
 		f.state = flowFree
-		f.gen = nextGen(f.gen)
+		f.gen = gen
 	}
-	th.table.reset(n, cfg.Key)
+	th.table.reset(n, [16]byte(keys[16:]))
 	th.dirty.reset(n)
 	th.cursor = 0
 	th.npending = 0
 	th.maxPending = cfg.MaxPending
 	th.txQueue = cfg.TxPacketQueueSize
 	th.mono.Config(cfg.NanoTime)
-	th.key = cfg.Key
+	th.key = [16]byte(keys[:16])
 	th.pendingTimeout = int64(cfg.PendingTimeout)
 	th.closeTimeout = int64(cfg.CloseTimeout)
 	th.release = cfg.ReleaseBuffers
@@ -147,11 +175,11 @@ func (th *TCPHandler) Configure(cfg TCPHandlerConfig) error {
 func (th *TCPHandler) Abort() {
 	for slot := range th.flows {
 		f := &th.flows[slot]
-		f.mu.Lock()
+		th.lock(slot)
 		if f.state != flowFree {
 			th.reap(slot, f)
 		}
-		f.mu.Unlock()
+		th.unlock(slot)
 	}
 	th.rst.len = 0
 	th.nextScan = 0
@@ -178,8 +206,8 @@ func (th *TCPHandler) demux(pkt Packet) (flow TCPFlow, isNew, wake bool, err err
 		return th.demuxMiss(&k, tfrm)
 	}
 	f := &th.flows[slot]
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	th.lock(slot)
+	defer th.unlock(slot)
 	_, flags := tfrm.OffsetAndFlags()
 	if f.state == flowPending {
 		if syn, _ := tcp.NewFrame(f.syn[:]); flags.HasAny(tcp.FlagRST) && tfrm.Seq() == syn.Seq()+1 {
@@ -215,14 +243,14 @@ func (th *TCPHandler) demuxMiss(k *flowKey, tfrm tcp.Frame) (flow TCPFlow, isNew
 		}
 		now := th.mono.Nanotime()
 		f := &th.flows[slot]
-		f.mu.Lock()
+		th.lock(slot)
 		copy(f.syn[:], tfrm.RawData()[:tfrm.HeaderLength()])
 		f.state = flowPending
 		f.at = now
 		f.rxPkts = 1
 		f.txPkts = 0
 		flow = TCPFlow{ID: k.id(), slot: uint16(slot), gen: f.gen}
-		f.mu.Unlock()
+		th.unlock(slot)
 		th.npending++
 		th.lowerNextScan(now + th.pendingTimeout)
 		return flow, true, false, nil
@@ -236,13 +264,14 @@ func (th *TCPHandler) demuxMiss(k *flowKey, tfrm tcp.Frame) (flow TCPFlow, isNew
 }
 
 // Accept opens the held SYN's flow with the given buffers and queues the SYN-ACK.
-// nil buffers reuse the slot's previous ones. On failure a RST is queued and the slot freed.
+// nil buffers reuse the slot's previous ones. On failure a RST is queued and the slot freed;
+// rxbuf and txbuf stay the caller's and are not passed to ReleaseBuffers.
 func (th *TCPHandler) Accept(flow TCPFlow, rxbuf, txbuf []byte) error {
 	f, err := th.lockFlow(flow)
 	if err != nil {
 		return err
 	}
-	defer f.mu.Unlock()
+	defer th.unlock(int(flow.slot))
 	slot := int(flow.slot)
 	if f.state != flowPending {
 		return lneto.ErrBadState
@@ -261,11 +290,13 @@ func (th *TCPHandler) Accept(flow TCPFlow, rxbuf, txbuf []byte) error {
 	th.npending--
 	f.state = flowOpen
 	f.rx, f.tx = rxbuf, txbuf
+	f.at = th.mono.Nanotime()
+	th.lowerNextScan(f.at + th.pendingTimeout) // Handshake timeout.
 	th.dirty.set(slot)
 	return nil
 }
 
-// open starts f's Handler on the buffers and replays the held SYN, readying the SYN-ACK. Must hold f.mu.
+// open starts f's Handler on the buffers and replays the held SYN, readying the SYN-ACK. Must hold the slot lock.
 func (th *TCPHandler) open(slot int, f *tcpFlow, rxbuf, txbuf []byte) error {
 	if rxbuf == nil || txbuf == nil {
 		return lneto.ErrShortBuffer
@@ -290,7 +321,7 @@ func (th *TCPHandler) Reject(flow TCPFlow) error {
 	if err != nil {
 		return err
 	}
-	defer f.mu.Unlock()
+	defer th.unlock(int(flow.slot))
 	if f.state != flowPending {
 		return lneto.ErrBadState
 	}
@@ -298,15 +329,26 @@ func (th *TCPHandler) Reject(flow TCPFlow) error {
 	return nil
 }
 
-// rejectLocked queues RST|ACK for f's held SYN and frees slot. Must hold f.mu.
+// rejectLocked queues RST|ACK for f's held SYN and frees slot. Must hold the slot lock.
 func (th *TCPHandler) rejectLocked(slot int, f *tcpFlow) {
 	syn, _ := tcp.NewFrame(f.syn[:])
 	th.rst.queue(&th.table.keys[slot], 0, syn.Seq()+1, tcp.FlagRST|tcp.FlagACK)
 	th.reap(slot, f)
 }
 
+// abortLocked queues RST|ACK for a synchronizing or synchronized flow and aborts its
+// Handler, keeping the slot so flow calls return [net.ErrClosed] until Release. Must hold the slot lock.
+func (th *TCPHandler) abortLocked(slot int, f *tcpFlow) {
+	if st := f.h.State(); !st.IsClosed() && st != tcp.StateListen {
+		tcb := f.h.ControlBlock()
+		th.rst.queue(&th.table.keys[slot], tcb.SendNext(), tcb.RecvNext(), tcp.FlagRST|tcp.FlagACK)
+	}
+	f.h.Abort()
+	th.dirty.clear(slot)
+}
+
 // reap frees slot and invalidates its handles. Accepted flows are aborted
-// and their buffers handed to ReleaseBuffers. Must hold f.mu.
+// and their buffers handed to ReleaseBuffers. Must hold the slot lock.
 func (th *TCPHandler) reap(slot int, f *tcpFlow) {
 	if f.state == flowPending {
 		th.npending--
@@ -324,18 +366,14 @@ func (th *TCPHandler) reap(slot int, f *tcpFlow) {
 }
 
 // Encapsulate writes the next IP+TCP packet to carrierData[offsetToIP:] and returns its length, 0 when idle.
-// len(carrierData[offsetToIP:]) is taken as the MTU; the SYN-ACK MSS derives from it.
+// len(carrierData[offsetToIP:]) capped at 65535 is taken as the MTU; the SYN-ACK MSS derives from it.
 func (th *TCPHandler) Encapsulate(carrierData []byte, offsetToIP int) (int, error) {
 	if offsetToIP < 0 || len(carrierData)-offsetToIP < minTCPCarrier {
 		return 0, lneto.ErrShortBuffer
 	}
-	pkt := carrierData[offsetToIP:]
+	pkt := carrierData[offsetToIP:min(len(carrierData), offsetToIP+math.MaxUint16)]
 	if now := th.mono.Nanotime(); th.nextScan != 0 && now >= th.nextScan {
 		th.maintain(now)
-	}
-	if th.rst.len > 0 {
-		th.ipID = internal.Prand16(th.ipID + 1)
-		return th.rst.drain(pkt, th.ipID), nil
 	}
 	nflows := len(th.flows)
 	start := int(th.cursor)
@@ -350,6 +388,11 @@ func (th *TCPHandler) Encapsulate(carrierData []byte, offsetToIP int) (int, erro
 			return n, nil
 		}
 	}
+	// Stateless RSTs go once flows are idle so junk segments cannot starve them; a full queue drops extras.
+	if th.rst.len > 0 {
+		th.ipID = internal.Prand16(th.ipID + 1)
+		return th.rst.drain(pkt, th.ipID), nil
+	}
 	return 0, nil
 }
 
@@ -357,8 +400,8 @@ func (th *TCPHandler) Encapsulate(carrierData []byte, offsetToIP int) (int, erro
 // It clears the slot's dirty bit when nothing is left to send and reaps released flows that are done.
 func (th *TCPHandler) encapsulateFlow(slot int, pkt []byte) int {
 	f := &th.flows[slot]
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	th.lock(slot)
+	defer th.unlock(slot)
 	if f.state == flowFree || f.state == flowPending {
 		th.dirty.clear(slot)
 		return 0
@@ -387,7 +430,7 @@ func (th *TCPHandler) maintain(now int64) {
 	th.nextScan = 0
 	for slot := range th.flows {
 		f := &th.flows[slot]
-		f.mu.Lock()
+		th.lock(slot)
 		switch {
 		case f.state == flowFree:
 		case f.state == flowPending:
@@ -397,10 +440,15 @@ func (th *TCPHandler) maintain(now int64) {
 				th.lowerNextScan(expiry)
 			}
 		case f.state == flowReleased && (now >= f.at+th.closeTimeout || f.h.IsTxOver()):
+			th.abortLocked(slot, f) // RST unless the close completed.
 			th.reap(slot, f)
+		case f.state == flowOpen && f.h.State() == tcp.StateSynRcvd && now >= f.at+th.pendingTimeout:
+			th.abortLocked(slot, f) // Peer never completed the handshake.
 		default:
 			if f.state == flowReleased {
 				th.lowerNextScan(f.at + th.closeTimeout)
+			} else if f.h.State() == tcp.StateSynRcvd {
+				th.lowerNextScan(f.at + th.pendingTimeout)
 			}
 			if d := f.deadline(); d != 0 && d <= now {
 				th.dirty.set(slot)
@@ -408,7 +456,7 @@ func (th *TCPHandler) maintain(now int64) {
 				th.lowerNextScan(d)
 			}
 		}
-		f.mu.Unlock()
+		th.unlock(slot)
 	}
 }
 
@@ -426,46 +474,48 @@ func (th *TCPHandler) NextDeadline() int64 {
 }
 
 // Read reads received flow data into b. Returns 0, nil when none is buffered and io.EOF after the peer's FIN.
-// Locks only flow; see [TCPHandler] for concurrency.
 func (th *TCPHandler) Read(flow TCPFlow, b []byte) (int, error) {
-	n, _, err := th.read(flow, b)
+	n, kick, err := th.read(flow, b)
+	if kick {
+		th.dirty.set(int(flow.slot))
+	}
 	return n, err
 }
 
 // Write queues b for sending on flow. Short writes happen when the tx buffer is full.
-// Locks only flow; see [TCPHandler] for concurrency.
 func (th *TCPHandler) Write(flow TCPFlow, b []byte) (int, error) {
-	n, _, err := th.write(flow, b)
+	n, kick, err := th.write(flow, b)
+	if kick {
+		th.dirty.set(int(flow.slot))
+	}
 	return n, err
 }
 
-// read is Read reporting whether flow's dirty bit went from clear to set.
-// It marks dirty only if reading queued a window update.
-func (th *TCPHandler) read(flow TCPFlow, b []byte) (n int, wake bool, err error) {
+// read is Read reporting whether reading queued a window update, leaving dirty untouched.
+// Touches only flow's slot, so TCPForwarder runs it under the slot lock alone.
+func (th *TCPHandler) read(flow TCPFlow, b []byte) (n int, kick bool, err error) {
 	f, err := th.lockFlow(flow)
 	if err != nil {
 		return 0, false, err
 	}
-	defer f.mu.Unlock()
+	defer th.unlock(int(flow.slot))
 	if f.state == flowPending {
 		return 0, false, lneto.ErrBadState
 	} else if f.h.State().IsPreestablished() {
 		return 0, false, nil // Handshake in progress: nothing to read yet.
 	}
 	n, err = f.h.Read(b)
-	if n > 0 && f.h.ControlBlock().HasPending() {
-		wake = th.dirty.set(int(flow.slot))
-	}
-	return n, wake, err
+	return n, n > 0 && f.h.ControlBlock().HasPending(), err
 }
 
-// write is Write reporting whether flow's dirty bit went from clear to set.
-func (th *TCPHandler) write(flow TCPFlow, b []byte) (n int, wake bool, err error) {
+// write is Write reporting whether data was queued, leaving dirty untouched.
+// Touches only flow's slot, so TCPForwarder runs it under the slot lock alone.
+func (th *TCPHandler) write(flow TCPFlow, b []byte) (n int, kick bool, err error) {
 	f, err := th.lockFlow(flow)
 	if err != nil {
 		return 0, false, err
 	}
-	defer f.mu.Unlock()
+	defer th.unlock(int(flow.slot))
 	if f.state == flowPending {
 		return 0, false, lneto.ErrBadState
 	} else if f.h.State().IsPreestablished() {
@@ -479,10 +529,7 @@ func (th *TCPHandler) write(flow TCPFlow, b []byte) (n int, wake bool, err error
 		return 0, false, nil // Tx buffer full or b empty.
 	}
 	n, err = f.h.Write(b[:towrite])
-	if n > 0 {
-		wake = th.dirty.set(int(flow.slot))
-	}
-	return n, wake, err
+	return n, n > 0, err
 }
 
 // CloseWrite queues a FIN once buffered data is sent. Reads keep working.
@@ -491,7 +538,7 @@ func (th *TCPHandler) CloseWrite(flow TCPFlow) error {
 	if err != nil {
 		return err
 	}
-	defer f.mu.Unlock()
+	defer th.unlock(int(flow.slot))
 	switch f.state {
 	case flowPending:
 		return lneto.ErrBadState
@@ -509,7 +556,7 @@ func (th *TCPHandler) Release(flow TCPFlow) error {
 	if err != nil {
 		return err
 	}
-	defer f.mu.Unlock()
+	defer th.unlock(int(flow.slot))
 	slot := int(flow.slot)
 	switch f.state {
 	case flowPending:
@@ -536,25 +583,27 @@ func (th *TCPHandler) Stats(flow TCPFlow) (rxPkts, txPkts uint32, err error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	defer f.mu.Unlock()
+	defer th.unlock(int(flow.slot))
 	return f.rxPkts, f.txPkts, nil
 }
 
 // lockFlow returns flow's slot locked, or net.ErrClosed if the handle is stale.
+// Caller unlocks with th.unlock(flow.Slot()).
 func (th *TCPHandler) lockFlow(flow TCPFlow) (*tcpFlow, error) {
-	if int(flow.slot) >= len(th.flows) {
+	slot := int(flow.slot)
+	if slot >= len(th.flows) {
 		return nil, net.ErrClosed
 	}
-	f := &th.flows[flow.slot]
-	f.mu.Lock()
+	f := &th.flows[slot]
+	th.lock(slot)
 	if f.gen != flow.gen || f.state == flowFree {
-		f.mu.Unlock()
+		th.unlock(slot)
 		return nil, net.ErrClosed
 	}
 	return f, nil
 }
 
-// deadline returns the flow Policy's next timer, or 0 if none. Must hold f.mu.
+// deadline returns the flow Policy's next timer, or 0 if none. Must hold the slot lock.
 func (f *tcpFlow) deadline() int64 {
 	if dp, ok := f.policy.(interface{ NextDeadline() int64 }); ok {
 		return dp.NextDeadline()
@@ -562,54 +611,35 @@ func (f *tcpFlow) deadline() int64 {
 	return 0
 }
 
-// flagSet is a bitset over flow slots whose bits may be set and cleared concurrently.
-// Words are updated with CompareAndSwap, available on every target including TinyGo.
-type flagSet []atomic.Uint32
+// bitset is a bitset over flow slots.
+type bitset []uint32
 
 // reset sizes the set for n slots and clears every bit.
-func (fs *flagSet) reset(n int) {
+func (bs *bitset) reset(n int) {
 	words := (n + 31) / 32
-	if cap(*fs) < words {
-		*fs = make(flagSet, words)
-		return
-	}
-	*fs = (*fs)[:words]
-	for i := range *fs {
-		(*fs)[i].Store(0)
-	}
+	internal.SliceReuse((*[]uint32)(bs), words)
+	*bs = (*bs)[:words]
+	clear(*bs)
 }
 
 // set raises bit i and reports whether it was clear.
-func (fs flagSet) set(i int) (wasClear bool) {
-	w, bit := &fs[i>>5], uint32(1)<<(i&31)
-	for {
-		old := w.Load()
-		if old&bit != 0 {
-			return false
-		} else if w.CompareAndSwap(old, old|bit) {
-			return true
-		}
-	}
+func (bs bitset) set(i int) (wasClear bool) {
+	w, bit := &bs[i>>5], uint32(1)<<(i&31)
+	wasClear = *w&bit == 0
+	*w |= bit
+	return wasClear
 }
 
 // clear lowers bit i.
-func (fs flagSet) clear(i int) {
-	w, bit := &fs[i>>5], uint32(1)<<(i&31)
-	for {
-		old := w.Load()
-		if old&bit == 0 || w.CompareAndSwap(old, old&^bit) {
-			return
-		}
-	}
-}
+func (bs bitset) clear(i int) { bs[i>>5] &^= uint32(1) << (i & 31) }
 
 // next returns the first set bit at or after start, wrapping around, or -1 if none is set.
-func (fs flagSet) next(start int) int {
-	nw := len(fs)
+func (bs bitset) next(start int) int {
+	nw := len(bs)
 	first := start >> 5
 	for k := 0; k <= nw && nw > 0; k++ {
 		wi := (first + k) % nw
-		word := fs[wi].Load()
+		word := bs[wi]
 		switch k {
 		case 0:
 			word &= ^uint32(0) << (start & 31) // Bits at or after start.

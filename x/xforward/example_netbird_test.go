@@ -69,10 +69,6 @@ type netbirdForwarder struct {
 }
 
 func newNetbirdForwarder(dev wgDevice, mtu uint16) (*netbirdForwarder, error) {
-	var key [16]byte
-	if _, err := csrng.Read(key[:]); err != nil {
-		return nil, err
-	}
 	const maxFlows = 4096
 	f := &netbirdForwarder{
 		dev:      dev,
@@ -100,7 +96,7 @@ func newNetbirdForwarder(dev wgDevice, mtu uint16) (*netbirdForwarder, error) {
 			CloseTimeout:   30 * time.Second,
 			ReleaseBuffers: nil, // NetBird: return rx, tx to size-class pools under a memory budget.
 			NanoTime:       nanotime,
-			Key:            key,
+			Entropy:        csrng.Read,
 		},
 		Wake: func() {
 			select {
@@ -119,7 +115,7 @@ func newNetbirdForwarder(dev wgDevice, mtu uint16) (*netbirdForwarder, error) {
 		MaxFlows:    maxFlows,
 		IdleTimeout: 30 * time.Second, // NetBird's udpTimeout.
 		NanoTime:    nanotime,
-		Key:         key,
+		Entropy:     csrng.Read,
 	})
 	if err != nil {
 		return nil, err

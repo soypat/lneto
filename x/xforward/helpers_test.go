@@ -2,6 +2,7 @@ package xforward_test
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net/netip"
 	"testing"
@@ -17,7 +18,19 @@ import (
 
 const testMTU = 1500
 
-var testKey = [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+// testEntropy fills dst with a fixed pattern so runs are reproducible.
+func testEntropy(dst []byte) (int, error) {
+	for i := range dst {
+		dst[i] = byte(i + 1)
+	}
+	return len(dst), nil
+}
+
+var errEntropy = errors.New("entropy failed")
+
+func failEntropy([]byte) (int, error)       { return 0, errEntropy }
+func shortEntropy(dst []byte) (int, error)  { return len(dst) - 1, nil }
+func zeroedEntropy(dst []byte) (int, error) { clear(dst); return len(dst), nil }
 
 // testBackoff waits briefly so blocked FlowConn calls retry quickly in tests.
 var testBackoff lneto.BackoffStrategy = func(n uint) time.Duration {
@@ -37,7 +50,7 @@ func testTCPConfig(nanotime func() int64) xforward.TCPHandlerConfig {
 		PendingTimeout:    time.Second,
 		CloseTimeout:      time.Second,
 		NanoTime:          nanotime,
-		Key:               testKey,
+		Entropy:           testEntropy,
 	}
 }
 
