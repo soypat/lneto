@@ -59,6 +59,7 @@ lneto is currently being used primarily by embedded developers and those who nee
 - [`lneto/dns`](./dns): DNS protocol implementation and low level logic.
 - [`lneto/ntp`](./ntp): NTP implementation and low level logic. Includes NTP time primitives manipulation and conversion to Go native types.
 - [`lneto/internal`](./internal): Lightweight and flexible ring buffer implementation and debugging primitives.
+- [`lneto/crypto/tlsauto`](./crypto/tlsauto/): TLS 1.3 client with mutual authentication built on `crypto/tlsraw`. Ships no cryptography itself; the caller supplies ciphers, key exchanges and certificate verification, for example from [lcrypto](https://github.com/soypat/lcrypto).
 - [`lneto/x`](./x): Experimental packages.
     - [`lneto/x/xnet`](./x/xnet/): `net` package like abstractions of stack implementations for ease of reuse. Still in testing phase and likely subject to breaking API change.
     - [`lneto/x/nts`](./x/nts/): Network Time Security (RFC 8915). NTS-KE key exchange over TLS 1.3 and AEAD-authenticated NTP client/server. Ships no cryptography itself; the caller supplies the mandated `AEAD_AES_SIV_CMAC_256` `cipher.AEAD` implementation.

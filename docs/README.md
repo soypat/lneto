@@ -35,6 +35,7 @@ go mod download github.com/soypat/lneto@latest
 | DHCPv6 NTP Configuration | RFC 5908 | ✅ | `dhcp/dhcpv6` | — | NTP server address, multicast address, and FQDN suboptions parsed and exposed |
 | DHCPv6 | RFC 8415 | 🟡 | `dhcp/dhcpv6` | — | Client IA_NA/IA_PD request handling and reconfigure-renew; no relay agent or dynamic server pools |
 | TLS 1.3 | RFC 8446 | 🟡 | `crypto/tlsraw` | 0 | TLS low-level record parsing and packet capture. No server/client state. |
+| TLS 1.3 client | RFC 8446 | 🟡 | `crypto/tlsauto` | — | Client with mutual authentication. No PSK, resumption, 0-RTT, HelloRetryRequest or KeyUpdate. Requires caller-supplied cryptography |
 
 ¹ `BenchmarkARPExchange` — full ARP request/response exchange over Ethernet: **0 B/op, 0 allocs/op**
 ² `BenchmarkTCPHandshake` — TCP 3-way handshake over Ethernet/IPv4: **0 B/op, 0 allocs/op**
