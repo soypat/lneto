@@ -7,6 +7,7 @@ import (
 	"errors"
 	"hash"
 	"io"
+	"slices"
 	"strconv"
 
 	"github.com/soypat/lneto"
@@ -1049,12 +1050,7 @@ func legacyScheme(s uint16) bool {
 }
 
 func hasScheme(list []uint16, s uint16) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(list, s)
 }
 
 func uint24(b []byte) uint32 { return uint32(b[0])<<16 | uint32(b[1])<<8 | uint32(b[2]) }
