@@ -196,12 +196,6 @@ func (c *Conn) Handshake() error {
 	}
 	c.state = stateConnected
 	// Only tickets follow, and skipTickets reads them without hbuf, so give both buffers back.
-	pending := c.hbuf[c.hsOff:c.hsEnd]
-	if len(pending) > 0 {
-		if err := c.skipTickets(pending); err != nil {
-			return c.fail(err)
-		}
-	}
 	clear(c.hbuf)
 	c.hbuf, c.hsOff, c.hsEnd = nil, 0, 0
 	c.certBuf, c.chain = nil, peerChain{}
