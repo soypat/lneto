@@ -6,34 +6,35 @@ import (
 )
 
 const (
-	sizeVNIHeader      = 8
-	sizeEthernetHeader = 14
+	sizeVNIHeader = 8
 )
 
-type VXLAN struct {
-	buf           []byte
-	EthernetFrame ethernet.Frame
+type Frame struct {
+	buf []byte
 }
 
-func NewVXLAN(buf []byte) (VXLAN, error) {
-	if len(buf) < sizeVNIHeader+sizeEthernetHeader {
-		return VXLAN{}, lneto.ErrTruncatedFrame
+func NewFrame(buf []byte) (Frame, error) {
+	if len(buf) < sizeVNIHeader {
+		return Frame{}, lneto.ErrTruncatedFrame
 	}
-	ethFrame, err := ethernet.NewFrame(buf[sizeVNIHeader:])
-	if err != nil {
-		return VXLAN{}, err
-	}
-	return VXLAN{
-		buf:           buf,
-		EthernetFrame: ethFrame,
+	return Frame{
+		buf: buf,
 	}, nil
 }
 
-func (v VXLAN) VNI() uint32 {
+func (v Frame) Flags() Flags {
+	return Flags(v.buf[0])
+}
+
+func (v Frame) SetFlags(f Flags) {
+	v.buf[0] = byte(f)
+}
+
+func (v Frame) VNI() uint32 {
 	return uint32(v.buf[4])<<16 | uint32(v.buf[5])<<8 | uint32(v.buf[6])
 }
 
-func (v VXLAN) SetVNI(vni uint32) error {
+func (v Frame) SetVNI(vni uint32) error {
 	if vni > 0xFFFFFF {
 		return lneto.ErrUnsupported
 	}
@@ -43,14 +44,6 @@ func (v VXLAN) SetVNI(vni uint32) error {
 	return nil
 }
 
-func (v VXLAN) IFlag() bool {
-	return v.buf[0]&0b00001000 != 0
-}
-
-func (v VXLAN) SetIFlag(valid bool) {
-	if valid {
-		v.buf[0] |= 0b00001000
-	} else {
-		v.buf[0] &= 0b11110111
-	}
+func (v Frame) EthernetFrame() (ethernet.Frame, error) {
+	return ethernet.NewFrame(v.buf[sizeVNIHeader:])
 }
