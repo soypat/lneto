@@ -37,10 +37,12 @@ type Conn struct {
 	// does not drop in-flight data (see issue #82).
 	writeLock atomic.Uint32
 
-	_backoff lneto.BackoffStrategy
-	rdead    time.Time
-	wdead    time.Time
-	abortErr error
+	_backoff     lneto.BackoffStrategy
+	rdead        time.Time
+	wdead        time.Time
+	closeTimeout time.Duration
+	closeDead    time.Time
+	abortErr     error
 	logger
 
 	ipID uint16
@@ -55,6 +57,7 @@ func (conn *Conn) reset() {
 	conn.remoteAddr = conn.remoteAddr[:0]
 	conn.rdead = time.Time{}
 	conn.wdead = time.Time{}
+	conn.closeDead = time.Time{}
 	conn.abortErr = nil
 	conn.ipID = 0
 	conn.writeLock.Store(0)
@@ -80,6 +83,9 @@ type ConnConfig struct {
 	// control, ...) for the connection. nil disables it. A Policy needing time
 	// carries its own clock. See [Policy].
 	Policy Policy
+	// CloseTimeout aborts the connection if it has not finished closing this long after
+	// both [Conn.Close] and [Conn.CloseRead], so a silent peer cannot hold it. Zero disables it.
+	CloseTimeout time.Duration
 }
 
 // Configure should be called on any newly created connection before usage. See [ConnConfig].
@@ -94,6 +100,7 @@ func (conn *Conn) Configure(config ConnConfig) (err error) {
 		return err
 	}
 	conn._backoff = config.RWBackoff
+	conn.closeTimeout = config.CloseTimeout
 	conn.logger.log = config.Logger
 	conn.h.SetPolicy(config.Policy)
 	return nil
@@ -248,6 +255,7 @@ func (conn *Conn) closeRead(handle uint32) error {
 		return net.ErrClosed // Ended connections keep handle until released: allow CloseRead.
 	}
 	conn.h.ShutdownRead()
+	conn.armCloseTimeout()
 	return nil
 }
 
@@ -270,7 +278,16 @@ func (conn *Conn) close(handle uint32) error {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	conn.trace("TCPConn.Close", slog.Uint64("lport", uint64(conn.h.localPort)), slog.Uint64("rport", uint64(conn.h.remotePort)))
-	return conn.h.Close()
+	err = conn.h.Close()
+	conn.armCloseTimeout()
+	return err
+}
+
+// armCloseTimeout starts the close timeout once both sides are closed. Must be called while holding [Conn.mu].
+func (conn *Conn) armCloseTimeout() {
+	if conn.closeTimeout > 0 && conn.closeDead.IsZero() && conn.h.closing && conn.h.shutdownRx {
+		conn.closeDead = time.Now().Add(conn.closeTimeout)
+	}
 }
 
 // Abort terminates all state of the connection forcibly.
@@ -506,6 +523,12 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 func (conn *Conn) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (n int, err error) {
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
+	if !conn.closeDead.IsZero() && time.Since(conn.closeDead) > 0 {
+		conn.debug("TCPConn.closeTimeout", slog.Uint64("lport", uint64(conn.h.localPort)), slog.Uint64("rport", uint64(conn.h.remotePort)))
+		conn.h.Abort()
+		conn.reset()
+		return 0, net.ErrClosed
+	}
 	if len(conn.remoteAddr) == 0 {
 		return 0, errNoRemoteAddr
 	}

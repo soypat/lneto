@@ -204,6 +204,7 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 				RxBuf:             make([]byte, s.plcfg.RxBufSize),
 				TxPacketQueueSize: s.plcfg.QueueSize,
 				RWBackoff:         s.plcfg.NewBackoff(),
+				CloseTimeout:      s.plcfg.ClosingTimeout,
 			}
 			if s.plcfg.NewPolicy != nil {
 				// A dialed connection needs loss recovery as much as a pooled

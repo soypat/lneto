@@ -47,6 +47,7 @@ type TCPPoolConfig struct {
 	EstablishedTimeout time.Duration
 	// ClosingTimeout sets the timeout for a TCP connection to close and be returned to Pool.
 	// If the connection is not closed in this time it will be aborted by the pool.
+	// Connections dialed with [StackGo] use it as [tcp.ConnConfig.CloseTimeout].
 	ClosingTimeout time.Duration
 	// NewUserData is used to create user data used for each individual TCP connection and returned on GetTCP.
 	NewUserData func() any

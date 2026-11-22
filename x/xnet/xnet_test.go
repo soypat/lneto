@@ -1686,3 +1686,51 @@ func TestStackAsync_ResetClearsSubnet(t *testing.T) {
 		t.Fatalf("first frame %s to %x, want IPv4 to the gateway %x", efrm.EtherTypeOrSize(), *efrm.DestinationHardwareAddr(), router)
 	}
 }
+
+// A closed conn whose peer stops answering must free its port slot after the close timeout.
+func TestTCPCloseTimeoutFreesPort(t *testing.T) {
+	const mtu = ethernet.MaxMTU
+	const closeTimeout = 10 * time.Millisecond
+	tst := testerFrom(t, mtu)
+	cl, sv, _, svconn := newTCPStacks(t, 1, mtu)
+	newConn := func() *tcp.Conn {
+		conn := new(tcp.Conn)
+		buf := make([]byte, 2*mtu)
+		err := conn.Configure(tcp.ConnConfig{
+			RxBuf:             buf[:mtu],
+			TxBuf:             buf[mtu:],
+			TxPacketQueueSize: 4,
+			RWBackoff:         backoffYield,
+			CloseTimeout:      closeTimeout,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return conn
+	}
+	clconn := newConn()
+	tst.TestTCPSetupAndEstablish(sv, cl, svconn, clconn, 80, 1234)
+
+	buf := tst.buf[:cap(tst.buf)]
+	clconn.CloseRead()
+	clconn.Close()
+	if n, err := cl.EgressEthernet(buf); err != nil || n == 0 {
+		t.Fatalf("FIN not sent: n=%d err=%v", n, err)
+	}
+	// The FIN is dropped, so the conn stays closing and holds the only port slot.
+	raddr := netip.AddrPortFrom(netip.AddrFrom4(sv.Addr4()), 80)
+	if err := cl.DialTCP(newConn(), 1235, raddr); err != lneto.ErrExhausted {
+		t.Fatalf("dial while closing: got %v, want %v", err, lneto.ErrExhausted)
+	}
+
+	time.Sleep(2 * closeTimeout)
+	if _, err := cl.EgressEthernet(buf); err != nil {
+		t.Fatal(err)
+	}
+	if clconn.State() != tcp.StateClosed {
+		t.Fatalf("conn not aborted after close timeout, state %s", clconn.State())
+	}
+	if err := cl.DialTCP(newConn(), 1236, raddr); err != nil {
+		t.Fatalf("dial after close timeout: %v", err)
+	}
+}
