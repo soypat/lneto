@@ -16,6 +16,9 @@ import (
 )
 
 var (
+	_ lneto.ReaderBuffered = (*Conn)(nil)
+	_ lneto.ReaderBuffered = ConnHandle{}
+
 	errDeadlineExceeded = os.ErrDeadlineExceeded
 	errNoRemoteAddr     = errors.New("tcp: no remote address established")
 )
@@ -412,6 +415,77 @@ func (conn *Conn) read(handle uint32, b []byte) (int, error) {
 	return n, nil
 }
 
+// BufferedData implements [lneto.ReaderBuffered]. The slices point at unread
+// data, which the stack does not touch until it is discarded.
+func (conn *Conn) BufferedData() (data0, data1 []byte) {
+	return conn.bufferedData(conn.currentHandle())
+}
+
+// LinearizeInput implements [lneto.ReaderBuffered].
+func (conn *Conn) LinearizeInput() { conn.linearizeInput(conn.currentHandle()) }
+
+// DiscardInput implements [lneto.ReaderBuffered].
+func (conn *Conn) DiscardInput(n int) error { return conn.discardInput(conn.currentHandle(), n) }
+
+// WaitInput implements [lneto.ReaderBuffered]. It honors the read deadline.
+func (conn *Conn) WaitInput(n int) error { return conn.waitInput(conn.currentHandle(), n) }
+
+func (conn *Conn) bufferedData(handle uint32) (data0, data1 []byte) {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if handle != conn.h.handle.Load() {
+		return nil, nil
+	}
+	return conn.h.BufferedData()
+}
+
+func (conn *Conn) linearizeInput(handle uint32) {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if handle == conn.h.handle.Load() {
+		conn.h.LinearizeInput()
+	}
+}
+
+func (conn *Conn) discardInput(handle uint32, n int) error {
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if handle != conn.h.handle.Load() {
+		return net.ErrClosed
+	}
+	return conn.h.DiscardInput(n)
+}
+
+func (conn *Conn) waitInput(handle uint32, n int) error {
+	var backoffs uint
+	for {
+		conn.mu.Lock()
+		if handle != conn.h.handle.Load() {
+			conn.mu.Unlock()
+			return net.ErrClosed
+		} else if n > conn.h.SizeInput() {
+			conn.mu.Unlock()
+			return lneto.ErrBufferFull
+		} else if conn.h.BufferedInput() >= n {
+			conn.mu.Unlock()
+			return nil
+		}
+		state := conn.h.State()
+		rxRefuse := conn.h.shutdownRx
+		aborted := conn.h.isAborted()
+		conn.mu.Unlock()
+		if state.IsClosed() && aborted {
+			return net.ErrClosed
+		} else if !state.RxDataOpen() || rxRefuse {
+			return io.EOF
+		} else if conn.deadlineExceeded(&conn.rdead) {
+			return errDeadlineExceeded
+		}
+		conn.backoff(backoffs)
+		backoffs++
+	}
+}
+
 // currentHandle returns the connection handle of the current connection.
 // Methods taking a handle fail with [net.ErrClosed] once that connection ends.
 func (conn *Conn) currentHandle() uint32 {
@@ -637,6 +711,18 @@ func (p ConnHandle) Conn() *Conn { return p.c }
 
 // Read is [Conn.Read] bound to the connection handle.
 func (p ConnHandle) Read(b []byte) (int, error) { return p.c.read(p.handle, b) }
+
+// BufferedData is [Conn.BufferedData] bound to the connection handle.
+func (p ConnHandle) BufferedData() (data0, data1 []byte) { return p.c.bufferedData(p.handle) }
+
+// LinearizeInput is [Conn.LinearizeInput] bound to the connection handle.
+func (p ConnHandle) LinearizeInput() { p.c.linearizeInput(p.handle) }
+
+// DiscardInput is [Conn.DiscardInput] bound to the connection handle.
+func (p ConnHandle) DiscardInput(n int) error { return p.c.discardInput(p.handle, n) }
+
+// WaitInput is [Conn.WaitInput] bound to the connection handle.
+func (p ConnHandle) WaitInput(n int) error { return p.c.waitInput(p.handle, n) }
 
 // Write is [Conn.Write] bound to the connection handle.
 func (p ConnHandle) Write(b []byte) (int, error) { return p.c.write(p.handle, b) }

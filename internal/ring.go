@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"slices"
 	"unsafe"
 
 	"github.com/soypat/lneto"
@@ -216,6 +217,29 @@ func (r *Ring) read(b []byte) (n int, err error) {
 		n += n2
 	}
 	return n, nil
+}
+
+// Data returns the unread bytes without consuming them. d1 follows d0 when the data wraps.
+func (r *Ring) Data() (d0, d1 []byte) {
+	if r.IsEmpty() {
+		return nil, nil
+	} else if r.End > r.Off {
+		return r.Buf[r.Off:r.End], nil
+	}
+	return r.Buf[r.Off:], r.Buf[:r.End]
+}
+
+// Linearize rotates Buf so unread data starts at index 0. Rotating all of Buf
+// keeps bytes staged with [Ring.PeekWrite] at the same offset from the write position.
+func (r *Ring) Linearize() {
+	if r.Off == 0 {
+		return
+	}
+	buffered := r.Buffered()
+	slices.Reverse(r.Buf[:r.Off])
+	slices.Reverse(r.Buf[r.Off:])
+	slices.Reverse(r.Buf)
+	r.Off, r.End = 0, buffered
 }
 
 // Reset flushes all data from ring buffer so that no data can be further read.

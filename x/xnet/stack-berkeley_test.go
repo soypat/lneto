@@ -37,3 +37,29 @@ func TestStackBerkeley_ZeroDeadlineClears(t *testing.T) {
 		t.Fatalf("zero deadline did not clear: read %v write %v", c.read, c.write)
 	}
 }
+
+type bufferedConn struct{ deadlineConn }
+
+func (c *bufferedConn) BufferedData() (data0, data1 []byte) { return nil, nil }
+func (c *bufferedConn) LinearizeInput()                     {}
+func (c *bufferedConn) DiscardInput(n int) error            { return nil }
+func (c *bufferedConn) WaitInput(n int) error               { return nil }
+
+func TestStackBerkeley_BufferedReader(t *testing.T) {
+	var s StackBerkeley
+	const plain, buffered = 3, 4
+	s.conns = append(s.conns,
+		socket[net.Conn]{sockfd: plain, sock: &deadlineConn{}},
+		socket[net.Conn]{sockfd: buffered, sock: &bufferedConn{}},
+	)
+	if _, ok := s.BufferedReader(plain); ok {
+		t.Error("plain conn has no buffered reader")
+	}
+	if _, ok := s.BufferedReader(5); ok {
+		t.Error("unknown fd has no buffered reader")
+	}
+	if _, ok := s.BufferedReader(buffered); !ok {
+		t.Error("buffered conn not found")
+	}
+	var _ BufferedConn = tcpconn{}
+}

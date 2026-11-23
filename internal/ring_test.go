@@ -698,3 +698,50 @@ func TestRingPeekWriteSurvivesEmptyRead(t *testing.T) {
 	}
 	testRingSanity(t, r)
 }
+
+func TestRingDataLinearize(t *testing.T) {
+	const size = 8
+	for off := range size {
+		for n := 0; n <= size; n++ {
+			r := Ring{Buf: make([]byte, size)}
+			if off > 0 {
+				r.Write(make([]byte, off))
+				r.ReadDiscard(off)
+			}
+			data := []byte("abcdefgh")[:n]
+			if n > 0 {
+				if _, err := r.Write(data); err != nil {
+					t.Fatal(off, n, err)
+				}
+			}
+			d0, d1 := r.Data()
+			if got := append(append([]byte{}, d0...), d1...); !bytes.Equal(got, data) {
+				t.Fatalf("off=%d n=%d Data=%q want %q", off, n, got, data)
+			}
+			staged := []byte("XY")
+			canStage := r.Free() >= 1+len(staged)
+			if canStage && !r.PeekWrite(staged, 1) {
+				t.Fatal("PeekWrite failed")
+			}
+			r.Linearize()
+			d0, d1 = r.Data()
+			if len(d1) != 0 || !bytes.Equal(d0, data) {
+				t.Fatalf("off=%d n=%d after Linearize d0=%q d1=%q", off, n, d0, d1)
+			}
+			if r.Buffered() != n {
+				t.Fatalf("off=%d n=%d buffered=%d", off, n, r.Buffered())
+			}
+			if !canStage {
+				continue
+			}
+			r.Write([]byte{'_'})
+			r.Commit(len(staged))
+			want := string(data) + "_XY"
+			got := make([]byte, r.Buffered())
+			r.Read(got)
+			if string(got) != want {
+				t.Fatalf("off=%d n=%d staged read %q want %q", off, n, got, want)
+			}
+		}
+	}
+}

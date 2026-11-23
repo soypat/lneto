@@ -619,6 +619,22 @@ func (h *Handler) Read(b []byte) (n int, err error) {
 	return n, err
 }
 
+// BufferedData returns unread received bytes without consuming them. data1 follows data0 when the data wraps.
+func (h *Handler) BufferedData() (data0, data1 []byte) { return h.bufRx.Data() }
+
+// LinearizeInput moves unread received bytes so [Handler.BufferedData] returns them all in data0.
+func (h *Handler) LinearizeInput() { h.bufRx.Linearize() }
+
+// DiscardInput consumes n unread received bytes like a Read of n bytes.
+func (h *Handler) DiscardInput(n int) error {
+	if err := h.bufRx.ReadDiscard(n); err != nil {
+		return err
+	}
+	h.deliverReassembled()
+	h.maybeQueueWindowUpdate()
+	return nil
+}
+
 // maybeQueueWindowUpdate queues a window update ACK if the receive window has
 // opened significantly since it was last advertised. This prevents zero-window
 // deadlocks where the remote peer cannot send data because it thinks our window

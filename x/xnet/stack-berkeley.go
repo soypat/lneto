@@ -237,6 +237,24 @@ func (s *StackBerkeley) Recv(sockfd int, buf []byte, flags int, deadline time.Ti
 	return conn.sock.Read(buf)
 }
 
+// BufferedConn reads a connection's data in place. SetReadDeadline bounds WaitInput.
+type BufferedConn interface {
+	lneto.ReaderBuffered
+	SetReadDeadline(time.Time) error
+}
+
+// BufferedReader returns the in place reader of the connection sockfd, if it has one.
+func (s *StackBerkeley) BufferedReader(sockfd int) (BufferedConn, bool) {
+	s.mu.Lock()
+	conn := s.getConn(sockfd)
+	s.mu.Unlock()
+	if !conn.isvalid() {
+		return nil, false
+	}
+	rb, ok := conn.sock.(BufferedConn)
+	return rb, ok
+}
+
 // Close shuts down sockfd and releases its resources.
 func (s *StackBerkeley) Close(sockfd int) error {
 	// Do not lock on Close calls.
