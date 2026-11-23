@@ -90,6 +90,9 @@ type Conn struct {
 	transcript, mac hash.Hash
 	exch            []lcrypto.Exchanger
 
+	rb   lneto.ReaderBuffered // rw when it lets records be read in place.
+	held int                  // Bytes of the last record still unread in rb.
+
 	rbuf, hbuf, wbuf []byte
 	hsOff, hsEnd     int
 	app              []byte
@@ -166,8 +169,10 @@ func (c *Conn) Open(rw io.ReadWriter) error {
 		return lneto.ErrBadState
 	}
 	c.Zeroize()
-	// The ciphertext adds the inner content type, padding and tag, RFC 8446 5.2.
-	c.rbuf = reuse(c.rbuf, tlsraw.SizeHeaderRecord+c.cfg.MaxRecord+256)
+	c.rb, _ = rw.(lneto.ReaderBuffered)
+	if c.rb == nil {
+		c.rbuf = reuse(c.rbuf, c.sizeRbuf())
+	}
 	c.hbuf = reuse(c.hbuf, sizeHandshakeBuf)
 	c.wbuf = reuse(c.wbuf, sizeWriteBuf)
 	c.certBuf = reuse(c.certBuf, sizeCertBuf)
@@ -271,6 +276,7 @@ func (c *Conn) Zeroize() {
 	clear(c.clientAP[:])
 	clear(c.serverAP[:])
 	clear(c.verify[:])
+	c.releaseHeld()
 	clear(c.rbuf)
 	clear(c.hbuf)
 	clear(c.wbuf)
@@ -897,24 +903,14 @@ func (c *Conn) skipTickets(content []byte) error {
 }
 
 // readRecord reads one record and returns its content type and content, decrypted
-// once keys are installed. content points into rbuf and is valid until the next call.
+// once keys are installed. content points into rbuf or rb and is valid until the next call.
 func (c *Conn) readRecord() (tlsraw.ContentType, []byte, error) {
 	for dropped := 0; ; dropped++ {
-		hdr := c.rbuf[:tlsraw.SizeHeaderRecord]
-		if _, err := io.ReadFull(c.rw, hdr); err != nil {
-			if err == io.EOF {
-				err = io.ErrUnexpectedEOF // Only close_notify ends a connection cleanly, RFC 8446 6.1.
-			}
+		rec, err := c.nextRecord()
+		if err != nil {
 			return 0, nil, err
 		}
-		n := int(binary.BigEndian.Uint16(hdr[3:5]))
-		if n > tlsraw.MaxCiphertext || n > len(c.rbuf)-tlsraw.SizeHeaderRecord {
-			return 0, nil, alertError(tlsraw.AlertRecordOverflow)
-		}
-		rec := c.rbuf[:tlsraw.SizeHeaderRecord+n]
-		if _, err := io.ReadFull(c.rw, rec[tlsraw.SizeHeaderRecord:]); err != nil {
-			return 0, nil, err
-		}
+		n := len(rec) - tlsraw.SizeHeaderRecord
 		ct := tlsraw.ContentType(rec[0])
 		content := rec[tlsraw.SizeHeaderRecord:]
 		switch {
@@ -941,6 +937,81 @@ func (c *Conn) readRecord() (tlsraw.ContentType, []byte, error) {
 		}
 		return ct, content, nil
 	}
+}
+
+// nextRecord returns the next raw record. It is read in place from rb when the
+// record fits there and copied into rbuf otherwise.
+func (c *Conn) nextRecord() ([]byte, error) {
+	if c.rb == nil {
+		return c.copyRecord()
+	} else if err := c.releaseHeld(); err != nil {
+		return nil, err
+	} else if err = c.rb.WaitInput(tlsraw.SizeHeaderRecord); err != nil {
+		return nil, unexpectedEOF(err)
+	}
+	var hdr [tlsraw.SizeHeaderRecord]byte
+	d0, d1 := c.rb.BufferedData()
+	copy(hdr[copy(hdr[:], d0):], d1)
+	size := tlsraw.SizeHeaderRecord + int(binary.BigEndian.Uint16(hdr[3:5]))
+	if size > c.sizeRbuf() {
+		return nil, alertError(tlsraw.AlertRecordOverflow)
+	}
+	err := c.rb.WaitInput(size)
+	if errors.Is(err, lneto.ErrBufferFull) {
+		return c.copyRecord()
+	} else if err != nil {
+		return nil, unexpectedEOF(err)
+	}
+	d0, _ = c.rb.BufferedData()
+	if len(d0) < size {
+		c.rb.LinearizeInput()
+		d0, _ = c.rb.BufferedData()
+	}
+	c.held = size
+	return d0[:size], nil
+}
+
+func (c *Conn) copyRecord() ([]byte, error) {
+	c.rbuf = reuse(c.rbuf, c.sizeRbuf())
+	hdr := c.rbuf[:tlsraw.SizeHeaderRecord]
+	if _, err := io.ReadFull(c.rw, hdr); err != nil {
+		return nil, unexpectedEOF(err)
+	}
+	size := tlsraw.SizeHeaderRecord + int(binary.BigEndian.Uint16(hdr[3:5]))
+	if size > len(c.rbuf) {
+		return nil, alertError(tlsraw.AlertRecordOverflow)
+	}
+	rec := c.rbuf[:size]
+	if _, err := io.ReadFull(c.rw, rec[tlsraw.SizeHeaderRecord:]); err != nil {
+		return nil, err
+	}
+	return rec, nil
+}
+
+// releaseHeld wipes the last record read in place, which may be plaintext, and consumes it.
+func (c *Conn) releaseHeld() error {
+	n := c.held
+	if n == 0 {
+		return nil
+	}
+	c.held = 0
+	d0, d1 := c.rb.BufferedData()
+	k := min(n, len(d0))
+	clear(d0[:k])
+	clear(d1[:min(n-k, len(d1))])
+	return c.rb.DiscardInput(n)
+}
+
+// sizeRbuf fits the largest record accepted. The ciphertext adds the inner content type, padding and tag, RFC 8446 5.2.
+func (c *Conn) sizeRbuf() int {
+	return tlsraw.SizeHeaderRecord + c.cfg.MaxRecord + 256
+}
+
+func unexpectedEOF(err error) error {
+	if err == io.EOF {
+		return io.ErrUnexpectedEOF // Only close_notify ends a connection cleanly, RFC 8446 6.1.
+	}
+	return err
 }
 
 func (c *Conn) handleAlert(content []byte) error {
