@@ -129,7 +129,7 @@ func (h *handler) RecvFrom(r io.Reader) (int, error) {
 
 // Send copies queued ciphertext into dst.
 func (h *handler) Send(dst []byte) (int, error) {
-	if err := h.startHello(); err != nil {
+	if err := h.start(); err != nil {
 		return 0, err
 	}
 	n := copy(dst, h.cfg.WriteBuf[h.sent:h.queued])
@@ -139,7 +139,7 @@ func (h *handler) Send(dst []byte) (int, error) {
 
 // SendTo writes queued ciphertext to w in one call.
 func (h *handler) SendTo(w io.Writer) (int, error) {
-	if err := h.startHello(); err != nil {
+	if err := h.start(); err != nil {
 		return 0, err
 	} else if h.sent == h.queued {
 		return 0, nil
@@ -149,14 +149,26 @@ func (h *handler) SendTo(w io.Writer) (int, error) {
 	return n, err
 }
 
-// startHello queues the ClientHello once per Open.
-func (h *handler) startHello() error {
-	if h.state != stateHandshake || h.hs.state != hsIdle {
+// start queues a flight the handshake has before any message arrives, which
+// is the ClientHello after Open. It fails h on error.
+func (h *handler) start() error {
+	if h.state != stateHandshake {
+		return nil
+	} else if err := h.speak(); err != nil {
+		return h.fail(err)
+	}
+	return nil
+}
+
+// speak queues the handshake's next flight if it has one. The encoder is only
+// built then: it compacts WriteBuf, which the ClientHello view points into.
+func (h *handler) speak() error {
+	if !h.hs.wantFlight() {
 		return nil
 	}
 	e := h.encoder()
-	if err := h.hs.writeHello(&e); err != nil {
-		return h.fail(err)
+	if err := h.hs.writeFlight(&h.keys, &e); err != nil {
+		return err
 	}
 	return h.commit(&e)
 }
@@ -345,7 +357,8 @@ func (h *handler) dispatch(ct tlsraw.ContentType, content []byte) error {
 }
 
 // recvHandshake reassembles handshake content and runs the handshake over every
-// complete message, queuing the client flight once the server's Finished is verified.
+// complete message, queuing each flight the handshake answers with. h is
+// connected once the handshake is done.
 func (h *handler) recvHandshake(content []byte) error {
 	if h.hr.Write(content) != nil {
 		return alertError(tlsraw.AlertRecordOverflow)
@@ -359,21 +372,15 @@ func (h *handler) recvHandshake(content []byte) error {
 		}
 		if err = h.hs.handle(&h.keys, msg, h.hr.Pending()); err != nil {
 			return err
-		}
-		if h.hs.wantFlight() {
-			e := h.encoder()
-			if err = h.hs.writeFlight(&h.keys, &e); err != nil {
-				return err
-			} else if err = h.commit(&e); err != nil {
-				return err
-			}
-			h.state = stateConnected
-			// Only tickets follow, and Discard reads them without a buffer, so wipe the handshake buffer.
-			h.hs.zeroize()
-			clear(h.cfg.HandshakeBuf)
-			h.hr.Reset(nil)
+		} else if err = h.speak(); err != nil {
+			return err
 		}
 	}
+	h.state = stateConnected
+	// Discard reads post-handshake messages without a buffer, so wipe the handshake buffer.
+	h.hs.zeroize()
+	clear(h.cfg.HandshakeBuf)
+	h.hr.Reset(nil)
 	return nil
 }
 

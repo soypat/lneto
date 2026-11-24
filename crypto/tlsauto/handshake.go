@@ -29,20 +29,6 @@ var helloRetryRandom = [32]byte{
 	0xc2, 0xa2, 0x11, 0x16, 0x7a, 0xbb, 0x8c, 0x5e, 0x07, 0x9e, 0x09, 0xe2, 0xc8, 0xa8, 0x33, 0x9c,
 }
 
-type hsState uint8
-
-const (
-	hsIdle hsState = iota // Nothing sent.
-	hsWaitServerHello
-	hsWaitEncryptedExtensions
-	hsWaitCertOrRequest
-	hsWaitCertificate // After CertificateRequest.
-	hsWaitCertVerify
-	hsWaitFinished
-	hsWantFlight // Server Finished verified, client flight not yet written.
-	hsDone
-)
-
 // recordKeys is the record protection of both directions. The handshake installs
 // keys into it, and the handler seals and opens with it.
 type recordKeys struct {
@@ -59,46 +45,49 @@ func (rk *recordKeys) zeroize() {
 	}
 }
 
-// clientHandshake is the client side of the RFC 8446 handshake with no I/O and
-// no record layer, the role tcp.ControlBlock plays. It consumes whole handshake
-// messages and writes the client's messages to an Encoder.
-type clientHandshake struct {
-	cfg        *Config // The handler's copy, set by configure.
-	serverName []byte  // cfg.ServerName converted once for Verifier.VerifyPeer.
-	exch       []lcrypto.Exchanger
-	state      hsState
-	vld        lneto.Validator
+// handshakeCommon is the part of the RFC 8446 handshake both roles share: the
+// key schedule and the authentication messages of 4.4 (Certificate,
+// CertificateVerify and Finished), which are the same in either direction.
+// Secrets are named own and peer instead of client and server, so only the key
+// schedule calls depend on the role. The order of messages and the hellos are
+// not shared: each role's handshake embeds handshakeCommon and drives it.
+type handshakeCommon struct {
+	cfg  *Config // The handler's copy, set by configure.
+	exch []lcrypto.Exchanger
+	vld  lneto.Validator
+	// peerIsServer is true on the client. It picks how the key schedule's
+	// secrets map to own and peer, the CertificateVerify contexts and the Verifier's role.
+	peerIsServer bool
+	// peerName is the identity Verifier checks the peer's leaf against: cfg.ServerName on the client.
+	peerName []byte
 
 	suite           *Suite
 	ks              tlsraw.KeySchedule
 	transcript, mac hash.Hash
-	// clientHello points into the handler's WriteBuf until ServerHello picks
-	// the transcript hash. Nothing else is encoded in that window.
-	clientHello []byte
-	// alpnOK reports that the server selected cfg.ALPN, the only acceptable answer.
+	// alpnOK reports that cfg.ALPN was negotiated, the only acceptable protocol.
 	alpnOK bool
 
-	certReq     bool
-	reqCtx      [maxRequestCtx]byte
-	reqCtxLen   uint8
+	// peerSchemes is the peer's signature_algorithms: what it accepts in our CertificateVerify.
 	peerSchemes [maxOfferedScheme]uint16
 	nPeerScheme uint8
-	// certBuf keeps the server Certificate, since the HandshakeReader moves its
+	// certBuf keeps the peer's Certificate, since the HandshakeReader moves its
 	// bytes before CertificateVerify arrives.
 	certBuf []byte
 	chain   peerChain
 
-	cv                 [sizeCVPrefix + maxHashSize]byte
-	shared             [maxShared]byte
-	clientHS, serverHS [maxHashSize]byte
-	clientAP, serverAP [maxHashSize]byte
-	verify             [maxHashSize]byte
+	cv            [sizeCVPrefix + maxHashSize]byte
+	shared        [maxShared]byte
+	ownHS, peerHS [maxHashSize]byte // Handshake traffic secrets.
+	ownAP, peerAP [maxHashSize]byte // Application traffic secrets.
+	verify        [maxHashSize]byte
 }
 
-// configure binds cfg and builds one Exchanger per key exchange.
-func (hs *clientHandshake) configure(cfg *Config) {
+// configure binds cfg and the role, and builds one Exchanger per key exchange.
+// It clears peerName, which the role sets after.
+func (hs *handshakeCommon) configure(cfg *Config, peerIsServer bool) {
 	hs.cfg = cfg
-	hs.serverName = []byte(cfg.ServerName)
+	hs.peerIsServer = peerIsServer
+	hs.peerName = nil
 	hs.exch = hs.exch[:0]
 	for _, g := range cfg.KeyExchanges {
 		hs.exch = append(hs.exch, g.NewExchanger())
@@ -106,82 +95,32 @@ func (hs *clientHandshake) configure(cfg *Config) {
 	hs.suite, hs.transcript, hs.mac = nil, nil, nil
 }
 
-// reset wipes secrets and scratch and returns to hsIdle. It keeps cfg, exch and serverName.
-func (hs *clientHandshake) reset(certBuf []byte) {
+// reset wipes secrets and negotiated state for a new handshake that keeps the
+// peer's Certificate in certBuf. It keeps cfg, exch, the role and peerName.
+func (hs *handshakeCommon) reset(certBuf []byte) {
 	hs.zeroize()
-	hs.state = hsIdle
 	hs.vld.ResetErr()
 	hs.suite, hs.transcript, hs.mac = nil, nil, nil
-	hs.alpnOK, hs.certReq = false, false
-	hs.reqCtxLen, hs.nPeerScheme = 0, 0
+	hs.alpnOK = false
+	hs.nPeerScheme = 0
 	hs.certBuf = certBuf
 }
 
-// zeroize wipes key shares, secrets and the peer chain. It keeps state and alpnOK.
-func (hs *clientHandshake) zeroize() {
+// zeroize wipes key shares, secrets and the peer chain. It keeps negotiated state such as alpnOK.
+func (hs *handshakeCommon) zeroize() {
 	hs.ks.Zeroize()
 	for _, x := range hs.exch {
 		x.Zeroize()
 	}
 	clear(hs.cv[:])
 	clear(hs.shared[:])
-	clear(hs.clientHS[:])
-	clear(hs.serverHS[:])
-	clear(hs.clientAP[:])
-	clear(hs.serverAP[:])
+	clear(hs.ownHS[:])
+	clear(hs.peerHS[:])
+	clear(hs.ownAP[:])
+	clear(hs.peerAP[:])
 	clear(hs.verify[:])
 	clear(hs.certBuf)
 	hs.chain = peerChain{}
-	hs.clientHello = nil
-}
-
-func (hs *clientHandshake) done() bool       { return hs.state == hsDone }
-func (hs *clientHandshake) wantFlight() bool { return hs.state == hsWantFlight }
-
-// handle consumes one handshake message with its header. It installs keys into rk
-// on ServerHello and server Finished. pending reports more buffered handshake
-// bytes, which RFC 8446 5.1 forbids at both key changes.
-func (hs *clientHandshake) handle(rk *recordKeys, msg []byte, pending bool) error {
-	typ := tlsraw.HandshakeType(msg[0])
-	var err error
-	switch hs.state {
-	case hsWaitServerHello:
-		if err = expect(typ, tlsraw.HandshakeTypeServerHello, pending); err == nil {
-			err = hs.handleServerHello(rk, msg)
-		}
-		hs.state = hsWaitEncryptedExtensions
-	case hsWaitEncryptedExtensions:
-		if err = expect(typ, tlsraw.HandshakeTypeEncryptedExtensions, false); err == nil {
-			err = hs.handleEncryptedExtensions(msg)
-		}
-		hs.state = hsWaitCertOrRequest
-	case hsWaitCertOrRequest:
-		if typ == tlsraw.HandshakeTypeCertificateRequest {
-			err = hs.handleCertificateRequest(msg)
-			hs.state = hsWaitCertificate
-			break
-		}
-		err = hs.handleCertificate(msg)
-		hs.state = hsWaitCertVerify
-	case hsWaitCertificate:
-		if err = expect(typ, tlsraw.HandshakeTypeCertificate, false); err == nil {
-			err = hs.handleCertificate(msg)
-		}
-		hs.state = hsWaitCertVerify
-	case hsWaitCertVerify:
-		if err = expect(typ, tlsraw.HandshakeTypeCertificateVerify, false); err == nil {
-			err = hs.handleCertificateVerify(msg)
-		}
-		hs.state = hsWaitFinished
-	case hsWaitFinished:
-		if err = expect(typ, tlsraw.HandshakeTypeFinished, pending); err == nil {
-			err = hs.handleServerFinished(rk, msg)
-		}
-		hs.state = hsWantFlight
-	default:
-		err = alertError(tlsraw.AlertUnexpectedMessage)
-	}
-	return err
 }
 
 // expect rejects a message of the wrong type, or one followed by buffered
@@ -193,199 +132,14 @@ func expect(got, want tlsraw.HandshakeType, pendingAtKeyChange bool) error {
 	return nil
 }
 
-// writeHello encodes the ClientHello record into e and keeps a view of it.
-func (hs *clientHandshake) writeHello(e *tlsraw.Encoder) error {
-	cfg := hs.cfg
-	rec := e.StartRecord(tlsraw.ContentTypeHandshake)
-	msg := e.StartMessage(tlsraw.HandshakeTypeClientHello)
-	e.Uint16(tlsraw.VersionTLS12)
-	random := e.Reserve(tlsraw.SizeHelloRandom)
-	if random == nil {
-		return e.Err()
-	} else if _, err := io.ReadFull(cfg.Rand, random); err != nil {
-		return err
-	}
-	e.Uint8(0) // Empty legacy_session_id, so no middlebox compatibility mode.
-	list := e.Open(2)
-	for _, s := range cfg.Suites {
-		e.Uint16(s.ID)
-	}
-	e.Close(list, 2)
-	e.Uint8(1)
-	e.Uint8(0)
-	exts := e.Open(2)
-
-	ext := startExt(e, tlsraw.ExtSupportedVersions)
-	e.Uint8(2)
-	e.Uint16(tlsraw.VersionTLS13)
-	e.Close(ext, 2)
-
-	ext = startExt(e, tlsraw.ExtSupportedGroups)
-	list = e.Open(2)
-	for _, g := range cfg.KeyExchanges {
-		e.Uint16(g.ID)
-	}
-	e.Close(list, 2)
-	e.Close(ext, 2)
-
-	ext = startExt(e, tlsraw.ExtSignatureAlgorithms)
-	list = e.Open(2)
-	for _, s := range cfg.Schemes {
-		e.Uint16(s)
-	}
-	e.Close(list, 2)
-	e.Close(ext, 2)
-
-	ext = startExt(e, tlsraw.ExtKeyShare)
-	list = e.Open(2)
-	for i, g := range cfg.KeyExchanges {
-		e.Uint16(g.ID)
-		key := e.Open(2)
-		share := e.Reserve(g.ClientShareLen)
-		if share == nil {
-			return e.Err()
-		}
-		n, err := hs.exch[i].ClientGenerateRekey(share, cfg.Rand)
-		if err != nil {
-			return err
-		} else if n != g.ClientShareLen {
-			return errNoConfig
-		}
-		e.Close(key, 2)
-	}
-	e.Close(list, 2)
-	e.Close(ext, 2)
-
-	if cfg.ALPN != "" {
-		ext = startExt(e, tlsraw.ExtALPN)
-		list = e.Open(2)
-		name := e.Open(1)
-		e.Bytes([]byte(cfg.ALPN))
-		e.Close(name, 1)
-		e.Close(list, 2)
-		e.Close(ext, 2)
-	}
-	if cfg.ServerName != "" {
-		ext = startExt(e, tlsraw.ExtServerName)
-		list = e.Open(2)
-		e.Uint8(0) // host_name
-		name := e.Open(2)
-		e.Bytes(hs.serverName)
-		e.Close(name, 2)
-		e.Close(list, 2)
-		e.Close(ext, 2)
-	}
-	e.Close(exts, 2)
-	// Kept in WriteBuf until the suite, and so the transcript hash, is known.
-	hs.clientHello = e.EndMessage(msg)
-	e.EndRecord(rec)
-	if err := e.Err(); err != nil {
-		return err
-	}
-	hs.state = hsWaitServerHello
-	return nil
-}
-
 func startExt(e *tlsraw.Encoder, typ tlsraw.ExtensionType) int {
 	e.Uint16(uint16(typ))
 	return e.Open(2)
 }
 
-func (hs *clientHandshake) handleServerHello(rk *recordKeys, msg []byte) error {
-	cfg := hs.cfg
-	var sh tlsraw.HelloServerMsg
-	body := msg[tlsraw.SizeHeaderHandshake:]
-	n, err := sh.Decode(body)
-	if err != nil || n != len(body) {
-		return alertError(tlsraw.AlertDecodeError)
-	}
-	if binary.BigEndian.Uint16(body) != tlsraw.VersionTLS12 {
-		return alertError(tlsraw.AlertProtocolVersion)
-	} else if *sh.Random() == helloRetryRandom {
-		return errHelloRetry
-	} else if len(sh.SessionID()) != 0 || sh.Compression() != 0 {
-		return alertError(tlsraw.AlertIllegalParameter)
-	}
-	suite := -1
-	for i := range cfg.Suites {
-		if cfg.Suites[i].ID == uint16(sh.CipherSuite()) {
-			suite = i
-			break
-		}
-	}
-	if suite < 0 {
-		return alertError(tlsraw.AlertIllegalParameter)
-	}
-	var tls13 bool
-	var group uint16
-	var share []byte
-	var seen uint64
-	for exts := sh.Extensions(); len(exts) > 0; {
-		ef, err := tlsraw.NewExtensionFrame(exts)
-		if err != nil {
-			return alertError(tlsraw.AlertDecodeError)
-		}
-		exts = exts[len(ef.RawData()):]
-		if err := hs.checkExt(ef, &seen); err != nil {
-			return err
-		}
-		switch ef.Type() {
-		case tlsraw.ExtSupportedVersions:
-			tls13 = binary.BigEndian.Uint16(ef.Data()) == tlsraw.VersionTLS13
-		case tlsraw.ExtKeyShare:
-			g, key, _, err := tlsraw.NextKeyShare(ef.Data(), true)
-			if err != nil || key == nil {
-				return alertError(tlsraw.AlertIllegalParameter)
-			}
-			group, share = uint16(g), key
-		default:
-			return alertError(tlsraw.AlertUnsupportedExtension)
-		}
-	}
-	if !tls13 {
-		return alertError(tlsraw.AlertProtocolVersion)
-	} else if share == nil {
-		return alertError(tlsraw.AlertMissingExtension)
-	}
-	gi := -1
-	for i := range cfg.KeyExchanges {
-		if cfg.KeyExchanges[i].ID == group {
-			gi = i
-			break
-		}
-	}
-	if gi < 0 || len(share) != cfg.KeyExchanges[gi].ServerShareLen {
-		return alertError(tlsraw.AlertIllegalParameter)
-	}
-	if err := hs.useSuite(rk, suite); err != nil {
-		return err
-	} else if err := hs.ks.Configure(hs.transcript, hs.mac, true); err != nil {
-		return err
-	}
-	hs.ks.AddMessage(hs.clientHello)
-	hs.ks.AddMessage(msg)
-	hs.clientHello = nil
-
-	g := &cfg.KeyExchanges[gi]
-	n, err = hs.exch[gi].ClientShared(hs.shared[:g.SharedLen], share)
-	if err != nil || n != g.SharedLen {
-		return alertError(tlsraw.AlertIllegalParameter)
-	}
-	for _, x := range hs.exch {
-		x.Zeroize()
-	}
-	size := hs.ks.Size()
-	hs.ks.Handshake(hs.clientHS[:size], hs.serverHS[:size], hs.shared[:g.SharedLen])
-	clear(hs.shared[:])
-	if err := hs.setKeys(&rk.in, rk.aeadIn, hs.serverHS[:size]); err != nil {
-		return err
-	}
-	return hs.setKeys(&rk.out, rk.aeadOut, hs.clientHS[:size])
-}
-
-// checkExt validates the shape of a server extension and rejects duplicates.
-func (hs *clientHandshake) checkExt(ef tlsraw.ExtensionFrame, seen *uint64) error {
-	ef.ValidateType(&hs.vld, true)
+// checkExt validates the shape of an extension the peer sent and rejects duplicates.
+func (hs *handshakeCommon) checkExt(ef tlsraw.ExtensionFrame, seen *uint64) error {
+	ef.ValidateType(&hs.vld, hs.peerIsServer)
 	if hs.vld.HasError() {
 		hs.vld.ResetErr()
 		return alertError(tlsraw.AlertDecodeError)
@@ -399,7 +153,8 @@ func (hs *clientHandshake) checkExt(ef tlsraw.ExtensionFrame, seen *uint64) erro
 	return nil
 }
 
-func (hs *clientHandshake) useSuite(rk *recordKeys, i int) error {
+// useSuite selects cfg.Suites[i]: it builds the AEADs and hashes and starts the key schedule.
+func (hs *handshakeCommon) useSuite(rk *recordKeys, i int) error {
 	s := &hs.cfg.Suites[i]
 	rk.aeadIn, rk.aeadOut = s.NewAEAD(), s.NewAEAD()
 	hs.transcript, hs.mac = s.NewHash(), s.NewHash()
@@ -407,92 +162,68 @@ func (hs *clientHandshake) useSuite(rk *recordKeys, i int) error {
 		return lneto.ErrUnsupported
 	}
 	hs.suite = s
-	return nil
+	return hs.ks.Configure(hs.transcript, hs.mac, true)
 }
 
-func (hs *clientHandshake) handleEncryptedExtensions(msg []byte) error {
-	body := msg[tlsraw.SizeHeaderHandshake:]
-	if len(body) < 2 || int(binary.BigEndian.Uint16(body)) != len(body)-2 {
-		return alertError(tlsraw.AlertDecodeError)
+// installHandshakeKeys advances the key schedule with the shared secret in
+// hs.shared[:n], which it wipes, and installs the handshake traffic keys of
+// both directions. The transcript must end at ServerHello.
+func (hs *handshakeCommon) installHandshakeKeys(rk *recordKeys, n int) error {
+	size := hs.ks.Size()
+	own, peer := hs.ownHS[:size], hs.peerHS[:size]
+	if hs.peerIsServer {
+		hs.ks.Handshake(own, peer, hs.shared[:n])
+	} else {
+		hs.ks.Handshake(peer, own, hs.shared[:n])
 	}
-	alpn := hs.cfg.ALPN
-	var seen uint64
-	for exts := body[2:]; len(exts) > 0; {
-		ef, err := tlsraw.NewExtensionFrame(exts)
-		if err != nil {
-			return alertError(tlsraw.AlertDecodeError)
-		}
-		exts = exts[len(ef.RawData()):]
-		if err := hs.checkExt(ef, &seen); err != nil {
-			return err
-		}
-		switch ef.Type() {
-		case tlsraw.ExtALPN:
-			name := ef.Data()[3:]
-			if alpn == "" || string(name) != alpn {
-				return alertError(tlsraw.AlertIllegalParameter)
-			}
-			hs.alpnOK = true
-		case tlsraw.ExtKeyShare, tlsraw.ExtSupportedVersions, tlsraw.ExtSignatureAlgorithms,
-			tlsraw.ExtPreSharedKey, tlsraw.ExtCookie, tlsraw.ExtPSKKeyExchangeModes:
-			// RFC 8446 4.2: not allowed in EncryptedExtensions.
-			return alertError(tlsraw.AlertIllegalParameter)
-		}
+	clear(hs.shared[:])
+	if err := hs.setKeys(&rk.in, rk.aeadIn, peer); err != nil {
+		return err
 	}
-	if alpn != "" && !hs.alpnOK {
-		return alertError(tlsraw.AlertNoApplicationProtocol)
-	}
-	hs.ks.AddMessage(msg)
-	return nil
+	return hs.setKeys(&rk.out, rk.aeadOut, own)
 }
 
-func (hs *clientHandshake) handleCertificateRequest(msg []byte) error {
-	body := msg[tlsraw.SizeHeaderHandshake:]
-	if len(body) < 1 {
-		return alertError(tlsraw.AlertDecodeError)
+// deriveMaster advances to the master secret and writes the application traffic
+// secrets to ownAP and peerAP. The transcript must end at the server Finished.
+func (hs *handshakeCommon) deriveMaster() {
+	size := hs.ks.Size()
+	own, peer := hs.ownAP[:size], hs.peerAP[:size]
+	if hs.peerIsServer {
+		hs.ks.Master(own, peer)
+	} else {
+		hs.ks.Master(peer, own)
 	}
-	ctxLen := int(body[0])
-	body = body[1:]
-	if len(body) < ctxLen+2 {
-		return alertError(tlsraw.AlertDecodeError)
-	}
-	hs.reqCtxLen = uint8(copy(hs.reqCtx[:], body[:ctxLen]))
-	body = body[ctxLen:]
-	if int(binary.BigEndian.Uint16(body)) != len(body)-2 {
-		return alertError(tlsraw.AlertDecodeError)
-	}
-	var seen uint64
-	var schemes []byte
-	for exts := body[2:]; len(exts) > 0; {
-		ef, err := tlsraw.NewExtensionFrame(exts)
-		if err != nil {
-			return alertError(tlsraw.AlertDecodeError)
-		}
-		exts = exts[len(ef.RawData()):]
-		if err := hs.checkExt(ef, &seen); err != nil {
-			return err
-		}
-		if ef.Type() == tlsraw.ExtSignatureAlgorithms {
-			schemes = ef.Data()[2:]
-		}
-	}
-	if schemes == nil {
-		return alertError(tlsraw.AlertMissingExtension)
-	}
-	hs.nPeerScheme = 0
-	for i := 0; i+1 < len(schemes) && int(hs.nPeerScheme) < len(hs.peerSchemes); i += 2 {
-		hs.peerSchemes[hs.nPeerScheme] = binary.BigEndian.Uint16(schemes[i:])
-		hs.nPeerScheme++
-	}
-	hs.certReq = true
-	hs.ks.AddMessage(msg)
-	return nil
 }
 
-func (hs *clientHandshake) handleCertificate(msg []byte) error {
-	if tlsraw.HandshakeType(msg[0]) != tlsraw.HandshakeTypeCertificate {
-		return alertError(tlsraw.AlertUnexpectedMessage)
+func (hs *handshakeCommon) setKeys(hc *tlsraw.HalfConn, aead lcrypto.AEADCipher, secret []byte) error {
+	return hs.ks.InstallKeys(hc, aead, hs.suite.KeyLen, secret)
+}
+
+// cvContexts returns the CertificateVerify context strings of RFC 8446 4.4.3
+// that this side and its peer sign with.
+func (hs *handshakeCommon) cvContexts() (own, peer string) {
+	if hs.peerIsServer {
+		return clientCVContext, serverCVContext
 	}
+	return serverCVContext, clientCVContext
+}
+
+// cvContent builds the signed content of RFC 8446 4.4.3 for the transcript so far.
+func (hs *handshakeCommon) cvContent(context string) []byte {
+	for i := range 64 {
+		hs.cv[i] = 0x20
+	}
+	copy(hs.cv[64:], context)
+	hs.cv[sizeCVPrefix-1] = 0
+	signed := hs.cv[:sizeCVPrefix+hs.ks.Size()]
+	hs.ks.TranscriptHash(signed[sizeCVPrefix:])
+	return signed
+}
+
+// readCertificate copies the peer's Certificate message, RFC 8446 4.4.2, into
+// certBuf and views its chain. Its certificate_request_context must be empty,
+// as RFC 8446 4.3.2 requires outside post-handshake authentication.
+func (hs *handshakeCommon) readCertificate(msg []byte) error {
 	body := msg[tlsraw.SizeHeaderHandshake:]
 	if len(body) > len(hs.certBuf) {
 		return alertError(tlsraw.AlertBadCertificate)
@@ -536,7 +267,9 @@ func (hs *clientHandshake) handleCertificate(msg []byte) error {
 	return nil
 }
 
-func (hs *clientHandshake) handleCertificateVerify(msg []byte) error {
+// readCertificateVerify has Verifier check the peer's chain and its signature
+// over the transcript so far, RFC 8446 4.4.3, made with a scheme this side offered.
+func (hs *handshakeCommon) readCertificateVerify(msg []byte) error {
 	body := msg[tlsraw.SizeHeaderHandshake:]
 	if len(body) < 4 || int(binary.BigEndian.Uint16(body[2:])) != len(body)-4 {
 		return alertError(tlsraw.AlertDecodeError)
@@ -545,8 +278,9 @@ func (hs *clientHandshake) handleCertificateVerify(msg []byte) error {
 	if !hasScheme(hs.cfg.Schemes, scheme) || legacyScheme(scheme) {
 		return alertError(tlsraw.AlertIllegalParameter)
 	}
-	signed := hs.cvContent(serverCVContext)
-	err := hs.cfg.Verifier.VerifyPeer(&hs.chain, scheme, true, hs.serverName, signed, body[4:])
+	_, peerContext := hs.cvContexts()
+	signed := hs.cvContent(peerContext)
+	err := hs.cfg.Verifier.VerifyPeer(&hs.chain, scheme, hs.peerIsServer, hs.peerName, signed, body[4:])
 	if err != nil {
 		return verifyError{err}
 	}
@@ -554,21 +288,11 @@ func (hs *clientHandshake) handleCertificateVerify(msg []byte) error {
 	return nil
 }
 
-// cvContent builds the signed content of RFC 8446 4.4.3 for the transcript so far.
-func (hs *clientHandshake) cvContent(context string) []byte {
-	for i := range 64 {
-		hs.cv[i] = 0x20
-	}
-	copy(hs.cv[64:], context)
-	hs.cv[sizeCVPrefix-1] = 0
-	signed := hs.cv[:sizeCVPrefix+hs.ks.Size()]
-	hs.ks.TranscriptHash(signed[sizeCVPrefix:])
-	return signed
-}
-
-func (hs *clientHandshake) handleServerFinished(rk *recordKeys, msg []byte) error {
+// readFinished checks the peer's Finished, RFC 8446 4.4.4, against its
+// handshake traffic secret, which it then wipes.
+func (hs *handshakeCommon) readFinished(msg []byte) error {
 	size := hs.ks.Size()
-	hs.ks.Finished(hs.verify[:size], hs.serverHS[:size])
+	hs.ks.Finished(hs.verify[:size], hs.peerHS[:size])
 	got := msg[tlsraw.SizeHeaderHandshake:]
 	if len(got) != size {
 		return alertError(tlsraw.AlertDecodeError)
@@ -576,84 +300,82 @@ func (hs *clientHandshake) handleServerFinished(rk *recordKeys, msg []byte) erro
 		return alertError(tlsraw.AlertDecryptError)
 	}
 	hs.ks.AddMessage(msg)
-	hs.ks.Master(hs.clientAP[:size], hs.serverAP[:size])
-	clear(hs.serverHS[:])
-	return hs.setKeys(&rk.in, rk.aeadIn, hs.serverAP[:size])
+	clear(hs.peerHS[:])
+	return nil
 }
 
-// writeFlight encodes Certificate, CertificateVerify and Finished in one record
-// sealed with rk.out, then installs the client application keys.
-func (hs *clientHandshake) writeFlight(rk *recordKeys, e *tlsraw.Encoder) error {
-	size := hs.ks.Size()
-	rec := e.StartRecord(tlsraw.ContentTypeApplicationData)
-	if hs.certReq {
-		peerSchemes := hs.peerSchemes[:hs.nPeerScheme]
-		var scheme uint16
+// ownScheme returns the scheme cfg.Credential signs CertificateVerify with, chosen
+// from those the peer accepts, or 0 when there is no usable credential.
+func (hs *handshakeCommon) ownScheme() uint16 {
+	cred := hs.cfg.Credential
+	if cred == nil || cred.NumCerts() == 0 {
+		return 0
+	}
+	accepted := hs.peerSchemes[:hs.nPeerScheme]
+	scheme := cred.Scheme(accepted)
+	if legacyScheme(scheme) || !hasScheme(accepted, scheme) {
+		return 0
+	}
+	return scheme
+}
+
+// writeCertificate encodes a Certificate message, RFC 8446 4.4.2, carrying
+// cfg.Credential's chain, or no certificates when withChain is false, and adds
+// it to the transcript.
+func (hs *handshakeCommon) writeCertificate(e *tlsraw.Encoder, reqCtx []byte, withChain bool) error {
+	msg := e.StartMessage(tlsraw.HandshakeTypeCertificate)
+	e.Uint8(uint8(len(reqCtx)))
+	e.Bytes(reqCtx)
+	list := e.Open(3)
+	if withChain {
 		cred := hs.cfg.Credential
-		if cred != nil && cred.NumCerts() > 0 {
-			scheme = cred.Scheme(peerSchemes)
-			if legacyScheme(scheme) || !hasScheme(peerSchemes, scheme) {
-				scheme = 0
-			}
-		}
-		msg := e.StartMessage(tlsraw.HandshakeTypeCertificate)
-		e.Uint8(hs.reqCtxLen)
-		e.Bytes(hs.reqCtx[:hs.reqCtxLen])
-		list := e.Open(3)
-		if scheme != 0 {
-			for i := range cred.NumCerts() {
-				data := e.Open(3)
-				n, err := cred.Cert(e.Rest(), i)
-				if err != nil {
-					return err
-				}
-				e.Advance(n)
-				e.Close(data, 3)
-				e.Uint16(0)
-			}
-		}
-		e.Close(list, 3)
-		hs.ks.AddMessage(e.EndMessage(msg))
-		if scheme != 0 {
-			signed := hs.cvContent(clientCVContext)
-			msg = e.StartMessage(tlsraw.HandshakeTypeCertificateVerify)
-			e.Uint16(scheme)
-			sig := e.Open(2)
-			n, err := cred.Sign(e.Rest(), signed, scheme)
+		for i := range cred.NumCerts() {
+			data := e.Open(3)
+			n, err := cred.Cert(e.Rest(), i)
 			if err != nil {
 				return err
 			}
 			e.Advance(n)
-			e.Close(sig, 2)
-			hs.ks.AddMessage(e.EndMessage(msg))
+			e.Close(data, 3)
+			e.Uint16(0) // No certificate extensions.
 		}
 	}
-	msg := e.StartMessage(tlsraw.HandshakeTypeFinished)
-	if verify := e.Reserve(size); verify != nil {
-		hs.ks.Finished(verify, hs.clientHS[:size])
-	}
-	e.EndMessage(msg)
-	e.SealRecord(&rk.out, rec, tlsraw.ContentTypeHandshake)
-	if err := e.Err(); err != nil {
-		return err
-	}
-	clear(hs.clientHS[:])
-	err := hs.setKeys(&rk.out, rk.aeadOut, hs.clientAP[:size])
-	clear(hs.clientAP[:])
-	clear(hs.serverAP[:])
-	hs.ks.Zeroize()
-	if err != nil {
-		return err
-	}
-	hs.state = hsDone
+	e.Close(list, 3)
+	hs.ks.AddMessage(e.EndMessage(msg))
 	return nil
 }
 
-func (hs *clientHandshake) setKeys(hc *tlsraw.HalfConn, aead lcrypto.AEADCipher, secret []byte) error {
-	return hs.ks.InstallKeys(hc, aead, hs.suite.KeyLen, secret)
+// writeCertificateVerify signs the transcript so far with cfg.Credential, RFC
+// 8446 4.4.3, and adds the message to the transcript.
+func (hs *handshakeCommon) writeCertificateVerify(e *tlsraw.Encoder, scheme uint16) error {
+	ownContext, _ := hs.cvContexts()
+	signed := hs.cvContent(ownContext)
+	msg := e.StartMessage(tlsraw.HandshakeTypeCertificateVerify)
+	e.Uint16(scheme)
+	sig := e.Open(2)
+	n, err := hs.cfg.Credential.Sign(e.Rest(), signed, scheme)
+	if err != nil {
+		return err
+	}
+	e.Advance(n)
+	e.Close(sig, 2)
+	hs.ks.AddMessage(e.EndMessage(msg))
+	return nil
 }
 
-// peerChain is a view of the server's Certificate message in certBuf.
+// writeFinished encodes this side's Finished, RFC 8446 4.4.4, adds it to the
+// transcript and wipes this side's handshake traffic secret.
+func (hs *handshakeCommon) writeFinished(e *tlsraw.Encoder) {
+	size := hs.ks.Size()
+	msg := e.StartMessage(tlsraw.HandshakeTypeFinished)
+	if verify := e.Reserve(size); verify != nil {
+		hs.ks.Finished(verify, hs.ownHS[:size])
+	}
+	hs.ks.AddMessage(e.EndMessage(msg))
+	clear(hs.ownHS[:])
+}
+
+// peerChain is a view of the peer's Certificate message in certBuf.
 type peerChain struct {
 	certs [maxPeerCerts][]byte
 	n     int
