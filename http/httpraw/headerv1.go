@@ -274,9 +274,11 @@ func (h *HeaderV1) GetFold(key string) []byte {
 // ContentLength returns the body length declared by the Content-Length field.
 // If the field is not present then the returned bool is false. Will return error for invalid or non-integer value.
 func (h *HeaderV1) ContentLength() (_ int64, present bool, _ error) {
-	value := h.GetFold(headerContentLength)
+	value, isDupe := h.hbuf.kv.GetFoldCheckDupe(headerContentLength)
 	if value == nil {
 		return 0, false, nil
+	} else if isDupe {
+		return 0, true, errBadContentLength
 	}
 	value = trimOWS(value)
 	// Unsigned parse of 63 bits rejects a sign and anything past int64's range.
