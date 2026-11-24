@@ -153,7 +153,7 @@ func (client *Client) encapsEcho(carrierData []byte, frameOffset int) (n int, ds
 		dataLen := int(inc.length)
 		if dataLen > len(efrm.Data()) {
 			// Echo request larger than egress buffer (MTU): reply cannot be sent, drop it.
-			client.responseRing.ReadDiscard(dataLen)
+			client.responseRing.DiscardInput(dataLen)
 			client.incomingEcho = slices.Delete(client.incomingEcho, 0, 1)
 			return 0, [16]byte{}, lneto.ErrShortBuffer
 		}

@@ -392,7 +392,7 @@ func TestScriptEncryptedErrors(t *testing.T) {
 		{"cert extensions overflow", script{mut: mutMap{cert: replaceMsg(cert, certList(append(certEntry(1), 0, 9)))}}, alertError(tlsraw.AlertDecodeError)},
 		{"cert too many", script{mut: mutMap{cert: replaceMsg(cert, certList(nine...))}}, alertError(tlsraw.AlertBadCertificate)},
 		{"cert none", script{mut: mutMap{cert: replaceMsg(cert, certList())}}, alertError(tlsraw.AlertDecodeError)},
-		{"cert too big", script{mut: mutMap{cert: replaceMsg(cert, make([]byte, sizeHandshakeBuf))}}, alertError(tlsraw.AlertRecordOverflow)},
+		{"cert too big", script{mut: mutMap{cert: replaceMsg(cert, make([]byte, testHandshakeBuf/2))}}, alertError(tlsraw.AlertRecordOverflow)},
 		{"CV short", script{mut: mutMap{cv: replaceMsg(cv, []byte{4, 3})}}, alertError(tlsraw.AlertDecodeError)},
 		{"CV not offered", script{mut: mutMap{cv: replaceMsg(cv, []byte{8, 8, 0, 0})}}, alertError(tlsraw.AlertIllegalParameter)},
 		{"CV legacy", script{cfg: func(c *Config) { c.Schemes = []uint16{0x0403, 0x0401} }, mut: mutMap{cv: replaceMsg(cv, []byte{4, 1, 0, 0})}}, alertError(tlsraw.AlertIllegalParameter)},
@@ -570,6 +570,10 @@ func TestConfigure(t *testing.T) {
 		{"large MaxRecord", func(c *Config) { c.MaxRecord = tlsraw.MaxPlaintext + 1 }},
 		{"bad suite", func(c *Config) { c.Suites = []Suite{{ID: 1}} }},
 		{"bad group", func(c *Config) { c.KeyExchanges = []KeyExchange{{ID: 1}} }},
+		{"small ReadBuf", func(c *Config) { c.ReadBuf = c.ReadBuf[:len(c.ReadBuf)-1] }},
+		{"ReadBuf under MaxRecord", func(c *Config) { c.MaxRecord = 4096; c.ReadBuf = c.ReadBuf[:4096] }},
+		{"small WriteBuf", func(c *Config) { c.WriteBuf = c.WriteBuf[:minWriteBuf-1] }},
+		{"small HandshakeBuf", func(c *Config) { c.HandshakeBuf = c.HandshakeBuf[:minHandshakeBuf-1] }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := valid
@@ -616,8 +620,8 @@ func TestClientHelloErrors(t *testing.T) {
 		{"share length", func(c *Config) {
 			c.KeyExchanges[0].NewExchanger = func() Exchanger { return &shortExchanger{ecdhExchanger{curve: ecdh.X25519()}} }
 		}, errNoConfig},
-		{"share too big", func(c *Config) { c.KeyExchanges[0].ClientShareLen = sizeWriteBuf }, nil},
-		{"hello too big", func(c *Config) { c.Schemes = make([]uint16, sizeWriteBuf/2) }, nil},
+		{"share too big", func(c *Config) { c.KeyExchanges[0].ClientShareLen = testWriteBuf }, nil},
+		{"hello too big", func(c *Config) { c.Schemes = make([]uint16, testWriteBuf/2) }, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := p.clientConfig(t)

@@ -58,7 +58,7 @@ func TestRing(t *testing.T) {
 	var readback [bufSize]byte
 	var zeros [bufSize]byte
 
-	// Set random data and write some more and read it back with ReadAt and ReadPeek and ReadDiscard.
+	// Set random data and write some more and read it back with ReadAt and ReadPeek and DiscardInput.
 	for range 32 {
 		nfirst := rng.Intn(len(data))/2 + 1 // write garbage data first.
 		nsecond := rng.Intn(len(data))/2 + 1
@@ -108,9 +108,9 @@ func TestRing(t *testing.T) {
 			testRingSanity(t, r)
 		}
 
-		// ReadDiscard test.
+		// DiscardInput test.
 		discard := rng.Intn(nfirst+nsecond) + 1
-		r.ReadDiscard(discard)
+		r.DiscardInput(discard)
 		n, err := r.Read(readback[:])
 		if err != nil && err != io.EOF {
 			t.Fatal(err)
@@ -698,3 +698,121 @@ func TestRingPeekWriteSurvivesEmptyRead(t *testing.T) {
 	}
 	testRingSanity(t, r)
 }
+
+// eachRingLayout calls f with a ring of size holding length bytes starting at
+// offset, for every offset and length, so empty, contiguous, wrapped and full
+// layouts are all covered. Off==size is included since reads and discards can
+// leave Off at the end of Buf.
+func eachRingLayout(size int, f func(r *Ring, data []byte)) {
+	for off := range size + 1 {
+		for length := 0; length <= size; length++ {
+			r := &Ring{Buf: make([]byte, size), Off: off}
+			data := make([]byte, length)
+			for i := range data {
+				data[i] = byte('a' + i)
+			}
+			if length > 0 {
+				r.Write(data)
+			}
+			f(r, data)
+		}
+	}
+}
+
+func TestRingBufferedData(t *testing.T) {
+	eachRingLayout(8, func(r *Ring, data []byte) {
+		first, second := r.BufferedData()
+		got := append(append([]byte(nil), first...), second...)
+		if !bytes.Equal(got, data) {
+			t.Fatalf("off=%d end=%d: Data %q, want %q", r.Off, r.End, got, data)
+		} else if len(second) > 0 && len(first) == 0 {
+			t.Fatalf("off=%d end=%d: second without first", r.Off, r.End)
+		} else if cap(first) != len(first) || cap(second) != len(second) {
+			t.Fatalf("off=%d end=%d: slices not capacity-capped", r.Off, r.End)
+		}
+	})
+}
+
+func TestRingDiscardInput(t *testing.T) {
+	eachRingLayout(8, func(r *Ring, data []byte) {
+		off, end := r.Off, r.End
+		if err := r.DiscardInput(0); err != nil || r.Off != off || r.End != end {
+			t.Fatalf("len=%d: DiscardInput(0) err=%v, off,end %d,%d->%d,%d", len(data), err, off, end, r.Off, r.End)
+		} else if r.DiscardInput(-1) == nil || r.DiscardInput(len(data)+1) == nil {
+			t.Fatalf("len=%d: want error for negative and oversized discard", len(data))
+		} else if r.Off != off || r.End != end {
+			t.Fatalf("len=%d: failed discard moved off,end %d,%d->%d,%d", len(data), off, end, r.Off, r.End)
+		}
+		for i := range data {
+			if err := r.DiscardInput(1); err != nil {
+				t.Fatalf("len=%d discard %d: %v", len(data), i, err)
+			}
+			testRingSanity(t, r)
+			first, second := r.BufferedData()
+			if got := string(first) + string(second); got != string(data[i+1:]) {
+				t.Fatalf("len=%d after %d discards: got %q, want %q", len(data), i+1, got, data[i+1:])
+			}
+		}
+	})
+}
+
+func TestRingLinearizeInput(t *testing.T) {
+	eachRingLayout(8, func(r *Ring, data []byte) {
+		free := r.Free()
+		staged := free >= 2
+		if staged && !r.PeekWrite([]byte("Z"), 1) { // Stage one byte past a one byte gap.
+			t.Fatal("PeekWrite failed")
+		}
+		r.LinearizeInput()
+		testRingSanity(t, r)
+		first, second := r.BufferedData()
+		if !bytes.Equal(first, data) || second != nil || (len(data) > 0 && r.Off != 0) {
+			t.Fatalf("len=%d: after LinearizeInput off=%d end=%d first=%q second=%q", len(data), r.Off, r.End, first, second)
+		}
+		if !staged {
+			return
+		}
+		r.Write([]byte("Y"))
+		if err := r.Commit(1); err != nil {
+			t.Fatal(err)
+		}
+		got := make([]byte, 8)
+		n, _ := r.Read(got)
+		if want := string(data) + "YZ"; string(got[:n]) != want {
+			t.Fatalf("len=%d: read %q, want %q: staged byte moved", len(data), got[:n], want)
+		}
+	})
+}
+
+func TestRingReadOnceFrom(t *testing.T) {
+	eachRingLayout(8, func(r *Ring, data []byte) {
+		src := bytes.NewReader([]byte("0123456789"))
+		want := string(data) + "0123456789"[:r.Free()]
+		for !r.IsFull() {
+			n, err := r.ReadOnceFrom(src)
+			if err != nil || n == 0 {
+				t.Fatalf("len=%d off=%d: %d, %v", len(data), r.Off, n, err)
+			}
+			testRingSanity(t, r)
+		}
+		if _, err := r.ReadOnceFrom(src); err != ErrRingBufferFull {
+			t.Fatalf("full ring: %v", err)
+		}
+		first, second := r.BufferedData()
+		if got := string(first) + string(second); got != want {
+			t.Fatalf("len=%d: got %q, want %q", len(data), got, want)
+		}
+	})
+	// Data returned with io.EOF reports nil; the next call reports io.EOF.
+	r := &Ring{Buf: make([]byte, 8)}
+	if n, err := r.ReadOnceFrom(eofReader("ab")); n != 2 || err != nil {
+		t.Fatalf("data with EOF: %d, %v", n, err)
+	} else if n, err := r.ReadOnceFrom(eofReader("")); n != 0 || err != io.EOF {
+		t.Fatalf("EOF: %d, %v", n, err)
+	}
+}
+
+// eofReader returns its bytes together with io.EOF.
+type eofReader string
+
+func (e eofReader) Read(b []byte) (int, error) { return copy(b, e), io.EOF }

@@ -222,7 +222,7 @@ func (mh *muxHandler) Encapsulate(carrierData []byte, ipOffset, frameOffset int)
 	avail := len(buf) - 8
 	if avail < int(dgram.length) {
 		// TODO(soypat): If packet is too long we discard it entirely. Maybe we prefer sending incomplete data? How do other stacks deal with this?
-		mh.txRing.ReadDiscard(int(dgram.length))
+		mh.txRing.DiscardInput(int(dgram.length))
 		return 0, lneto.ErrShortBuffer
 	}
 
@@ -295,7 +295,7 @@ func (mh *muxHandler) ReadNext(buf []byte) (n int, completeRead bool, lport uint
 	maxRead := min(dlen, len(buf))
 	n, _ = mh.rxRing.Read(buf[:maxRead])
 	if n < dlen {
-		mh.rxRing.ReadDiscard(dlen - n)
+		mh.rxRing.DiscardInput(dlen - n)
 	}
 	return n, n == dlen, dgram.lport, netip.AddrPortFrom(dgram.raddr, dgram.rport)
 }

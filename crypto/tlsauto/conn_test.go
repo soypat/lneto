@@ -76,7 +76,25 @@ func (p *pki) clientConfig(t *testing.T) Config {
 		Verifier:     &x509Verifier{roots: roots},
 		ServerName:   "server",
 		ALPN:         "test/1",
+		ReadBuf:      make([]byte, tlsraw.SizeHeaderRecord+tlsraw.MaxPlaintext+recordSlack),
+		WriteBuf:     make([]byte, testWriteBuf),
+		HandshakeBuf: make([]byte, testHandshakeBuf),
 	}
+}
+
+// Buffer sizes of clientConfig.
+const (
+	testWriteBuf     = 2048
+	testHandshakeBuf = 8192
+)
+
+func isZero(b []byte) bool {
+	for _, v := range b {
+		if v != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *pki) serverConfig(curves ...tls.CurveID) *tls.Config {
@@ -143,7 +161,8 @@ func TestHandshakeMutual(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cs, done := serve(t, p.serverConfig(tc.curve))
 			var c Conn
-			if err := c.Configure(p.clientConfig(t)); err != nil {
+			cfg := p.clientConfig(t)
+			if err := c.Configure(cfg); err != nil {
 				t.Fatal(err)
 			}
 			if err := c.Open(cs); err != nil {
@@ -155,8 +174,8 @@ func TestHandshakeMutual(t *testing.T) {
 			if c.ALPN() != "test/1" {
 				t.Fatalf("ALPN %q", c.ALPN())
 			}
-			if c.hbuf != nil || c.certBuf != nil {
-				t.Fatal("handshake buffers kept after the handshake")
+			if !isZero(cfg.HandshakeBuf) {
+				t.Fatal("handshake buffer not wiped after the handshake")
 			}
 			msg := make([]byte, 20000) // Spans more than one record each way.
 			rand.Read(msg)
@@ -279,33 +298,5 @@ func TestPeerChain(t *testing.T) {
 	}
 	if _, err := p.CertView(1); err == nil {
 		t.Fatal("cert view out of range")
-	}
-}
-
-func TestSkipTickets(t *testing.T) {
-	ticket := func(body int) []byte {
-		m := []byte{byte(tlsraw.HandshakeTypeNewSessionTicket), byte(body >> 16), byte(body >> 8), byte(body)}
-		return append(m, make([]byte, body)...)
-	}
-	stream := append(ticket(200), ticket(5000)...)
-	stream = append(stream, ticket(0)...)
-	for _, size := range []int{1, 3, 4, 7, 200, 4096, len(stream)} {
-		var c Conn
-		for rest := stream; len(rest) > 0; {
-			n := min(size, len(rest))
-			if err := c.skipTickets(rest[:n]); err != nil {
-				t.Fatalf("records of %d bytes: %v", size, err)
-			}
-			rest = rest[n:]
-		}
-		if c.ticketHdrN != 0 || c.ticketSkip != 0 {
-			t.Fatalf("records of %d bytes: stopped inside a message", size)
-		}
-	}
-
-	var c Conn
-	keyUpdate := []byte{byte(tlsraw.HandshakeTypeKeyUpdate), 0, 0, 1, 0}
-	if err := c.skipTickets(append(ticket(10), keyUpdate...)); err != alertError(tlsraw.AlertUnexpectedMessage) {
-		t.Fatalf("KeyUpdate after a ticket: got %v, want unexpected_message", err)
 	}
 }

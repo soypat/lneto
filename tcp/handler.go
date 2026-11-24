@@ -603,10 +603,7 @@ func (h *Handler) Read(b []byte) (n int, err error) {
 		n, err = h.bufRx.Read(b)
 	}
 	if n > 0 {
-		// Reading freed receive-buffer space; deliver any contiguous
-		// out-of-order data that was waiting for room.
-		h.deliverReassembled()
-		h.maybeQueueWindowUpdate()
+		h.inputConsumed()
 	}
 	if n == 0 && err == nil {
 		state := h.State()
@@ -617,6 +614,48 @@ func (h *Handler) Read(b []byte) (n int, err error) {
 		}
 	}
 	return n, err
+}
+
+var _ lneto.ReaderBuffered = (*Handler)(nil)
+
+// BufferedData returns received bytes not yet read, without consuming them.
+// data1 is non-empty only when they wrap past the end of the receive buffer.
+// The slices stay valid, and may be modified in place, until the next Read,
+// DiscardInput, LinearizeInput or reset of h. It returns nil after [Handler.ShutdownRead].
+func (h *Handler) BufferedData() (data0, data1 []byte) {
+	if h.shutdownRx {
+		return nil, nil
+	}
+	return h.bufRx.BufferedData()
+}
+
+// LinearizeInput moves unread bytes so BufferedData returns them all in data0.
+// Out-of-order data held for reassembly stays valid. It costs O(SizeInput) and
+// invalidates slices from earlier BufferedData calls.
+func (h *Handler) LinearizeInput() {
+	h.bufRx.LinearizeInput()
+}
+
+// DiscardInput consumes n unread bytes as Read would, without copying them,
+// then delivers reassembled data and queues a window update when warranted.
+// n == 0 is a no-op. It returns [io.EOF] after [Handler.ShutdownRead] and errors,
+// discarding nothing, if n is negative or more than [Handler.BufferedInput].
+func (h *Handler) DiscardInput(n int) error {
+	if h.shutdownRx {
+		return io.EOF
+	}
+	err := h.bufRx.DiscardInput(n)
+	if err == nil && n > 0 {
+		h.inputConsumed()
+	}
+	return err
+}
+
+// inputConsumed runs after the application consumes received bytes: the freed
+// space lets contiguous out-of-order data be delivered and may reopen the window.
+func (h *Handler) inputConsumed() {
+	h.deliverReassembled()
+	h.maybeQueueWindowUpdate()
 }
 
 // maybeQueueWindowUpdate queues a window update ACK if the receive window has

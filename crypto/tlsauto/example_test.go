@@ -16,6 +16,9 @@ func Example() {
 		Suites:       []tlsauto.Suite{suite},
 		KeyExchanges: []tlsauto.KeyExchange{group},
 		MaxRecord:    4096,
+		ReadBuf:      make([]byte, 5+4096+256),
+		WriteBuf:     make([]byte, 2048),
+		HandshakeBuf: make([]byte, 8192),
 	})
 	if err != nil {
 		panic(err)
