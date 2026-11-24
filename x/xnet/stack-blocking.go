@@ -226,10 +226,13 @@ func (s StackBlocking) waitDialTCP(ctx context.Context, conn *tcp.Conn, timeout 
 		if err = ctx.Err(); err != nil {
 			return err
 		}
+		// Read before State. The SYN may be sent between the two reads, which
+		// then see SynSent, not a closed conn that is no longer waiting.
+		awaitingSyn := conn.AwaitingSynSend()
 		state := conn.State()
 		if state == tcp.StateEstablished {
 			return nil
-		} else if state != tcp.StateSynSent && state != tcp.StateSynRcvd && !conn.AwaitingSynSend() {
+		} else if state != tcp.StateSynSent && state != tcp.StateSynRcvd && !awaitingSyn {
 			// Unexpected state, abort and terminate connection.
 			if err = conn.Err(); err != nil {
 				return err

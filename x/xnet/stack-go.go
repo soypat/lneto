@@ -6,6 +6,7 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"sync"
 	"syscall"
 	"time"
 
@@ -70,6 +71,7 @@ func (s StackBlocking) StackGo(cfg StackGoConfig) StackGo {
 		udpcfg:         cfg.UDPConfig,
 		tcpDialTimeout: cfg.TCPDialTimeout,
 		tcpDialRetries: cfg.TCPDialRetries,
+		dials:          &dialPool{max: max(1, int(cfg.ListenerPoolConfig.PoolSize))},
 	}
 	return sg
 }
@@ -80,6 +82,7 @@ type StackGo struct {
 	udpcfg         UDPConfig
 	tcpDialTimeout time.Duration
 	tcpDialRetries int
+	dials          *dialPool
 }
 
 func (s StackGo) Socket(ctx context.Context, network string, family, sotype int, laddr, raddr net.Addr) (c any, err error) {
@@ -197,24 +200,14 @@ func (s StackGo) SocketNetip(ctx context.Context, network string, family, sotype
 		}
 
 		if isDial {
-			var conn tcp.Conn
 			// DIAL TCP: active connection a.k.a TCP Client branch.
-			conncfg := tcp.ConnConfig{
-				TxBuf:             make([]byte, s.plcfg.TxBufSize),
-				RxBuf:             make([]byte, s.plcfg.RxBufSize),
-				TxPacketQueueSize: s.plcfg.QueueSize,
-				RWBackoff:         s.plcfg.NewBackoff(),
-			}
-			if s.plcfg.NewPolicy != nil {
-				// A dialed connection needs loss recovery as much as a pooled
-				// one. See [TCPPoolConfig.NewPolicy].
-				conncfg.Policy = s.plcfg.NewPolicy()
-			}
-			err = conn.Configure(conncfg)
+			d, err := s.dials.get(&s.plcfg)
 			if err != nil {
 				return nil, err
 			}
-			err = s.blk.StackRetrying().DoDialTCP(ctx, &conn, laddr.Port(), raddr, s.tcpDialTimeout, s.tcpDialRetries)
+			conn := &d.conn
+			err = s.blk.StackRetrying().DoDialTCP(ctx, conn, laddr.Port(), raddr, s.tcpDialTimeout, s.tcpDialRetries)
+			s.dials.put(d)
 			if err != nil {
 				return nil, err
 			}
@@ -409,4 +402,60 @@ func parseNetAddr(addr net.Addr) (netip.AddrPort, error) {
 		return netip.AddrPort{}, lneto.ErrInvalidAddr
 	}
 	return netip.AddrPortFrom(nip.Unmap(), uint16(port)), nil
+}
+
+// dialPool keeps dialed TCP connections so their buffers are reused once they
+// are closed, instead of allocating new buffers on every dial.
+type dialPool struct {
+	mu    sync.Mutex
+	conns []*dialConn
+	max   int
+}
+
+type dialConn struct {
+	conn    tcp.Conn
+	dialing bool
+}
+
+// get returns a closed connection configured for a new dial, allocating one if none is free.
+func (p *dialPool) get(cfg *TCPPoolConfig) (*dialConn, error) {
+	conncfg := tcp.ConnConfig{
+		TxPacketQueueSize: cfg.QueueSize,
+		RWBackoff:         cfg.NewBackoff(),
+	}
+	if cfg.NewPolicy != nil {
+		// A dialed connection needs loss recovery as much as a pooled
+		// one. See [TCPPoolConfig.NewPolicy].
+		conncfg.Policy = cfg.NewPolicy()
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, d := range p.conns {
+		if !d.dialing && d.conn.State().IsClosed() {
+			d.dialing = true
+			// Nil buffers keep the ones the connection already has.
+			if err := d.conn.Configure(conncfg); err != nil {
+				d.dialing = false
+				return nil, err
+			}
+			return d, nil
+		}
+	}
+	d := &dialConn{dialing: true}
+	conncfg.TxBuf = make([]byte, cfg.TxBufSize)
+	conncfg.RxBuf = make([]byte, cfg.RxBufSize)
+	if err := d.conn.Configure(conncfg); err != nil {
+		return nil, err
+	}
+	if len(p.conns) < p.max {
+		p.conns = append(p.conns, d)
+	}
+	return d, nil
+}
+
+// put marks the dial on d finished, so d can be reused once its connection is closed.
+func (p *dialPool) put(d *dialConn) {
+	p.mu.Lock()
+	d.dialing = false
+	p.mu.Unlock()
 }
