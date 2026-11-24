@@ -39,6 +39,18 @@ type StackNode interface {
 	// SetFlagPending(flagPending func(numPendingEncapsulations int))
 }
 
+// ReaderBuffered is the in-memory equivalent to an [io.Reader] which can provide the benefit of zero-copy reading.
+type ReaderBuffered interface {
+	// BufferedData returns unread bytes without consuming them. data1 is non-empty when unread data is not contiguous
+	// and contains data immediately following data0. Ring and ping-pong buffers are typical data1!=nil returners.
+	BufferedData() (data0, data1 []byte)
+	// LinearizeInput moves unread bytes so BufferedData returns them all in data0. Needed to have contiguous input
+	// to things like cryptographic primitives that require contiguous data.
+	LinearizeInput()
+	// DiscardInput consumes n unread bytes as Read(make([]byte, n)) would.
+	DiscardInput(n int) error
+}
+
 // IPProto represents the IP protocol number.
 type IPProto uint8
 

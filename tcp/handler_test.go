@@ -2103,6 +2103,146 @@ func TestHandler_OutOfOrderDiscardedAfterShutdownRead(t *testing.T) {
 	}
 }
 
+// newSmallRxPair returns an established client and server whose server receive
+// buffer holds rxSize bytes, so a few segments fill or wrap it.
+func newSmallRxPair(t *testing.T, rxSize int) (client, server *Handler, buf []byte) {
+	t.Helper()
+	const mtu = ethernet.MaxMTU
+	const maxpackets = 4
+	client, server = new(Handler), new(Handler)
+	if err := client.SetBuffers(make([]byte, mtu), make([]byte, mtu), maxpackets); err != nil {
+		t.Fatal(err)
+	} else if err = server.SetBuffers(make([]byte, mtu), make([]byte, rxSize), maxpackets); err != nil {
+		t.Fatal(err)
+	}
+	setupClientServer(t, rand.New(rand.NewSource(int64(rxSize))), client, server)
+	buf = make([]byte, mtu)
+	establish(t, client, server, buf)
+	return client, server, buf
+}
+
+// TestHandler_BufferedDataDiscardInput checks the zero-copy read path sees and
+// consumes the same bytes Read would.
+func TestHandler_BufferedDataDiscardInput(t *testing.T) {
+	client, server, buf := newSmallRxPair(t, 64)
+	if err := server.Recv(emitClientData(t, client, buf, "hello world")); err != nil {
+		t.Fatal("server recv:", err)
+	}
+	data0, data1 := server.BufferedData()
+	if got := string(data0) + string(data1); got != "hello world" {
+		t.Fatalf("BufferedData %q, want %q", got, "hello world")
+	} else if server.BufferedInput() != len(got) {
+		t.Fatalf("BufferedData consumed input, buffered=%d", server.BufferedInput())
+	}
+	if err := server.DiscardInput(6); err != nil {
+		t.Fatal("discard:", err)
+	} else if err = server.DiscardInput(0); err != nil {
+		t.Fatal("discard 0:", err)
+	} else if server.DiscardInput(-1) == nil || server.DiscardInput(6) == nil {
+		t.Fatal("want error for negative and oversized discard")
+	}
+	var rd [16]byte
+	n, err := server.Read(rd[:])
+	if err != nil || string(rd[:n]) != "world" {
+		t.Fatalf("read after discard = %q,%v want %q", rd[:n], err, "world")
+	}
+}
+
+// TestHandler_DiscardInputWindowUpdate checks DiscardInput reopens a zero window as Read does.
+func TestHandler_DiscardInputWindowUpdate(t *testing.T) {
+	client, server, buf := newSmallRxPair(t, 256)
+	if err := server.Recv(emitClientData(t, client, buf, string(make([]byte, server.FreeInput())))); err != nil {
+		t.Fatal("server recv:", err)
+	}
+	n, err := server.Send(buf)
+	if err != nil || n == 0 {
+		t.Fatal("server ACK:", n, err)
+	} else if wnd := mustSegment(t, buf[:n], 0).WND; wnd != 0 {
+		t.Fatalf("want zero window ACK, got %d", wnd)
+	}
+	if err = server.DiscardInput(server.BufferedInput()); err != nil {
+		t.Fatal("discard:", err)
+	}
+	n, err = server.Send(buf)
+	if err != nil || n == 0 {
+		t.Fatal("no window update after DiscardInput freed the buffer:", n, err)
+	} else if wnd := mustSegment(t, buf[:n], 0).WND; wnd == 0 {
+		t.Fatal("window update still advertises zero window")
+	}
+}
+
+// TestHandler_LinearizeInputKeepsReassembly linearizes a wrapped receive buffer
+// while an out-of-order segment is staged in its free space, then fills the gap.
+func TestHandler_LinearizeInputKeepsReassembly(t *testing.T) {
+	client, server, buf := newSmallRxPair(t, 16)
+	recv := func(pkt []byte) {
+		t.Helper()
+		if err := server.Recv(pkt); err != nil {
+			t.Fatal("server recv:", err)
+		}
+	}
+	var rd [16]byte
+	recv(emitClientData(t, client, buf, "0123456789ab"))
+	pumpHandlers(t, server, client, buf)
+	if n, err := server.Read(rd[:10]); n != 10 || err != nil {
+		t.Fatal("read:", n, err)
+	}
+	pumpHandlers(t, server, client, buf) // Window update.
+	// "cdefgh" wraps past the end of the buffer.
+	recv(emitClientData(t, client, buf, "cdefgh"))
+	pumpHandlers(t, server, client, buf)
+
+	pktA := emitClientData(t, client, buf, "ijkl")
+	recv(emitClientData(t, client, buf, "mnop")) // Staged past the gap pktA fills.
+	if server.Reassembly().Len() != 1 {
+		t.Fatal("want the out-of-order segment staged")
+	}
+	data0, data1 := server.BufferedData()
+	if len(data1) == 0 || string(data0)+string(data1) != "abcdefgh" {
+		t.Fatalf("want wrapped abcdefgh before LinearizeInput, got %q %q", data0, data1)
+	}
+	server.LinearizeInput()
+	data0, data1 = server.BufferedData()
+	if string(data0) != "abcdefgh" || len(data1) != 0 {
+		t.Fatalf("want contiguous abcdefgh after LinearizeInput, got %q %q", data0, data1)
+	}
+	recv(pktA)
+	n, err := server.Read(rd[:])
+	if err != nil || string(rd[:n]) != "abcdefghijklmnop" {
+		t.Fatalf("read %q,%v want %q", rd[:n], err, "abcdefghijklmnop")
+	}
+}
+
+func TestHandler_BufferedDataAfterShutdownRead(t *testing.T) {
+	client, server, buf := newSmallRxPair(t, 64)
+	if err := server.Recv(emitClientData(t, client, buf, "abc")); err != nil {
+		t.Fatal("server recv:", err)
+	}
+	server.ShutdownRead()
+	if data0, data1 := server.BufferedData(); data0 != nil || data1 != nil {
+		t.Fatalf("BufferedData after ShutdownRead = %q %q, want nil", data0, data1)
+	} else if err := server.DiscardInput(1); err != io.EOF {
+		t.Fatalf("DiscardInput after ShutdownRead = %v, want io.EOF", err)
+	}
+}
+
+func TestHandler_BufferedDataNoAllocs(t *testing.T) {
+	client, server, buf := newSmallRxPair(t, 64)
+	if err := server.Recv(emitClientData(t, client, buf, "0123456789abcdef")); err != nil {
+		t.Fatal("server recv:", err)
+	}
+	allocs := testing.AllocsPerRun(10, func() {
+		server.BufferedData()
+		server.LinearizeInput()
+		if err := server.DiscardInput(1); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("want zero allocations, got %v", allocs)
+	}
+}
+
 // M4: in CLOSE-WAIT the local side must not send FIN until the application calls Close.
 func TestHandler_CloseWaitNoAutoFIN(t *testing.T) {
 	const mtu = ethernet.MaxMTU

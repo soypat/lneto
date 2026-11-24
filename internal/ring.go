@@ -1,10 +1,10 @@
 package internal
 
 import (
-	"bytes"
 	"errors"
 	"io"
 	"math"
+	"slices"
 	"unsafe"
 
 	"github.com/soypat/lneto"
@@ -97,6 +97,9 @@ func (r *Ring) Write(b []byte) (int, error) {
 // [Ring.Commit] begins, matching [Ring.Write]'s placement (including wrap).
 func (r *Ring) writeStart() int {
 	if r.End == 0 {
+		if r.Off == len(r.Buf) {
+			return 0 // Empty with Off at the end: Write wraps to the start.
+		}
 		return r.Off // Empty: writing begins at Off.
 	}
 	if r.End == len(r.Buf) {
@@ -145,15 +148,74 @@ func (r *Ring) Commit(n int) error {
 	return nil
 }
 
-// ReadDiscard is a performance auxiliary method that performs a dummy read or no-op read
-// for advancing the read pointer n bytes without actually copying data.
-// This method panics if amount of bytes is more than buffered (see [Ring.Buffered]).
-func (r *Ring) ReadDiscard(n int) error {
-	if n <= 0 {
+var _ lneto.ReaderBuffered = (*Ring)(nil)
+
+// BufferedData returns the readable bytes without consuming them. data1 is
+// non-empty only when the data wraps past the end of Buf. Both are
+// capacity-capped, so appending to them never writes over ring data.
+func (r *Ring) BufferedData() (data0, data1 []byte) {
+	if r.End == 0 {
+		return nil, nil
+	}
+	off := r.Off
+	if off == len(r.Buf) {
+		off = 0 // Off may sit at the end of Buf after a read or discard; data then begins at index 0.
+	}
+	if r.End > off {
+		return r.Buf[off:r.End:r.End], nil
+	}
+	return r.Buf[off:len(r.Buf):len(r.Buf)], r.Buf[:r.End:r.End]
+}
+
+// LinearizeInput rotates Buf in place so the readable data starts at Buf[0] and is
+// contiguous. Bytes staged with [Ring.PeekWrite] keep their offset from the
+// write position, so a later [Ring.Commit] still reveals them. It invalidates
+// slices returned by earlier [Ring.BufferedData] calls.
+func (r *Ring) LinearizeInput() {
+	if r.Off == 0 {
+		return
+	}
+	n := r.Buffered()
+	slices.Reverse(r.Buf[:r.Off])
+	slices.Reverse(r.Buf[r.Off:])
+	slices.Reverse(r.Buf)
+	r.Off, r.End = 0, n
+}
+
+// ReadOnceFrom performs a single rd.Read into the contiguous free space at the
+// write position and makes what was read readable. Data returned with io.EOF
+// reports a nil error, so io.EOF comes on a later call. It returns
+// [ErrRingBufferFull] without reading when the ring is full.
+func (r *Ring) ReadOnceFrom(rd io.Reader) (int, error) {
+	if r.IsFull() {
+		return 0, ErrRingBufferFull
+	}
+	start := r.writeStart()
+	span := r.Buf[start:]
+	if r.End != 0 && start < r.Off {
+		span = r.Buf[start:r.Off] // Free space ends where readable data begins.
+	}
+	n, err := rd.Read(span)
+	if n > 0 {
+		if cerr := r.Commit(n); cerr != nil {
+			return 0, cerr
+		} else if err == io.EOF {
+			err = nil
+		}
+	}
+	return n, err
+}
+
+// DiscardInput advances the read pointer n bytes without copying data, as a
+// [Ring.Read] of n bytes would. n == 0 is a no-op. It errors, discarding nothing,
+// if n is negative or more than [Ring.Buffered].
+func (r *Ring) DiscardInput(n int) error {
+	if n < 0 {
 		return errInvalidDiscard
 	}
 	buffered := r.Buffered()
 	switch {
+	case n == 0:
 	case n > buffered:
 		return errDiscardExceeds
 	case n == buffered:
@@ -199,22 +261,13 @@ func (r *Ring) Read(b []byte) (int, error) {
 func (r *Ring) read(b []byte) (n int, err error) {
 	if len(b) == 0 {
 		return 0, nil
-	} else if r.IsEmpty() {
+	}
+	data0, data1 := r.BufferedData()
+	if len(data0) == 0 {
 		return 0, io.EOF
 	}
-	if r.End > r.Off {
-		// start       off       end      len(buf)
-		//   |  sfree   |  used   |  efree   |
-		n = copy(b, r.Buf[r.Off:r.End])
-		return n, nil
-	}
-	// start     end       off     len(buf)
-	//   |  used  |  mfree  |  used  |
-	n = copy(b, r.Buf[r.Off:])
-	if n < len(b) {
-		n2 := copy(b[n:], r.Buf[:r.End])
-		n += n2
-	}
+	n = copy(b, data0)
+	n += copy(b[n:], data1)
 	return n, nil
 }
 
@@ -337,10 +390,8 @@ func (r *Ring) addOff(a, b int) int {
 }
 
 func (r *Ring) string() string {
-	var b bytes.Buffer
-	r2 := *r
-	b.ReadFrom(&r2)
-	return b.String()
+	data0, data1 := r.BufferedData()
+	return string(data0) + string(data1)
 }
 
 func (r *Ring) _string(off int64) string {
