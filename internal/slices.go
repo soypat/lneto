@@ -7,11 +7,15 @@ import (
 // ByteSet defines a set of bytes ranging values 0-255. Zero value matches nothing.
 type ByteSet [8]uint32
 
+// AddByte adds a single byte to the byte set.
+func (bs *ByteSet) AddByte(c byte) {
+	bs[c>>5] |= 1 << (c & 31)
+}
+
 // Add adds a set of bytes to the byte set.
 func (bs *ByteSet) Add(searchSet string) {
 	for i := 0; i < len(searchSet); i++ {
-		c := searchSet[i]
-		bs[c>>5] |= 1 << (c & 31)
+		bs.AddByte(searchSet[i])
 	}
 }
 

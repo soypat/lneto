@@ -123,11 +123,21 @@ func (kvb *kvBuffer) Get(key string) []byte {
 
 // GetFold returns the value of the first key that matches ascii-case-insensitive.
 func (kvb *kvBuffer) GetFold(key string) []byte {
-	i := kvb.getFoldIdx(key)
+	i := kvb.GetFoldIdxFrom(key, 0)
 	if i < 0 {
 		return nil
 	}
 	return kvb.AtValue(i)
+}
+
+// GetFoldIdxFrom returns the index of the first key that matches starting from startIdx index, ascii-case-insensitive, or -1.
+func (kvb *kvBuffer) GetFoldIdxFrom(key string, startIdx int) int {
+	for i := startIdx; i < len(kvb.kvs); i++ {
+		if kvb.kvs[i].isValid() && internal.EqualFoldASCII(key, b2s(kvb.musttoken(kvb.kvs[i].key))) {
+			return i
+		}
+	}
+	return -1
 }
 
 // ForEach iterates over the cookie's key-value pairs as stored until cb returns false.
@@ -285,15 +295,6 @@ func (kvb *kvBuffer) AtValue(i int) (key []byte) {
 func (kvb *kvBuffer) getIdx(key string) int {
 	for i, pair := range kvb.kvs {
 		if pair.isValid() && b2s(kvb.musttoken(pair.key)) == key {
-			return i
-		}
-	}
-	return -1
-}
-
-func (kvb *kvBuffer) getFoldIdx(key string) int {
-	for i, pair := range kvb.kvs {
-		if pair.isValid() && EqualFoldASCII(key, b2s(kvb.AtKey(i))) {
 			return i
 		}
 	}
