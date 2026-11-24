@@ -635,6 +635,11 @@ func TestHeaderV1RejectsUnsupportedVersion(t *testing.T) {
 		{name: "h2c preface", raw: "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"},
 		{name: "request http09 no version", raw: "GET /index.html\r\nHost: h\r\n\r\n"},
 		{name: "request bogus proto", raw: "GET / BANANA\r\nHost: h\r\n\r\n"},
+		// HTTP-version is "HTTP/" DIGIT "." DIGIT (RFC 9112 2.3). Previously only the "HTTP/1." prefix was checked. lfuzzo found.
+		{name: "request v1 no minor", raw: "GET / HTTP/1.\r\nHost: h\r\n\r\n"},
+		{name: "request v1 minor not digit", raw: "GET / HTTP/1.x\r\nHost: h\r\n\r\n"},
+		{name: "request v1 minor too long", raw: "GET / HTTP/1.11\r\nHost: h\r\n\r\n"},
+		{name: "response v1 no minor", raw: "HTTP/1. 200 OK\r\nServer: s\r\n\r\n", asResponse: true},
 		{name: "response http2", raw: "HTTP/2.0 200 OK\r\nServer: s\r\n\r\n", asResponse: true},
 		{name: "response http09", raw: "HTTP/0.9 200 OK\r\nServer: s\r\n\r\n", asResponse: true},
 	} {
@@ -665,6 +670,7 @@ func TestHeaderV1AcceptsV1Versions(t *testing.T) {
 	}{
 		{raw: "GET / HTTP/1.1\r\nHost: h\r\n\r\n"},
 		{raw: "GET / HTTP/1.0\r\nHost: h\r\n\r\n"},
+		{raw: "GET / HTTP/1.2\r\nHost: h\r\n\r\n"}, // Higher minor is processed as HTTP/1.1, RFC 9110 6.2.
 		{raw: "HTTP/1.1 200 OK\r\nServer: s\r\n\r\n", asResponse: true},
 		{raw: "HTTP/1.0 200 OK\r\nServer: s\r\n\r\n", asResponse: true},
 	} {

@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 	"unsafe"
+
+	"github.com/soypat/lneto"
 )
 
 // defaultKVCap is the key/value table size tests hand to Reset. A Reset with 0
@@ -48,6 +50,11 @@ func TestHeaderV1ReadParse_table(t *testing.T) {
 		{name: "value obs-text", header: req + "X: a\x80b\r\n\r\n", checkKeys: [][2]string{{"X", "a\x80b"}}},
 		{name: "value ctl", header: req + "X: a\x10b\r\n\r\n", wantParseErr: errInvalidValue},
 		{name: "value del", header: req + "X: a\x7fb\r\n\r\n", wantParseErr: errInvalidValue},
+		// Version.
+		{name: "bad req version 2.0", header: "GET / HTTP/2.0\r\n\r\n", wantParseErr: lneto.ErrUnsupported},
+		{name: "bad req version 1.10", header: "GET / HTTP/1.10\r\n\r\n", wantParseErr: lneto.ErrUnsupported},
+		{name: "bad resp version 2.0", header: "HTTP/2.0 200 OK\r\n\r\n", asResponse: true, wantParseErr: lneto.ErrUnsupported},
+		{name: "bad resp version 2.0", header: "HTTP/2.0 200 OK\r\n\r\n", asResponse: true, wantParseErr: lneto.ErrUnsupported},
 	}
 	var header HeaderV1
 	header.Reset(make([]byte, 256), maxNumHeaders)
