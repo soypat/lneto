@@ -35,6 +35,25 @@ type Policy interface {
 	PostRx(h *Handler, prevState State, accepted Frame)
 }
 
+// ECNPolicy is a [Policy] doing Explicit Congestion Notification (RFC 3168),
+// whose codepoints are in the IP header the Handler does not see. The
+// [Handler] hands it, alone or as a member of [Policies], each segment's frame
+// together with the codepoint of the packet carrying it: [Handler.RecvECN]
+// takes the codepoint of a received packet and [Handler.SendECN] returns the
+// one for a sent packet, which a [Conn] reads from and writes to the IP header.
+// Policies needing no IP header leave it unimplemented.
+type ECNPolicy interface {
+	Policy
+	// PreRxECN is called by [Handler] before [Policy.PreRx] with the incoming
+	// frame and the ECN codepoint of the packet carrying it, Not-ECT if the
+	// frame came through [Handler.Recv].
+	PreRxECN(h *Handler, incoming Frame, ecn uint8)
+	// PostTxECN is called by [Handler] after [Policy.PostTx] with the same frame,
+	// whose flags it may still set, and returns the ECN codepoint of the packet
+	// to carry it.
+	PostTxECN(h *Handler, outgoing Frame) (ecn uint8)
+}
+
 // Policies drives several [Policy] implementations as one, so independent
 // concerns such as a retransmission timer and selective acknowledgement can be
 // combined without one embedding the other. Install it with
@@ -48,6 +67,9 @@ type Policy interface {
 //   - PreTx returns the smallest new-data limit, and requests a retransmission
 //     if any member does, from the lowest sequence requested, so the resend
 //     covers what every requester wanted.
+//   - The Handler offers PreRxECN and PostTxECN to every member that is an
+//     [ECNPolicy], also in nested Policies, and sends the codepoint of the
+//     first. Policies itself is no ECNPolicy, whatever its members.
 //
 // Members writing options in PreTx must append after the options already
 // present, which end at the frame's data offset, and raise the offset to cover
@@ -100,6 +122,36 @@ func (ps Policies) PostRx(h *Handler, prevState State, accepted Frame) {
 	for _, p := range ps {
 		p.PostRx(h, prevState, accepted)
 	}
+}
+
+// preRxECN calls PreRxECN of p if it is an [ECNPolicy], or of every such member
+// if it is [Policies].
+func preRxECN(p Policy, h *Handler, incoming Frame, ecn uint8) {
+	switch p := p.(type) {
+	case ECNPolicy:
+		p.PreRxECN(h, incoming, ecn)
+	case Policies:
+		for _, member := range p {
+			preRxECN(member, h, incoming, ecn)
+		}
+	}
+}
+
+// postTxECN calls PostTxECN of p if it is an [ECNPolicy], or of every such
+// member if it is [Policies], and returns the codepoint of the first. ok is
+// false without one.
+func postTxECN(p Policy, h *Handler, outgoing Frame) (ecn uint8, ok bool) {
+	switch p := p.(type) {
+	case ECNPolicy:
+		return p.PostTxECN(h, outgoing), true
+	case Policies:
+		for _, member := range p {
+			if cp, isECN := postTxECN(member, h, outgoing); isECN && !ok {
+				ecn, ok = cp, true
+			}
+		}
+	}
+	return ecn, ok
 }
 
 // NextDeadline returns the earliest non-zero deadline among members that have a

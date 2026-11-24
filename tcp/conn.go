@@ -487,8 +487,9 @@ func (conn *Conn) Demux(buf []byte, off int) (err error) {
 		return lneto.ErrMismatch
 	}
 	conn.trace("tcpconn.Recv", slog.Uint64("lport", uint64(conn.h.LocalPort())), slog.Uint64("rport", uint64(conn.h.remotePort)))
+	ecn, _ := internal.GetIPECN(buf[:off]) // Not-ECT if unreadable.
 	prevState := conn.h.State()
-	err = conn.h.Recv(buf[off:])
+	err = conn.h.RecvECN(buf[off:], ecn)
 	if err != nil {
 		if err == net.ErrClosed && prevState == StateSynSent {
 			conn.abortErr = lneto.ErrConnRefused
@@ -519,7 +520,7 @@ func (conn *Conn) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 	} else if len(raddr) != len(conn.remoteAddr) {
 		return 0, lneto.ErrMismatchLen
 	}
-	n, err = conn.h.Send(carrierData[offsetToFrame:])
+	n, ecn, err := conn.h.SendECN(carrierData[offsetToFrame:])
 	if err != nil || n == 0 {
 		return 0, err
 	}
@@ -528,6 +529,7 @@ func (conn *Conn) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int)
 	if err != nil {
 		return 0, err
 	}
+	internal.SetIPECN(ipFrame, ecn) // The IP layer computes the IPv4 header checksum after.
 	conn.ipID++
 	return n, nil
 }

@@ -187,6 +187,7 @@ const (
 	pshack = FlagPSH | FlagACK
 
 	flagctl = FlagSYN | FlagFIN | FlagRST
+	flagECN = FlagECE | FlagCWR // Set by an ECN peer on any segment (RFC 3168 §6.1).
 )
 
 // HasAll checks if mask bits are all set in the receiver flags.

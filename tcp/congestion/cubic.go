@@ -58,6 +58,10 @@ type CUBICConfig struct {
 // that data are no new loss until SND.UNA passes it (RFC 6582 §3.2). The first
 // two duplicate ACKs each allow one more segment (RFC 3042).
 //
+// The peer's ECE, which only a peer using ECN as by tcp/ecn sends, reduces the
+// window as a loss does, without recovery and once per window of data, which
+// meanwhile neither grows nor is reduced again for a loss (RFC 3168 §6.1.2).
+//
 // The ControlBlock resends SND.UNA on every duplicate ACK from the third. Each
 // copy the peer already holds draws a duplicate ACK at a later SND.UNA, so as
 // many duplicate ACKs as copies were sent do not count, and the resends they
@@ -101,6 +105,12 @@ type CUBIC struct {
 	haveRecover bool
 	highRxt     tcp.Value // End of the data resent since the loss (RFC 6675).
 	dup         dupACKs   // Also allowing one segment each for the first two (RFC 3042).
+
+	// inCWR holds from a reduction for ECE until SND.UNA passes cwrEnd: the
+	// window does not grow, and ECE and losses do not reduce it again (RFC 3168
+	// §6.1.2).
+	inCWR  bool
+	cwrEnd tcp.Value
 
 	cwndLimited  bool // The last transmit had data to fill the window.
 	appLimited   bool // The window has not been full since appLimitedAt.
@@ -199,6 +209,9 @@ func (c *CUBIC) PostRx(h *tcp.Handler, prevState tcp.State, accepted tcp.Frame) 
 	}
 	una, nxt := cb.SendUNA(), cb.SendNext()
 	dupACK := isDupACK(seg, c.una, una, nxt, c.sendRoom, cb.MaxInFlightData())
+	if seg.Flags.HasAny(tcp.FlagECE) {
+		c.onECE(una, nxt) // Before the ACK grows the window.
+	}
 	c.postRx(una, nxt, cb.HasPendingRetransmit(), dupACK, c.nanotime())
 }
 
@@ -207,6 +220,7 @@ func (c *CUBIC) postRx(una, nxt tcp.Value, owed, dupACK bool, now int64) {
 		c.fastRetransmit, c.haveProbe = false, false
 		c.dup.acked(una)
 		c.haveRecover = c.haveRecover && !c.recover.LessThan(una)
+		c.inCWR = c.inCWR && !c.cwrEnd.LessThan(una)
 		c.onACK(tcp.Sizeof(c.una, una), una, now)
 	} else {
 		if dupACK {
@@ -336,7 +350,7 @@ func (c *CUBIC) onACK(acked tcp.Size, una tcp.Value, now int64) {
 	}
 	// Grow only while limited by the window, which basing ssthresh on cwnd
 	// requires (§4.6).
-	if !c.cwndLimited {
+	if !c.cwndLimited || c.inCWR {
 		return
 	}
 	ackSeg := float32(acked) / float32(c.smss)
@@ -379,14 +393,32 @@ func (c *CUBIC) cubicTarget(t float32) float32 {
 	return c.originPoint + cubicC*d*d*d
 }
 
-// onLoss applies the multiplicative decrease (§4.6) and starts recovery up to
-// nxt, unless already recovering.
+// onLoss starts recovery up to nxt, unless already recovering, and reduces
+// the window unless an ECE did in this window.
 func (c *CUBIC) onLoss(nxt tcp.Value) {
 	if c.inRecovery {
 		return
 	}
 	c.inRecovery, c.recover, c.haveRecover, c.highRxt = true, nxt, true, c.una
 	c.dup.n = 0
+	if !c.inCWR {
+		c.reduce()
+	}
+}
+
+// onECE reduces the window for the peer's echo of a congestion mark, once
+// per window of data up to nxt and not in recovery (RFC 3168 §6.1.2). The
+// ACK of nxt can still echo the mark the reduction answered.
+func (c *CUBIC) onECE(una, nxt tcp.Value) {
+	if c.inRecovery || c.inCWR && !c.cwrEnd.LessThan(una) {
+		return
+	}
+	c.inCWR, c.cwrEnd = true, nxt
+	c.reduce()
+}
+
+// reduce applies the multiplicative decrease (§4.6).
+func (c *CUBIC) reduce() {
 	c.epochSet = false
 	if c.cfg.fastConvergence && c.cwnd < c.wMax {
 		c.wMax = c.cwnd * (1 + cubicBeta) / 2
@@ -411,5 +443,6 @@ func (c *CUBIC) onRTO(nxt tcp.Value) {
 	c.cwnd = 1
 	c.epochSet = false
 	c.inRecovery, c.afterRTO, c.recover, c.haveRecover, c.highRxt = true, true, nxt, true, c.una
+	c.inCWR = false
 	c.dup.n = 0
 }
