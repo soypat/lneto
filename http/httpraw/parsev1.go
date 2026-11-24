@@ -93,6 +93,21 @@ var (
 
 // isRequestTarget reports whether non-empty target has a request-target form, RFC 9112 3.2.
 func isRequestTarget(method, target string) bool {
+	// Query escapes are checked per parameter when decoded, as net/http does.
+	path, _, _ := strings.Cut(target, "?")
+	for i := 0; i < len(path); i++ {
+		if path[i] != '%' {
+			continue
+		} else if i+2 >= len(path) {
+			return false
+		}
+		_, okhi := unhexdigit(path[i+1])
+		_, oklo := unhexdigit(path[i+2])
+		if !okhi || !oklo {
+			return false // pct-encoded = "%" HEXDIG HEXDIG, RFC 3986 2.1.
+		}
+		i += 2
+	}
 	if target[0] == '/' || target == "*" || method == "CONNECT" {
 		return true // origin-form, asterisk-form, authority-form.
 	}
