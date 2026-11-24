@@ -3,6 +3,7 @@ package httpraw
 import (
 	"bytes"
 	"errors"
+	"strings"
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/internal"
@@ -79,7 +80,27 @@ var (
 		bs.Add("\x7f")
 		return bs
 	}()
+	// notScheme matches every byte that is not an RFC 3986 3.1 scheme char.
+	notScheme = func() (bs internal.ByteSet) {
+		bs.AddRange('0', '9')
+		bs.AddRange('A', 'Z')
+		bs.AddRange('a', 'z')
+		bs.Add("+-.")
+		bs.Invert()
+		return bs
+	}()
 )
+
+// isRequestTarget reports whether non-empty target has a request-target form, RFC 9112 3.2.
+func isRequestTarget(method, target string) bool {
+	if target[0] == '/' || target == "*" || method == "CONNECT" {
+		return true // origin-form, asterisk-form, authority-form.
+	}
+	// absolute-form: scheme ":" with scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ), RFC 3986 3.1.
+	colon := strings.IndexByte(target, ':')
+	alpha := target[0]|0x20 >= 'a' && target[0]|0x20 <= 'z'
+	return colon > 0 && alpha && notScheme.IndexAny(target[:colon]) < 0
+}
 
 func protoIsV1(s string) bool {
 	// HTTP-version = "HTTP/" DIGIT "." DIGIT, RFC 9112 2.3; any 1.x minor is processed as 1.1, RFC 9110 6.2.
@@ -251,6 +272,9 @@ func (hb *headerv1Buf) parseFirstLineRequest(initFlags Flags) (method, uri, prot
 		uri = hb.kv.view(b[methodEnd+1:])
 		method = hb.kv.view(b[:methodEnd])
 		return method, uri, proto, flags | flagNoHTTP11, lneto.ErrUnsupported
+	}
+	if !isRequestTarget(b2s(b[:methodEnd]), b2s(b[methodEnd+1:reqURIEnd])) {
+		return method, uri, proto, flags, errInvalidRequestLine
 	}
 	method = hb.kv.view(b[:methodEnd])
 	return method, uri, proto, flags, nil
