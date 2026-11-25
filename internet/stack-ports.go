@@ -23,7 +23,8 @@ type StackPorts struct {
 	rstQueue tcp.RSTQueue
 }
 
-// NextFreePort returns the next free port in range [start,start+numToCheck*increment). 0 returned if none found.
+// NextFreePort checks numToCheck ports from start in steps of increment and returns the first free one.
+// A port inside a port range jumps to the end of the range, which counts as a check. 0 returned if none found.
 func (ps *StackPorts) NextFreePort(start, increment, numToCheck uint16) uint16 {
 	return ps.handlers.nextFreePort(start, increment, numToCheck)
 }
@@ -93,14 +94,27 @@ func (ps *StackPorts) Demux(b []byte, offset int) (err error) {
 // Register registers a port StackNode on StackPorts.
 // If dstMAC is set to non-nil, length six buffer then
 func (ps *StackPorts) Register(h lneto.StackNode) error {
-	port := h.LocalPort()
+	return ps.register(h, h.LocalPort(), 1, nil)
+}
+
+// RegisterPortRange registers h to receive packets for ports [startPort, startPort+numPorts).
+// Ranges may not overlap other registered ports. h must accept every port in the range.
+func (ps *StackPorts) RegisterPortRange(h lneto.StackNode, startPort, numPorts uint16) error {
+	return ps.register(h, startPort, numPorts, nil)
+}
+
+func (ps *StackPorts) register(h lneto.StackNode, startPort, numPorts uint16, macAddr []byte) error {
 	proto := h.Protocol()
-	if port <= 0 {
+	if startPort == 0 {
 		return lneto.ErrZeroSource
-	} else if proto != uint64(ps.protocol) {
+	} else if proto != uint64(ps.protocol) || numPorts == 0 || int(startPort)+int(numPorts) > math.MaxUint16+1 {
 		return lneto.ErrInvalidConfig
+	} else if macAddr != nil && len(macAddr) != 6 {
+		return lneto.ErrInvalidAddr
 	}
-	return ps.handlers.registerByPortProto(nodeFromStackNode(h, port, proto, nil))
+	n := nodeFromStackNode(h, startPort, proto, macAddr)
+	n.nports = numPorts
+	return ps.handlers.registerByPortProto(n)
 }
 
 // StackPortsMACFiltered is a StackPorts implementation but that avoids calling encapsulate on nodes
@@ -110,7 +124,7 @@ type StackPortsMACFiltered struct {
 	sp StackPorts
 }
 
-// NextFreePort returns the next free port in range [start,start+numToCheck*increment). 0 returned if none found.
+// NextFreePort returns the next free port. See [StackPorts.NextFreePort].
 func (mfsp *StackPortsMACFiltered) NextFreePort(start, increment, numToCheck uint16) uint16 {
 	return mfsp.sp.NextFreePort(start, increment, numToCheck)
 }
@@ -120,16 +134,13 @@ func (mfsp *StackPortsMACFiltered) RegisterMACFiltered(h lneto.StackNode, macAdd
 	// or better yet, if the handlers node slice owns the memory. We need to think carefully of who has write access (the ARP and NDP handlers)
 	// and make sure that they never write after the connection has been terminated. Idea:
 	// RegisterMACFiltered(h lneto.StackNode, filterMAC bool) (macAddr *[6]byte, connIDthing *uint8, err error)
-	port := h.LocalPort()
-	proto := h.Protocol()
-	if port <= 0 {
-		return lneto.ErrZeroSource
-	} else if proto != uint64(mfsp.sp.protocol) {
-		return lneto.ErrInvalidConfig
-	} else if macAddr != nil && len(macAddr) != 6 {
-		return lneto.ErrInvalidAddr
-	}
-	return mfsp.sp.handlers.registerByPortProto(nodeFromStackNode(h, port, proto, macAddr))
+	return mfsp.sp.register(h, h.LocalPort(), 1, macAddr)
+}
+
+// RegisterPortRange registers h without MAC filtering to receive packets for ports [startPort, startPort+numPorts).
+// See [StackPorts.RegisterPortRange].
+func (mfsp *StackPortsMACFiltered) RegisterPortRange(h lneto.StackNode, startPort, numPorts uint16) error {
+	return mfsp.sp.RegisterPortRange(h, startPort, numPorts)
 }
 
 func (ps *StackPortsMACFiltered) ResetUDP(maxNodes uint16) {

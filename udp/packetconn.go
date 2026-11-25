@@ -1,6 +1,7 @@
 package udp
 
 import (
+	"math"
 	"net"
 	"net/netip"
 	"os"
@@ -74,6 +75,11 @@ func (pc *PacketConn) Configure(cfg PacketConnConfig) error {
 
 // Open sets the local address and enables port filtering for incoming datagrams.
 func (pc *PacketConn) Open(localAddr netip.AddrPort) error {
+	return pc.OpenPortRange(localAddr, 1)
+}
+
+// OpenPortRange is [PacketConn.Open] for ports [localAddr.Port(), localAddr.Port()+numPorts).
+func (pc *PacketConn) OpenPortRange(localAddr netip.AddrPort, numPorts uint16) error {
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 	if pc.localAddr.IsValid() {
@@ -81,11 +87,23 @@ func (pc *PacketConn) Open(localAddr netip.AddrPort) error {
 	}
 	if !localAddr.IsValid() || localAddr.Port() == 0 {
 		return lneto.ErrZeroSource
+	} else if numPorts == 0 || int(localAddr.Port())+int(numPorts) > math.MaxUint16+1 {
+		return lneto.ErrInvalidConfig
 	}
 	pc.localAddr = localAddr
 	pc.m.FilterResetLocalPorts()
-	pc.m.FilterAddLocalPort(localAddr.Port(), 1)
+	pc.m.FilterAddLocalPort(localAddr.Port(), numPorts)
 	return nil
+}
+
+// LocalPortRange returns the ports set by [PacketConn.OpenPortRange] as [start, start+numPorts).
+func (pc *PacketConn) LocalPortRange() (start, numPorts uint16) {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	if len(pc.m.filterLPorts) == 0 {
+		return 0, 0
+	}
+	return pc.m.filterLPorts[0].startPort, pc.m.filterLPorts[0].nports
 }
 
 // Abort resets the connection, discarding all buffered data and clearing deadlines.
@@ -148,33 +166,45 @@ func (pc *PacketConn) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame 
 // ReadFrom dequeues the next received datagram into p and returns the sender's address.
 // Blocks until a datagram is available or the read deadline is exceeded.
 func (pc *PacketConn) ReadFrom(p []byte) (n int, addr netip.AddrPort, err error) {
+	n, _, addr, err = pc.ReadFromLocal(p)
+	return n, addr, err
+}
+
+// ReadFromLocal is [PacketConn.ReadFrom] that also returns the local port the datagram was sent to.
+func (pc *PacketConn) ReadFromLocal(p []byte) (n int, lport uint16, raddr netip.AddrPort, err error) {
 	connID, err := pc.lockConnID()
 	if err != nil {
-		return 0, netip.AddrPort{}, err
+		return 0, 0, netip.AddrPort{}, err
 	}
 	var backoffs uint
 	for {
 		pc.mu.Lock()
 		if (pc.m.closeCalled && pc.m.BufferedInput() == 0) || connID != pc.m.connid.Load() {
 			pc.mu.Unlock()
-			return 0, netip.AddrPort{}, net.ErrClosed
+			return 0, 0, netip.AddrPort{}, net.ErrClosed
 		}
-		n, _, _, addr = pc.m.ReadNext(p)
+		n, _, lport, raddr = pc.m.ReadNext(p)
 		pc.mu.Unlock()
 		if n > 0 {
-			return n, addr, nil
+			return n, lport, raddr, nil
 		}
 		if pc.deadlineExceeded(&pc.rdead) {
-			return 0, netip.AddrPort{}, os.ErrDeadlineExceeded
+			return 0, 0, netip.AddrPort{}, os.ErrDeadlineExceeded
 		}
 		pc.backoff(backoffs)
 		backoffs++
 	}
 }
 
-// WriteTo enqueues a datagram for transmission to addr.
+// WriteTo enqueues a datagram for transmission to addr from the first port of [PacketConn.LocalPortRange].
 // Blocks until buffer space is available or the write deadline is exceeded.
 func (pc *PacketConn) WriteTo(p []byte, addr netip.AddrPort) (n int, err error) {
+	return pc.WriteToLocal(p, 0, addr)
+}
+
+// WriteToLocal is [PacketConn.WriteTo] sending from local port lport, which must be in [PacketConn.LocalPortRange].
+// lport 0 sends from the first port of the range.
+func (pc *PacketConn) WriteToLocal(p []byte, lport uint16, raddr netip.AddrPort) (n int, err error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
@@ -189,7 +219,14 @@ func (pc *PacketConn) WriteTo(p []byte, addr netip.AddrPort) (n int, err error) 
 			pc.mu.Unlock()
 			return 0, net.ErrClosed
 		}
-		werr := pc.m.WriteTo(p, pc.localAddr.Port(), addr)
+		src := lport
+		if src == 0 {
+			src = pc.localAddr.Port()
+		} else if pc.m.FilterLocalPort(src) {
+			pc.mu.Unlock()
+			return 0, lneto.ErrInvalidAddr
+		}
+		werr := pc.m.WriteTo(p, src, raddr)
 		pc.mu.Unlock()
 		if werr == nil {
 			return len(p), nil
