@@ -879,75 +879,85 @@ func TestWindowUpdateAfterRead(t *testing.T) {
 	var rawbuf [mtu]byte
 	establish(t, client, server, rawbuf[:])
 
-	// Fill the server's RX buffer completely (without reading).
-	fillData := make([]byte, server.FreeInput())
-	n, err := client.Write(fillData)
-	if err != nil {
-		t.Fatal("client write:", err)
-	} else if n != len(fillData) {
-		t.Fatal("short write")
-	}
-	clear(rawbuf[:])
-	n, err = client.Send(rawbuf[:])
-	if err != nil {
-		t.Fatal("client send:", err)
-	}
-	err = server.Recv(rawbuf[:n])
-	if err != nil {
-		t.Fatal("server recv:", err)
-	}
-	if server.FreeInput() != 0 {
-		t.Fatalf("expected server RX buffer full, got %d free", server.FreeInput())
-	}
+	// Every way of consuming input must queue the window update.
+	for _, consume := range []string{"Read", "ReadDiscard"} {
+		// Fill the server's RX buffer completely (without reading).
+		fillData := make([]byte, server.FreeInput())
+		n, err := client.Write(fillData)
+		if err != nil {
+			t.Fatal("client write:", err)
+		} else if n != len(fillData) {
+			t.Fatal("short write")
+		}
+		clear(rawbuf[:])
+		n, err = client.Send(rawbuf[:])
+		if err != nil {
+			t.Fatal("client send:", err)
+		}
+		err = server.Recv(rawbuf[:n])
+		if err != nil {
+			t.Fatal("server recv:", err)
+		}
+		if server.FreeInput() != 0 {
+			t.Fatalf("expected server RX buffer full, got %d free", server.FreeInput())
+		}
 
-	// Server sends ACK — should advertise Window=0.
-	clear(rawbuf[:])
-	n, err = server.Send(rawbuf[:])
-	if err != nil {
-		t.Fatal("server send ACK:", err)
-	}
-	if n == 0 {
-		t.Fatal("expected server to send ACK for received data")
-	}
-	zeroWndFrm, _ := NewFrame(rawbuf[:n])
-	if wnd := zeroWndFrm.WindowSize(); wnd != 0 {
-		t.Fatalf("expected Window=0 in ACK, got %d", wnd)
-	}
+		// Server sends ACK — should advertise Window=0.
+		clear(rawbuf[:])
+		n, err = server.Send(rawbuf[:])
+		if err != nil {
+			t.Fatal("server send ACK:", err)
+		}
+		if n == 0 {
+			t.Fatal("expected server to send ACK for received data")
+		}
+		zeroWndFrm, _ := NewFrame(rawbuf[:n])
+		if wnd := zeroWndFrm.WindowSize(); wnd != 0 {
+			t.Fatalf("expected Window=0 in ACK, got %d", wnd)
+		}
 
-	// Verify no pending segment before Read (nothing to send).
-	clear(rawbuf[:])
-	n, err = server.Send(rawbuf[:])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 0 {
-		t.Fatal("expected no pending segment before Read")
-	}
+		// Verify no pending segment before Read (nothing to send).
+		clear(rawbuf[:])
+		n, err = server.Send(rawbuf[:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Fatal("expected no pending segment before Read")
+		}
 
-	// App reads ALL data from server, freeing the entire buffer.
-	readBuf := make([]byte, rxBufSize)
-	n, err = server.Read(readBuf)
-	if err != nil {
-		t.Fatal("server read:", err)
-	}
-	if n != len(fillData) {
-		t.Fatalf("read %d, expected %d", n, len(fillData))
-	}
+		// App consumes ALL data from server, freeing the entire buffer.
+		if consume == "Read" {
+			n, err = server.Read(make([]byte, rxBufSize))
+		} else {
+			n, err = server.ReadDiscard(rxBufSize)
+		}
+		if err != nil {
+			t.Fatalf("server %s: %v", consume, err)
+		}
+		if n != len(fillData) {
+			t.Fatalf("%s consumed %d, expected %d", consume, n, len(fillData))
+		}
 
-	// Server should now have a pending window update ACK.
-	clear(rawbuf[:])
-	n, err = server.Send(rawbuf[:])
-	if err != nil {
-		t.Fatal("server send window update:", err)
+		// Server should now have a pending window update ACK.
+		clear(rawbuf[:])
+		n, err = server.Send(rawbuf[:])
+		if err != nil {
+			t.Fatal("server send window update:", err)
+		}
+		if n == 0 {
+			t.Fatalf("BUG: no window update sent after %s freed buffer space from Window=0", consume)
+		}
+		wndFrm, _ := NewFrame(rawbuf[:n])
+		if wnd := wndFrm.WindowSize(); wnd == 0 {
+			t.Fatal("BUG: window update ACK still has Window=0")
+		}
+		t.Logf("%s: window update sent: Window=%d (buffer free=%d)", consume, wndFrm.WindowSize(), server.FreeInput())
+		// Client learns of the open window so the next round can refill it.
+		if err = client.Recv(rawbuf[:n]); err != nil {
+			t.Fatal("client recv window update:", err)
+		}
 	}
-	if n == 0 {
-		t.Fatal("BUG: no window update sent after Read() freed buffer space from Window=0")
-	}
-	wndFrm, _ := NewFrame(rawbuf[:n])
-	if wnd := wndFrm.WindowSize(); wnd == 0 {
-		t.Fatal("BUG: window update ACK still has Window=0")
-	}
-	t.Logf("window update sent: Window=%d (buffer free=%d)", wndFrm.WindowSize(), server.FreeInput())
 }
 
 // TestWindowUpdateSWSAvoidance verifies that small reads that free less than
@@ -2276,6 +2286,10 @@ func TestConn_ReadEOFAfterCleanClose(t *testing.T) {
 
 			got := make([]byte, 16)
 			if tt.data != "" {
+				d0, d1, err := server.BufferedData()
+				if err != nil || string(d0)+string(d1) != tt.data {
+					t.Fatalf("BufferedData: got %q+%q, %v; want %q, nil", d0, d1, err, tt.data)
+				}
 				n, err := conn.Read(got)
 				if err != nil || string(got[:n]) != tt.data {
 					t.Fatalf("first read: got %q, %v; want %q, nil", got[:n], err, tt.data)
@@ -2284,6 +2298,13 @@ func TestConn_ReadEOFAfterCleanClose(t *testing.T) {
 			n, err := conn.Read(got)
 			if n != 0 || err != tt.wantErr {
 				t.Fatalf("read after close: got n=%d err=%v, want 0, %v", n, err, tt.wantErr)
+			}
+			// lneto.ReaderBuffered methods must agree with Read once drained.
+			if _, _, err := server.BufferedData(); err != tt.wantErr {
+				t.Errorf("BufferedData after close: err=%v, want %v", err, tt.wantErr)
+			}
+			if n, err := server.ReadDiscard(1); n != 0 || err != tt.wantErr {
+				t.Errorf("ReadDiscard after close: got n=%d err=%v, want 0, %v", n, err, tt.wantErr)
 			}
 		})
 	}
@@ -2319,6 +2340,7 @@ func TestHandlerStreamIntegrityUnderReorder(t *testing.T) {
 		shuffleWindow = 4  // segments that may arrive in any order among themselves
 	)
 	rng := rand.New(rand.NewSource(3))
+	drain := rand.New(rand.NewSource(4)) // Own source keeps arrival orders independent of drain choices.
 	client, server := newHandler(t, mtu, maxpackets), newHandler(t, mtu, maxpackets)
 	setupClientServer(t, rng, client, server)
 	var rawbuf [mtu]byte
@@ -2365,14 +2387,34 @@ func TestHandlerStreamIntegrityUnderReorder(t *testing.T) {
 			if err := server.Recv(append([]byte(nil), segs[idx]...)); err != nil {
 				t.Logf("round %d segment %d refused: %v", round, idx, err)
 			}
-			// Drain as an application would, keeping the ring from filling.
+			// Drain as an application would, keeping the ring from filling. Read and
+			// zero-copy BufferedData+ReadDiscard must yield the same stream, also when
+			// LinearizeInput moves the ring while segments are staged in it.
 			for {
-				n, err := server.Read(rb)
-				if n > 0 {
+				if drain.Intn(2) == 0 {
+					n, err := server.Read(rb)
 					got = append(got, rb[:n]...)
+					if n == 0 || err != nil {
+						break
+					}
+					continue
 				}
-				if n == 0 || err != nil {
+				if drain.Intn(2) == 0 {
+					server.LinearizeInput()
+				}
+				d0, d1, err := server.BufferedData()
+				unread := len(d0) + len(d1)
+				if unread == 0 || err != nil {
+					if n, rerr := server.Read(rb); n != 0 || rerr != err {
+						t.Fatalf("round %d: BufferedData unread=%d err=%v, but Read=(%d,%v)", round, unread, err, n, rerr)
+					}
 					break
+				}
+				k := 1 + drain.Intn(unread)
+				mark := len(got)
+				got = append(append(got, d0...), d1...)[:mark+k]
+				if n, err := server.ReadDiscard(k); n != k || err != nil {
+					t.Fatalf("round %d: ReadDiscard(%d)=(%d,%v), want %d,nil", round, k, n, err, k)
 				}
 			}
 			// Feed ACKs back so the sender's window keeps opening; without this
