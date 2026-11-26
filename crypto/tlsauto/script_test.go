@@ -264,7 +264,12 @@ func runScript(t *testing.T, sc script) (*Conn, *scriptServer, chan error) {
 	c := new(Conn)
 	if err := c.Configure(cfg); err != nil {
 		t.Fatal(err)
-	} else if err := c.Open(cs); err != nil {
+	}
+	var rw io.ReadWriter = cs
+	if scriptRing > 0 {
+		rw = newRingConn(cs, scriptRing)
+	}
+	if err := c.Open(rw); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { cs.Close() })
