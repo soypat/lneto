@@ -180,7 +180,7 @@ func (h *Handler) ReadNext(b []byte) (int, error) {
 	}
 	discard := int(dgram.length) - len(b)
 	if discard > 0 {
-		err = h.rxRing.ReadDiscard(discard)
+		_, err = h.rxRing.ReadDiscard(discard)
 		if err != nil {
 			panic("udp readnext discard failure")
 		}
