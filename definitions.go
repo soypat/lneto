@@ -1,6 +1,8 @@
 package lneto
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+)
 
 // StackNode is an abstraction of a packet exchanging protocol controller. This is the building block for all protocols,
 // from Ethernet to IP to TCP, practically any protocol can be expressed as a StackNode and function completely.
@@ -37,6 +39,22 @@ type StackNode interface {
 	ConnectionID() *atomic.Uint32
 	// TODO(pato,ddirect): Do we eventually want to trigger writes to buffers asynchronously?
 	// SetFlagPending(flagPending func(numPendingEncapsulations int))
+}
+
+// BufferReader is the in-memory equivalent to an [io.Reader] which can provide the benefit of zero-copy parsing of held data.
+// Implementers of ReaderBuffered are synchronous and never block.
+type ReaderBuffered interface {
+	// ReadDiscard tries to discard n bytes and returns the amount actually discarded.
+	ReadDiscard(n int) (int, error)
+	// SizeInput returns the maximum number of bytes BufferedData can store.
+	SizeInput() int
+	// BufferedData returns unread bytes without consuming them. data1 is non-empty when unread data is not contiguous
+	// and contains data immediately following data0. Ring and ping-pong buffers are typical data1!=nil returners.
+	// Slices must stay valid until next Read, ReadDiscard, LinearizeInput or reset of ReaderBuffered. err should be same error Read would return.
+	BufferedData() (data0, data1 []byte, err error)
+	// LinearizeInput moves unread bytes so BufferedData returns them all in data0. Needed to have contiguous input
+	// to things like cryptographic primitives that require contiguous data. Returns true if data moved.
+	LinearizeInput() bool
 }
 
 // IPProto represents the IP protocol number.

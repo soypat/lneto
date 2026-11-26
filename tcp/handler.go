@@ -111,6 +111,38 @@ func (h *Handler) SetBuffers(txbuf, rxbuf []byte, packets int) error {
 	return h.bufTx.ResetOrReuse(txbuf, packets, 0)
 }
 
+var _ lneto.ReaderBuffered = (*Handler)(nil) // compile-time check of interface implementation.
+
+// ReadDiscard implements [lneto.ReaderBuffered.ReadDiscard].
+func (h *Handler) ReadDiscard(n int) (_ int, err error) {
+	if h.shutdownRx {
+		return 0, io.EOF
+	}
+	n, err = h.bufRx.ReadDiscard(n)
+	if n != 0 {
+		h.inputConsumed()
+	}
+	return n, err
+}
+
+// BufferedData implements [lneto.ReaderBuffered.BufferedData].
+func (h *Handler) BufferedData() (data0, data1 []byte, err error) {
+	if h.shutdownRx {
+		return nil, nil, io.EOF
+	}
+	return h.bufRx.BufferedData()
+}
+
+// BufferedData implements [lneto.ReaderBuffered.LinearizeInput].
+func (h *Handler) LinearizeInput() bool { return h.bufRx.LinearizeInput() }
+
+func (h *Handler) inputConsumed() {
+	// Reading freed receive-buffer space; deliver any contiguous
+	// out-of-order data that was waiting for room.
+	h.deliverReassembled()
+	h.maybeQueueWindowUpdate()
+}
+
 // SetPolicy installs the transmit-steering algorithm. nil disables it.
 // It should be set before the connection is opened. See [Policy].
 func (h *Handler) SetPolicy(policy Policy) {
@@ -603,10 +635,8 @@ func (h *Handler) Read(b []byte) (n int, err error) {
 		n, err = h.bufRx.Read(b)
 	}
 	if n > 0 {
-		// Reading freed receive-buffer space; deliver any contiguous
-		// out-of-order data that was waiting for room.
-		h.deliverReassembled()
-		h.maybeQueueWindowUpdate()
+		h.inputConsumed()
+
 	}
 	if n == 0 && err == nil {
 		state := h.State()
