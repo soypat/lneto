@@ -148,20 +148,20 @@ func (r *Ring) Commit(n int) error {
 
 // ReadDiscard is a performance auxiliary method that performs a dummy read or no-op read
 // for advancing the read pointer n bytes without actually copying data.
-// This method panics if amount of bytes is more than buffered (see [Ring.Buffered]).
+// At most [Ring.Buffered] bytes are discarded; the amount discarded is returned.
 func (r *Ring) ReadDiscard(n int) (int, error) {
 	if n <= 0 {
 		return 0, errInvalidDiscard
 	}
 	buffered := r.Buffered()
+	n = min(n, buffered)
 	switch {
-	case n > buffered:
-		n = buffered
-		fallthrough
+	case n == 0:
+		// Already empty: emptied would move the write position and lose PeekWrite'd bytes.
 	case n == buffered:
 		r.emptied()
-	case n+r.Off > len(r.Buf):
-		r.Off = n - (len(r.Buf) - r.Off)
+	case n+r.Off >= len(r.Buf):
+		r.Off = n - (len(r.Buf) - r.Off) // Wrap keeping Off<len(Buf).
 	default:
 		r.Off += n
 	}
