@@ -698,3 +698,67 @@ func TestRingPeekWriteSurvivesEmptyRead(t *testing.T) {
 	}
 	testRingSanity(t, r)
 }
+
+// TestRingReaderBuffered drives every (Off, Buffered) state of a small ring
+// through ReadDiscard and LinearizeInput and checks BufferedData reports exactly
+// the unread bytes. A byte staged with PeekWrite (as TCP reassembly does on its
+// receive ring) must survive both and become readable once committed.
+func TestRingReaderBuffered(t *testing.T) {
+	const size = 8
+	const content = "abcdefgh"
+	for off := range size {
+		for nbuf := range size + 1 {
+			for discard := range nbuf + 2 { // 0 is invalid, nbuf+1 discards past the end.
+				for _, linearize := range []bool{false, true} {
+					name := fmt.Sprintf("off=%d buf=%d discard=%d linearize=%v", off, nbuf, discard, linearize)
+					t.Run(name, func(t *testing.T) {
+						r := &Ring{Buf: make([]byte, size)}
+						setRingData(t, r, off, []byte(content[:nbuf]))
+						staged := nbuf < size
+						if staged && !r.PeekWrite([]byte("S"), 0) {
+							t.Fatal("PeekWrite should fit")
+						}
+
+						n, err := r.ReadDiscard(discard)
+						if wantErr := discard == 0; n != min(discard, nbuf) || (err != nil) != wantErr {
+							t.Fatalf("ReadDiscard(%d)=(%d,%v), want n=%d err=%v", discard, n, err, min(discard, nbuf), wantErr)
+						}
+						_, d1, _ := r.BufferedData()
+						if linearize && !r.LinearizeInput() && len(d1) > 0 {
+							t.Error("LinearizeInput must report moving wrapped data")
+						}
+
+						want := content[n:nbuf]
+						var wantErr error
+						if want == "" {
+							wantErr = io.EOF
+						}
+						d0, d1, err := r.BufferedData()
+						switch {
+						case err != wantErr:
+							t.Errorf("BufferedData err=%v, want %v", err, wantErr)
+						case string(d0)+string(d1) != want:
+							t.Errorf("BufferedData=%q+%q, want %q", d0, d1, want)
+						case len(d0) == 0 && len(d1) > 0:
+							t.Errorf("BufferedData data1=%q with empty data0", d1)
+						case linearize && len(d1) > 0:
+							t.Errorf("BufferedData=%q+%q still wrapped after LinearizeInput", d0, d1)
+						case cap(d0) != len(d0) || cap(d1) != len(d1):
+							t.Error("BufferedData slices must be clipped so appends cannot clobber the ring")
+						}
+						testRingSanity(t, r)
+
+						if staged {
+							if err := r.Commit(1); err != nil {
+								t.Fatal("commit:", err)
+							}
+							if got := r.string(); got != want+"S" {
+								t.Errorf("read %q after commit, want %q: staged byte lost", got, want+"S")
+							}
+						}
+					})
+				}
+			}
+		}
+	}
+}

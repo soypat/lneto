@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"slices"
 	"unsafe"
 
 	"github.com/soypat/lneto"
@@ -147,23 +148,24 @@ func (r *Ring) Commit(n int) error {
 
 // ReadDiscard is a performance auxiliary method that performs a dummy read or no-op read
 // for advancing the read pointer n bytes without actually copying data.
-// This method panics if amount of bytes is more than buffered (see [Ring.Buffered]).
-func (r *Ring) ReadDiscard(n int) error {
+// At most [Ring.Buffered] bytes are discarded; the amount discarded is returned.
+func (r *Ring) ReadDiscard(n int) (int, error) {
 	if n <= 0 {
-		return errInvalidDiscard
+		return 0, errInvalidDiscard
 	}
 	buffered := r.Buffered()
+	n = min(n, buffered)
 	switch {
-	case n > buffered:
-		return errDiscardExceeds
+	case n == 0:
+		// Already empty: emptied would move the write position and lose PeekWrite'd bytes.
 	case n == buffered:
 		r.emptied()
-	case n+r.Off > len(r.Buf):
-		r.Off = n - (len(r.Buf) - r.Off)
+	case n+r.Off >= len(r.Buf):
+		r.Off = n - (len(r.Buf) - r.Off) // Wrap keeping Off<len(Buf).
 	default:
 		r.Off += n
 	}
-	return nil
+	return n, nil
 }
 
 // ReadAt reads data at an offset from start of readable data but does not advance read pointer. [io.EOF] returned when no data available.
@@ -246,21 +248,39 @@ func (r *Ring) Buffered() int {
 	return r.Size() - r.Free()
 }
 
-// Free returns amount of bytes that can be read into ring buffer before reaching maximum capacity given by [ring.Size]. Always less than [ring.Size].
-func (r *Ring) Free() int {
-	if r.End == 0 || r.Off == 0 {
-		return len(r.Buf) - r.End
+// BufferedData implements [lneto.ReaderBuffered.BufferedData].
+func (r *Ring) BufferedData() (data0, data1 []byte, err error) {
+	if r.IsEmpty() {
+		return nil, nil, io.EOF
 	}
-	if r.Off < r.End {
+	off := r.Off
+	if r.End > off {
 		// start       off       end      len(buf)
 		//   |  sfree   |  used   |  efree   |
-		startFree := r.Off
-		endFree := len(r.Buf) - r.End
-		return startFree + endFree
+		return r.Buf[off:r.End:r.End], nil, nil
 	}
 	// start     end       off     len(buf)
 	//   |  used  |  mfree  |  used  |
-	return r.Off - r.End
+	return r.Buf[off:len(r.Buf):len(r.Buf)], r.Buf[:r.End:r.End], nil
+}
+
+// LinearizeInput implements [lneto.ReaderBuffered.LinearizeInput].
+func (r *Ring) LinearizeInput() bool {
+	if r.Off == 0 {
+		return false
+	}
+	n := r.Buffered()
+	slices.Reverse(r.Buf[:r.Off])
+	slices.Reverse(r.Buf[r.Off:])
+	slices.Reverse(r.Buf)
+	r.Off, r.End = 0, n
+	return true
+}
+
+// Free returns amount of bytes that can be read into ring buffer before reaching maximum capacity given by [ring.Size]. Always less than [ring.Size].
+func (r *Ring) Free() int {
+	d0, d1, _ := r.BufferedData()
+	return len(r.Buf) - len(d0) - len(d1)
 }
 
 func (r *Ring) midFree() int {
